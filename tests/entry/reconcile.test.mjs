@@ -167,28 +167,80 @@ describe('entry lifecycle reconciliation', () => {
     assert.ok(Array.isArray(summary.unreachable));
   });
 
+  // 미러가 앞선 리비전을 들고 있으면(entry DB만 복원했을 때 생기는 상태) 같은 리비전으로
+  // 재전송해봐야 downstream 가드가 200으로 무시하고 outbox 행만 지워진다. 매번 고쳤다고
+  // 보고하면서 영원히 안 고쳐지던 경로다.
+  it('raises the revision when the mirror is ahead, so the repair actually applies', async () => {
+    mirror.state.set(11, { active: false, revision: 999 });   // entry는 11을 active로 안다
+    mirror.applied.length = 0;
+
+    const summary = await reconcile();
+
+    assert.equal(mirror.state.get(11).active, true, 'the mirror must actually converge');
+    assert.ok(mirror.applied.some((a) => a.num === 11 && a.revision > 999),
+      `re-send must carry a revision above the mirror's, got ${JSON.stringify(mirror.applied)}`);
+    assert.ok(summary.repaired >= 1);
+
+    // 두 번째 실행은 조용해야 한다. 안 그러면 매번 "고쳤다"고 보고하는 예전 동작이다.
+    mirror.applied.length = 0;
+    const second = await reconcile();
+    assert.deepEqual(mirror.applied, [], 'a converged mirror is not rewritten');
+    assert.equal(second.repaired, 0);
+  });
+
+  it('leaves entry consistent with the raised revision', async () => {
+    const row = db.prepare(`SELECT active_revision FROM 'entry_${YEAR}' WHERE num = 11`).get();
+    const mirrored = mirror.state.get(11);
+    assert.equal(row.active_revision, mirrored.revision,
+      'entry must persist the revision it sent, or the next real event is rejected too');
+  });
+
+  // 부팅 훅은 30초 재시도 타이머보다 먼저 돈다. 아직 배달 안 된 이벤트를 drift로 오인하면
+  // 재시작마다 가짜 경고와 중복 이벤트가 쌓인다.
+  it('does not report in-flight events as drift', async () => {
+    db.prepare('DELETE FROM lifecycle_outbox').run();
+    const num = 10;
+    const cur = db.prepare(`SELECT active, active_revision FROM 'entry_${YEAR}' WHERE num = ?`).get(num);
+    db.prepare(`
+      INSERT INTO lifecycle_outbox (event_type, service, method, path, body, next_attempt_at)
+      VALUES ('team.active', 'inspection', 'PATCH', '/api/internal/team-active', ?, ?)
+    `).run(JSON.stringify({ num, year: YEAR, active: !cur.active, revision: cur.active_revision + 1 }), Date.now() + 600000);
+    mirror.state.set(num, { active: !!cur.active, revision: cur.active_revision });
+    // 미러를 어긋나게 해두되, 그 번호엔 배달 대기 행이 있다.
+    mirror.state.set(num, { active: !cur.active, revision: cur.active_revision });
+    mirror.applied.length = 0;
+
+    const summary = await reconcile();
+
+    assert.deepEqual(mirror.applied.filter((a) => a.num === num), [],
+      'a number with a pending event must be left alone');
+    assert.equal(summary.repaired, 0);
+    db.prepare('DELETE FROM lifecycle_outbox').run();
+  });
+
+  it('reports unknown teams in the summary, not only in the log', async () => {
+    mirror.state.set(777, { active: true, revision: 1 });
+    const summary = await reconcile();
+    assert.ok(summary.unknown.some((u) => u.nums.includes(777)),
+      'the one item needing a human must be visible to the caller');
+    mirror.state.delete(777);
+  });
+
+  it('does not repeat a service in unreachable', async () => {
+    const prev = process.env.SCORE_SERVER;
+    process.env.SCORE_SERVER = 'http://127.0.0.1:1';
+    try {
+      const summary = await reconcile();
+      assert.deepEqual(summary.unreachable.filter((s) => s === 'score'), ['score']);
+    } finally {
+      process.env.SCORE_SERVER = prev;
+    }
+  });
+
   it('requires admin', async () => {
     const res = await client.post('/api/admin/reconcile', {
       cookie: makeAuthCookie({ email: 's@test.com', name: 'S', role: 'student' }),
     });
     assert.equal(res.status, 403);
-  });
-});
-
-describe('team-status snapshot route', () => {
-  it('rejects a request without the internal secret', async () => {
-    const mock = createMirrorService();
-    const started = await startServer(mock.app);
-    try {
-      // mock은 가드가 없으므로 여기서는 계약(형태)만 고정한다. 실제 가드는 각 서비스의
-      // requireInternalRequest가 담당하고 그쪽 스위트가 덮는다.
-      const res = await fetch(`${started.baseUrl}/api/internal/team-status?year=${YEAR}`, {
-        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      });
-      assert.equal(res.status, 200);
-      assert.deepEqual(await res.json(), {});
-    } finally {
-      await stopServer(started.server);
-    }
   });
 });

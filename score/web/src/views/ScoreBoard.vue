@@ -479,6 +479,10 @@ function handleSettingInput(key, event) {
 
 function startSettingEdit(key, stored) {
   if (isReadOnly.value) return;
+  // 이 핸들러는 <td>에 걸려 있고 열린 <input>이 그 안에 있다. 편집 중에 입력칸을 다시
+  // 클릭하면(캐럿 이동) 클릭이 <td>로 버블링되므로, 여기서 무조건 버퍼를 다시 심으면
+  // 타이핑하던 값이 저장된 값으로 되돌아간다. 이미 편집 중인 칸이면 아무것도 하지 않는다.
+  if (editingSettingCell.value === key) return;
   editingSettingCell.value = key;
   editingSettingValue.value = stored == null ? "" : String(stored);
 }

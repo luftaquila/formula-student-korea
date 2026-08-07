@@ -118,7 +118,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/admin/lifecycle-outbox` | admin | — | `[{ id, service, event, status, attempts, ... }]` | 미전달/실패 이벤트 목록 |
 | POST | `/api/admin/lifecycle-outbox/:id/retry` | admin | — | 200 or 409 | 실패 이벤트 즉시 재전달 시도. 번호가 재사용된 삭제 이벤트와 현재 Entry의 번호 배치·팀 snapshot·활성 상태/revision에 맞지 않는 오래된 번호 변경/활성 이벤트는 409로 거부 |
 | DELETE | `/api/admin/lifecycle-outbox/:id` | admin | — | 200 | 실패 이벤트 폐기 |
-| POST | `/api/admin/reconcile` | admin | — | `{ checked, repaired, unreachable }` | 다운스트림 `team_status` 미러를 Entry 진실과 대조하고 어긋난 팀만 재전송. 백업 복원·수동 DB 조작 뒤에 실행. Entry 부팅 시에도 자동 1회 |
+| POST | `/api/admin/reconcile` | admin | — | `{ checked, repaired, unreachable, unknown }` | 다운스트림 `team_status` 미러를 Entry 진실과 대조하고 어긋난 팀만 재전송. `checked`는 서비스×연도 쌍 수, `repaired`는 재전송을 **큐에 넣은** 팀 수, `unknown`은 Entry가 모르는데 미러에 남아 있는 팀(자동 삭제하지 않으므로 사람이 판단해야 함). 미러 리비전이 Entry보다 앞서 있으면 새 리비전을 발급해 재전송이 실제로 적용되게 한다. 배달 대기 중인 이벤트가 있는 번호는 건너뛴다. 백업 복원·수동 DB 조작 뒤에 실행. Entry 부팅 시에도 자동 실행되며, 닿지 못한 서비스가 있으면 15초 간격으로 최대 5회 재시도 |
 
 ### Vehicle Types
 

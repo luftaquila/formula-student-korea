@@ -263,6 +263,7 @@ async function updateSmsRank(e) {
 // 되돌아간 값으로 저장 요청이 나가고 "변경했습니다" 알림까지 뜬다 — 바뀌지 않았는데
 // 바뀌었다고 알리는 게 조용히 사라지는 것보다 나쁘다.
 const editingCancelPenalty = ref(null);
+let cancelPenaltySaving = false;
 
 function handleCancelPenaltyFocus(e) {
   editingCancelPenalty.value = e.target.value;
@@ -272,11 +273,22 @@ function handleCancelPenaltyInput(e) {
   if (editingCancelPenalty.value !== null) editingCancelPenalty.value = e.target.value;
 }
 
+// change는 blur보다 먼저 발생한다. 저장이 시작됐으면 blur가 버퍼를 먼저 비우지 못하게 해
+// 요청이 도는 동안 화면이 옛 값으로 되돌아가는 깜빡임을 막는다. 값이 그대로면 change 자체가
+// 안 나므로 그때는 blur가 정리한다.
+function handleCancelPenaltyBlur() {
+  if (!cancelPenaltySaving) editingCancelPenalty.value = null;
+}
+
 async function updateCancelPenalty(e) {
+  cancelPenaltySaving = true;
   const raw = e.target.value;
-  editingCancelPenalty.value = null;
   const value = parseInt(raw, 10);
-  if (isNaN(value) || value < 0 || value > 60) return;
+  if (isNaN(value) || value < 0 || value > 60) {
+    cancelPenaltySaving = false;
+    editingCancelPenalty.value = null;
+    return;
+  }
 
   try {
     await setCancelPenaltySettings(value);
@@ -284,6 +296,10 @@ async function updateCancelPenalty(e) {
     success(`취소 페널티를 ${value}분으로 변경했습니다.`);
   } catch (e) {
     error(e.message);
+  } finally {
+    // 스토어(cancelPenalty)가 갱신된 뒤에 버퍼를 놓는다.
+    cancelPenaltySaving = false;
+    editingCancelPenalty.value = null;
   }
 }
 
@@ -642,7 +658,7 @@ function goToInspection(num) {
               <span class="setting-label">취소 페널티</span>
             </div>
             <div class="setting-input">
-              <input type="number" :value="editingCancelPenalty ?? cancelPenalty" min="0" max="60" @focus="handleCancelPenaltyFocus" @input="handleCancelPenaltyInput" @change="updateCancelPenalty" @blur="editingCancelPenalty = null" />
+              <input type="number" :value="editingCancelPenalty ?? cancelPenalty" min="0" max="60" @focus="handleCancelPenaltyFocus" @input="handleCancelPenaltyInput" @change="updateCancelPenalty" @blur="handleCancelPenaltyBlur" />
               <span>분</span>
             </div>
           </div>
