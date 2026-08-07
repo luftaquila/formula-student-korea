@@ -257,8 +257,25 @@ async function updateSmsRank(e) {
   }
 }
 
+// AdminPanel은 1초마다 penaltyClock을 갱신하고 SSE도 여러 종류 구독한다. Vue 3는 `value`를
+// 리렌더링마다 DOM에 다시 쓰므로, 편집 버퍼가 없으면 입력한 값이 1초 안에 반드시 되돌아간다
+// (경쟁 조건이 아니라 결정론적). 게다가 아래 저장 핸들러엔 "값이 같으면 스킵"이 없어서,
+// 되돌아간 값으로 저장 요청이 나가고 "변경했습니다" 알림까지 뜬다 — 바뀌지 않았는데
+// 바뀌었다고 알리는 게 조용히 사라지는 것보다 나쁘다.
+const editingCancelPenalty = ref(null);
+
+function handleCancelPenaltyFocus(e) {
+  editingCancelPenalty.value = e.target.value;
+}
+
+function handleCancelPenaltyInput(e) {
+  if (editingCancelPenalty.value !== null) editingCancelPenalty.value = e.target.value;
+}
+
 async function updateCancelPenalty(e) {
-  const value = parseInt(e.target.value, 10);
+  const raw = e.target.value;
+  editingCancelPenalty.value = null;
+  const value = parseInt(raw, 10);
   if (isNaN(value) || value < 0 || value > 60) return;
 
   try {
@@ -625,7 +642,7 @@ function goToInspection(num) {
               <span class="setting-label">취소 페널티</span>
             </div>
             <div class="setting-input">
-              <input type="number" :value="cancelPenalty" min="0" max="60" @change="updateCancelPenalty" />
+              <input type="number" :value="editingCancelPenalty ?? cancelPenalty" min="0" max="60" @focus="handleCancelPenaltyFocus" @input="handleCancelPenaltyInput" @change="updateCancelPenalty" @blur="editingCancelPenalty = null" />
               <span>분</span>
             </div>
           </div>

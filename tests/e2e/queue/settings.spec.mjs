@@ -109,12 +109,9 @@ test.describe("Queue settings management", () => {
     const currentPenalty = await penaltyInput.inputValue();
     const newPenalty = currentPenalty === "5" ? "7" : "5";
 
-    // Atomically set value and dispatch change to avoid fill()'s two-event issue
-    await penaltyInput.evaluate((el, v) => {
-      el.focus();
-      el.value = v;
-      el.dispatchEvent(new Event("change", { bubbles: true }));
-    }, newPenalty);
+    await penaltyInput.click();
+    await penaltyInput.fill(newPenalty);
+    await penaltyInput.blur();
 
     // Should show success notification (confirms save succeeded)
     await expectNotification(page, "success", "취소 페널티");

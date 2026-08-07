@@ -376,6 +376,39 @@ function formatResult(result) {
 }
 
 // 수동 점수 저장
+// 편집 중인 수동 점수 칸. Vue 3는 `value` prop을 리렌더링마다 DOM에 다시 쓰므로
+// (runtime-core patchProps가 `value`만 무조건 hostPatchProp 호출 → runtime-dom이 살아있는
+// DOM 값과 비교해 덮어씀), SSE로 다른 팀 점수가 들어오기만 해도 운영자가 타이핑하던 값이
+// 저장 전에 되돌아갔다. blur 시점엔 변경이 없어(`handleManualSave`의 `numValue === oldValue`)
+// 저장 요청조차 나가지 않는다 — 실패도 에러도 아니라 입력이 조용히 사라진다.
+// EnduranceInput.vue가 같은 이유로 같은 방식을 쓴다.
+const editingManualCell = ref(null); // { num, type }
+const editingManualValue = ref(null);
+
+function isEditingManual(num, type) {
+  return editingManualCell.value?.num === num && editingManualCell.value?.type === type;
+}
+
+function manualDisplayValue(num, type, stored) {
+  return isEditingManual(num, type) && editingManualValue.value !== null ? editingManualValue.value : stored;
+}
+
+function handleManualFocus(num, type, event) {
+  editingManualCell.value = { num, type };
+  editingManualValue.value = event.target.value;
+}
+
+function handleManualInput(num, type, event) {
+  if (isEditingManual(num, type)) editingManualValue.value = event.target.value;
+}
+
+async function handleManualBlur(num, type, event) {
+  const raw = event.target.value;
+  editingManualCell.value = null;
+  editingManualValue.value = null;
+  await handleManualSave(num, type, raw);
+}
+
 async function handleManualSave(teamNum, scoreType, value) {
   const numValue = value === "" ? null : Number(value);
   const oldValue = manualScores.value[teamNum]?.[scoreType] ?? null;
@@ -405,6 +438,7 @@ function isReportOverMax(teamNum) {
 // 페널티 설정 저장
 async function handlePenaltySave(eventType, field, value) {
   editingSettingCell.value = null;
+  editingSettingValue.value = null;
   const numValue = value === "" ? 0 : Number(value);
   if (isNaN(numValue) || numValue < 0) return;
 
@@ -428,9 +462,25 @@ function getPenalty(eventType, field) {
   return penalties.value[eventType]?.[field] ?? 0;
 }
 
-function startSettingEdit(key) {
+// 설정 칸도 수동 점수 칸과 같은 이유로 편집 버퍼가 필요하다. SSE(페널티·설정·교통 기록)나
+// 1초 단위 리렌더링이 들어오면 Vue가 `value`를 스토어 값으로 되돌리고, blur가 되돌아간 값을
+// 읽어 `numValue === oldValue`로 판단해 저장 요청이 나가지 않는다.
+const editingSettingValue = ref(null);
+
+function settingDisplayValue(key, stored) {
+  return editingSettingCell.value === key && editingSettingValue.value !== null
+    ? editingSettingValue.value
+    : stored;
+}
+
+function handleSettingInput(key, event) {
+  if (editingSettingCell.value === key) editingSettingValue.value = event.target.value;
+}
+
+function startSettingEdit(key, stored) {
   if (isReadOnly.value) return;
   editingSettingCell.value = key;
+  editingSettingValue.value = stored == null ? "" : String(stored);
 }
 
 function settingInputRef(el) {
@@ -440,6 +490,7 @@ function settingInputRef(el) {
 // 점수 설정 저장
 async function handleSettingSave(eventType, key, value) {
   editingSettingCell.value = null;
+  editingSettingValue.value = null;
   const numValue = value === "" ? null : Number(value);
   if (numValue !== null && isNaN(numValue)) return;
 
@@ -1016,9 +1067,11 @@ function exportData(format) {
                       class="manual-input"
                       type="number"
                       :max="getSetting('보고서', 'total') ?? undefined"
-                      :value="getManualScore(entry.num, 'report')"
+                      :value="manualDisplayValue(entry.num, 'report', getManualScore(entry.num, 'report'))"
                       :disabled="isReadOnly"
-                      @blur="handleManualSave(entry.num, 'report', $event.target.value)"
+                      @focus="handleManualFocus(entry.num, 'report', $event)"
+                      @input="handleManualInput(entry.num, 'report', $event)"
+                      @blur="handleManualBlur(entry.num, 'report', $event)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
                     />
@@ -1040,9 +1093,11 @@ function exportData(format) {
                     <input
                       class="manual-input"
                       type="number"
-                      :value="getManualScore(entry.num, 'bonus')"
+                      :value="manualDisplayValue(entry.num, 'bonus', getManualScore(entry.num, 'bonus'))"
                       :disabled="isReadOnly"
-                      @blur="handleManualSave(entry.num, 'bonus', $event.target.value)"
+                      @focus="handleManualFocus(entry.num, 'bonus', $event)"
+                      @input="handleManualInput(entry.num, 'bonus', $event)"
+                      @blur="handleManualBlur(entry.num, 'bonus', $event)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
                     />
@@ -1051,9 +1106,11 @@ function exportData(format) {
                     <input
                       class="manual-input"
                       type="number"
-                      :value="getManualScore(entry.num, 'deduction')"
+                      :value="manualDisplayValue(entry.num, 'deduction', getManualScore(entry.num, 'deduction'))"
                       :disabled="isReadOnly"
-                      @blur="handleManualSave(entry.num, 'deduction', $event.target.value)"
+                      @focus="handleManualFocus(entry.num, 'deduction', $event)"
+                      @input="handleManualInput(entry.num, 'deduction', $event)"
+                      @blur="handleManualBlur(entry.num, 'deduction', $event)"
                       @keyup.enter="$event.target.blur()"
                       placeholder="-"
                     />
@@ -1138,7 +1195,7 @@ function exportData(format) {
                 <tr v-for="{ field, label } in [{ field: 'cone_penalty', label: '콘터치' }, { field: 'oc_penalty', label: '코스이탈' }, { field: 'start_delay', label: '출발지연' }]" :key="field">
                   <td class="col-setting-label">{{ label }}</td>
                   <template v-for="evtType in [...dynamicEvents.map(e => e.type), '내구']" :key="'p-'+field+'-'+evtType">
-                    <td v-if="field !== 'start_delay' || evtType === '내구'" class="col-setting-value setting-cell" @click="startSettingEdit('p:'+field+':'+evtType)">
+                    <td v-if="field !== 'start_delay' || evtType === '내구'" class="col-setting-value setting-cell" @click="startSettingEdit('p:'+field+':'+evtType, getPenalty(evtType, field))">
                       <input
                         v-if="editingSettingCell === 'p:'+field+':'+evtType"
                         :ref="settingInputRef"
@@ -1146,7 +1203,8 @@ function exportData(format) {
                         type="number"
                         step="any"
                         min="0"
-                        :value="getPenalty(evtType, field)"
+                        :value="settingDisplayValue('p:'+field+':'+evtType, getPenalty(evtType, field))"
+                        @input="handleSettingInput('p:'+field+':'+evtType, $event)"
                         @blur="handlePenaltySave(evtType, field, $event.target.value)"
                         @keyup.enter="$event.target.blur()"
                       />
@@ -1177,7 +1235,7 @@ function exportData(format) {
                     <td
                       v-if="key === 'total' || !['보고서', '에너지'].includes(evtType)"
                       class="col-setting-value setting-cell"
-                      @click="startSettingEdit('s:'+key+':'+evtType)"
+                      @click="startSettingEdit('s:'+key+':'+evtType, getSetting(evtType, key))"
                     >
                       <input
                         v-if="editingSettingCell === 's:'+key+':'+evtType"
@@ -1186,7 +1244,8 @@ function exportData(format) {
                         type="number"
                         step="any"
                         min="0"
-                        :value="getSetting(evtType, key)"
+                        :value="settingDisplayValue('s:'+key+':'+evtType, getSetting(evtType, key))"
+                        @input="handleSettingInput('s:'+key+':'+evtType, $event)"
                         @blur="handleSettingSave(evtType, key, $event.target.value)"
                         @keyup.enter="$event.target.blur()"
                       />
