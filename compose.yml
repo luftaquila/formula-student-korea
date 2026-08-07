@@ -23,12 +23,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
-      DOCUMENTS_SERVER: http://documents:9700
-      QUEUE_SERVER: http://queue:9300
-      INSPECTION_SERVER: http://inspection:9400
-      SCORE_SERVER: http://score:9600
-      TRAFFIC_SERVER: http://traffic:9500
     volumes:
       - ./entry/data:/home/node/fsk-entry/data
     restart: unless-stopped
@@ -55,7 +49,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
       MISSION_TELEMETRY_MAX_ROWS: ${MISSION_TELEMETRY_MAX_ROWS:-}
       VWORLD_KEY: ${VWORLD_KEY:-}
       ROVER_MAX_WAYPOINT_DIST_M: ${ROVER_MAX_WAYPOINT_DIST_M:-}
@@ -90,7 +83,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
     volumes:
       - ./traffic/data:/home/node/fsk-traffic/data
     restart: unless-stopped
@@ -130,9 +122,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      ENTRY_SERVER: http://entry:9200
-      AUTH_SERVER: http://auth:9100
-      EMAIL_SERVER: http://email:9900
     volumes:
       - ./queue/data:/home/node/fsk-queue/data
     restart: unless-stopped
@@ -159,7 +148,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
     volumes:
       - ./inspection/data:/home/node/fsk-inspection/data
     restart: unless-stopped
@@ -186,10 +174,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      ENTRY_SERVER: http://entry:9200
-      INSPECTION_SERVER: http://inspection:9400
-      TRAFFIC_SERVER: http://traffic:9500
-      AUTH_SERVER: http://auth:9100
     volumes:
       - ./score/data:/home/node/fsk-score/data
     depends_on:
@@ -221,7 +205,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
     volumes:
       - ./calendar/data:/home/node/fsk-calendar/data
     restart: unless-stopped
@@ -248,9 +231,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
-      ENTRY_SERVER: http://entry:9200
-      EMAIL_SERVER: http://email:9900
       PUBLIC_URL: ${PUBLIC_URL}
     volumes:
       - ./documents/data:/home/node/fsk-documents/data
@@ -278,7 +258,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      AUTH_SERVER: http://auth:9100
       EMAIL_LOG_MAX_ROWS: ${EMAIL_LOG_MAX_ROWS:-}
     volumes:
       - ./email/data:/home/node/fsk-email/data
@@ -306,8 +285,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      LOG_SERVICES: "entry:http://entry:9200,queue:http://queue:9300,inspection:http://inspection:9400,traffic:http://traffic:9500,score:http://score:9600,documents:http://documents:9700,calendar:http://calendar:11000,course:http://course:10000,email:http://email:9900"
-      EMAIL_SERVER: http://email:9900
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}

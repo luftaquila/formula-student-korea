@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
-import { tmpDbPath, cleanup, setupTestEnv } from '../helpers/test-utils.mjs';
+import { tmpDbPath, cleanup, setupTestEnv, TRUST_JWT } from '../helpers/test-utils.mjs';
 
 setupTestEnv();
 
@@ -57,7 +57,7 @@ describe('Inspection answer-type migration', () => {
 
     let migratedDb;
     try {
-      migratedDb = createInspectionApp({ dbPath }).db;
+      migratedDb = createInspectionApp({ dbPath, validateUser: TRUST_JWT }).db;
       const schema = migratedDb.prepare(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'sheet_template'"
       ).get().sql;

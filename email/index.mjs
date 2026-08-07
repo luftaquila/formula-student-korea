@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import { createDatabase, runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest, createSecretChecker } from "../shared/express-setup.mjs";
 import { createLogger } from "../shared/logger.mjs";
+import { serviceUrl } from "../shared/services.mjs";
 
 const PORT = 9900;
 
@@ -103,7 +104,7 @@ const logger = createLogger(db, "email");
 const dbRun = createDbRun();
 const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "admin";
@@ -521,7 +522,7 @@ ${htmlContent}
    Recipients (proxy to auth service)
    ============================================ */
 app.get("/api/recipients", async (req, res) => {
-  const authServer = process.env.AUTH_SERVER || "http://localhost:9100";
+  const authServer = serviceUrl("auth");
   try {
     const headers = {};
     if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;

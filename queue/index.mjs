@@ -7,6 +7,7 @@ import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInt
 import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
+import { serviceUrl } from "../shared/services.mjs";
 
 const PORT = 9300;
 
@@ -485,7 +486,7 @@ function renumberLogRows(table, prevNum, newNum, year) {
 
 const logger = createLogger(db, "queue");
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/internal/")) return "admin";
   // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
@@ -2060,7 +2061,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
    유틸리티 함수
    ============================================ */
 async function getEntries() {
-  const entryServer = process.env.ENTRY_SERVER || "http://localhost:9200";
+  const entryServer = serviceUrl("entry");
   const headers = {};
   if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
   const res = await fetch(`${entryServer}/api/entries`, { headers, signal: AbortSignal.timeout(5000) });
@@ -2076,8 +2077,13 @@ let smsConfig = null;
 // doesn't leave a "fetch failed" warning every time. An HTTP error response
 // (email up but the endpoint is failing) is a real problem and warns at once.
 async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
-  const emailServer = process.env.EMAIL_SERVER;
-  if (emailServer && process.env.INTERNAL_SECRET) {
+  const emailServer = serviceUrl("email");
+  // 예전 조건에 있던 EMAIL_SERVER 검사는 뺐다. 이 diff에서 "설정 없음 = 아무것도 안 함"이
+  // 버그를 숨긴 게 아니라 실제 정보였던 유일한 자리다 — email 없이 뜨는 스택에서는 그게
+  // "SMS 설정 조회 대상 없음"을 뜻했다. FSK는 email이 항상 있으므로 무해하지만, 그런
+  // 스택에서는 5분마다 http://email:9900을 재시도하며 sms.config_fetch를 계속 남기게 된다.
+  // INTERNAL_SECRET은 프로덕션 부팅 시 강제된다(express-setup) — dev/test에서만 비어 있다.
+  if (process.env.INTERNAL_SECRET) {
     for (let attempt = 0; ; attempt++) {
       try {
         const headers = { "X-Internal-Service": process.env.INTERNAL_SECRET };

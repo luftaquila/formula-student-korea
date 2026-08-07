@@ -164,6 +164,7 @@
 import { ref, reactive, computed, onMounted, onUnmounted } from "vue";
 import { createApiClient } from "@shared/api-base.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { SERVICE_NAMES } from "@shared/service-names.js";
 
 const api = createApiClient("/auth");
 const PAGE_SIZE = 100;
@@ -191,9 +192,9 @@ const levelDropdownOpen = ref(false);
 const serviceDropdownRef = ref(null);
 const levelDropdownRef = ref(null);
 
-// compose.yml의 LOG_SERVICES(entry,queue,inspection,traffic,score,documents,calendar,course,email)
-// + auth 자신. calendar·email이 빠져 있어 개별 필터가 불가능했다.
-const serviceList = ["auth", "entry", "queue", "inspection", "traffic", "score", "documents", "calendar", "course", "email"];
+// 집계 대상과 같은 레지스트리에서 온다(auth 포함 — 자기 로그는 로컬 조회). 손으로 적은
+// 목록을 두면 SERVICE_URLS에 키를 추가했을 때 집계만 늘고 필터에는 안 나타난다.
+const serviceList = SERVICE_NAMES;
 const levelList = ["info", "warn", "error"];
 
 const filters = reactive({

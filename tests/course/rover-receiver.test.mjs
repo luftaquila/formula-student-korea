@@ -8,6 +8,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
 
@@ -23,7 +24,7 @@ const openStreams = [];
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createCourseApp({ dbPath });
+  const result = createCourseApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -111,7 +112,7 @@ async function status() {
 // leaks across the shared server's tests) is deterministic.
 async function withFreshServer(fn, appOptions = {}) {
   const p = tmpDbPath();
-  const app2 = createCourseApp({ dbPath: p, ...appOptions });
+  const app2 = createCourseApp({ dbPath: p, ...appOptions, validateUser: TRUST_JWT });
   const started2 = await startServer(app2.app);
   const cli2 = createClient(started2.baseUrl);
   try {
@@ -416,7 +417,7 @@ describe('POST /api/rover/request routing vs active source', () => {
     // Fresh server so receiverState.last_position is genuinely empty — the shared
     // server's in-memory state leaks a receiver position from earlier tests.
     const dbPath2 = tmpDbPath();
-    const app2 = createCourseApp({ dbPath: dbPath2 });
+    const app2 = createCourseApp({ dbPath: dbPath2, validateUser: TRUST_JWT });
     const started2 = await startServer(app2.app);
     const srv2 = started2.server;
     const url2 = started2.baseUrl;
@@ -528,7 +529,7 @@ describe('base source without a connected receiver', () => {
   it('status exposes ntrip_source and the selection is audited via logger.warn', async () => {
     // Fresh server guarantees no receiver is connected.
     const dbPath2 = tmpDbPath();
-    const app2 = createCourseApp({ dbPath: dbPath2 });
+    const app2 = createCourseApp({ dbPath: dbPath2, validateUser: TRUST_JWT });
     const started2 = await startServer(app2.app);
     const srv2 = started2.server;
     const cli2 = createClient(started2.baseUrl);

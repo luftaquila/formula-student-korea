@@ -7,6 +7,7 @@ import { createLogger } from "../shared/logger.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
+import { serviceUrl } from "../shared/services.mjs";
 import { calculateEnergyScores } from "./lib/energy-score.mjs";
 
 const PORT = 9600;
@@ -168,7 +169,7 @@ function invalidatePublicScoreCache(year = null) {
   }
 }
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (/^\/api\/score\/public\/\d{4}(?:\/events)?$/.test(req.path)) return null;
   if (/^\/public\/\d{4}$/.test(req.path)) return null;
@@ -184,9 +185,9 @@ app.get("/api/health", (req, res) => res.send("ok"));
 /* ============================================
    설정
    ============================================ */
-const ENTRY_SERVER = process.env.ENTRY_SERVER || "http://localhost:9200";
-const INSPECTION_SERVER = process.env.INSPECTION_SERVER || "http://localhost:9400";
-const TRAFFIC_SERVER = process.env.TRAFFIC_SERVER || "http://localhost:9500";
+const ENTRY_SERVER = serviceUrl("entry");
+const INSPECTION_SERVER = serviceUrl("inspection");
+const TRAFFIC_SERVER = serviceUrl("traffic");
 
 // 내부 서비스 호출 타임아웃 — 집계 시 기록 테이블이 커서 5초보다 여유 있게 둔다
 const INTERNAL_FETCH_TIMEOUT_MS = 10000;

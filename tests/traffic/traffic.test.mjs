@@ -9,6 +9,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
@@ -26,7 +27,7 @@ let server, baseUrl, client, db, dbPath;
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createTrafficApp({ dbPath });
+  const result = createTrafficApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -1675,7 +1676,7 @@ describe('Traffic legacy record consolidation migration', () => {
   });
 
   it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
-    migDb = createTrafficApp({ dbPath: migPath }).db;
+    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
 
     const rows = migDb.prepare("SELECT legacy_rowid, num, detail, invalidated, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
     assert.equal(rows.length, 2);
@@ -1695,7 +1696,7 @@ describe('Traffic legacy record consolidation migration', () => {
 
   it('is idempotent — re-opening the consolidated DB does not duplicate or error', () => {
     migDb.close();
-    migDb = createTrafficApp({ dbPath: migPath }).db;
+    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });

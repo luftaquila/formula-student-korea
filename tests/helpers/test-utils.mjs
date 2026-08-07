@@ -60,3 +60,12 @@ export function setupTestEnv() {
   process.env.JWT_SECRET = TEST_SECRET;
   process.env.INTERNAL_SECRET = TEST_INTERNAL_SECRET;
 }
+
+// 대부분의 테스트는 auth 서비스 없이 대상 서비스만 띄우므로 재검증할 상대가 없다.
+// 앱 팩토리에 `validateUser: TRUST_JWT`로 주입해 JWT를 그대로 신뢰시킨다. `role: null`은
+// "역할 변경 없음"이라 미들웨어가 JWT의 role을 유지한다.
+//
+// 런타임 스위치(env) 대신 주입인 이유: 프로덕션에 재검증을 끌 수단 자체를 만들지 않기
+// 위해서다. mock auth를 세우는 테스트는 이걸 넘기지 말고 AUTH_SERVER만 지정하면
+// 실제 HTTP 재검증 경로를 그대로 탄다.
+export const TRUST_JWT = async () => ({ valid: true, role: null });

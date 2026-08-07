@@ -5,6 +5,7 @@ import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn }
 import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger, buildLogFilter } from "../shared/logger.mjs";
+import { serviceUrl, logAggregationTargets } from "../shared/services.mjs";
 
 const PORT = 9100;
 
@@ -155,10 +156,10 @@ function warnAggThrottled(action, detail, target) {
   logger.warn(null, action, detail, target);
 }
 
-const EMAIL_SERVER = process.env.EMAIL_SERVER;
+const EMAIL_SERVER = serviceUrl("email");
 
 async function notifyNewUser(emails) {
-  if (!EMAIL_SERVER || !process.env.INTERNAL_SECRET) return;
+  if (!process.env.INTERNAL_SECRET) return;
   try {
     const list = Array.isArray(emails) ? emails : [emails];
     const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
@@ -1096,18 +1097,7 @@ app.delete("/api/ops-contacts/:userId", (req, res) => {
 /* ============================================
    로그 집계 API
    ============================================ */
-const LOG_SERVICES = (() => {
-  const env = process.env.LOG_SERVICES || "";
-  const map = {};
-  for (const part of env.split(",").filter(Boolean)) {
-    const idx = part.indexOf(":");
-    if (idx === -1) continue;
-    const name = part.slice(0, idx).trim();
-    const url = part.slice(idx + 1).trim();
-    if (name && url) map[name] = url;
-  }
-  return map;
-})();
+const LOG_SERVICES = logAggregationTargets();
 
 // GET /api/admin/logs - 전체 서비스 로그 집계
 app.get("/api/admin/logs", async (req, res) => {
@@ -1129,6 +1119,9 @@ app.get("/api/admin/logs", async (req, res) => {
   const targetServices = service
     ? Object.fromEntries(
         service.split(",").map(s => s.trim()).filter(Boolean)
+          // 모르는 이름을 거른다. 안 거르면 url이 undefined인 채로 아래 템플릿에 들어가
+          // "undefined/api/logs"로 fetch 한다(documents에서 고친 것과 같은 패턴).
+          .filter(name => name === "auth" || LOG_SERVICES[name])
           .map(name => [name, name === "auth" ? null : LOG_SERVICES[name]])
       )
     : { auth: null, ...LOG_SERVICES };
