@@ -1,3 +1,5 @@
+import { SERVICE_NAMES } from "./service-names.js";
+
 // 서비스 간 통신 URL의 단일 소스.
 //
 // compose와 k3s 매니페스트가 같은 DNS 이름·포트를 쓰므로 이 상수는 모든 배포에서
@@ -19,21 +21,29 @@
 // 저장소에서 빌드되므로 여기서 깨지는 건 없지만, 이 파일의 전제가 어디까지 유효한지는
 // 명시해 둔다: logAggregationTargets()가 레지스트리에서 파생되므로, 부분 스택으로 이
 // 코드를 쓰면 없는 서비스로 집계를 시도해 logs.aggregate_failed가 영구히 쌓인다.
-// 키를 추가하면 그 서비스는 자동으로 로그 집계 대상이 된다(logAggregationTargets).
-// 따라서 여기 등록하는 서비스는 `/api/logs`를 제공해야 한다 — 아니면 로그 뷰어에
-// 영구적인 logs.aggregate_failed가 남는다.
-const SERVICE_URLS = {
-  auth: "http://auth:9100",
-  entry: "http://entry:9200",
-  queue: "http://queue:9300",
-  inspection: "http://inspection:9400",
-  traffic: "http://traffic:9500",
-  score: "http://score:9600",
-  documents: "http://documents:9700",
-  email: "http://email:9900",
-  course: "http://course:10000",
-  calendar: "http://calendar:11000",
+// 서비스를 추가하려면 service-names.js에 이름을, 아래 SERVICE_PORTS에 포트를 넣는다.
+// 이름을 추가하면 그 서비스는 자동으로 로그 집계 대상이 되므로(logAggregationTargets),
+// 반드시 `/api/logs`를 제공해야 한다 — 아니면 로그 뷰어에 영구적인 logs.aggregate_failed가
+// 남는다. 이름 목록이 별도 파일인 이유는 그 파일 헤더에 적혀 있다(브라우저 번들 대상).
+const SERVICE_PORTS = {
+  auth: 9100,
+  entry: 9200,
+  queue: 9300,
+  inspection: 9400,
+  traffic: 9500,
+  score: 9600,
+  documents: 9700,
+  calendar: 11000,
+  course: 10000,
+  email: 9900,
 };
+
+// compose·k3s 모두 서비스 이름이 곧 DNS 이름이므로 이름에서 URL을 만든다.
+const SERVICE_URLS = Object.fromEntries(
+  SERVICE_NAMES.map((name) => [name, `http://${name}:${SERVICE_PORTS[name]}`]),
+);
+
+export { SERVICE_NAMES };
 
 // `<NAME>_SERVER` env는 override 전용이다. 테스트(임시 포트의 mock 서버)와 컨테이너
 // 밖 로컬 실행에서만 쓰이며, 설정하지 않아도 컨테이너 배포는 정상 동작한다.

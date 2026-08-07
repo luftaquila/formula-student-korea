@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { serviceUrl, logAggregationTargets } from '../../shared/services.mjs';
+import { serviceUrl, logAggregationTargets, SERVICE_NAMES } from '../../shared/services.mjs';
 
 const ENV_KEYS = ['ENTRY_SERVER', 'AUTH_SERVER', 'QUEUE_SERVER'];
 
@@ -53,6 +53,29 @@ describe('logAggregationTargets', () => {
     ]);
     assert.equal(targets.auth, undefined, 'auth queries its own DB locally');
     assert.equal(targets.entry, 'http://entry:9200');
+  });
+
+  // 로그 뷰어의 서비스 필터가 이 배열을 쓴다. 손으로 적은 목록을 대체했으므로,
+  // 집계 대상과 어긋나지 않는지 고정한다.
+  it('SERVICE_NAMES covers the aggregation targets plus auth', () => {
+    assert.deepEqual(
+      [...SERVICE_NAMES].sort(),
+      ['auth', ...Object.keys(logAggregationTargets())].sort(),
+    );
+    assert.ok(SERVICE_NAMES.includes('auth'), 'the viewer filters auth too (queried locally)');
+  });
+
+  // 이름은 service-names.js, 포트는 services.mjs에 있다. 이름만 추가하면 URL이
+  // "http://x:undefined"가 되므로 조용히 깨지지 않게 고정한다.
+  it('every name resolves to a well-formed URL', () => {
+    for (const name of SERVICE_NAMES) {
+      assert.match(serviceUrl(name), /^http:\/\/[a-z]+:\d+$/, `${name} must have a port`);
+    }
+  });
+
+  // 브라우저 번들에 들어가는 배열이므로 컴포넌트가 넘겨받아 변형하지 못하게 한다.
+  it('SERVICE_NAMES is frozen', () => {
+    assert.ok(Object.isFrozen(SERVICE_NAMES));
   });
 
   it('honours overrides', () => {

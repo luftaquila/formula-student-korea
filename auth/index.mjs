@@ -1119,6 +1119,9 @@ app.get("/api/admin/logs", async (req, res) => {
   const targetServices = service
     ? Object.fromEntries(
         service.split(",").map(s => s.trim()).filter(Boolean)
+          // 모르는 이름을 거른다. 안 거르면 url이 undefined인 채로 아래 템플릿에 들어가
+          // "undefined/api/logs"로 fetch 한다(documents에서 고친 것과 같은 패턴).
+          .filter(name => name === "auth" || LOG_SERVICES[name])
           .map(name => [name, name === "auth" ? null : LOG_SERVICES[name]])
       )
     : { auth: null, ...LOG_SERVICES };
