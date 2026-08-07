@@ -11,6 +11,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
@@ -190,7 +191,7 @@ before(async () => {
   process.env.TRAFFIC_SERVER = t.baseUrl;
 
   dbPath = tmpDbPath();
-  const result = createScoreApp({ dbPath, skipSSESubscriptions: true});
+  const result = createScoreApp({ dbPath, skipSSESubscriptions: true, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -1067,7 +1068,7 @@ describe('Score aggregation business logic', () => {
     process.env.TRAFFIC_SERVER = t.baseUrl;
 
     dp = tmpDbPath();
-    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true});
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true, validateUser: TRUST_JWT });
     database = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -1208,7 +1209,7 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
     process.env.TRAFFIC_SERVER = t.baseUrl;
 
     dp = tmpDbPath();
-    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true});
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true, validateUser: TRUST_JWT });
     database = result.db;
     const started = await startServer(result.app);
     srv = started.server; url = started.baseUrl;

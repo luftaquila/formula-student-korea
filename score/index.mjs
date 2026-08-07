@@ -169,7 +169,7 @@ function invalidatePublicScoreCache(year = null) {
   }
 }
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (/^\/api\/score\/public\/\d{4}(?:\/events)?$/.test(req.path)) return null;
   if (/^\/public\/\d{4}$/.test(req.path)) return null;

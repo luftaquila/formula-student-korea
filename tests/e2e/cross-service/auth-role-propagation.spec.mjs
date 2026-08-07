@@ -4,8 +4,8 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 import { createJWT } from "../../../shared/express-setup.mjs";
 
 // Cross-service fail-close propagation:
-// Every non-auth service builds validateUser() from AUTH_SERVER and calls
-// GET /api/users/role/:email on EACH request. That query is `active = 1`, so once
+// Every non-auth service builds validateUser() from the shared/services.mjs registry
+// (no env required) and calls GET /api/users/role/:email on EACH request. That query is `active = 1`, so once
 // auth deactivates a user, auth returns 404 and the downstream middleware nulls
 // req.user → the next downstream request is rejected (401 on API routes).
 //
@@ -63,7 +63,7 @@ test.describe("Auth deactivation propagates to downstream service (fail-close)",
 
     // 2. Forge this user's session cookie (mirrors what auth would set on login).
     //    The downstream service trusts the signature, then re-validates against
-    //    AUTH_SERVER on every request — that re-validation is what we're testing.
+    //    the auth service on every request — that re-validation is what we're testing.
     const officialJwt = createJWT(
       { email: TEST_EMAIL, name: "E2E Deactivation User", role: "official" },
       JWT_SECRET,

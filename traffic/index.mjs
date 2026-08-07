@@ -276,7 +276,7 @@ runMigrationOnce(db, "traffic.utc_timestamp_normalization.v1", () => {
    ============================================ */
 const logger = createLogger(db, "traffic");
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health" || req.path === "/api/time") return null;
   return "admin";
 });

@@ -8,6 +8,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
@@ -27,7 +28,7 @@ let server, baseUrl, client, db, dbPath;
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createInspectionApp({ dbPath});
+  const result = createInspectionApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;

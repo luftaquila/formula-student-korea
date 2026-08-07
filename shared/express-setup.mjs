@@ -2,6 +2,7 @@ import fs from "fs";
 import crypto from "crypto";
 
 import { ROLE_LEVELS } from "./constants.js";
+import { serviceUrl } from "./services.mjs";
 export const VALID_ROLES = Object.keys(ROLE_LEVELS);
 
 // 불리언 환경변수 파싱. env 값은 항상 문자열이므로 "false"/"0"도 truthy가 되는
@@ -76,9 +77,15 @@ export function createApp(deps, authRoleFn) {
     process.exit(1);
   }
 
-  if (process.env.NODE_ENV === "production" && !process.env.INTERNAL_SECRET) {
-    console.error("FATAL: INTERNAL_SECRET must be set in production. Exiting.");
-    process.exit(1);
+  // INTERNAL_SECRET이 없으면 auth 재검증 요청이 인증 헤더 없이 나가 거부된다(fail-close).
+  // 프로덕션은 부팅을 막고, 그 외에서는 경고만 남긴다 — 조용히 재검증을 건너뛰는 대신
+  // 시끄럽게 실패시키는 쪽이 이 파일이 지키려는 원칙이다.
+  if (!process.env.INTERNAL_SECRET) {
+    if (process.env.NODE_ENV === "production") {
+      console.error("FATAL: INTERNAL_SECRET must be set in production. Exiting.");
+      process.exit(1);
+    }
+    console.warn("WARN: INTERNAL_SECRET is not set — inter-service calls and user revalidation will be rejected.");
   }
 
   const app = express();
@@ -116,13 +123,24 @@ export function createApp(deps, authRoleFn) {
   });
 
   // 3. JWT user extraction
-  // Build validateUser: direct function from deps, or auto HTTP via AUTH_SERVER
+  // Build validateUser: direct function from deps, or auto HTTP to the auth service.
+  // 재검증은 기본 동작이다. 예전에는 AUTH_SERVER env가 있을 때만 켜져서, 배포 설정에서
+  // URL을 빠뜨리면 JWT가 무검증으로 신뢰됐다 — 삭제·강등된 사용자가 세션 만료(최대 7일)
+  // 까지 권한을 유지하는 구멍이었다. URL은 이제 레지스트리 상수로 오므로 누락될 수 없다.
+  // 재검증을 끄는 유일한 방법은 검증기를 직접 주입하는 것뿐이다(auth는 자기 DB 함수를,
+  // 테스트는 stub을 넘긴다). 런타임 스위치를 두지 않으므로 프로덕션에는 끌 방법 자체가
+  // 없다 — 설정 하나로 삭제·강등 전파가 멈추는 경로를 만들지 않는다.
+  //
+  // INTERNAL_SECRET 누락도 위 부팅 검사가 담당한다. 여기서 다시 검사하면 "설정이 없으면
+  // 조용히 재검증을 끈다"는 이 PR이 없애려는 실패 모드가 한 칸 옆에서 되살아난다.
   let validateUser = deps.validateUser || null;
-  if (!validateUser && process.env.AUTH_SERVER && process.env.INTERNAL_SECRET) {
+  if (!validateUser) {
     validateUser = async (email) => {
       try {
-        const res = await fetch(`${process.env.AUTH_SERVER}/api/users/role/${encodeURIComponent(email)}`, {
-          headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
+        const res = await fetch(`${serviceUrl("auth")}/api/users/role/${encodeURIComponent(email)}`, {
+          // 시크릿이 없으면 빈 헤더로 나간다. 빈 값은 falsy라 auth의 내부 인증 분기가
+          // 아예 잡히지 않고 쿠키 경로로 흘러 401로 거부된다 → transient fail-close.
+          headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
           signal: AbortSignal.timeout(3000),
         });
         if (res.ok) {
@@ -179,16 +197,41 @@ export function createApp(deps, authRoleFn) {
       } catch { /* invalid token */ }
     }
 
-    // Validate user still exists + sync role from auth
-    if (req.user && validateUser) {
-      const result = await validateUser(req.user.email);
-      const valid = typeof result === "object" ? result.valid : result;
-      const freshRole = typeof result === "object" ? result.role : null;
+    // Validate user still exists + sync role from auth. validateUser는 위에서 항상
+    // 채워지므로(주입 아니면 내장 HTTP) 존재 여부를 다시 보지 않는다.
+    if (req.user) {
+      // 계약은 `{ valid, role, transient? }` 하나뿐이다. 예전에는 bare boolean도 받았지만,
+      // validateUser가 10개 팩토리의 공개 주입 지점이 된 지금은 두 형태를 허용하면
+      // 소비자마다 해석이 갈린다 — course의 SSE 재검증은 `result?.valid`를 보므로
+      // `true`를 반환하는 stub이 거기서만 연결을 끊는다.
+      //
+      // 예외도 같은 이유로 계약에 넣는다. 내장 HTTP 검증기는 네트워크 오류를 자체 catch로
+      // `{ valid: false, transient: true }`로 바꾸지만, 주입된 검증기는 그대로 던진다
+      // (auth의 것은 db.prepare().get()을 무방비로 호출한다). 감싸지 않으면 같은 예외가
+      // 여기서는 500이 되고 sse.mjs에서는 fail-open이 된다. 내장 경로와 동일하게 일시 장애로
+      // 취급해 쿠키를 보존한 채 fail-close 한다.
+      // 내장 경로가 두 실패 분기 모두 로그를 남기므로 여기도 남긴다. 조용히 삼키면 auth의
+      // 검증기가 DB 오류로 던졌을 때 전 요청이 401이 되면서 아무 흔적도 남지 않는다.
+      //
+      // logger.warn이 아니라 console.warn인 이유는 이 계층에 logger가 없어서가 아니라,
+      // logger의 저장소가 방금 실패한 바로 그것이기 때문이다 — createLogger(db)는 검증기가
+      // 조회하던 같은 DB에 INSERT 하고, 로그 뷰어도 그 DB를 읽는다. 이 분기를 타게 만드는
+      // 대표적 원인(auth의 SQLITE_BUSY/IOERR)에서는 DB 로깅이 정확히 무용하다. 프로세스
+      // stderr는 그 상황에서도 남는 유일한 채널이다. CLAUDE.md 로깅 정책의 예외 항목 참고.
+      let result;
+      try {
+        result = await validateUser(req.user.email);
+      } catch (e) {
+        console.warn(`[auth] fail-close: validator threw for ${req.user.email}: ${e.message || e}`);
+        result = { valid: false, transient: true };
+      }
+      const valid = result?.valid;
+      const freshRole = result?.role ?? null;
       if (!valid) {
         req.user = null;
         // 확정 무효(404)에서만 쿠키를 지운다. transient(auth 5xx/네트워크 장애)면 이 요청은
         // 거부하되 쿠키를 보존해 복구 후 재-OAuth 없이 세션이 이어지게 한다.
-        if (!(result && typeof result === "object" && result.transient)) {
+        if (!result?.transient) {
           const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
           res.setHeader("Set-Cookie", [
             `fsk_session=; HttpOnly; ${cookieOpts}`,
@@ -256,6 +299,11 @@ export function createApp(deps, authRoleFn) {
       }
     },
   }));
+
+  // 확정된 검증기를 노출한다. course의 SSE 주기 재검증처럼 미들웨어 밖에서 같은 판단을
+  // 해야 하는 곳이 자체 HTTP 클라이언트를 다시 구현하면, 404-vs-non-ok 해석이 두 곳에
+  // 생기고 그중 한쪽만 테스트로 덮인다.
+  app.validateUser = validateUser;
 
   return app;
 }

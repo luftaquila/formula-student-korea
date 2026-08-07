@@ -202,7 +202,7 @@ fs.mkdirSync(TMP_DIR, { recursive: true });
    ============================================ */
 const logger = createLogger(db, "documents");
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/internal/")) return "admin";
   if (req.path.startsWith("/api/admin")) return "chief";

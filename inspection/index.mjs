@@ -196,7 +196,7 @@ function validateStoredCalculationGraph(year) {
    ============================================ */
 const logger = createLogger(db, "inspection");
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path.startsWith("/api/internal/")) return "admin";
   if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";

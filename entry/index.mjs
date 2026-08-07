@@ -154,7 +154,7 @@ for (const year of getAvailableYears()) {
    ============================================ */
 const logger = createLogger(db, "entry");
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/years") return null;
   if (req.path === "/api/entries" && req.method === "GET" && req.query.includeInactive !== "true") return null;

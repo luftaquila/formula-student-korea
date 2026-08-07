@@ -36,7 +36,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_events_all_day_end_start ON events(all_d
 const logger = createLogger(db, "calendar");
 const dbRun = createDbRun();
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/logs") return "admin";
   if (req.method === "GET" && req.path === "/api/events") return null;

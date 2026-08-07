@@ -104,7 +104,7 @@ const logger = createLogger(db, "email");
 const dbRun = createDbRun();
 const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/logs") return "admin";
   if (req.path.startsWith("/api/")) return "admin";

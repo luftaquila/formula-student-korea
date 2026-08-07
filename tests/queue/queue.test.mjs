@@ -11,6 +11,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
@@ -48,7 +49,7 @@ before(async () => {
 
   // Then start queue service
   dbPath = tmpDbPath();
-  const result = createQueueApp({ dbPath});
+  const result = createQueueApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -1755,7 +1756,7 @@ describe('Queue legacy → normalized migration', () => {
   });
 
   it('migrates legacy current/per-inspection/history into normalized tables and drops legacy tables', () => {
-    migDb = createQueueApp({ dbPath: migPath}).db;
+    migDb = createQueueApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
 
     // current → current_inspection: comma list split, invalid type dropped, default year applied
     const ci = migDb.prepare("SELECT inspection FROM current_inspection WHERE num = 1 AND year = ? ORDER BY inspection").all(yr).map((r) => r.inspection);
@@ -1794,7 +1795,7 @@ describe('Queue legacy → normalized migration', () => {
 
   it('is idempotent — re-opening the migrated DB makes no further changes and does not error', () => {
     migDb.close();
-    migDb = createQueueApp({ dbPath: migPath}).db;
+    migDb = createQueueApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE num = 1").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = 'battery'").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5").get().c, 1);

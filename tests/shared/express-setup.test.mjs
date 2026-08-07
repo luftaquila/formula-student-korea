@@ -13,6 +13,7 @@ import {
   startServer,
   stopServer,
   setupTestEnv,
+  TRUST_JWT,
 } from '../helpers/test-utils.mjs';
 
 setupTestEnv();
@@ -436,5 +437,141 @@ describe('createApp CSRF middleware', () => {
   it('never blocks reads (GET) regardless of Sec-Fetch-Site', async () => {
     const res = await fetch(`${baseUrl}/api/read`, { headers: { 'Sec-Fetch-Site': 'cross-site' } });
     assert.equal(res.status, 200);
+  });
+});
+
+// ─── Remote user revalidation (default-on) ────────────────────────────────
+// 이 블록은 "AUTH_SERVER env가 있을 때만 재검증"이던 구멍의 회귀 방지용이다. 그때는
+// URL을 빠뜨리면 validateUser가 null이 되어 JWT가 무검증으로 신뢰됐고, 삭제·강등된
+// 사용자가 세션 만료(최대 7일)까지 권한을 유지했다. 이제 URL은 레지스트리 상수에서
+// 오므로 env 없이도 재검증이 돌아야 하고, 끄는 방법은 검증기 주입뿐이다.
+describe('remote user revalidation', () => {
+  const cookie = makeAuthCookie({ email: 'u@test.com', name: 'U', role: 'admin' });
+
+  async function withApp(deps, fn) {
+    const app = createApp({ express, ...deps }, () => 'admin');
+    app.get('/api/admin', (req, res) => res.json({ user: req.user.email, role: req.user.role }));
+    const started = await startServer(app);
+    try {
+      await fn(createClient(started.baseUrl));
+    } finally {
+      await stopServer(started.server);
+    }
+  }
+
+  const priorAuthServer = process.env.AUTH_SERVER;
+  after(() => {
+    // 이 블록이 파일 끝이 아니게 될 때를 대비해 되돌린다.
+    if (priorAuthServer === undefined) delete process.env.AUTH_SERVER;
+    else process.env.AUTH_SERVER = priorAuthServer;
+  });
+
+  it('revalidates without AUTH_SERVER set, using the registry default', async () => {
+    delete process.env.AUTH_SERVER;
+    await withApp({}, async (client) => {
+      // 레지스트리 기본값(http://auth:9100)은 테스트 머신에서 닿지 않는다 → transient →
+      // fail-close. 요청이 거부된다는 것이 곧 재검증이 시도됐다는 증거다. 구현이
+      // 회귀해 validateUser가 null이 되면 JWT가 그대로 신뢰돼 200이 나온다.
+      const res = await client.get('/api/admin', { cookie });
+      assert.equal(res.status, 401, 'an unreachable auth service must not be treated as "user is valid"');
+      // transient 장애에서는 쿠키를 보존해 복구 후 재-OAuth 없이 세션이 이어져야 한다.
+      assert.equal(res.headers.get('set-cookie'), null, 'a transient failure must not clear the session');
+    });
+  });
+
+  it('an injected validator is the only way to skip the HTTP round-trip', async () => {
+    delete process.env.AUTH_SERVER;
+    await withApp({ validateUser: TRUST_JWT }, async (client) => {
+      const res = await client.get('/api/admin', { cookie });
+      assert.equal(res.status, 200);
+      assert.equal((await res.json()).user, 'u@test.com');
+    });
+  });
+
+  it('an injected validator still propagates deletion and demotion', async () => {
+    delete process.env.AUTH_SERVER;
+    await withApp({ validateUser: async () => ({ valid: false, role: null }) }, async (client) => {
+      const res = await client.get('/api/admin', { cookie });
+      assert.equal(res.status, 401, 'deleted user is rejected');
+      // 확정 무효는 transient와 달리 쿠키를 지운다.
+      assert.match(res.headers.get('set-cookie') || '', /fsk_session=;/, 'a confirmed deletion clears the session');
+    });
+    await withApp({ validateUser: async () => ({ valid: true, role: 'student' }) }, async (client) => {
+      // 강등은 라우트 접근을 막고(admin 전용), 주입이 재검증을 우회하지 못함을 보인다.
+      assert.equal((await client.get('/api/admin', { cookie })).status, 403, 'demoted user loses admin');
+    });
+  });
+
+  // 주입된 검증기의 예외는 내장 HTTP 검증기의 네트워크 오류와 같게 다뤄야 한다. 감싸지
+  // 않으면 Express 5가 에러 핸들러로 보내 500이 되고, 같은 예외를 sse.mjs는 fail-open으로
+  // 처리해 한 stub이 소비자마다 반대로 동작한다. auth의 검증기가 db 오류로 던질 수 있다.
+  it('treats a throwing validator as a transient failure, not a 500', async () => {
+    delete process.env.AUTH_SERVER;
+    // 내장 경로와 같은 조건에서 로그를 남기는지도 함께 고정한다. 조용히 fail-close 하면
+    // auth의 DB 오류가 전 요청 401로 나타나면서 아무 진단도 남지 않는다.
+    const warnings = [];
+    const originalWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      await withApp({ validateUser: async () => { throw new Error('db is down'); } }, async (client) => {
+        const res = await client.get('/api/admin', { cookie });
+        assert.equal(res.status, 401, 'a throwing validator must fail closed, not 500');
+        assert.equal(res.headers.get('set-cookie'), null, 'a transient failure must not clear the session');
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    assert.ok(
+      warnings.some((w) => w.includes('fail-close') && w.includes('u@test.com') && w.includes('db is down')),
+      `a thrown validator error must be logged, got: ${JSON.stringify(warnings)}`,
+    );
+  });
+});
+
+// ─── Required-secret boot guards ──────────────────────────────────────────
+// INTERNAL_SECRET을 재검증 조건에서 빼면서 이 가드가 그 시크릿의 유일한 방어선이 됐다.
+// 프로덕션 exit 분기를 통째로 지워도 전 스위트가 통과하므로, 자식 프로세스로 직접 고정한다.
+describe('INTERNAL_SECRET boot guard', () => {
+  // 부모 env를 상속한다(PATH·HOME 없이는 자식 node가 뜨지 않는다). 검사 대상 변수만 조작.
+  async function boot({ nodeEnv, internalSecret }) {
+    const { spawnSync } = await import('node:child_process');
+    // `-e` 스크립트는 파일 URL 기준이 없어 상대 동적 import가 cwd로 해석된다. 절대 URL을
+    // 넘기지 않으면 MODULE_NOT_FOUND도 exit 1이라 가드를 안 타고도 통과해 버린다.
+    const setupUrl = new URL('../../shared/express-setup.mjs', import.meta.url).href;
+    const script = `
+      import { createRequire } from 'node:module';
+      const require = createRequire('${import.meta.url}');
+      const express = require('../../auth/node_modules/express');
+      const { createApp } = await import('${setupUrl}');
+      createApp({ express }, () => null);
+      console.log('BOOTED');
+    `;
+    const env = { ...process.env, NODE_ENV: nodeEnv, JWT_SECRET: TEST_SECRET };
+    if (internalSecret) env.INTERNAL_SECRET = internalSecret;
+    else delete env.INTERNAL_SECRET;
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+      env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
+  }
+
+  it('aborts a production boot when INTERNAL_SECRET is missing', async () => {
+    const { code, stdout, stderr } = await boot({ nodeEnv: 'production' });
+    assert.equal(code, 1, 'production must not boot without INTERNAL_SECRET');
+    assert.doesNotMatch(stdout, /BOOTED/);
+    assert.match(stderr, /INTERNAL_SECRET must be set in production/);
+  });
+
+  it('boots with a warning outside production', async () => {
+    const { code, stdout, stderr } = await boot({ nodeEnv: 'development' });
+    assert.equal(code, 0, 'non-production still boots');
+    assert.match(stdout, /BOOTED/);
+    assert.match(stderr, /INTERNAL_SECRET is not set/);
+  });
+
+  it('boots silently when the secret is present', async () => {
+    const { code, stderr } = await boot({ nodeEnv: 'production', internalSecret: TEST_INTERNAL_SECRET });
+    assert.equal(code, 0);
+    assert.doesNotMatch(stderr, /INTERNAL_SECRET/);
   });
 });

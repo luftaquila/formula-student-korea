@@ -10,6 +10,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
@@ -61,7 +62,7 @@ before(async () => {
   restoreLifecycleSink();
 
   dbPath = tmpDbPath();
-  const result = createEntryApp({ dbPath});
+  const result = createEntryApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
   stopLifecycleOutboxRetry = result.stopLifecycleOutboxRetry;
   const started = await startServer(result.app);
@@ -98,7 +99,7 @@ describe('Entry annual-table migration', () => {
     let migratedDb;
     let stopRetry;
     try {
-      const result = createEntryApp({ dbPath: legacyPath});
+      const result = createEntryApp({ dbPath: legacyPath, validateUser: TRUST_JWT });
       migratedDb = result.db;
       stopRetry = result.stopLifecycleOutboxRetry;
 

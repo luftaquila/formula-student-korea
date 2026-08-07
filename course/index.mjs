@@ -289,7 +289,7 @@ function isInternalRequest(req) {
   return isInternalSecret(req.headers["x-internal-service"]) || isRoverSecret(req.headers["x-rover-secret"]);
 }
 
-const app = createApp({ express }, (req) => {
+const app = createApp({ express, validateUser: options.validateUser }, (req) => {
   // Normalize before matching: Express 5 routing is case-insensitive and
   // trailing-slash-insensitive by default, so `/API/rover/camera` and
   // `/api/rover/camera/` reach the same handlers. A raw `req.path ===` gate
@@ -393,14 +393,20 @@ function getMemos(courseId) {
 // 최신 role로 meta를 갱신(→ admin 필터가 재평가)하거나, chief 미만/삭제 시 연결을 종료한다.
 async function revalidateSseRole(meta) {
   const email = meta.email;
-  if (!email || !process.env.AUTH_SERVER || !process.env.INTERNAL_SECRET) return meta; // 검증 불가 → 유지
-  const res = await fetch(`${process.env.AUTH_SERVER}/api/users/role/${encodeURIComponent(email)}`, {
-    headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
-    signal: AbortSignal.timeout(3000),
-  });
-  if (res.status === 404) return null;         // 삭제/비활성 → 연결 종료
-  if (!res.ok) throw new Error("transient");   // 5xx/네트워크 → 연결 유지(fail-open)
-  const { role } = await res.json();
+  if (!email) return meta; // 검증 불가 → 유지
+
+  // 미들웨어가 쓰는 바로 그 검증기를 재사용한다. 여기서 HTTP 클라이언트를 다시 구현하면
+  // 404-vs-non-ok 해석이 두 곳에 생기고 한쪽만 테스트로 덮인다(주입 여부 분기도 함께 사라진다).
+  const result = await app.validateUser(email);
+  if (!result?.valid) {
+    if (result?.transient) throw new Error("transient"); // 일시 장애 → 연결 유지(fail-open)
+    return null;                                         // 삭제/비활성 → 연결 종료
+  }
+  // `?? meta.role` 폴백은 **주입된 검증기 전용**이다. 내장 경로는 여기 닿지 않는다 —
+  // auth는 활성 사용자가 없으면 404를 주고(위에서 종료), 있으면 role이 NOT NULL이다.
+  // 주입 stub이 role을 생략하면 예전 코드가 끊었을 연결을 유지하게 되므로, 그 차이를
+  // 모르고 stub을 쓰지 않도록 남긴다.
+  const role = result.role ?? meta.role;
   if (!role || (ROLE_LEVELS[role] || 0) < ROLE_LEVELS.chief) return null; // chief 미만 → 종료
   return { ...meta, role };                    // 최신 role 반영
 }

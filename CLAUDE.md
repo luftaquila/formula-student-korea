@@ -37,7 +37,7 @@ All 10 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `
 
 `<NAME>_SERVER` env는 **override 전용**이며 테스트·컨테이너 밖 로컬 실행에서만 쓴다. 예전에는 env가 있을 때만 대상이 활성화되는 구조라, 배포 설정에서 URL이 빠지면 해당 연동이 조용히 사라졌다(k3s entry 매니페스트에서 inspection/score/traffic이 누락돼 팀 비활성화가 전달되지 않은 사고). 이제 기본값이 코드에 있어 **inter-service URL에 한해서는** 설정 누락이 불가능하다. 코드로 옮길 수 없는 값(`PUBLIC_URL`·`VWORLD_KEY`·시크릿)에는 "설정 없음 ⇒ 조용히 아무것도 안 함"이 그대로 남아 있으므로, 그쪽은 부팅 시 fail-fast로 막는다.
 
-All non-auth services validate via `AUTH_SERVER` (fail-close: only 200 confirms user).
+All non-auth services validate via the auth service (fail-close: only 200 confirms user). 이 재검증은 **항상 켜져 있고 끄는 런타임 스위치가 없다** — 우회하려면 `create*App({ validateUser })`로 검증기를 직접 주입해야 하며, auth는 자기 DB 함수를, 테스트는 `TRUST_JWT` stub을 넘긴다. 설정 하나로 삭제·강등 전파가 멈추는 경로를 만들지 않기 위한 것이다.
 
 ## Tech Stack
 
@@ -55,6 +55,8 @@ cd {service} && node index.mjs
 # 단독 실행하면서 다른 서비스를 부르려면 해당 서비스만 override 한다. 예:
 #   cd score && ENTRY_SERVER=http://localhost:9200 INSPECTION_SERVER=http://localhost:9400 \
 #               TRAFFIC_SERVER=http://localhost:9500 node index.mjs
+# auth 재검증은 끌 수 없다(런타임 스위치 없음). auth를 안 띄우고 단독 실행하려면
+# AUTH_SERVER를 mock으로 지정하거나, 코드에서 create*App({ validateUser })를 주입한다.
 
 # Docker (Makefile wraps podman compose, auto-prunes)
 make deploy                    # Pull images + restart (production)
@@ -149,6 +151,8 @@ logger.warn(req, action, detail, target, actorOverride)   // level: warn (실패
 2. **같은 액션의 성공/실패는 반드시 레벨로 구분한다.** 같은 action 문자열을 써도 성공은 `logger.log`, 실패는 `logger.warn`. 로그 뷰어에서 레벨 필터링으로 장애를 찾을 수 있어야 한다.
 
 3. **catch 블록에서 `console.error` 대신 `logger.warn`을 쓴다.** 구조화된 로그만 로그 뷰어에 노출되므로, `console.*`으로만 남기면 운영 중 확인 불가. `console.error`는 서버 시작·마이그레이션 등 logger 사용 불가 시점에만 허용.
+
+   예외 하나 더 — **로거의 저장소 자체가 실패 대상인 경로.** `shared/express-setup.mjs`의 인증 재검증 실패 분기가 이에 해당한다. `createLogger(db)`는 검증기가 조회하던 바로 그 DB에 `INSERT` 하고 로그 뷰어도 같은 DB를 읽으므로, 이 분기를 타게 만드는 대표 원인(auth의 `SQLITE_BUSY`/`IOERR`)에서는 DB 로깅이 무용하다. 이런 경로에서만 `console.warn`이 옳으며, 이유를 주석에 남긴다. "logger를 쓸 수 없어서"가 아니라 "logger가 못 미더운 상황이라서"가 기준이다.
 
 4. **서비스 간 통신 실패는 반드시 로깅한다.** fetch 실패, 타임아웃 등을 `logger.warn`으로 기록하여 어떤 서비스가 왜 실패했는지 추적 가능하게 한다.
 
