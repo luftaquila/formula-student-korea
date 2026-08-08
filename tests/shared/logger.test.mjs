@@ -123,6 +123,58 @@ describe('createLogger', () => {
     assert.ok(res.body.total >= 2);
   });
 
+  it('queryHandler exposes nextCursor/hasMore and a before-cursor returns strictly older rows', () => {
+    const curDb = new Database(':memory:');
+    const curLogger = createLogger(curDb, 'cursor-test');
+    const insert = curDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)");
+    // 동일 timestamp 3행(id로 갈라야 함) + 더 오래된 1행
+    insert.run('2026-03-01T00:00:01.000Z', 'same_a');
+    insert.run('2026-03-01T00:00:01.000Z', 'same_b');
+    insert.run('2026-03-01T00:00:01.000Z', 'same_c');
+    insert.run('2026-03-01T00:00:00.000Z', 'older');
+
+    const res1 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '2' }, { role: 'admin' }), res1);
+    assert.equal(res1.body.logs.length, 2);
+    assert.equal(res1.body.hasMore, true);
+    assert.ok(res1.body.nextCursor);
+    // 최신 정렬: same_c(id 3), same_b(id 2)
+    assert.deepEqual(res1.body.logs.map(l => l.action), ['same_c', 'same_b']);
+
+    const res2 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '2', before: res1.body.nextCursor }, { role: 'admin' }), res2);
+    assert.deepEqual(res2.body.logs.map(l => l.action), ['same_a', 'older']);
+    assert.equal(res2.body.hasMore, res2.body.logs.length === 2);
+
+    curDb.close();
+  });
+
+  it('queryHandler combines before-cursor with filters', () => {
+    const curDb = new Database(':memory:');
+    const curLogger = createLogger(curDb, 'cursor-filter-test');
+    const insert = curDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, ?, ?)");
+    insert.run('2026-03-01T00:00:03.000Z', 'warn', 'w1');
+    insert.run('2026-03-01T00:00:02.000Z', 'info', 'i1');
+    insert.run('2026-03-01T00:00:01.000Z', 'warn', 'w2');
+
+    const res1 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '1', level: 'warn' }, { role: 'admin' }), res1);
+    assert.deepEqual(res1.body.logs.map(l => l.action), ['w1']);
+
+    const res2 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '1', level: 'warn', before: res1.body.nextCursor }, { role: 'admin' }), res2);
+    assert.deepEqual(res2.body.logs.map(l => l.action), ['w2']);
+
+    curDb.close();
+  });
+
+  it('queryHandler silently falls back to page 1 on a malformed before-cursor', () => {
+    const res = mockRes();
+    logger.queryHandler(mockReq({ limit: '1', before: 'garbage-no-comma' }, { role: 'admin' }), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.logs.length, 1);
+  });
+
   // 보존은 AFTER INSERT 트리거(setupRowCapRetention)라 삽입 즉시 적용된다 — 타이머 없음.
   it('row-cap retention keeps only the newest maxRows rows as inserts happen', () => {
     const cleanDb = new Database(':memory:');

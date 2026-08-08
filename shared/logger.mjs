@@ -46,6 +46,17 @@ export function buildLogFilter(query) {
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
 
+// keyset 커서 "<timestamp>,<id>" 파서. ISO 타임스탬프에는 콤마가 없으므로 마지막 콤마로
+// 안전하게 분리한다. 형식이 어긋나면 null(= 커서 없음, 첫 페이지)로 조용히 폴백한다.
+export function parseLogCursor(raw) {
+  if (!raw) return null;
+  const s = String(raw);
+  const idx = s.lastIndexOf(",");
+  if (idx < 1) return null;
+  const id = Number(s.slice(idx + 1));
+  return Number.isInteger(id) ? { ts: s.slice(0, idx), id } : null;
+}
+
 export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,14 +116,32 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     }
 
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
-    const offset = Number(req.query.offset) || 0;
+    const cursor = parseLogCursor(req.query.before);
 
     const { where, params } = buildLogFilter(req.query);
 
+    // 정렬 키는 (timestamp DESC, id DESC)로 통일한다 — auth 집계의 병합 정렬 키와 같아야
+    // keyset 커서가 페이지 경계에서 행을 빠뜨리거나 중복시키지 않는다. id는 rowid alias라
+    // idx_logs_timestamp가 사실상 (timestamp, rowid) 복합 인덱스로 동작한다.
     const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
-    const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    let logs;
+    if (cursor) {
+      const cond = `${where ? `${where} AND` : "WHERE"} (timestamp, id) < (?, ?)`;
+      logs = db.prepare(`SELECT * FROM logs ${cond} ORDER BY timestamp DESC, id DESC LIMIT ?`)
+        .all(...params, cursor.ts, cursor.id, limit);
+    } else {
+      // offset은 레거시 호환(내부 소비자 전환기)용. 커서가 오면 무시된다.
+      const offset = Number(req.query.offset) || 0;
+      logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`)
+        .all(...params, limit, offset);
+    }
 
-    res.json({ logs, total, service: serviceName });
+    const last = logs[logs.length - 1];
+    res.json({
+      logs, total, service: serviceName,
+      nextCursor: logs.length === limit && last ? `${last.timestamp},${last.id}` : null,
+      hasMore: logs.length === limit,
+    });
   }
 
   return {

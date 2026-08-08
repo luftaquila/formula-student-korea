@@ -103,11 +103,11 @@
           </table>
         </div>
 
-        <!-- Pagination -->
+        <!-- Pagination (keyset 커서: 이전 = 커서 스택 pop, 다음 = nextCursor push) -->
         <div v-if="!loading && !error && total > 0" class="pagination">
-          <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="goPage(page - 1)">이전</button>
-          <span class="page-info">{{ page }} / {{ totalPages }} ({{ total }}건)</span>
-          <button class="btn btn-ghost btn-sm" :disabled="page >= totalPages" @click="goPage(page + 1)">다음</button>
+          <button class="btn btn-ghost btn-sm" :disabled="page <= 1" @click="goPrev">이전</button>
+          <span class="page-info">{{ page }} 페이지 (총 {{ total }}건)</span>
+          <button class="btn btn-ghost btn-sm" :disabled="!hasMore" @click="goNext">다음</button>
         </div>
       </div>
     </div>
@@ -181,7 +181,13 @@ function closeDetail() {
 
 const logs = ref([]);
 const total = ref(0);
-const page = ref(1);
+// 커서 스택: 스택의 각 항목은 "그 페이지를 가져올 때 쓴 커서 토큰". 페이지 1은 커서 없음
+// (빈 스택). 다음 = nextCursor push 후 fetch, 이전 = pop 후 fetch. keyset 커서는 삽입에
+// 안정적이라(새 행은 항상 더 큰 키) 뒤 페이지가 밀리지 않는다.
+const cursorStack = ref([]);
+const nextCursor = ref(null);
+const hasMore = ref(false);
+const page = computed(() => cursorStack.value.length + 1);
 const loading = ref(false);
 const error = ref(null);
 const autoRefresh = ref(false);
@@ -243,8 +249,6 @@ function toggleAllLevels() {
   fetchLogs(true);
 }
 
-const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
-
 function levelBadge(level) {
   if (level === "warn") return "badge-warning";
   if (level === "error") return "badge-danger";
@@ -267,10 +271,12 @@ function truncate(str, len) {
 }
 
 async function fetchLogs(resetPage = false) {
-  if (resetPage) page.value = 1;
+  if (resetPage) cursorStack.value = [];
   if (filters.services.size === 0 || filters.levels.size === 0) {
     logs.value = [];
     total.value = 0;
+    nextCursor.value = null;
+    hasMore.value = false;
     return;
   }
 
@@ -280,7 +286,8 @@ async function fetchLogs(resetPage = false) {
   try {
     const params = new URLSearchParams();
     params.set("limit", String(PAGE_SIZE));
-    params.set("offset", String((page.value - 1) * PAGE_SIZE));
+    const cursor = cursorStack.value[cursorStack.value.length - 1];
+    if (cursor) params.set("cursor", cursor);
     if (filters.services.size > 0 && filters.services.size < serviceList.length) {
       params.set("service", [...filters.services].join(","));
     }
@@ -297,6 +304,8 @@ async function fetchLogs(resetPage = false) {
     const data = await res.json();
     logs.value = data.logs || [];
     total.value = data.total || 0;
+    nextCursor.value = data.nextCursor || null;
+    hasMore.value = !!data.hasMore;
   } catch (e) {
     error.value = e.message;
   } finally {
@@ -317,15 +326,26 @@ function resetFilters() {
   fetchLogs(true);
 }
 
-function goPage(p) {
-  page.value = p;
+function goNext() {
+  if (!nextCursor.value) return;
+  cursorStack.value.push(nextCursor.value);
+  fetchLogs();
+}
+
+function goPrev() {
+  if (cursorStack.value.length === 0) return;
+  cursorStack.value.pop();
   fetchLogs();
 }
 
 function toggleAutoRefresh() {
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
   if (autoRefresh.value) {
-    refreshTimer = setInterval(() => fetchLogs(), 10000);
+    // 새 로그는 1페이지(커서 없음)에만 나타나므로 깊은 페이지에서는 갱신을 건너뛴다 —
+    // keyset 커서라 깊은 페이지 내용은 어차피 변하지 않는다.
+    refreshTimer = setInterval(() => {
+      if (cursorStack.value.length === 0) fetchLogs();
+    }, 10000);
   }
 }
 
