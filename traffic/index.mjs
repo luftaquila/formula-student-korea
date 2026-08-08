@@ -1368,21 +1368,22 @@ app.delete("/api/records/:name", (req, res) => {
   });
   if (!preflight.ok) return;
 
-  const result = dbRun(() => {
+  const result = dbRun(() =>
     db.transaction(() => {
-      db.prepare("DELETE FROM record WHERE name = ?").run(name);
+      const deleted = db.prepare("DELETE FROM record WHERE name = ?").run(name).changes;
       const legacy = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? AND name NOT IN (${reservedSql})`).get(name);
       if (legacy) db.exec(`DROP TABLE IF EXISTS '${name}'`);
       db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
-    })();
-  });
+      return deleted;
+    })(),
+  );
 
   if (!result.success) {
     logger.warn(req, "record.delete", { error: result.internalError || result.error }, name);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "record.delete", { dropped: true }, name);
+  logger.log(req, "record.delete", { deleted: result.result }, name);
 
   // SSE 브로드캐스트
   broadcastEvent("records", { type: "delete", name, recordFiles: getRecordFiles() });
@@ -1452,7 +1453,7 @@ app.delete("/api/controllers", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "controller.clear");
+  logger.log(req, "controller.clear", { deleted: result.result.changes });
   res.status(200).send();
 });
 

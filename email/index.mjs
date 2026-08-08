@@ -465,6 +465,8 @@ ${htmlContent}
   let lastMessageId = null;
   let lastError = null;
   let lastErrorStatus = 500;
+  // 실패 수신자·사유 목록(뷰어 detail용, 10건 캡). 전수 기록은 email_log 테이블이 담당.
+  const failedRecipients = [];
 
   for (let i = 0; i < recipients.length; i++) {
     const recipient = recipients[i];
@@ -485,6 +487,7 @@ ${htmlContent}
           .run(subject, recipient, result.error, htmlContent, source, sentBy)
       );
       if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, cause: logResult.cause, subject, recipient, source });
+      if (failedRecipients.length < 10) failedRecipients.push({ recipient, error: result.error });
       lastError = result.error;
       lastErrorStatus = result.status;
     }
@@ -503,7 +506,7 @@ ${htmlContent}
   }
 
   if (successCount < recipients.length) {
-    logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, lastError, source });
+    logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, failed: failedRecipients, lastError, source });
   }
   // 내부 서비스에서 호출한 경우(예: documents 예약 알림은 수신자별 1건씩 호출), 호출자가
   // 자체 집계 로그(`schedule.*`)를 남기므로 성공 info는 생략해 로그 노이즈를 줄인다.

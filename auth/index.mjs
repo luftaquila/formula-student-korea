@@ -797,7 +797,8 @@ app.post("/api/users/bulk", (req, res) => {
     return res.status(txResult.status).send(txResult.error);
   }
 
-  logger.log(req, "user.create_bulk", { added, skipped });
+  // 클라이언트로만 반환되고 버려지던 행별 거절 사유를 로그에도 남긴다(형식 오류·역할 보정).
+  logger.log(req, "user.create_bulk", { added, skipped, errors: errors.map((e) => ({ email: e.row?.email, reason: e.reason })) });
   if (added.length > 0) notifyNewUser(added);
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
@@ -816,7 +817,7 @@ app.patch("/api/users/bulk", (req, res) => {
   if (ADMIN_EMAIL && !active) {
     const protectedUser = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
     if (protectedUser && numIds.includes(protectedUser.id)) {
-      logger.warn(req, "user.bulk_toggle", { reason: "protected_admin", id: protectedUser.id });
+      logger.warn(req, "user.bulk_toggle", { reason: "protected_admin", id: protectedUser.id }, ADMIN_EMAIL);
       return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
     }
   }
@@ -860,7 +861,7 @@ app.delete("/api/users/bulk", (req, res) => {
   if (ADMIN_EMAIL) {
     const protectedUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get(ADMIN_EMAIL);
     if (protectedUser && numIds.includes(protectedUser.id)) {
-      logger.warn(req, "user.bulk_delete", { reason: "protected_admin", id: protectedUser.id });
+      logger.warn(req, "user.bulk_delete", { reason: "protected_admin", id: protectedUser.id }, ADMIN_EMAIL);
       return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
     }
   }

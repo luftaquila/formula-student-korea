@@ -1008,6 +1008,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       );
       if (penaltyMinutes > 0) {
         const until = Date.now() + penaltyMinutes * 60 * 1000;
+        appliedPenalty = { minutes: penaltyMinutes, until };
         db.prepare(`
           INSERT OR REPLACE INTO cancel_penalty
             (num, inspection, year, until, phone, queue_timestamp)
@@ -1048,7 +1049,9 @@ app.post("/api/admin/cancel/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "queue.cancel", { inspection: type }, `#${num}`);
+  logger.log(req, "queue.cancel", appliedPenalty
+    ? { inspection: type, penalty_minutes: appliedPenalty.minutes, penalty_until: appliedPenalty.until }
+    : { inspection: type, penalty: false }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
   broadcastQueue(type);
@@ -1548,7 +1551,7 @@ app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "booth.toggle", { error: result.error, cause: result.cause }, type);
+    logger.warn(req, "booth.toggle", { error: result.error, cause: result.cause, booth: boothNum, active: req.body.active === true }, type);
     return res.status(result.status).send(result.error);
   }
 

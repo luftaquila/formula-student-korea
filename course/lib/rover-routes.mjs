@@ -143,10 +143,10 @@ function startMission(waypoints, actor, courseId) {
     return insertMission.run(courseId || null, Date.now(), JSON.stringify(waypoints), actor || null);
   })());
   if (!r.success) {
-    logger.warn(null, "mission.start", { error: r.error, cause: r.cause, course_id: courseId }, "rover", SYS);
+    logger.warn(null, "mission.start", { error: r.error, cause: r.cause, course_id: courseId, actor }, "rover", SYS);
     return false;
   }
-  if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior }, "rover");
+  if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior, actor }, "rover", SYS);
   currentMissionId = Number(r.result.lastInsertRowid);
   // A fresh mission starts with a clean slate — never inherit a previous run's
   // obstacle alert, and scope the resume grace window to THIS mission so a
@@ -487,7 +487,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     markRoverDisconnected("stale");
     if (currentMissionId != null) {
       interruptMission();
-      logger.warn(null, "mission.interrupted", { mission_id: currentMissionId, reason: "telemetry_stale" }, "rover");
+      logger.warn(null, "mission.interrupted", { mission_id: currentMissionId, reason: "telemetry_stale" }, "rover", SYS);
     }
     // Test/app shutdown may close SQLite just before a half-open SSE socket's
     // deferred close/stale callback runs.  There is no mission left to reconcile
@@ -515,7 +515,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     if (receiverState.base.state === "surveying") {
       receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
     }
-    logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver");
+    logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver", SYS);
     broadcastRoverStatus();
   }
   // Camera control is a one-way (server→perception) channel, so a dead peer is only
@@ -530,7 +530,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     } catch {
       try { cameraControlClient.end(); } catch {}
       cameraControlClient = null;
-      logger.warn(null, "rover.camera.control_stale", null, "rover");
+      logger.warn(null, "rover.camera.control_stale", null, "rover", SYS);
     }
   }
 }, DEVICE_WATCHDOG_TICK_MS);
@@ -1767,7 +1767,7 @@ function sendRoverEvent(event, data) {
     try { roverClient.end(); } catch {}
     roverClient = null;
     markRoverDisconnected("write_failed");
-    logger.warn(null, "rover.stream.write_failed", { event }, "rover");
+    logger.warn(null, "rover.stream.write_failed", { event }, "rover", SYS);
     broadcastRoverStatus();
     return false;
   }
@@ -1782,7 +1782,7 @@ function sendReceiverEvent(event, data) {
     try { receiverClient.end(); } catch {}
     receiverClient = null;
     markReceiverDisconnected("write_failed");
-    logger.warn(null, "receiver.stream.write_failed", { event }, "receiver");
+    logger.warn(null, "receiver.stream.write_failed", { event }, "receiver", SYS);
     broadcastRoverStatus();
     return false;
   }
@@ -2007,11 +2007,12 @@ app.post("/api/gps/survey-points/:id/survey", (req, res) => {
 app.post("/api/gps/survey-points/:id/survey/cancel", (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
-  sendReceiverEvent("base-survey-cancel", { point_id: id });
+  // 수신기가 끊겨 있으면 취소 이벤트가 전달되지 않는다. 전달 여부를 로그에 남긴다.
+  const delivered = sendReceiverEvent("base-survey-cancel", { point_id: id });
   if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
     receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
   }
-  logger.log(req, "gps.survey.cancel", { id }, "gps");
+  logger.log(req, "gps.survey.cancel", { id, delivered }, "gps");
   broadcastRoverStatus();
   res.json({ ok: true });
 });
@@ -2176,7 +2177,7 @@ app.post("/api/rover/execute", (req, res) => {
         logger.log(req, "course.snapshot.auto", { snapshot_id: snapshotId, course_id: courseId }, course?.name);
       }
     }
-    catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, `course#${courseId}`); }
+    catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, course.name); }
   }
 
   // 로버에 경로를 보내기 전에 미션을 먼저 기록한다. 순서를 뒤집으면 기록 실패 시 로버는 이미

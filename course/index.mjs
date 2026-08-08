@@ -861,29 +861,29 @@ app.post("/api/courses/import", (req, res) => {
 
   const nameValidation = validateCourseName(name);
   if (!nameValidation.valid) {
-    logger.warn(req, "course.import", nameValidation.error, name);
+    logger.warn(req, "course.import", { error: nameValidation.error }, name);
     return res.status(400).send(nameValidation.error);
   }
 
   if (!Array.isArray(cones)) {
-    logger.warn(req, "course.import", "올바르지 않은 콘 데이터입니다.", name);
+    logger.warn(req, "course.import", { error: "올바르지 않은 콘 데이터입니다." }, name);
     return res.status(400).send("올바르지 않은 콘 데이터입니다.");
   }
 
   for (const cone of cones) {
     const cv = validateCoordinate(cone.lat, cone.lng);
     if (!cv.valid) {
-      logger.warn(req, "course.import", cv.error, name);
+      logger.warn(req, "course.import", { error: cv.error }, name);
       return res.status(400).send(cv.error);
     }
     const sv = validateSide(cone.side);
     if (!sv.valid) {
-      logger.warn(req, "course.import", sv.error, name);
+      logger.warn(req, "course.import", { error: sv.error }, name);
       return res.status(400).send(sv.error);
     }
     const av = validateAltitude(cone.alt);
     if (!av.valid) {
-      logger.warn(req, "course.import", av.error, name);
+      logger.warn(req, "course.import", { error: av.error }, name);
       return res.status(400).send(av.error);
     }
   }
@@ -892,15 +892,15 @@ app.post("/api/courses/import", (req, res) => {
   const memos = Array.isArray(req.body.memos) ? req.body.memos : [];
   for (const memo of memos) {
     const cv = validateCoordinate(memo.lat, memo.lng);
-    if (!cv.valid) { logger.warn(req, "course.import", cv.error, name); return res.status(400).send(cv.error); }
+    if (!cv.valid) { logger.warn(req, "course.import", { error: cv.error }, name); return res.status(400).send(cv.error); }
     const wv = validateMemoDimension(memo.width, "너비");
-    if (!wv.valid) { logger.warn(req, "course.import", wv.error, name); return res.status(400).send(wv.error); }
+    if (!wv.valid) { logger.warn(req, "course.import", { error: wv.error }, name); return res.status(400).send(wv.error); }
     const hv = validateMemoDimension(memo.height, "높이");
-    if (!hv.valid) { logger.warn(req, "course.import", hv.error, name); return res.status(400).send(hv.error); }
+    if (!hv.valid) { logger.warn(req, "course.import", { error: hv.error }, name); return res.status(400).send(hv.error); }
     const rv = validateMemoRotation(memo.rotation);
-    if (!rv.valid) { logger.warn(req, "course.import", rv.error, name); return res.status(400).send(rv.error); }
+    if (!rv.valid) { logger.warn(req, "course.import", { error: rv.error }, name); return res.status(400).send(rv.error); }
     const cnv = validateMemoContent(memo.content);
-    if (!cnv.valid) { logger.warn(req, "course.import", cnv.error, name); return res.status(400).send(cnv.error); }
+    if (!cnv.valid) { logger.warn(req, "course.import", { error: cnv.error }, name); return res.status(400).send(cnv.error); }
   }
 
   const routeMarkers = req.body.route_markers === undefined ? [] : req.body.route_markers;
@@ -955,7 +955,7 @@ app.post("/api/courses/import", (req, res) => {
 
   if (!result.success) {
     const msg = result.error?.includes("UNIQUE") ? "이미 존재하는 코스 이름입니다." : result.error;
-    logger.warn(req, "course.import", msg, name);
+    logger.warn(req, "course.import", { error: msg }, name);
     if (result.error?.includes("UNIQUE")) return res.status(400).send("이미 존재하는 코스 이름입니다.");
     return res.status(result.status).send(result.error);
   }
@@ -1434,7 +1434,15 @@ app.patch("/api/memos/:id", (req, res) => {
   }
 
   const memoCourse = getCourseById(memo.course_id);
-  logger.log(req, "memo.update", { fields: Object.keys(req.body) }, memoCourse?.name);
+  // 변경된 필드만 before/after로 기록한다. content는 길 수 있으므로 100자로 자른다.
+  const changes = {};
+  for (const field of ["lat", "lng", "width", "height", "rotation", "content"]) {
+    if (memo[field] !== result.result[field]) {
+      const truncate = (v) => field === "content" && typeof v === "string" ? v.slice(0, 100) : v;
+      changes[field] = { from: truncate(memo[field]), to: truncate(result.result[field]) };
+    }
+  }
+  logger.log(req, "memo.update", { changes }, memoCourse?.name);
   broadcastEvent("memos", { type: "update", courseId: memo.course_id, memo: result.result, memos: getMemos(memo.course_id) });
   res.json(result.result);
 });
