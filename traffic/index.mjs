@@ -2,11 +2,10 @@ import express from "express";
 import Database from "better-sqlite3";
 import crypto from "node:crypto";
 import { runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
-import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
+import { createTeamStateClient } from "../shared/team-state-client.mjs";
 import { formatEnduranceDetail, enduranceTotal } from "./lib/event-timing.mjs";
 
 const CONTROLLER_MAX_ROWS = 100000;
@@ -26,7 +25,9 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
 // 쿼리에서 제외해야 한다(아래 reservedSql).
 const RESERVED_TABLES = [
   "controller", "event_mode", "record_visibility", "record", "logs",
-  "wireless_event", "wireless_mapping", "wireless_telemetry", "wireless_light", "wireless_session", "team_status",
+  "wireless_event", "wireless_mapping", "wireless_telemetry", "wireless_light", "wireless_session",
+  // team_status는 미러 시절 잔재(다음 릴리스에서 DROP) — 방어적으로 계속 예약.
+  "team_status", "team_state_checkpoint", "team_id_backfill", "schema_migrations",
 ];
 const reservedSql = RESERVED_TABLES.map((n) => `'${n}'`).join(", ");
 
@@ -82,7 +83,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS record (
 db.exec("DROP INDEX IF EXISTS idx_record_name_id");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_record_name_legacy_rowid ON record(name, legacy_rowid)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_record_name_num ON record(name, num)");
-ensureTeamStatusTable(db);
+// team_id: entry의 불변 팀 id 태그. num/univ/team 비정규화 컬럼은 유지하되(감사·표시),
+// 수렴형 강제가 id 기준으로 최신화한다 — 예전에는 번호 변경 없는 팀명 변경이 이벤트를
+// 내보내지 않아 여기 복사본이 조용히 낡는 구멍이 있었다.
+try { db.exec("ALTER TABLE record ADD COLUMN team_id INTEGER"); } catch { /* already exists */ }
+db.exec("CREATE INDEX IF NOT EXISTS idx_record_team ON record(team_id)");
 
 /* ============================================
    무선(LoRa) 계측 서브시스템 테이블
@@ -303,17 +308,16 @@ function getYearRecordFiles(year) {
 }
 
 function getRecordRows(name) {
+  // 연도를 파싱할 수 없는 이름은 비활성 필터 없이 전부 노출('[]' 바인딩 — 기존 escape hatch)
   const year = recordYearFromName(name);
+  const inactiveJson = year ? teamState.getStateSync(year).inactiveNumsJson : "[]";
   return db.prepare(`
     SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
     FROM record
     WHERE name = ?
-      AND (? IS NULL OR NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = ? AND s.team_num = record.num AND s.active = 0
-      ))
+      AND num NOT IN (SELECT value FROM json_each(?))
     ORDER BY legacy_rowid
-  `).all(name, year, year);
+  `).all(name, inactiveJson);
 }
 
 function getYearRecordGroups(year) {
@@ -325,12 +329,9 @@ function getYearRecordGroups(year) {
     FROM record r
     LEFT JOIN record_visibility v ON v.name = r.name
     WHERE r.name >= ? AND r.name < ? AND COALESCE(v.visible, 1) != 0
-      AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = ? AND s.team_num = r.num AND s.active = 0
-      )
+      AND r.num NOT IN (SELECT value FROM json_each(?))
     ORDER BY r.name, r.legacy_rowid
-  `).all(startName, endName, Number(year));
+  `).all(startName, endName, teamState.getStateSync(Number(year)).inactiveNumsJson);
   const groups = [];
   let current = null;
   for (const row of rows) {
@@ -358,15 +359,17 @@ function recordFileExists(name) {
 
 function insertRecordRow(name, data) {
   const year = recordYearFromName(name) ?? currentRecordYear();
+  // 랩 계측마다 도는 핫패스 — 예전엔 트랜잭션 안에서 미러 DB를 읽었지만 이제 순수 Map 조회다
   if (!isTeamActive(db, year, data.entry.num)) {
     throw { status: 409, message: "비활성화된 엔트리에는 기록을 저장할 수 없습니다." };
   }
   db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
   const nextRowid = db.prepare("SELECT COALESCE(MAX(legacy_rowid), 0) + 1 AS value FROM record WHERE name = ?").get(name).value;
   db.prepare(`
-    INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, nextRowid, data.time, data.entry.num, data.entry.univ, data.entry.team, data.type, data.result, data.detail ?? null);
+    INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail, team_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(name, nextRowid, data.time, data.entry.num, data.entry.univ, data.entry.team, data.type, data.result, data.detail ?? null,
+    teamState.resolveTeamId(year, data.entry.num));
   return getRecordRow(name, nextRowid);
 }
 
@@ -489,6 +492,122 @@ function parseTeamJson(value) {
 function matchingTeam(team, num) {
   return !!team && Number(team.num) === num;
 }
+
+/* ============================================
+   Entry team-state (미러 대체 캐시 + 수렴형 강제)
+   ============================================ */
+const teamState = createTeamStateClient({ db, logger, service: "traffic" });
+
+// 미로드·모르는 팀 = 활성 (기존 미러의 absent-row-means-active와 동일한 fail-open).
+// 랩 계측 핫패스(insertRecordRow)에서 트랜잭션 내 DB 조회 대신 순수 Map 조회가 된다.
+function isTeamActive(_db, year, num) {
+  return teamState.isActive(year, num);
+}
+
+function recordYearRange(year) {
+  return [`FSK ${Number(year)} `, `FSK ${Number(year) + 1} `];
+}
+
+teamState.registerBackfill((year, state) => {
+  const [startName, endName] = recordYearRange(year);
+  const upd = db.prepare("UPDATE record SET team_id = ? WHERE name >= ? AND name < ? AND num = ? AND team_id IS NULL");
+  for (const team of state.teams.values()) upd.run(team.id, startName, endName, team.num);
+  const orphans = db.prepare("SELECT COUNT(*) AS c FROM record WHERE name >= ? AND name < ? AND team_id IS NULL")
+    .get(startName, endName).c;
+  if (orphans > 0) {
+    // entry가 모르는 팀의 기록 — 삭제·무효화하지 않고 로그만 (기존 reconcile 철학)
+    logger.warn(null, "traffic.team_id_backfill", { year, unmatched_rows: orphans });
+  }
+});
+
+teamState.registerEnforcement((year, state, prevState) => {
+  const [startName, endName] = recordYearRange(year);
+  const touchedSessions = new Set();
+  const knownIdsJson = JSON.stringify([...state.teams.keys()]);
+  let recordsChanged = false;
+
+  // ⓪ 귀속(adoption): 직전 번호 체계로 기록된 team_id NULL 레코드를 팀에 귀속시킨다
+  // (계측 중 캐시가 잠깐 낡았던 창에서 쓰인 행도 이후의 수렴을 따라가게).
+  const adoptState = prevState || state;
+  {
+    const upd = db.prepare("UPDATE record SET team_id = ? WHERE name >= ? AND name < ? AND num = ? AND team_id IS NULL");
+    for (const team of adoptState.teams.values()) upd.run(team.id, startName, endName, team.num);
+  }
+
+  // ① tombstone: 기록은 삭제하지 않고 invalidate(감사 보존 — score가 invalidated를 집계에서
+  // 제외하므로 스코어보드에선 삭제와 동일), 무선 세션은 해제한다.
+  for (const t of state.tombstones) {
+    const invalidated = db.prepare(`
+      UPDATE record SET invalidated = 1, scoreboard = 0
+      WHERE name >= ? AND name < ? AND team_id = ? AND (invalidated != 1 OR scoreboard != 0)
+    `).run(startName, endName, t.id).changes;
+    const sessions = updateWirelessBindingsForDelete(t.num, year);
+    sessions.forEach((s) => touchedSessions.add(s));
+    if (invalidated > 0 || sessions.length > 0) {
+      if (invalidated > 0) recordsChanged = true;
+      logger.log(null, "team.cascade_delete", { year, team_id: t.id, invalidated, wirelessSessions: sessions.length }, `#${t.num}`);
+    }
+  }
+
+  // ② 리넘버·개명 수렴: id 기준으로 비정규화 num/univ/team을 최신화한다. record에는 num
+  // UNIQUE가 없어 단일 패스로 충분하다. 번호가 실제로 바뀐 팀은 목적지 번호에 남은 남의
+  // 기록(현재 어떤 팀의 것도 아닌 행)을 기존 renumber 시맨틱대로 invalidate하고, 무선
+  // 세션 바인딩도 새 번호·이름으로 옮긴다.
+  const updDenorm = db.prepare(`
+    UPDATE record SET num = ?, univ = ?, team = ?
+    WHERE name >= ? AND name < ? AND team_id = ? AND (num != ? OR univ != ? OR team != ?)
+  `);
+  for (const team of state.teams.values()) {
+    const prevTeam = prevState?.teams.get(team.id);
+    const renumbered = prevTeam && prevTeam.num !== team.num;
+    const changed = updDenorm.run(team.num, team.univ, team.team, startName, endName, team.id,
+      team.num, team.univ, team.team).changes;
+    if (renumbered) {
+      db.prepare(`
+        UPDATE record SET invalidated = 1, scoreboard = 0
+        WHERE name >= ? AND name < ? AND num = ? AND invalidated = 0
+          AND (team_id IS NULL OR team_id NOT IN (SELECT value FROM json_each(?)))
+      `).run(startName, endName, team.num, knownIdsJson);
+      const sessions = updateWirelessBindingsForRenumber(prevTeam.num, team.num, year, { univ: team.univ, team: team.team });
+      sessions.forEach((s) => touchedSessions.add(s));
+    }
+    if (changed > 0) {
+      recordsChanged = true;
+      logger.log(null, "team_num.update", { year, team_id: team.id, num: team.num, updated: changed });
+    }
+  }
+
+  // ③ 비활성: 진행 중 무선 선택/런 해제 (기록은 조회 필터가 숨긴다 — 기존과 동일)
+  for (const team of state.teams.values()) {
+    if (team.active) continue;
+    const sessions = updateWirelessBindingsForDelete(team.num, year);
+    sessions.forEach((s) => touchedSessions.add(s));
+    if (sessions.length > 0) {
+      logger.log(null, "team.active", { year, active: false, wirelessSessions: sessions.length }, `#${team.num}`);
+    }
+  }
+
+  // ④ 모르는 팀 — 로그만, 무효화·삭제 금지
+  const knownIds = new Set([...state.teams.keys(), ...state.tombstones.map((t) => t.id)]);
+  const localIds = db.prepare(
+    "SELECT DISTINCT team_id FROM record WHERE name >= ? AND name < ? AND team_id IS NOT NULL",
+  ).all(startName, endName).map((r) => r.team_id);
+  const unknown = localIds.filter((id) => !knownIds.has(id));
+  if (unknown.length > 0 && teamState.throttled(`unknown:${year}`)) {
+    logger.warn(null, "traffic.team_state_unknown", { year, team_ids: unknown });
+  }
+
+  if (recordsChanged || touchedSessions.size > 0) {
+    return () => {
+      if (recordsChanged) {
+        broadcastEvent("records", { type: "team-sync", year, recordFiles: getRecordFiles() });
+      }
+      for (const eventType of touchedSessions) {
+        broadcastEvent("wireless:session", getSession(eventType));
+      }
+    };
+  }
+});
 function updateWirelessBindingsForDelete(num, year) {
   if (Number(year) !== currentRecordYear()) return [];
   const touched = new Set();
@@ -1193,125 +1312,9 @@ app.delete("/api/records/:name", (req, res) => {
   res.status(200).send();
 });
 
-/* ============================================
-   Internal API: 엔트리 라이프사이클 연동
-   ============================================ */
-
-registerTeamStatusRoute(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  onDeactivate: ({ year, num }) => updateWirelessBindingsForDelete(num, year),
-  onApplied: ({ deactivation }) => {
-    for (const eventType of deactivation || []) {
-      broadcastEvent("wireless:session", getSession(eventType));
-    }
-  },
-});
-
-app.delete("/api/internal/team/:num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const num = Number(req.params.num);
-  const year = Number(req.query.year);
-  if (!Number.isInteger(num) || num < 1) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
-    return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  }
-  if (!Number.isInteger(year)) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-
-  const result = dbRun(() => {
-    return db.transaction(() => {
-      const startName = `FSK ${year} `;
-      const endName = `FSK ${year + 1} `;
-      const invalidated = db.prepare(`
-        UPDATE record
-        SET invalidated = 1, scoreboard = 0
-        WHERE name >= ? AND name < ? AND num = ?
-      `).run(startName, endName, num).changes;
-      const wirelessSessions = updateWirelessBindingsForDelete(num, year);
-      db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, num);
-      return { invalidated, wirelessSessions };
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team.cascade_delete", { error: result.error, year }, `#${num}`);
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team.cascade_delete", { year, invalidated: result.result.invalidated, wirelessSessions: result.result.wirelessSessions.length }, `#${num}`);
-  broadcastEvent("records", { type: "team-delete", year, num, recordFiles: getRecordFiles() });
-  for (const eventType of result.result.wirelessSessions) {
-    broadcastEvent("wireless:session", getSession(eventType));
-  }
-  res.status(200).send();
-});
-
-app.patch("/api/internal/team-num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const prevNum = Number(req.body.prevNum);
-  const newNum = Number(req.body.newNum);
-  const year = Number(req.body.year);
-  const entry = req.body.entry && typeof req.body.entry === "object" ? req.body.entry : {};
-  if (!Number.isInteger(prevNum) || prevNum < 1 || !Number.isInteger(newNum) || newNum < 1 || !Number.isInteger(year)) {
-    logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
-    return res.status(400).send("올바르지 않은 요청입니다.");
-  }
-  // self-renumber는 목적지(=자기 번호) record를 먼저 invalidate하므로 자기 데이터를 망가뜨림. 조기 반환.
-  if (prevNum === newNum) return res.status(200).send();
-
-  const result = dbRun(() => {
-    return db.transaction(() => {
-      let changed = 0;
-      const updates = ["num = ?"];
-      const params = [newNum];
-      if (typeof entry.univ === "string" && entry.univ.trim()) {
-        updates.push("univ = ?");
-        params.push(entry.univ.trim());
-      }
-      if (typeof entry.team === "string" && entry.team.trim()) {
-        updates.push("team = ?");
-        params.push(entry.team.trim());
-      }
-      for (const name of getYearRecordFiles(year)) {
-        const existing = db.prepare("SELECT COUNT(*) AS count FROM record WHERE name = ? AND num = ?").get(name, prevNum).count;
-        if (existing === 0) continue;
-        // 목적지(newNum)의 기존 기록은 삭제하지 않고 무효화한다(다른 소비자는 DELETE):
-        // 경기 기록은 감사/재집계를 위해 보존하되, score가 invalidated 행을 집계에서
-        // 제외하므로 스코어보드에선 삭제와 동일한 효과를 낸다. 이어지는 rename은
-        // invalidated/scoreboard 플래그를 건드리지 않아 이동되는 팀의 유효 기록은 보존된다.
-        db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND num = ?").run(name, newNum);
-        changed += db.prepare(`UPDATE record SET ${updates.join(", ")} WHERE name = ? AND num = ?`).run(...params, name, prevNum).changes;
-      }
-      const wirelessSessions = updateWirelessBindingsForRenumber(prevNum, newNum, year, entry);
-      const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
-      // renumber는 기존 snapshot/revision만 이동한다. 새 활성 상태는 후속
-      // team.active가 적용해 wireless 정리와 team-active SSE를 실행한다.
-      if (previousStatus) {
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, newNum);
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, prevNum);
-        db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
-          .run(year, newNum, previousStatus.active, previousStatus.revision);
-      }
-      return { changed, wirelessSessions };
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team_num.update", { year, prevNum, newNum, updated: result.result.changed, wirelessSessions: result.result.wirelessSessions.length });
-  broadcastEvent("records", { type: "team-renumber", year, prevNum, newNum, recordFiles: getRecordFiles() });
-  for (const eventType of result.result.wirelessSessions) {
-    broadcastEvent("wireless:session", getSession(eventType));
-  }
-  res.status(200).send();
-});
+// entry 팀 상태 동기화 기동 (SSE 구독 + 부팅 fetch). 테스트는 skipTeamStateSync로
+// 네트워크 구독을 끄고 teamState.refresh(year)를 직접 호출한다.
+if (!options.skipTeamStateSync) teamState.start();
 
 /* ============================================
    API 라우트: /api/controllers
@@ -1955,7 +1958,7 @@ app.get("/api/wireless/events", (req, res) => {
    ============================================ */
 addSpaFallback(app);
 
-return { app, db };
+return { app, db, teamState };
 }
 
 runIfDirect(import.meta, "traffic", createTrafficApp);

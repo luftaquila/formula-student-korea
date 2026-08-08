@@ -12,6 +12,7 @@ import {
   TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
+  startFakeEntryServer,
 } from '../helpers/test-utils.mjs';
 
 setupTestEnv();
@@ -26,8 +27,12 @@ const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', rol
 let server, baseUrl, client, db, dbPath;
 
 before(async () => {
+  // 메인 스위트는 entry 없이 동작해야 한다(fail-open: 전원 활성). 기본 컨테이너 DNS
+  // (http://entry:9200)로의 백그라운드 갱신이 느리게 실패하며 이벤트 루프를 잡지 않도록
+  // 즉시 실패하는 주소를 지정한다. 팀 상태가 필요한 스위트는 자기 fake로 덮어쓴다.
+  process.env.ENTRY_SERVER = 'http://127.0.0.1:1';
   dbPath = tmpDbPath();
-  const result = createTrafficApp({ dbPath, validateUser: TRUST_JWT });
+  const result = createTrafficApp({ dbPath, validateUser: TRUST_JWT, skipTeamStateSync: true });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -150,53 +155,9 @@ describe('POST /api/records', () => {
   });
 });
 
-// ─── Records yearly summary and internal lifecycle ──────────────────────
-describe('Records lifecycle sync', () => {
+// ─── Record visibility filter ────────────────────────────────────────────
+describe('Record visibility filter', () => {
   const YEAR = new Date().getFullYear();
-  const RECORD_NAME = `FSK ${YEAR} Lifecycle Run`;
-
-  it('returns year records in one response and renumbers/invalidates team rows', async () => {
-    const createRes = await client.post('/api/records', {
-      body: {
-        name: 'Lifecycle Run',
-        data: {
-          time: '2026-01-02T10:00:00',
-          type: '가속',
-          entry: { num: 901, univ: 'OldUniv', team: 'OldTeam' },
-          result: 45000,
-        },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(createRes.status, 201);
-
-    const yearRes = await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie });
-    assert.equal(yearRes.status, 200);
-    const yearRows = await yearRes.json();
-    const table = yearRows.find((row) => row.name === RECORD_NAME);
-    assert.ok(table, 'year endpoint should include lifecycle record table');
-    assert.ok(table.records.some((row) => row.num === 901));
-
-    const patchRes = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year: YEAR, prevNum: 901, newNum: 902, entry: { univ: 'NewUniv', team: 'NewTeam' } },
-    });
-    assert.equal(patchRes.status, 200);
-    let rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
-    let row = rows.find((r) => r.num === 902);
-    assert.ok(row);
-    assert.equal(row.univ, 'NewUniv');
-    assert.equal(row.team, 'NewTeam');
-
-    const deleteRes = await client.delete(`/api/internal/team/902?year=${YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(deleteRes.status, 200);
-    rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
-    row = rows.find((r) => r.num === 902);
-    assert.equal(row.invalidated, 1);
-    assert.equal(row.scoreboard, 0);
-  });
 
   it('excludes hidden record tables from the year endpoint (visibility filter)', async () => {
     // record-visibility 제외는 score에서 traffic getYearRecordGroups로 이동했으므로
@@ -234,80 +195,6 @@ describe('Records lifecycle sync', () => {
     assert.ok(afterShow.some((t) => t.name === name), 'un-hidden table should reappear in the year endpoint');
   });
 
-  it('treats prevNum === newNum as a no-op and does not invalidate the team\'s records', async () => {
-    const createRes = await client.post('/api/records', {
-      body: {
-        name: 'Self Renumber Run',
-        data: {
-          time: '2026-01-03T10:00:00',
-          type: '가속',
-          entry: { num: 905, univ: 'SelfUniv', team: 'SelfTeam' },
-          result: 46000,
-        },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(createRes.status, 201);
-    const name = `FSK ${YEAR} Self Renumber Run`;
-
-    const res = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year: YEAR, prevNum: 905, newNum: 905, entry: { univ: 'SelfUniv', team: 'SelfTeam' } },
-    });
-    assert.equal(res.status, 200);
-
-    const rows = await (await client.get(`/api/records/${encodeURIComponent(name)}`, { cookie: adminCookie })).json();
-    const row = rows.find((r) => r.num === 905);
-    assert.ok(row, 'record for #905 should still exist');
-    // self-renumber는 목적지(=자기 번호) record를 invalidate하므로, 가드가 없으면 invalidated=1이 된다.
-    assert.equal(row.invalidated, 0, 'self-renumber must not invalidate the team\'s own records');
-  });
-
-  it('clears armed wireless sessions on team delete and updates bound runs on renumber', async () => {
-    const deleteSelect = await client.post('/api/wireless/select', {
-      body: { event_type: '가속', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
-      cookie: adminCookie,
-    });
-    assert.equal(deleteSelect.status, 200);
-    await client.post('/api/wireless/arm', {
-      body: { event_type: '가속', action: 'green', green_tick: '1600000000', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
-      cookie: adminCookie,
-    });
-    const del = await client.delete(`/api/internal/team/977?year=${YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(del.status, 200);
-    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    let accel = state.sessions.find(s => s.event_type === '가속');
-    assert.equal(accel.armed, false);
-    assert.equal(accel.team, null);
-    assert.equal(accel.event_name, null);
-
-    const NAME = 'LIFE-RENUMBER';
-    await client.post('/api/wireless/arm', {
-      body: { event_type: '오토크로스', action: 'green', green_tick: '1600000000', team: { num: 978, univ: 'OldUniv', team: 'OldTeam' }, event_name: NAME },
-      cookie: adminCookie,
-    });
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year: YEAR, prevNum: 978, newNum: 979, entry: { univ: 'NewUniv', team: 'NewTeam' } },
-    });
-    assert.equal(renumber.status, 200);
-    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const autoX = state.sessions.find(s => s.event_type === '오토크로스');
-    assert.equal(autoX.team.num, 979);
-    assert.equal(autoX.team.univ, 'NewUniv');
-    assert.equal(autoX.team.team, 'NewTeam');
-
-    const dnf = await client.post('/api/wireless/dnf', { body: { event_type: '오토크로스' }, cookie: adminCookie });
-    assert.equal(dnf.status, 200);
-    const rows = await (await client.get(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie })).json();
-    assert.ok(rows.some(r => r.num === 979 && r.univ === 'NewUniv' && r.team === 'NewTeam' && r.result === -1), 'renumbered bound run should save under new team number');
-    assert.ok(!rows.some(r => r.num === 978), 'stale team number should not be used after renumber');
-
-    await client.delete(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie });
-  });
 });
 
 describe('Wireless security observation (sec_drop baseline)', () => {
@@ -1676,7 +1563,7 @@ describe('Traffic legacy record consolidation migration', () => {
   });
 
   it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
-    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
+    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT, skipTeamStateSync: true }).db;
 
     const rows = migDb.prepare("SELECT legacy_rowid, num, detail, invalidated, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
     assert.equal(rows.length, 2);
@@ -1696,123 +1583,144 @@ describe('Traffic legacy record consolidation migration', () => {
 
   it('is idempotent — re-opening the consolidated DB does not duplicate or error', () => {
     migDb.close();
-    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
+    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT, skipTeamStateSync: true }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });
 });
 
-describe('Entry active-state synchronization', () => {
+
+// ─── Team-state 수렴형 강제 (구 내부 라이프사이클 라우트 대체) ─────────────
+// entry가 이벤트를 push하는 대신 traffic이 team-state 스냅샷을 pull해서 version 변경 시
+// 기록 invalidate(tombstone)·비정규화 num/univ/team 갱신·무선 세션 정리를 멱등 적용한다.
+describe('Team-state convergent enforcement', () => {
+  let fake, srv, cli, database, dp, teamState;
   const YEAR = new Date().getFullYear();
-  const NUM = 990;
-  const NAME = `FSK ${YEAR} Inactive Run`;
+  const NAME = `FSK ${YEAR} Sync Run`;
+  let version = 0;
 
-  it('preserves records while hiding and blocking an inactive team', async () => {
-    const created = await client.post('/api/records', {
-      body: {
-        name: 'Inactive Run',
-        data: { time: new Date().toISOString(), type: '가속', entry: { num: NUM, univ: 'U', team: 'T' }, result: 41000 },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(created.status, 201);
-    const rowid = (await created.json()).record.rowid;
-    await client.post('/api/wireless/select', {
-      body: { event_type: '가속', team: { num: NUM, univ: 'U', team: 'T' }, event_name: 'Inactive Run' },
-      cookie: adminCookie,
-    });
-
-    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
-    await sse.ready;
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: NUM, year: YEAR, active: false, revision: 30 },
-    });
-    assert.equal(deactivate.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    sse.close();
-    const statusEvent = sse.events.find((event) => event.event === 'team-active');
-    assert.deepEqual(statusEvent?.data, { year: YEAR, team_num: NUM, active: false, revision: 30 });
-    assert.equal(
-      sse.events.some((event) => event.event === 'records' && 'active' in event.data),
-      false,
-      'status snapshots must not be published as records mutation payloads',
-    );
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ? AND num = ?").get(NAME, NUM).c, 1);
-    assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
-    const yearGroups = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
-    assert.ok(!yearGroups.some((group) => group.records.some((row) => row.num === NUM)));
-    assert.equal((await client.patch(`/api/records/${encodeURIComponent(NAME)}/${rowid}`, {
-      body: { field: 'cones', value: 1 }, cookie: adminCookie,
-    })).status, 409);
-    assert.equal((await client.post('/api/records', {
-      body: { name: 'Blocked Run', data: { time: new Date().toISOString(), type: '가속', entry: { num: NUM, univ: 'U', team: 'T' }, result: 42000 } },
-      cookie: adminCookie,
-    })).status, 409);
-    const session = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const accel = session.sessions.find((item) => item.event_type === '가속');
-    assert.equal(accel.team, null, 'in-progress team selection is cleared');
-
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: NUM, year: YEAR, active: true, revision: 29 },
-    });
-    assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: NUM, year: YEAR, active: true, revision: 31 },
-    });
-    const restored = await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json();
-    assert.equal(restored[0].result, 41000);
+  const baseTeams = () => ({
+    601: { num: 61, univ: 'A대', team: '팀A', type: null, active: true },
+    602: { num: 62, univ: 'B대', team: '팀B', type: null, active: true },
   });
 
-  it('clears a renumbered wireless selection when the following bulk event deactivates it', async () => {
-    const prevNum = 991;
-    const newNum = 992;
-    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 70)")
-      .run(YEAR, prevNum);
-    const selected = await client.post('/api/wireless/select', {
-      body: {
-        event_type: '스키드패드',
-        team: { num: prevNum, univ: 'Old Univ', team: 'Old Team' },
-        event_name: 'Renumber Then Deactivate',
-      },
+  function publish(mutate = (s) => s) {
+    version++;
+    const snap = mutate({ version, teams: baseTeams(), tombstones: [] });
+    snap.version = version;
+    fake.setSnapshot(YEAR, snap);
+    return teamState.refresh(YEAR);
+  }
+
+  before(async () => {
+    fake = await startFakeEntryServer();
+    process.env.ENTRY_SERVER = fake.url;
+    dp = tmpDbPath();
+    const result = createTrafficApp({ dbPath: dp, validateUser: TRUST_JWT, skipTeamStateSync: true });
+    database = result.db;
+    teamState = result.teamState;
+    const started = await startServer(result.app);
+    srv = started.server;
+    cli = createClient(started.baseUrl);
+    await publish();
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    await fake.close();
+    database.close();
+    cleanup(dp);
+  });
+
+  async function createRecord(num, univ, team, result = 45000) {
+    const res = await cli.post('/api/records', {
+      body: { name: 'Sync Run', data: { time: new Date().toISOString(), type: '가속', entry: { num, univ, team }, result } },
       cookie: adminCookie,
     });
-    assert.equal(selected.status, 200);
+    assert.equal(res.status, 201);
+    return (await res.json()).record;
+  }
 
-    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
-    await sse.ready;
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: {
-        year: YEAR,
-        prevNum,
-        newNum,
-        entry: { univ: 'New Univ', team: 'New Team', active: false, active_revision: 71 },
-      },
+  it('stamps team_id on new records and converges num/univ/team after a rename+renumber', async () => {
+    await createRecord(61, 'A대', '팀A');
+    assert.equal(database.prepare("SELECT team_id FROM record WHERE name = ? AND num = 61").get(NAME).team_id, 601);
+
+    // 팀명 변경 + 리넘버가 한 스냅샷에 — 예전에는 rename만으로는 이벤트가 없어 조용히 낡았다
+    await publish((s) => {
+      s.teams[601] = { num: 71, univ: 'A대(정정)', team: '팀A(정정)', type: null, active: true };
+      return s;
     });
-    assert.equal(renumber.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(YEAR, newNum),
-      { active: 1, revision: 70 },
-    );
-    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.equal(state.sessions.find((item) => item.event_type === '스키드패드').team.num, newNum);
+    const row = database.prepare("SELECT num, univ, team FROM record WHERE name = ? AND team_id = 601").get(NAME);
+    assert.deepEqual(row, { num: 71, univ: 'A대(정정)', team: '팀A(정정)' });
+  });
 
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: newNum, year: YEAR, active: false, revision: 71 },
+  it('adopts records written under the previous numbering (prevState adoption)', async () => {
+    // 캐시가 낡은 사이 쓰인 행 흉내: team_id NULL로 직접 삽입 (현재 71 = id 601)
+    database.prepare(`INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result)
+      VALUES (?, 99, ?, 71, 'A대(정정)', '팀A(정정)', '가속', 50000)`).run(NAME, new Date().toISOString());
+    await publish((s) => {
+      s.teams[601] = { num: 72, univ: 'A대(정정)', team: '팀A(정정)', type: null, active: true };
+      return s;
     });
-    assert.equal(deactivate.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    sse.close();
+    const row = database.prepare("SELECT num, team_id FROM record WHERE name = ? AND legacy_rowid = 99").get(NAME);
+    assert.deepEqual(row, { num: 72, team_id: 601 }, 'NULL-id row must be adopted and follow the renumber');
+  });
 
-    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.equal(state.sessions.find((item) => item.event_type === '스키드패드').team, null);
-    assert.deepEqual(
-      sse.events.find((event) => event.event === 'team-active')?.data,
-      { year: YEAR, team_num: newNum, active: false, revision: 71 },
-    );
+  it('deactivation hides records, blocks writes, and clears wireless selection; reactivation restores', async () => {
+    const select = await cli.post('/api/wireless/select', {
+      body: { event_type: '가속', team: { num: 62, univ: 'B대', team: '팀B' }, event_name: 'Sync Run' },
+      cookie: adminCookie,
+    });
+    assert.equal(select.status, 200);
+
+    await publish((s) => {
+      s.teams[601] = { num: 72, univ: 'A대(정정)', team: '팀A(정정)', type: null, active: true };
+      s.teams[602] = { ...s.teams[602], active: false };
+      return s;
+    });
+
+    // 기록 보존 + 조회 숨김
+    assert.ok(database.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ? AND team_id = 601").get(NAME).c >= 1);
+    const visible = await (await cli.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json();
+    assert.ok(!visible.some((r) => r.num === 62), 'inactive team records hidden');
+    // 쓰기 차단
+    const blocked = await cli.post('/api/records', {
+      body: { name: 'Sync Run', data: { time: new Date().toISOString(), type: '가속', entry: { num: 62, univ: 'B대', team: '팀B' }, result: 42000 } },
+      cookie: adminCookie,
+    });
+    assert.equal(blocked.status, 409);
+    // 무선 선택 해제
+    const state = await (await cli.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(state.sessions.find((s) => s.event_type === '가속').team, null);
+
+    // 재활성화 → 다시 노출
+    await publish((s) => {
+      s.teams[601] = { num: 72, univ: 'A대(정정)', team: '팀A(정정)', type: null, active: true };
+      return s;
+    });
+    assert.equal((await cli.post('/api/records', {
+      body: { name: 'Sync Run', data: { time: new Date().toISOString(), type: '가속', entry: { num: 62, univ: 'B대', team: '팀B' }, result: 42000 } },
+      cookie: adminCookie,
+    })).status, 201);
+  });
+
+  it('tombstones invalidate (not delete) the team records and clear wireless bindings', async () => {
+    await publish((s) => {
+      s.teams[601] = { num: 72, univ: 'A대(정정)', team: '팀A(정정)', type: null, active: true };
+      delete s.teams[602];
+      s.tombstones = [{ id: 602, num: 62, deleted_at: '2026-01-01T00:00:00.000Z' }];
+      return s;
+    });
+    const rows = database.prepare("SELECT invalidated, scoreboard FROM record WHERE name = ? AND team_id = 602").all(NAME);
+    assert.ok(rows.length >= 1, 'records preserved (audit)');
+    assert.ok(rows.every((r) => r.invalidated === 1 && r.scoreboard === 0), 'tombstoned team records invalidated');
+    // 팀 601은 무사
+    assert.ok(database.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ? AND team_id = 601 AND invalidated = 0").get(NAME).c >= 1);
+  });
+
+  it('re-applying the same snapshot is a no-op (idempotent)', async () => {
+    const before = database.prepare("SELECT COUNT(*) AS c FROM record WHERE invalidated = 1").get().c;
+    await teamState.refresh(YEAR);
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM record WHERE invalidated = 1").get().c, before);
   });
 });
