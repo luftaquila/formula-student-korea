@@ -1172,6 +1172,39 @@ describe('GET /api/rover/map-tile', () => {
       assert.equal(res.status, 400, `expected 400 for ?${q}`);
     }
   });
+
+  it('throttles repeated upstream failures to one rover.map_tile warn per reason', async () => {
+    // A minimap screen requests dozens of tiles, so a persistent upstream
+    // failure (expired VWORLD_KEY etc.) must not flood the warn filter: the
+    // route logs once per failure reason per 60s. Fail the upstream fetch
+    // deterministically (offline-safe) by intercepting the tile hosts only —
+    // the throttle keys on the error name, so a unique name isolates this test.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const target = String(typeof input === 'string' ? input : input?.url ?? input);
+      if (target.includes('api.vworld.kr') || target.includes('mt0.google.com')) {
+        const err = new Error('simulated tile upstream outage');
+        err.name = 'TestTileFailure';
+        return Promise.reject(err);
+      }
+      return realFetch(input, init);
+    };
+    try {
+      for (let i = 0; i < 3; i++) {
+        const res = await client.get(`/api/rover/map-tile?z=18&x=${i}&y=1`, { cookie: adminCookie });
+        assert.equal(res.status, 502, 'every failed tile request still 502s');
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rows = db.prepare(
+      "SELECT detail FROM logs WHERE action = 'rover.map_tile' AND level = 'warn' AND detail LIKE '%simulated tile upstream outage%'",
+    ).all();
+    assert.equal(rows.length, 1, '3 failing tile requests must produce exactly ONE warn row');
+    const detail = JSON.parse(rows[0].detail);
+    assert.match(detail.error, /simulated tile upstream outage/);
+    assert.equal(detail.z, 18, 'the logged row keeps the tile coords for triage');
+  });
 });
 
 // ─── Rover telemetry / status ───────────────────────────────────────────
@@ -2581,6 +2614,89 @@ describe('Ground calibration trigger', () => {
     assert.ok(rec, 'a bare disconnect logs control_closed');
     assert.equal(rec.level, 'info', 'a benign close is info, not warn');
     assert.equal(rec.detail, null, 'a benign close carries no aborted-calibration detail');
+  });
+});
+
+// ─── Camera control write failure (sendCameraControl teardown) ───────────
+describe('Camera control write failure', () => {
+  let srv, url, cli, localDb, localDbPath;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server; url = started.baseUrl; cli = createClient(url);
+  });
+  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
+
+  it('a throwing control write logs control_write_failed once and drops the slot', async () => {
+    // Capture the server-side response object of the perception control SSE:
+    // http.Server emits 'request' to every listener, so this sees the same res
+    // the route stores in cameraControlClient. By the time the client fetch
+    // resolves (headers received) the handler has already run, so the capture
+    // is deterministic — no polling.
+    let ctlRes = null;
+    srv.on('request', (rq, rs) => {
+      if (rq.url.startsWith('/api/rover/camera/control')) ctlRes = rs;
+    });
+
+    const ac = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const reader = ctl.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    assert.ok(ctlRes, 'the control response is captured on attach');
+
+    // Simulate a dead perception socket: writing to a destroyed http response
+    // does NOT throw synchronously in Node (the error is emitted async), so
+    // force the synchronous-throw path sendCameraControl guards against by
+    // sabotaging this connection's write. (Same technique as the documents
+    // tests' fs.renameSync monkeypatch — instance-scoped, restored by close.)
+    ctlRes.write = () => { throw new Error('simulated dead control socket'); };
+
+    const countWriteFailed = () => localDb.prepare(
+      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_write_failed'",
+    ).get().n;
+    const countClosed = () => localDb.prepare(
+      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'",
+    ).get().n;
+    assert.equal(countWriteFailed(), 0, 'no write-failed rows before the failure');
+
+    // Any control-triggering call now hits the throwing write.
+    const res = await cli.post('/api/rover/camera/detection', {
+      body: { on: true }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.camera_connected, false, 'the dead control slot is dropped after the failed write');
+
+    assert.equal(countWriteFailed(), 1, 'the failed control write leaves exactly one warn trail');
+    const rec = localDb.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_write_failed' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.equal(rec.level, 'warn');
+    assert.equal(JSON.parse(rec.detail).event, 'detect-on', 'the warn names the event that failed to deliver');
+
+    // The emptied slot short-circuits later sends to false — no warn flooding.
+    await cli.post('/api/rover/camera/detection', { body: { on: false }, cookie: adminCookie });
+    assert.equal(countWriteFailed(), 1, 'subsequent control calls must not log again');
+
+    // The slot was cleared by the failed write, so the eventual client
+    // disconnect must NOT also log control_closed for this connection (the
+    // close handler's cameraControlClient === res guard is false).
+    const closedBefore = countClosed();
+    ac.abort();
+    await drained.catch(() => {});
+    await sleep(150);
+    assert.equal(countClosed(), closedBefore,
+      'a connection torn down by a failed write does not double-log control_closed');
   });
 });
 

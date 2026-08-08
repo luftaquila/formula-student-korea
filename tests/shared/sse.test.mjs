@@ -181,3 +181,126 @@ describe('SSE Manager', () => {
     });
   });
 });
+
+// ─── 운영자 가시성: 용량 거부·init 실패 warn 로깅 ─────────────────────────
+// createSSEManager(max, { logger })는 sse.rejected / sse.init_failed를 warn으로
+// 남기되, 같은 action:reason은 60초에 1회만 기록한다(DoS·깨진 initDataFn 폭주 방어).
+describe('SSE Manager logging', () => {
+  const servers = [];
+
+  after(async () => {
+    for (const s of servers) {
+      await new Promise((resolve) => s.close(resolve));
+    }
+  });
+
+  function makeLogger() {
+    const warns = [];
+    return {
+      warns,
+      warn: (req, action, detail) => warns.push({ action, detail }),
+    };
+  }
+
+  function createLoggedSSEApp({ maxClients = 10, logger, initDataFn = () => ({}), handlerOpts } = {}) {
+    const app = express();
+    const { broadcast, handler } = createSSEManager(maxClients, { logger });
+    app.get('/events', handler(initDataFn, handlerOpts));
+    return new Promise((resolve) => {
+      const server = app.listen(0, () => {
+        servers.push(server);
+        const port = server.address().port;
+        resolve({ server, port, broadcast, baseUrl: `http://localhost:${port}` });
+      });
+    });
+  }
+
+  it('max_clients rejection logs one throttled sse.rejected warn', async () => {
+    const logger = makeLogger();
+    const { baseUrl } = await createLoggedSSEApp({ maxClients: 1, logger });
+
+    const res1 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res1.statusCode, 200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    // 첫 거부는 warn을 남긴다.
+    const res2 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res2.statusCode, 503);
+
+    // 60초 창 안의 두 번째 거부는 스로틀되어 추가 warn이 없어야 한다.
+    const res3 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res3.statusCode, 503);
+
+    const rejected = logger.warns.filter((w) => w.action === 'sse.rejected');
+    assert.equal(rejected.length, 1, 'second rejection within 60s must be throttled');
+    assert.equal(rejected[0].detail.reason, 'max_clients');
+
+    res1.destroy();
+    res2.destroy();
+    res3.destroy();
+  });
+
+  it('max_per_ip rejection logs sse.rejected with reason max_per_ip', async () => {
+    const logger = makeLogger();
+    const { baseUrl } = await createLoggedSSEApp({
+      maxClients: 10,
+      logger,
+      handlerOpts: { maxPerIp: 1 },
+    });
+
+    const res1 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res1.statusCode, 200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res2 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res2.statusCode, 429);
+
+    const rejected = logger.warns.filter((w) => w.action === 'sse.rejected');
+    assert.equal(rejected.length, 1);
+    assert.equal(rejected[0].detail.reason, 'max_per_ip');
+
+    res1.destroy();
+    res2.destroy();
+  });
+
+  it('throwing initDataFn logs sse.init_failed once and still serves an empty init', async () => {
+    const logger = makeLogger();
+    const { baseUrl } = await createLoggedSSEApp({
+      logger,
+      initDataFn: () => { throw new Error('snapshot query failed'); },
+    });
+
+    const res1 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res1.statusCode, 200);
+    const data = await readSSEData(res1, 1);
+    assert.ok(data.includes('event: init'));
+    assert.ok(data.includes('data: {}'), 'broken initDataFn degrades to an empty snapshot');
+
+    // 60초 창 안의 두 번째 실패도 스로틀 대상이다.
+    const res2 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res2.statusCode, 200);
+    await readSSEData(res2, 1);
+
+    const failed = logger.warns.filter((w) => w.action === 'sse.init_failed');
+    assert.equal(failed.length, 1, 'repeated init failures within 60s must be throttled');
+    assert.equal(failed[0].detail.reason, 'init_data');
+    assert.equal(failed[0].detail.error, 'snapshot query failed');
+
+    res1.destroy();
+    res2.destroy();
+  });
+
+  it('without a logger, rejection paths do not crash', async () => {
+    const { baseUrl } = await createLoggedSSEApp({ maxClients: 1, logger: null });
+
+    const res1 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res1.statusCode, 200);
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res2 = await getSSE(`${baseUrl}/events`);
+    assert.equal(res2.statusCode, 503);
+
+    res1.destroy();
+    res2.destroy();
+  });
+});

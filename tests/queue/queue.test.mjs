@@ -1933,3 +1933,82 @@ describe('Queue legacy → normalized migration', () => {
     }
   });
 });
+
+// ─── Logging audit: 비활성 409 warn / team.active 400 warn / queue.cancel detail ─
+// sms.send 통합 액션(timeout/socket-error 포함 동일 action)은 여기서 검증하지 않는다:
+// 테스트 환경에서는 smsConfig가 로드되지 않아 sendSmsNotification이 조기 반환하고,
+// NCP HTTPS 호출을 결정적으로 실패시킬 주입 지점이 없다.
+describe('Queue logging audit', () => {
+  const year = new Date().getFullYear();
+  const lastLog = (action, target) => db.prepare(
+    "SELECT * FROM logs WHERE action = ? AND target = ? ORDER BY id DESC LIMIT 1",
+  ).get(action, target);
+
+  it('warns priority.set when the entry is deactivated (409)', async () => {
+    const num = 880;
+    const deactivate = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num, year, active: false, revision: 1 },
+    });
+    assert.equal(deactivate.status, 200);
+
+    const res = await client.post('/api/admin/priority/battery', {
+      body: { num, priority: 1 },
+      cookie: chiefCookie,
+    });
+    assert.equal(res.status, 409);
+    const log = lastLog('priority.set', `#${num}`);
+    assert.equal(log.level, 'warn');
+    assert.ok(log.detail.includes('비활성화'), 'warn detail must state the entry is deactivated');
+  });
+
+  it('warns booth.enter when the entry is deactivated (409)', async () => {
+    const num = 880; // 위 테스트에서 비활성화됨
+    const res = await client.post('/api/admin/booths/battery/1/enter', {
+      body: { num },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 409);
+    const log = lastLog('booth.enter', `#${num}`);
+    assert.equal(log.level, 'warn');
+    assert.ok(log.detail.includes('비활성화'), 'warn detail must state the entry is deactivated');
+  });
+
+  it('warns team.active on an invalid internal body (missing revision → 400)', async () => {
+    const res = await client.patch('/api/internal/team-active', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+      body: { num: 881, year, active: false },
+    });
+    assert.equal(res.status, 400);
+    const log = db.prepare("SELECT * FROM logs WHERE action = 'team.active' ORDER BY id DESC LIMIT 1").get();
+    assert.equal(log.level, 'warn');
+    assert.ok(log.detail.includes('올바르지 않은'), 'warn detail must state the request was invalid');
+  });
+
+  it('queue.cancel info detail includes the applied penalty (or penalty:false)', async () => {
+    // 결정성: 3번 엔트리의 잔여 상태를 정리하고 새로 등록 → 취소.
+    db.prepare("DELETE FROM inspection_queue WHERE num = 3 AND year = ?").run(year);
+    db.prepare("DELETE FROM current_inspection WHERE num = 3 AND year = ?").run(year);
+    db.prepare("DELETE FROM cancel_penalty WHERE num = 3 AND year = ?").run(year);
+
+    const register = await client.post('/api/admin/register/noise', {
+      body: { num: 3, phone: '01033334444' },
+      cookie: chiefCookie,
+    });
+    assert.equal(register.status, 201);
+    const cancel = await client.post('/api/admin/cancel/noise', {
+      body: { num: 3 },
+      cookie: officialCookie,
+    });
+    assert.equal(cancel.status, 200);
+
+    const log = lastLog('queue.cancel', '#3');
+    assert.equal(log.level, 'info');
+    const detail = JSON.parse(log.detail);
+    assert.equal(detail.inspection, 'noise');
+    assert.ok(Number.isInteger(detail.penalty_minutes) || detail.penalty === false,
+      'detail must state the applied penalty minutes or penalty:false');
+
+    db.prepare("DELETE FROM cancel_penalty WHERE num = 3 AND year = ?").run(year);
+  });
+});

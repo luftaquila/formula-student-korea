@@ -113,6 +113,50 @@ describe('createDbRun', () => {
     assert.equal(res.success, false);
     assert.equal(res.status, 500);
   });
+
+  // ─── cause: 로거 전용 원인 필드 ───────────────────────────────────────
+  // 500 catch-all만 cause를 채운다. 클라이언트에는 새니타이즈된 error만 나가고,
+  // 핸들러의 logger.warn이 cause로 실제 원인(SQLITE_BUSY 등)을 남길 수 있어야 한다.
+
+  it('500 branch exposes "<code>: <message>" as cause for coded errors', () => {
+    const res = dbRun(() => {
+      const e = new Error('database is locked');
+      e.code = 'SQLITE_BUSY';
+      throw e;
+    });
+    assert.equal(res.success, false);
+    assert.equal(res.status, 500);
+    assert.equal(res.error, '서버 오류가 발생했습니다.');
+    assert.equal(res.cause, 'SQLITE_BUSY: database is locked');
+  });
+
+  it('500 branch falls back to e.message as cause when there is no code', () => {
+    const res = dbRun(() => {
+      throw new Error('something broke');
+    });
+    assert.equal(res.status, 500);
+    assert.equal(res.cause, 'something broke');
+  });
+
+  it('constraint branches carry no cause key', () => {
+    const res = dbRun(() => {
+      const e = new Error('UNIQUE violation');
+      e.code = 'SQLITE_CONSTRAINT_UNIQUE';
+      throw e;
+    });
+    assert.equal(res.success, false);
+    assert.ok(!('cause' in res), 'constraint result must not have a cause key');
+  });
+
+  it('app-thrown {status, message} errors carry no cause key', () => {
+    const res = dbRun(() => {
+      throw { status: 404, message: '없는 항목입니다.' };
+    });
+    assert.equal(res.success, false);
+    assert.equal(res.status, 404);
+    assert.equal(res.error, '없는 항목입니다.');
+    assert.ok(!('cause' in res), 'app error result must not have a cause key');
+  });
 });
 
 // ─── isSecureConnection ─────────────────────────────────────────────────
