@@ -875,7 +875,8 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "inspection.visibility", { active: !(req.body.hidden === true) }, req.params.type);
+  // 요청 필드(hidden)를 그대로 기록 — 이중 부정(active)은 오독을 부른다.
+  logger.log(req, "inspection.visibility", { hidden: req.body.hidden === true }, req.params.type);
 
   // SSE 브로드캐스트: 활성 검차 목록 변경 (hidden 정보 포함)
   broadcastInspections();
@@ -2265,7 +2266,7 @@ function sendSmsNotification(type, prev) {
       );
     }
   } catch (e) {
-    logger.warn(null, "sms.error", { error: String(e), num: target?.num, type });
+    logger.warn(null, "sms.send", { error: String(e), num: target?.num, type });
   }
 }
 

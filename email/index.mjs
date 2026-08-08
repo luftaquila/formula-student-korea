@@ -243,7 +243,7 @@ app.get("/api/quota", async (req, res) => {
 
     if (!resp.ok) {
       const text = await resp.text();
-      logger.warn(req, "quota.fetch", { error: text, status: resp.status });
+      logger.warn(req, "email.quota_check", { error: text, status: resp.status });
       return res.json({ remaining: null, error: `Brevo API 오류 (${resp.status})` });
     }
 
@@ -252,7 +252,7 @@ app.get("/api/quota", async (req, res) => {
     const remaining = freePlan?.credits ?? 0;
     res.json({ remaining });
   } catch (e) {
-    logger.warn(req, "quota.fetch", { error: e.message });
+    logger.warn(req, "email.quota_check", { error: e.message });
     res.json({ remaining: null, error: "Brevo API 연결 실패" });
   }
 });
@@ -286,7 +286,7 @@ app.get("/api/emails", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "emails.list", { error: result.error, cause: result.cause });
+    logger.warn(req, "email.list", { error: result.error, cause: result.cause });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);
@@ -305,7 +305,7 @@ app.get("/api/emails/:id", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "emails.get", { error: result.error, cause: result.cause }, String(id));
+    logger.warn(req, "email.get", { error: result.error, cause: result.cause }, String(id));
     return res.status(result.status).send(result.error);
   }
   if (!result.result) return res.status(404).send("Email not found");

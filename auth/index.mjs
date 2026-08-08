@@ -793,12 +793,12 @@ app.post("/api/users/bulk", (req, res) => {
 
   const txResult = dbRun(() => run());
   if (!txResult.success) {
-    logger.warn(req, "user.create_bulk", { error: txResult.error, cause: txResult.cause });
+    logger.warn(req, "user.bulk_create", { error: txResult.error, cause: txResult.cause });
     return res.status(txResult.status).send(txResult.error);
   }
 
   // 클라이언트로만 반환되고 버려지던 행별 거절 사유를 로그에도 남긴다(형식 오류·역할 보정).
-  logger.log(req, "user.create_bulk", { added, skipped, errors: errors.map((e) => ({ email: e.row?.email, reason: e.reason })) });
+  logger.log(req, "user.bulk_create", { added, skipped, errors: errors.map((e) => ({ email: e.row?.email, reason: e.reason })) });
   if (added.length > 0) notifyNewUser(added);
   res.json({ added: added.length, skipped: skipped.length, errors });
 });

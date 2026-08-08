@@ -1307,7 +1307,7 @@ app.post("/api/admin/sessions", (req, res) => {
 
   // 예약 알림 등록 (세션 시작 시, 마감 3시간 전, 마감 1시간 전)
   try { scheduleSessionNotifications(txResult.result.id, nStart, nEnd); }
-  catch (e) { logger.warn(req, "schedule.register", { error: e.message, sessionId: txResult.result.id }); }
+  catch (e) { logger.warn(req, "schedule.register", { error: e.message, session_id: txResult.result.id }); }
 });
 
 // PUT /api/admin/sessions/:id - 세션 수정
@@ -1417,7 +1417,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
 
   // 예약 알림 재등록 (날짜 변경 반영)
   try { scheduleSessionNotifications(id, nStart, nEnd); }
-  catch (e) { logger.warn(req, "schedule.register", { error: e.message, sessionId: id }); }
+  catch (e) { logger.warn(req, "schedule.register", { error: e.message, session_id: id }); }
 });
 
 // DELETE /api/admin/sessions/:id - 세션 삭제

@@ -819,6 +819,7 @@ function runBridgeWatch() {
       logger.warn(null, "wireless.bridge", { online: false, watchdog: true, last_seen: lastBridgeSeenIso }, "bridge", SYS_ACTOR);
     } catch (e) {
       logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", SYS_ACTOR);
+      // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
       console.error("[wireless] bridge watch:", e.message || e);
     }
   }
@@ -848,6 +849,7 @@ function runLeaseWatch() {
     return { skipped: false, expired: expired.length };
   } catch (e) {
     logger.warn(null, "wireless.lease.watch", { error: e.message || String(e) }, "lease", SYS_ACTOR);
+    // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
     console.error("[wireless] lease watch:", e.message || e);
   }
   return { skipped: false, expired: 0 };
@@ -870,6 +872,7 @@ function runEventRetention() {
     return { skipped: false, ...result };
   } catch (e) {
     logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", SYS_ACTOR);
+    // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
     console.error("[wireless] event retention:", e.message || e);
   }
   return { skipped: false, removed: 0, cutoff: null };

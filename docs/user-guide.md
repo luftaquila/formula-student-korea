@@ -516,7 +516,7 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 | `user.login` | info | 로그인 |
 | `user.logout` | info | 로그아웃 |
 | `user.create` | info | 사용자 생성 |
-| `user.create_bulk` | info | 사용자 일괄 생성 |
+| `user.bulk_create` | info | 사용자 일괄 생성 |
 | `user.bulk_toggle` | info | 사용자 일괄 활성/비활성 토글 |
 | `user.bulk_delete` | info | 사용자 일괄 삭제 |
 | `user.update` | info | 사용자 정보 수정 |

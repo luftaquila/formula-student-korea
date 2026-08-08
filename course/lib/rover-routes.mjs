@@ -3081,9 +3081,9 @@ app.post("/api/rover/camera/detection", (req, res) => {
   // real inter-service delivery failure; a plain "perception offline" is benign
   // because reconnect re-applies the stored state.
   if (wasConnected && !delivered) {
-    logger.warn(req, "rover.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
+    logger.warn(req, "rover.camera.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
   } else {
-    logger.log(req, "rover.detection", detail, "rover");
+    logger.log(req, "rover.camera.detection", detail, "rover");
   }
   broadcastRoverStatus();
   res.json({ ok: true, detection: on, camera_connected: !!cameraControlClient });
