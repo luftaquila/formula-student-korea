@@ -93,11 +93,12 @@
 | 2.1 | 연도 목록 조회 | public | `GET /api/years` | entry_YYYY 테이블 스캔, 내림차순 |
 | 2.2 | 엔트리 목록 조회 | public/admin | `GET /api/entries?year=` | 기본은 활성 엔트리만 반환. 관리 화면은 `includeInactive=true`(admin)로 전체 조회, JSON 다운로드 지원 |
 | 2.3 | 엔트리 추가 | admin | `POST /api/entries?year=` | `{ num, univ, team, type? }`, type은 해당 연도 vehicle_types에 존재해야 함 |
-| 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경 시 리넘버링. durable lifecycle_outbox로 5개 서비스(queue/documents/inspection/score/traffic)에 재시도 팬아웃 — 동기화 대기분 있으면 202 `pending_lifecycle`. 번호 유지 + 팀명 변경이 모호하면 409 `{ ambiguous }` → `intent: retain|replacement`로 재요청 |
-| 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | 삭제 이벤트를 durable outbox로 5개 서비스에 재시도 팬아웃 (대기분 있으면 202) |
-| 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 삭제 이벤트를 outbox로 5개 서비스에 팬아웃 |
-| 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON으로 전체 교체(트랜잭션), 삭제/리넘버 이벤트 outbox 팬아웃. 모호한 팀 교체는 409 → replacements/retains 재요청 |
-| 2.7a | 엔트리 활성 상태 변경 | admin | `PATCH /api/entries/:num/active?year=` | 탈락 팀 비활성화/복구. revision 이벤트를 queue/inspection/score/traffic 4개 서비스로 fan-out, 동기화 대기 시 202. Documents는 영향받지 않음 |
+| 2.4 | 엔트리 수정 | admin | `PATCH /api/entries/:num?year=` | 번호 변경은 불변 team id를 유지한 채 num만 변경 — 다운스트림은 id로 키잉하므로 아무것도 옮기지 않는다. 번호 유지 + 팀명 변경이 모호하면 409 `{ ambiguous }` → `intent: retain|replacement`로 재요청 (`replacement`는 이전 팀 tombstone + 새 id 발급). 상태 버전 +1 후 `entries` SSE |
+| 2.5 | 엔트리 삭제 | admin | `DELETE /api/entries/:num?year=` | tombstone 기록 + 상태 버전 +1. 다운스트림 정리는 각 서비스의 수렴형 강제가 스냅샷 동기화로 수행 |
+| 2.6 | 엔트리 전체 삭제 | admin | `DELETE /api/entries?year=` | 연도별 전체 초기화, 전 팀 tombstone 기록 |
+| 2.7 | 엔트리 일괄 업로드 | admin | `POST /api/entries/bulk?year=` | JSON으로 전체 교체(트랜잭션). 행별 `id`(선택)는 `?download` 산출물 왕복 시 권위 매칭 키. identity/명시 renumber/id 매칭으로 기존 팀의 id를 승계하고 삭제·교체 팀은 tombstone 기록. 모호한 팀 교체는 409 → replacements/retains 재요청 |
+| 2.7a | 엔트리 활성 상태 변경 | admin | `PATCH /api/entries/:num/active?year=` | 탈락 팀 비활성화/복구. 상태 버전만 올린다 — 다운스트림 반영은 team-state 동기화. Documents는 활성 상태를 적용하지 않음 |
+| 2.7b | 팀 상태 스냅샷 | 내부 | `GET /api/internal/team-state?year=` | 다운스트림 team-state 캐시가 pull하는 권위 스냅샷: `{ year, version, teams: { <team_id>: ... }, tombstones }` |
 
 ### 차량 유형
 
@@ -125,7 +126,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.4 | 대기 등록 | chief | `POST /api/admin/register/:type` | 엔트리 검증(entry 서비스) → 활성 확인 → 페널티 확인 → 동시 등록 규칙(배터리+샤시 허용) → 삽입 → SSE (등록 시 SMS 미발송) |
+| 3.4 | 대기 등록 | chief | `POST /api/admin/register/:type` | 엔트리 검증(team-state 캐시 — entry 장애 중에도 serve-stale로 동작, 스냅샷 없는 콜드 스타트만 503) → 활성 확인 → 페널티 확인 → 동시 등록 규칙(배터리+샤시 허용) → 삽입 → SSE (등록 시 SMS 미발송) |
 | 3.5 | 대기 취소 | official | `POST /api/admin/cancel/:type` | 삭제 → 페널티 부과 → SSE → SMS (알림 순번에 새로 진입한 대기자에게) |
 | 3.6 | 부스 입차 | official | `POST /api/admin/booths/:type/:boothNum/enter` | 큐에서 제거 → 부스 점유 → 로그 기록 → SSE → SMS |
 | 3.7 | 부스 출차 | official | `POST /api/admin/booths/:type/:boothNum/exit` | 점유 해제 → 검사 이력 기록(재검 감지용) |
@@ -181,8 +182,8 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 3.35 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | 대기열, current, 우선순위, 페널티, 이력, 부스 점유 해제 |
-| 3.36 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 현재 대기열/current/우선순위/페널티/진행 중 부스를 즉시 정리. 완료 이력은 보존하되 숨김, 재활성화해도 transient 상태는 복원하지 않음 |
+| 3.35 | 팀 상태 동기화 | 내부 | entry `GET /api/internal/team-state` (pull) | `shared/team-state-client.mjs`가 스냅샷을 캐시(TTL 30초·SSE 무효화·체크포인트)하고 수렴형 강제로 반영. tombstone cascade: 삭제·교체 팀의 대기열, current, 우선순위, 페널티, 이력, 부스 점유 정리. 리넘버는 team_id 기준 num 갱신. entry가 모르는 팀은 로그만 |
+| 3.36 | 엔트리 비활성 정리 | 내부 | (team-state 강제 훅) | 비활성 팀의 현재 대기열/current/우선순위/페널티/진행 중 부스를 즉시 정리. 완료 이력은 보존하되 숨김, 재활성화해도 transient 상태는 복원하지 않음 |
 
 ---
 
@@ -221,7 +222,7 @@
 |---|------|------|-------------|------|
 | 4.16 | SSE 실시간 업데이트 | official | `GET /api/sheet/events` | 답변, 메모, 카테고리 결과, 검사자 변경 실시간 스트림 |
 | 4.17 | 검차 시트 인쇄 | official | SheetTemplatePrint.vue | `/template/print?year=` 라우트, 브라우저 인쇄 기능으로 PDF 출력 |
-| 4.18 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 검차 데이터는 보존하고 비활성 기간 동안 목록·시트 조회·수정·인쇄 입력에서 제외 |
+| 4.18 | 팀 상태 동기화 | 내부 | entry `GET /api/internal/team-state` (pull) | 시트 데이터를 불변 team_id로 키잉. 수렴형 강제: tombstone cascade(삭제·교체 팀의 시트 데이터 삭제), 리넘버 시 team_num 비정규화 갱신. 비활성 팀은 데이터를 보존하고 목록·시트 조회·수정·인쇄 입력에서만 제외 |
 
 ---
 
@@ -289,7 +290,7 @@
 |---|------|------|-------------|------|
 | 5.16 | SSE 실시간 업데이트 | admin | `GET /api/events` | 기록 추가/수정/삭제, 성적 반영 토글, 경기 모드 변경, 무선(`wireless:*`) 실시간 스트림. init: `{ recordFiles, eventModes, recordVisibility, wireless }` |
 | 5.17 | 기록 CSV/XLSX 내보내기 | admin | RecordView.vue | 클라이언트 사이드에서 선택된 기록 테이블을 CSV/XLSX로 다운로드 |
-| 5.18 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 기록은 보존하고 조회·집계·수정을 차단. 진행 중인 무선 선택/런은 해제 |
+| 5.18 | 팀 상태 동기화 | 내부 | entry `GET /api/internal/team-state` (pull) | 기록에 불변 team_id 태그. 수렴형 강제: tombstone은 기록을 삭제하지 않고 invalidate(감사 보존) + 무선 세션 해제, 리넘버·팀명 변경 시 비정규화 num/univ/team을 id 기준으로 수렴, 비활성 팀은 기록 보존 + 조회·집계 차단 + 진행 중 무선 선택/런 해제 |
 
 ---
 
@@ -299,7 +300,7 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 6.1 | 성적 대시보드 조회 | admin | `GET /api/score?year=` | entry + inspection + traffic + endurance/에너지 자동점수 + 수동점수 + 페널티/점수 설정 집계 |
+| 6.1 | 성적 대시보드 조회 | admin | `GET /api/score?year=` | entry(team-state 캐시 — serve-stale이라 entry 장애 중에도 집계 계속, 스냅샷 없는 콜드 스타트만 503) + inspection + traffic + endurance/에너지 자동점수 + 수동점수 + 페널티/점수 설정 집계 |
 | 6.2 | 수동 점수 입력 | admin | `PUT /api/score/manual` | 보고서/가점/감점, SSE. 에너지는 수동 입력 불가 |
 
 ### 페널티·점수 설정
@@ -323,7 +324,7 @@
 | 6.7 | SSE 실시간 업데이트 | admin | `GET /api/score/events` | 화이트리스트 재전파(entry: entries, inspection: category-result/answer, traffic: records/record-visibility/event-mode) + 재연결 시 refresh + manual-score/penalty/setting/endurance 로컬 이벤트 |
 | 6.8 | 성적 대시보드 내보내기 | admin | ScoreBoard.vue | 전체 성적표 CSV/XLSX 클라이언트 사이드 다운로드 |
 | 6.9 | 내구 데이터 내보내기 | admin | EnduranceInput.vue | 내구 및 에너지 계측·판정 데이터 CSV/XLSX 클라이언트 사이드 다운로드 |
-| 6.10 | 엔트리 비활성 연동 | 내부 | `PATCH /api/internal/team-active` | 수동점수/내구 데이터를 보존하고 관리자·공개 집계 및 수정에서 제외 |
+| 6.10 | 팀 상태 동기화 | 내부 | entry `GET /api/internal/team-state` (pull) | 수동점수/내구를 불변 team_id로 키잉. 수렴형 강제: tombstone cascade(삭제·교체 팀의 점수 삭제), 리넘버 시 team_num 비정규화 갱신. 비활성 팀은 데이터를 보존하고 관리자·공개 집계 및 수정에서만 제외 |
 
 ---
 
@@ -369,9 +370,9 @@
 
 | # | 흐름 | 역할 | API | 설명 |
 |---|------|------|-----|------|
-| 7.15 | 엔트리 번호 동기화 | 내부 | `PATCH /api/internal/team-num` | entry 서비스에서 번호 변경 시 student_team, session_team, submission + 파일 디렉토리 일괄 갱신. 파일 작업 실패 시 202 `pending_file_work` → 30초 주기 백그라운드 워커 재시도 |
-| 7.16 | 엔트리 삭제 연동 | 내부 | `DELETE /api/internal/team/:num?year=` | student_team, session_team, submission, 파일 삭제 |
-| 7.17 | 레거시 활성 이벤트 호환 | 내부 | `PATCH /api/internal/team-active` | 이전 outbox에 남은 이벤트를 200으로 소진하는 no-op. 매핑·제출·다운로드·아카이브·알림은 활성 상태의 영향을 받지 않음 |
+| 7.15 | 팀 상태 동기화 | 내부 | entry `GET /api/internal/team-state` (pull) | student_team/session_team/submission을 불변 team_id로 키잉. 리넘버는 team_num 비정규화만 갱신 — 업로드 디렉토리는 제출 시점 고정 `dir_seg`(레거시=숫자 num, 신규=`t<team_id>`)라 파일 시스템 작업이 없다(`team_renumber_file_work` 워커 폐지) |
+| 7.16 | 엔트리 삭제 연동 | 내부 | (team-state tombstone cascade) | 삭제 팀의 student_team, session_team, submission 행 + 파일 디렉토리 정리 |
+| 7.17 | 엔트리 활성 상태 | 내부 | (미적용) | Documents는 활성 상태를 적용하지 않음 — 매핑·제출·다운로드·아카이브·알림은 비활성 팀에도 계속 허용 |
 
 ---
 
@@ -541,7 +542,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용. **코스/콘/메
 ### Score 집계 체인
 
 ```
-Score → Entry: 엔트리 목록 조회
+Score → Entry: 엔트리 목록 = team-state 캐시 (GET /api/internal/team-state pull, serve-stale)
 Score → Inspection: 카테고리 결과 + 템플릿(코너 웨이트 항목) 조회
 Score → Traffic: 기록 + 경기 모드 조회
 Score → Score DB: 내구, 수동 점수, 페널티/점수 설정
@@ -552,8 +553,10 @@ Score 서비스는 entry, inspection, traffic의 SSE 엔드포인트를 구독�
 ### Queue 엔트리 검증
 
 ```
-Queue → Entry: POST /api/admin/register 시 엔트리 존재 확인
+Queue → Entry: 등록·순번 조회 시 team-state 캐시에서 엔트리 존재·활성 확인 (요청마다 HTTP 왕복 없음)
 ```
+
+serve-stale 캐시라 entry 장애 중에도 동작하고, 스냅샷을 한 번도 못 받은 콜드 스타트에서만 503.
 
 ### Auth 사용자 검증
 
@@ -583,25 +586,19 @@ Documents → Email: POST /api/internal/send (서류 제출 알림, 마감 알�
 Queue → Email: GET /api/internal/sms-config (SMS 설정 조회, 5분 주기 갱신)
 ```
 
-### Entry → Documents 팀 번호 동기화
+### Entry 팀 상태 동기화 (pull)
 
 ```
-Entry → 5개 서비스: 번호 변경을 durable lifecycle_outbox에 기록 후 queue/documents/inspection/score/traffic의 PATCH /api/internal/team-num으로 재시도 전달 (실패분은 dead-letter → /api/admin/lifecycle-outbox에서 복구)
+Queue/Documents/Inspection/Score/Traffic → Entry: GET /api/internal/team-state?year= (shared/team-state-client.mjs)
+Queue/Documents/Inspection/Score/Traffic → Entry: GET /api/events SSE 구독 — entries 이벤트로 캐시 즉시 무효화
 ```
 
-### Entry 삭제 → Queue/Documents 정리
+push outbox·내부 팀 라우트(`team-num`/`team-active`/`team/:num`/`team-status`)는 폐지됐다. 각 서비스가 스냅샷을 pull하고 수렴형 강제로 로컬 데이터를 멱등 갱신한다:
 
-```
-Entry → 5개 서비스: 삭제 이벤트를 durable outbox에 기록 후 queue/documents/inspection/score/traffic의 DELETE /api/internal/team/:num으로 재시도 전달
-Documents는 student_team/session_team/submission/파일까지 정리
-```
-
-### Entry 비활성화 → 대회 운영 서비스 소프트 제외
-
-```
-Entry → Queue/Inspection/Traffic/Score: PATCH /api/internal/team-active { num, year, active, revision }
-Queue: 현재 운영 상태만 정리(재활성화 시 복원하지 않음), 완료 이력은 보존
-Inspection/Traffic/Score: 영구 데이터를 삭제하지 않고 숨김·수정 차단, 재활성화 시 다시 노출
-각 소비자는 revision 이하의 오래된 이벤트를 무시
-Documents: 활성 상태와 무관하게 계정 할당·제출·다운로드·아카이브·알림을 계속 허용
-```
+- 캐시: 연도별 인메모리(TTL 30초) + fetch 실패 시 serve-stale + 연도당 1행 체크포인트(재시작 내성). 스냅샷 `version`이 이미 반영한 값이면 재조회 생략
+- 영구 데이터는 불변 team_id로 키잉 — 리넘버는 entry의 num만 바뀌고 다운스트림은 비정규화(num/univ/team) 갱신만 수행
+- 삭제·교체는 tombstone으로 전달: Queue/Inspection/Score/Documents는 해당 팀 데이터 삭제(Documents는 파일 디렉토리까지), Traffic은 삭제 대신 invalidate(감사 보존)
+- 비활성화: Queue는 현재 운영 상태만 정리(재활성화 시 복원하지 않음, 완료 이력 보존), Inspection/Traffic/Score는 영구 데이터를 삭제하지 않고 숨김·수정 차단(재활성화 시 다시 노출), Documents는 활성 상태와 무관하게 계정 할당·제출·다운로드·아카이브·알림을 계속 허용
+- 레거시 (year, num) 키 행은 연도별 1회 백필로 team_id를 채운다(빈 스냅샷으로는 확정하지 않음)
+- entry가 모르는 team_id는 로그만 남기고 삭제하지 않는다
+- 캐시가 비어 있으면 전원 활성으로 동작하되, 엔트리 데이터가 필수인 경로(queue 등록·순번, score 집계)는 스냅샷 없는 콜드 스타트에서만 503, documents는 라벨만 저하

@@ -35,15 +35,17 @@ test.describe("Entry → Documents team_num sync", () => {
     });
     expect(patchRes.status).toBe(200);
 
-    // 3. Poll documents API until team_num sync completes
+    // 3. The renumber is no longer pushed synchronously: documents pulls entry's
+    //    team-state snapshot (SSE-triggered) and rewrites team_num keyed by the
+    //    immutable team_id. Poll until the mapping converges to the new num.
     await expect.poll(async () => {
       const res = await fetch(
         `${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`,
         { headers: chiefHeaders },
       );
       const data = await res.json();
-      return data.find((m) => m.team_num === 99) && !data.find((m) => m.team_num === 1);
-    }, { timeout: 5000 }).toBeTruthy();
+      return Boolean(data.find((m) => m.team_num === 99) && !data.find((m) => m.team_num === 1));
+    }, { timeout: 15_000 }).toBeTruthy();
 
     // 4. Verify via the admin page UI
     await page.goto("/documents/admin");
@@ -61,14 +63,14 @@ test.describe("Entry → Documents team_num sync", () => {
     });
     expect(restoreRes.status).toBe(200);
 
-    // Poll until sync completes
+    // Poll until the pull sync converges back to team_num=1
     await expect.poll(async () => {
       const res = await fetch(
         `${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`,
         { headers: chiefHeaders },
       );
       const data = await res.json();
-      return data.find((m) => m.team_num === 1);
-    }, { timeout: 5000 }).toBeTruthy();
+      return Boolean(data.find((m) => m.team_num === 1));
+    }, { timeout: 15_000 }).toBeTruthy();
   });
 });

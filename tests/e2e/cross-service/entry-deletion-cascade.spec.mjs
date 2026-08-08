@@ -50,13 +50,29 @@ test.describe("Entry deletion cascade to queue and documents", () => {
       });
     }
 
-    const regRes = await fetch(`${BASE_URL}/queue/api/admin/register/배터리`, {
-      method: "POST",
-      headers: chiefHeaders,
-      body: JSON.stringify({ num: 90, phone: "010-0000-0000" }),
-    });
+    // Queue learns about new entries asynchronously (team-state pull sync
+    // triggered by entry's SSE), so a register fired right after the entry POST
+    // can be rejected with "존재하지 않는 엔트리" (or 503 on a cold cache) until
+    // queue's snapshot converges — retry only those outcomes. Other failures
+    // (e.g. queue inactive) fall through to the tolerant branch below.
+    let registered = false;
+    await expect.poll(async () => {
+      const regRes = await fetch(`${BASE_URL}/queue/api/admin/register/배터리`, {
+        method: "POST",
+        headers: chiefHeaders,
+        body: JSON.stringify({ num: 90, phone: "010-0000-0000" }),
+      });
+      if (regRes.status === 200 || regRes.status === 201) {
+        registered = true;
+        return "registered";
+      }
+      const body = await regRes.text();
+      if (regRes.status === 503 || body.includes("존재하지 않는 엔트리")) return "converging";
+      return `failed:${regRes.status}`;
+    }, { timeout: 15_000 }).not.toBe("converging");
+
     // Registration may succeed or fail if queue is not active - check both cases
-    if (regRes.status === 200 || regRes.status === 201) {
+    if (registered) {
       // 3. Verify team #90 is in the queue
       const queueRes = await fetch(`${BASE_URL}/queue/api/admin/inspection/배터리`, {
         headers: { Cookie: getAuthCookie("official") },
@@ -71,14 +87,15 @@ test.describe("Entry deletion cascade to queue and documents", () => {
       });
       expect(deleteRes.status).toBe(200);
 
-      // 5. Verify queue no longer contains team #90
+      // 5. The deletion writes a tombstone in entry; queue removes the team's
+      //    queue rows on its next team-state sync — poll until it converges.
       await expect.poll(async () => {
         const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/배터리`, {
           headers: { Cookie: getAuthCookie("official") },
         });
         const data = await res.json();
         return !data.some((item) => item.num === 90);
-      }, { timeout: 10000 }).toBeTruthy();
+      }, { timeout: 15_000 }).toBeTruthy();
     } else {
       // Queue not active — just test deletion without queue registration
       const deleteRes = await fetch(`${BASE_URL}/entry/api/entries/90?year=${YEAR}`, {
@@ -113,27 +130,32 @@ test.describe("Entry deletion cascade to queue and documents", () => {
     });
     expect(mapRes.status).toBe(201);
 
-    // 3. Verify student-team mapping exists
-    const mappingsRes = await fetch(`${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`, {
-      headers: chiefHeaders,
-    });
-    const mappings = await mappingsRes.json();
-    expect(mappings.some((m) => m.team_num === 90)).toBeTruthy();
+    // 3. Wait until documents' team-state sync has resolved the mapping to the
+    //    team's immutable id. The tombstone cascade deletes by team_id, so a
+    //    mapping still carrying NULL team_id (created while documents had not
+    //    yet seen team #90 in a snapshot) would survive the deletion.
+    await expect.poll(async () => {
+      const res = await fetch(`${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`, {
+        headers: chiefHeaders,
+      });
+      const data = await res.json();
+      return data.find((m) => m.team_num === 90)?.team_id ?? null;
+    }, { timeout: 15_000 }).not.toBeNull();
 
-    // 4. Delete entry #90
+    // 4. Delete entry #90 (writes a tombstone; downstream cleanup is async)
     const deleteRes = await fetch(`${BASE_URL}/entry/api/entries/90?year=${YEAR}`, {
       method: "DELETE",
       headers: adminHeaders,
     });
     expect(deleteRes.status).toBe(200);
 
-    // 5. Verify student-team mapping for #90 is gone
+    // 5. Documents drops the mapping on its next team-state sync — poll.
     await expect.poll(async () => {
       const res = await fetch(`${BASE_URL}/documents/api/admin/student-teams?year=${YEAR}`, {
         headers: chiefHeaders,
       });
       const data = await res.json();
       return !data.some((m) => m.team_num === 90);
-    }, { timeout: 10000 }).toBeTruthy();
+    }, { timeout: 15_000 }).toBeTruthy();
   });
 });

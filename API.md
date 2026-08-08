@@ -101,24 +101,21 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/years` | public | — | `[2025, 2024, ...]` | Available year list |
-| GET | `/api/entries` | public / admin | `?year=&download&includeInactive=true` | `{ num: { univ, team, type, active } }` | 기본 응답은 활성 엔트리만 포함. admin의 `includeInactive=true`는 비활성 엔트리도 포함하며 `download`는 JSON 파일 다운로드 |
-| POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 or 202 | Create entry and fan out its initial active snapshot to the four competition services (동기화 대기 시 202 pending_lifecycle) |
-| PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type?, intent? }?year=` | 200, 202, or 409 | Update entry. 번호 변경/팀 교체는 durable outbox로 5개 서비스에 팬아웃 — 일부 동기화 대기 시 `202 { status: "pending_lifecycle" }`. 번호 유지 + 팀명 변경이 모호하면 `409 { message, ambiguous }` → `intent: "retain"\|"replacement"`로 재요청 |
-| PATCH | `/api/entries/:num/active` | admin | `{ active: boolean }?year=` | 200 or 202 | 엔트리 활성/비활성 전환. revision이 붙은 이벤트를 queue/inspection/score/traffic 4개 서비스에 fan-out하며 일부 동기화 대기 시 202. Documents는 영향받지 않음 |
-| DELETE | `/api/entries/:num` | admin | `?year=` | 200 or 202 | Delete single entry (동기화 대기 시 202 pending_lifecycle) |
-| DELETE | `/api/entries` | admin | `?year=` | 200 or 202 | Delete all entries for year (동기화 대기 시 202) |
-| POST | `/api/entries/bulk` | admin | `{ data: { "num": { univ, team, type?, active? } }, renumbers?: { "from": to }, replacements?: [num], retains?: [num] }?year=` | 200, 202, or 409 | Bulk upload (replaces all entries for year). `active` 기본값은 `true`. `renumbers`=명시적 번호 이동 매핑. 모호한 팀 교체는 409 ambiguous → replacements/retains로 재요청 |
+| GET | `/api/entries` | public / admin | `?year=&download&includeInactive=true` | `{ num: { id, univ, team, type, active } }` | 기본 응답은 활성 엔트리만 포함. `id`는 불변 team id로, `download` JSON에도 실려 재업로드 시 권위 매칭 키가 된다. admin의 `includeInactive=true`는 비활성 엔트리도 포함하며 `download`는 JSON 파일 다운로드 |
+| POST | `/api/entries` | admin | `{ num, univ, team, type? }?year=` | 201 | Create entry (불변 team id 발급, 연도 상태 버전 +1) |
+| PATCH | `/api/entries/:num` | admin | `{ num, univ, team, type?, intent? }?year=` | 200 or 409 | Update entry. 번호 변경은 불변 id를 유지한 채 num만 바꾼다(다운스트림은 id로 키잉하므로 이동 없음). 번호 유지 + 팀명 변경이 모호하면 `409 { message, ambiguous }` → `intent: "retain"\|"replacement"`로 재요청. `replacement`는 이전 팀을 tombstone 처리하고 새 id 발급. 번호와 팀 정체성 동시 변경은 `intent: "retain"`일 때만 허용(그 외 409) |
+| PATCH | `/api/entries/:num/active` | admin | `{ active: boolean }?year=` | 200 | 엔트리 활성/비활성 전환. 상태 버전만 올린다 — 다운스트림 반영은 team-state 동기화가 수행. Documents는 활성 상태를 적용하지 않음 |
+| DELETE | `/api/entries/:num` | admin | `?year=` | 200 | Delete single entry (tombstone 기록 — 다운스트림 cascade는 각 서비스의 수렴형 강제가 수행) |
+| DELETE | `/api/entries` | admin | `?year=` | 200 | Delete all entries for year (전 팀 tombstone 기록) |
+| POST | `/api/entries/bulk` | admin | `{ data: { "num": { id?, univ, team, type?, active? } }, renumbers?: { "from": to }, replacements?: [num], retains?: [num] }?year=` | 200 or 409 | Bulk upload (replaces all entries for year). `active` 기본값은 `true`. 행별 `id`(선택)는 `?download` 산출물 왕복 시 권위 매칭 키 — 번호가 다르면 explicit renumber, 같은 번호의 정체성 변경은 명칭 정정으로 확정된다. `renumbers`=명시적 번호 이동 매핑. 모호한 팀 교체는 409 ambiguous → replacements/retains로 재요청. 매칭된 팀은 id를 승계하고 삭제·교체 팀은 tombstone 기록 |
 
-### Lifecycle Outbox (admin)
+### Team State (internal)
 
-엔트리 삭제/번호변경 이벤트는 durable outbox에 저장 후 queue/documents/inspection/score/traffic 5개 서비스로 재시도 전달된다. 활성상태 이벤트는 Documents를 제외한 queue/inspection/score/traffic 4개 서비스에만 전달되며, 각 소비자는 revision으로 오래된 재시도를 무시한다. 전달 실패분(dead-letter)은 아래 API로 복구한다.
+팀 동기화는 push가 아니라 pull이다: 다운스트림 5개 서비스(queue/documents/inspection/score/traffic)의 `shared/team-state-client.mjs`가 아래 스냅샷을 인메모리 캐시(TTL 30초, 실패 시 serve-stale, 연도당 1행 체크포인트로 재시작 내성)하고, entry SSE `entries` 이벤트로 즉시 무효화하며, `version` 변화 시 수렴형 강제(enforcement)로 로컬 데이터를 멱등 갱신한다. reconcile·outbox·revision 시계는 존재하지 않는다.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/admin/lifecycle-outbox` | admin | — | `[{ id, service, event, status, attempts, ... }]` | 미전달/실패 이벤트 목록 |
-| POST | `/api/admin/lifecycle-outbox/:id/retry` | admin | — | 200 or 409 | 실패 이벤트 즉시 재전달 시도. 번호가 재사용된 삭제 이벤트와 현재 Entry의 번호 배치·팀 snapshot·활성 상태/revision에 맞지 않는 오래된 번호 변경/활성 이벤트는 409로 거부 |
-| DELETE | `/api/admin/lifecycle-outbox/:id` | admin | — | 200 | 실패 이벤트 폐기 |
-| POST | `/api/admin/reconcile` | admin | — | `{ checked, repaired, unreachable, unknown }` | 다운스트림 `team_status` 미러를 Entry 진실과 대조하고 어긋난 팀만 재전송. `checked`는 서비스×연도 쌍 수, `repaired`는 재전송을 **큐에 넣은** 팀 수, `unknown`은 Entry가 모르는데 미러에 남아 있는 팀(자동 삭제하지 않으므로 사람이 판단해야 함). 미러 리비전이 Entry보다 앞서 있으면 새 리비전을 발급해 재전송이 실제로 적용되게 한다. 배달 대기 중인 이벤트가 있는 번호는 건너뛴다. 백업 복원·수동 DB 조작 뒤에 실행. Entry 부팅 시에도 자동 실행되며, 닿지 못한 서비스가 있으면 15초 간격으로 최대 5회 재시도 |
+| GET | `/api/internal/team-state` | internal | `?year=` | `{ year, version, teams: { <team_id>: { num, univ, team, type, active } }, tombstones: [{ id, num, deleted_at }] }` | 권위 팀 스냅샷. `team_id`는 불변·연도 통틀어 유일, `version`은 연도별 상태 버전(모든 팀 상태 변이 시 +1). 존재하지 않는 연도는 테이블 생성 없이 빈 스냅샷(version 0) |
 
 ### Vehicle Types
 
@@ -133,7 +130,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/events` | admin | — | SSE stream | Entry and vehicle-type invalidation events. Emits `entries` after mutations so dependent services can refresh their entry snapshot |
+| GET | `/api/events` | admin | — | SSE stream | Entry and vehicle-type invalidation events. Emits `entries` (payload: `{ year, change, version, ... }`) after mutations so dependent services can refresh their team-state snapshot — 이미 반영한 `version`이면 클라이언트가 재조회를 생략한다 |
 
 ---
 
@@ -168,7 +165,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/api/admin/register/:type` | chief | `{ num, phone }` | 201 | Register team in queue (validates entry, penalty, concurrent rules) |
+| POST | `/api/admin/register/:type` | chief | `{ num, phone }` | 201 or 503 | Register team in queue (validates entry via the team-state cache — serve-stale이라 entry 장애 중에도 동작, 스냅샷을 한 번도 못 받은 콜드 스타트만 503 — plus penalty, concurrent rules) |
 | POST | `/api/admin/cancel/:type` | official | `{ num }` | 200 | Cancel registration (applies time penalty) |
 
 ### Active Cancel Penalties
@@ -224,14 +221,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 | GET | `/api/admin/settings/cancel-penalty` | official | — | `{ value: int }` | Cancel penalty minutes |
 | PATCH | `/api/admin/settings/cancel-penalty` | chief | `{ value: int }` | 200 | Set cancel penalty (0-60 min) |
 
-### Internal API
+### Team-State Sync
 
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (queue, priority, penalty, history, booth occupancy) |
-| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service (queue/priority/history/booth rows) |
-| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 비활성화 시 현재 대기열/current/우선순위/취소 페널티/진행 중 부스 세션을 정리. 완료 이력은 보존하되 비활성 중 조회에서 제외 |
-| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
+내부 팀 라우트는 없다 — entry의 `GET /api/internal/team-state`를 pull(`shared/team-state-client.mjs`)하고 수렴형 강제로 반영한다. 큐 테이블(대기열/current/우선순위/페널티/이력/부스 점유/로그)은 `team_id` 태그를 병기한다(num은 운영 PK·표시용으로 유지). 강제 내용: tombstone cascade(삭제·교체 팀의 큐 데이터 정리), 비활성 팀의 현재 대기열/current/우선순위/취소 페널티/진행 중 부스 세션 정리(완료 이력은 보존하되 비활성 중 조회에서 제외), 리넘버 시 num 갱신, entry가 모르는 팀은 로그만 남기고 삭제하지 않음.
 
 ---
 
@@ -271,16 +263,9 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 Answer and memo versions are independent. When `base_version` is provided and no longer matches the stored version, the write returns `409 { error, current }` without overwriting the newer value. Requests without `base_version` remain supported for backward compatibility. Answer/memo SSE payloads include `version`, `updated_at`, `updated_by`, and the caller's optional `mutation_id`.
 
-### Internal API
+### Team-State Sync
 
-엔트리 라이프사이클 소비자 라우트 (`shared/team-lifecycle.mjs`, 대상 테이블 `sheet_answer`/`sheet_category_result`/`sheet_inspector`).
-
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team sheet data on entry deletion |
-| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
-| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 답변/결과/검차관 데이터를 보존하면서 비활성 팀의 조회·수정을 차단 |
-| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
+내부 팀 라우트는 없다 — entry team-state 스냅샷을 pull(`shared/team-state-client.mjs`)하고 수렴형 강제로 반영한다. 시트 테이블(`sheet_answer`/`sheet_category_result`/`sheet_inspector`)은 불변 `team_id`로 키잉한다(team_num은 비정규화 표시용). 강제 내용: tombstone cascade(삭제·교체 팀의 시트 데이터 삭제), 리넘버 시 team_num 비정규화 갱신. 비활성 팀은 데이터를 보존한 채 조회 필터·수정 차단(409)으로만 제외하고, entry가 모르는 팀은 로그만 남기고 삭제하지 않는다.
 
 ---
 
@@ -346,14 +331,9 @@ Answer and memo versions are independent. When `base_version` is provided and no
 | GET | `/api/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |
 | POST | `/api/wireless/bridge/offline` | admin | — | `{ ...bridge }` | 브리지가 종료 직전 오프라인을 즉시 보고 (15초 무수신 감지 대기 없이) |
 
-### Internal API
+### Team-State Sync
 
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team records on entry deletion |
-| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
-| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 경기기록을 보존하면서 조회·집계·수정을 차단하고 진행 중 무선 팀 선택/런을 해제 |
-| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
+내부 팀 라우트는 없다 — entry team-state 스냅샷을 pull(`shared/team-state-client.mjs`)하고 수렴형 강제로 반영한다. `record` 행은 생성 시 `team_id` 태그를 받는다(num/univ/team 비정규화 컬럼은 감사·표시용 유지). 강제 내용: tombstone은 기록을 삭제하지 않고 invalidate(감사 보존 — score가 invalidated를 집계에서 제외) + 무선 세션 해제, 리넘버·팀명 변경 시 비정규화 num/univ/team을 id 기준으로 수렴(과거의 조용한 stale 구멍 폐쇄), 비활성 팀은 기록 보존 + 조회·집계 차단 + 진행 중 무선 선택/런 해제. entry가 모르는 팀의 기록은 로그만 남기고 건드리지 않는다.
 
 ---
 
@@ -400,16 +380,9 @@ Answer and memo versions are independent. When `base_version` is provided and no
 | GET | `/api/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, fuel_consumed, ... } }` | Endurance and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
 | PUT | `/api/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields or energy fields (C fuel/extra fuel, E net energy, official energy DSQ flag). Energy class cannot be written manually; negative values are accepted only for E net energy |
 
-### Internal API
+### Team-State Sync
 
-엔트리 라이프사이클 소비자 라우트 (`shared/team-lifecycle.mjs`, 대상 테이블 `score_manual`/`score_endurance`).
-
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (score_manual, score_endurance) |
-| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 | Sync team number change from entry service |
-| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 수동점수·내구 데이터를 보존하면서 집계·조회·수정을 차단 |
-| GET | `/api/internal/team-status` | admin | `?year=` | `{ [num]: { active, revision } }` | Entry의 정합성 점검이 읽는 미러 스냅샷 |
+내부 팀 라우트는 없다 — entry team-state 스냅샷을 pull(`shared/team-state-client.mjs`)하고 수렴형 강제로 반영한다. `score_manual`/`score_endurance`는 불변 `team_id`로 키잉한다(team_num은 비정규화 표시용). 강제 내용: tombstone cascade(삭제·교체 팀의 점수 삭제), 리넘버 시 team_num 비정규화 갱신. 비활성 팀은 데이터를 보존한 채 집계·조회·수정에서 제외하고, entry가 모르는 팀은 로그만 남기고 삭제하지 않는다. 집계(`GET /api/score`)의 엔트리 목록도 이 캐시에서 읽는다 — serve-stale이라 entry 장애 중에도 집계가 계속되고, 스냅샷을 한 번도 못 받은 콜드 스타트에서만 503.
 
 ---
 
@@ -419,7 +392,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/entries` | student | `?year=` | `{ num: { univ, team, type, active } }` | 로그인 학생에게 해당 연도의 자기 매핑 팀만 반환. 비활성 팀도 포함 |
+| GET | `/api/entries` | student | `?year=` | `{ num: { id, univ, team, type, active } }` | 로그인 학생에게 해당 연도의 자기 매핑 팀만 반환(team-state 캐시). 비활성 팀도 포함 |
 | GET | `/api/sessions` | student | — | `{ team, sessions }` | My team's open sessions with latest submission |
 | GET | `/api/sessions/:id` | student | — | `{ session, team_num, submission, files }` | Session detail with files |
 | POST | `/api/sessions/:id/submit` | student | `multipart/form-data` | `{ id, submitted_at, is_late, total_size }` | Upload files (validates time window, extensions, size) |
@@ -430,7 +403,7 @@ Answer and memo versions are independent. When `base_version` is provided and no
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/admin/entries` | chief | `?year=` | `{ num: { univ, team, type, active } }` | 계정 할당·제출 대상 선택을 위한 전체 엔트리 목록. 비활성 팀도 포함 |
+| GET | `/api/admin/entries` | chief | `?year=` | `{ num: { id, univ, team, type, active } }` | 계정 할당·제출 대상 선택을 위한 전체 엔트리 목록(team-state 캐시). 비활성 팀도 포함 |
 | GET | `/api/admin/sessions` | chief | `?year=` | `[{ id, name, notice, start_at, end_at, ... }]` | All sessions |
 | POST | `/api/admin/sessions` | chief | `{ name, notice?, start_at, end_at, late_end_at?, max_file_size?, allowed_extensions?, year, teams: [int] }` | `{ id }` | Create session |
 | PUT | `/api/admin/sessions/:id` | chief | `{ name, notice?, start_at, end_at, late_end_at?, max_file_size?, allowed_extensions?, teams: [int] }` | 200 | Update session (cleans up removed teams' submissions) |
@@ -446,13 +419,9 @@ Answer and memo versions are independent. When `base_version` is provided and no
 | POST | `/api/admin/student-teams` | chief | `{ email, team_num, year }` | `{ email, team_num, year }` | Add student-team mapping |
 | DELETE | `/api/admin/student-teams/:email/:year` | chief | — | 200 | Remove student-team mapping |
 
-### Internal API
+### Team-State Sync
 
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| PATCH | `/api/internal/team-num` | admin | `{ prevNum, newNum, year }` | 200 or 202 | Sync team number change from entry service (updates student_team, session_team, submission, renames upload dirs). 파일 디렉토리 작업 실패 시 `202 { status: "pending_file_work", failures }` — 30초 주기 백그라운드 워커가 재시도 (`team_renumber_file_work`) |
-| DELETE | `/api/internal/team/:num` | admin | `?year=` | 200 | Cleanup team data on entry deletion (student_team, session_team, submission, files) |
-| PATCH | `/api/internal/team-active` | admin | `{ num, year, active, revision }` | 200 | 이전 outbox에 남은 이벤트를 안전하게 소진하기 위한 호환 no-op. Documents 기능에는 활성 상태를 적용하지 않음 |
+내부 팀 라우트는 없다 — entry team-state 스냅샷을 pull(`shared/team-state-client.mjs`)하고 수렴형 강제로 반영한다. `student_team`/`session_team`/`submission`은 불변 `team_id`로 키잉한다(team_num은 비정규화 표시용). 업로드 디렉토리의 팀 세그먼트는 제출 시점에 `dir_seg`로 고정되어 영원히 불변이다(레거시 행은 기존 숫자 num, 신규 제출은 `t<team_id>`) — 리넘버가 파일 시스템을 건드리지 않으므로 `team_renumber_file_work` 재시도 큐 자체가 사라졌다. 강제 내용: tombstone cascade(삭제 팀의 행 + 파일 디렉토리 제거), 리넘버 시 team_num 비정규화 갱신. 활성 상태는 documents 기능에 적용하지 않으며(매핑·제출·다운로드·아카이브·알림 계속 허용), entry가 모르는 팀은 로그만 남기고 삭제하지 않는다. 엔트리 라벨 조회도 이 캐시에서 읽는다 — 스냅샷을 못 받았으면 라벨만 저하되고 흐름은 계속되는 graceful degradation 유지.
 
 ---
 

@@ -3,12 +3,13 @@ import { storageStatePath } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 // Score aggregation and endurance inputs reflect entry mutations:
-// score.computeScore() fetches the entry list from the entry service for the
-// requested year and returns it as `entries` (keyed by num). When an entry is
-// deleted, the next /score/api/score call must no longer list that team. We seed
-// an isolated entry in the CURRENT year (the year the score dashboard defaults to
-// and the year the seeded template/traffic data live in), confirm score lists it,
-// delete it, then poll until score drops it.
+// score.computeScore() reads the entry list from its team-state cache (pulled
+// from entry's versioned snapshot, invalidated by entry's SSE) and returns it as
+// `entries` (keyed by num). Convergence after an entry mutation is asynchronous
+// but fast. When an entry is deleted, score must drop that team once its cache
+// converges. We seed an isolated entry in the CURRENT year (the year the score
+// dashboard defaults to and the year the seeded template/traffic data live in),
+// poll until score lists it, delete it, then poll until score drops it.
 
 const YEAR = new Date().getFullYear();
 // Unique high num avoids the seeded 1..32 range and collisions with parallel shards.
@@ -67,22 +68,22 @@ test.describe("Entry changes reflected in score", () => {
     });
     expect(createRes.status).toBe(201);
 
-    // 2. score's aggregation lists the team. Aggregation fans out to entry/inspection/
-    //    traffic and is eventual from the caller's view, so poll until it appears.
+    // 2. score's aggregation lists the team once its team-state cache pulls the
+    //    new snapshot (SSE-triggered, eventual from the caller's view) — poll.
     await expect.poll(async () => {
       const entries = await scoreEntries();
-      return entries[NUM] && entries[NUM].team === team;
-    }, { timeout: 10000 }).toBeTruthy();
+      return Boolean(entries[NUM] && entries[NUM].team === team);
+    }, { timeout: 15_000 }).toBeTruthy();
 
-    // 3. Delete the entry.
+    // 3. Delete the entry (writes a tombstone; always 200, no pending state).
     const delRes = await deleteEntry();
     expect(delRes.status).toBe(200);
 
-    // 4. score no longer lists the team on its next aggregation.
+    // 4. score drops the team once its team-state cache converges — poll.
     await expect.poll(async () => {
       const entries = await scoreEntries();
       return entries[NUM] === undefined;
-    }, { timeout: 10000 }).toBeTruthy();
+    }, { timeout: 15_000 }).toBeTruthy();
   });
 
   test("score endurance inputs follow a same-number vehicle-type edit live", async ({ page }) => {
@@ -98,9 +99,18 @@ test.describe("Entry changes reflected in score", () => {
     });
     expect(createRes.status).toBe(201);
 
+    // Score's team-state cache converges asynchronously after the create. Wait
+    // for the API to list the team BEFORE loading the page: the entry:entries
+    // relay event fired at create time, so a page opened later would miss it
+    // and only render the team if the initial load already includes it.
+    await expect.poll(async () => {
+      const entries = await scoreEntries();
+      return Boolean(entries[NUM] && entries[NUM].team === team);
+    }, { timeout: 15_000 }).toBeTruthy();
+
     await page.goto("/score/endurance");
     const row = page.locator("tbody tr").filter({ hasText: team });
-    await expect(row).toBeVisible();
+    await expect(row).toBeVisible({ timeout: 15_000 });
     await expect(row.locator('input[data-field="fuel_consumed"]')).toBeEnabled();
     await expect(row.locator('input[data-field="electric_net_energy"]')).toBeDisabled();
 

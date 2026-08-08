@@ -30,12 +30,12 @@ All 10 backend services share `Dockerfile.service` (root) with `ARG SERVICE` + `
 - entry, inspection, traffic, documents, course, email, calendar → auth
 - queue → entry, auth, email
 - auth, documents → email
-- entry → queue, documents, inspection, score, traffic (lifecycle outbox 팬아웃 대상)
+- queue, documents, inspection, score, traffic → entry (team-state pull — `shared/team-state-client.mjs`가 `GET /api/internal/team-state` 스냅샷 조회 + entry SSE `entries` 이벤트 구독)
 - documents → entry, email
 - score → entry, inspection, traffic, auth
 - auth → 전 서비스 (로그 집계, `logAggregationTargets()`)
 
-**정합성 점검** — outbox는 *전달*만 보장하고 *정확성*은 검증하지 않는다. 그래서 다운스트림 DB가 백업에서 되돌아가거나 전달 경로에 구멍이 나면 미러가 조용히 어긋난 채 남는다. entry가 부팅 시 1회, 그리고 `POST /api/admin/reconcile`로 각 서비스의 `GET /api/internal/team-status` 스냅샷을 자기 진실과 대조해 어긋난 팀만 재전송한다. 주기 타이머는 없다 — drift는 배포·복원·수동 조작 같은 이산 사건에서만 생긴다. 다만 스택 전체가 같이 뜨는 경우 첫 시도는 대상이 아직 안 떠 있으므로, 닿지 못한 서비스가 남아 있는 동안 15초 간격 최대 5회 재시도한다. 정상이면 로그를 남기지 않고, `entry.reconcile_drift`(warn)만 신호다. entry가 모르는 팀이 미러에 있으면 **로그만 남기고 자동 삭제하지 않는다**.
+**팀 상태 동기화** — push outbox가 아니라 pull이다. entry가 팀마다 불변·연도 통틀어 유일한 `id`(team_id)를 발급하고, 변이마다 연도별 `entry_state_version`을 올리고, 삭제·교체는 `team_tombstone`에 기록해 `GET /api/internal/team-state?year=`로 권위 스냅샷을 노출한다. 다운스트림은 `shared/team-state-client.mjs`로 이 스냅샷을 인메모리 캐시(TTL 30초, fetch 실패 시 serve-stale)하고, entry SSE `entries` 이벤트로 즉시 무효화하며, 연도당 1행 체크포인트로 재시작 내성을 얻는다. version이 바뀌면 수렴형 강제(enforcement)가 tombstone cascade·비활성 정리·비정규화(num/univ/team) 갱신을 한 트랜잭션에 멱등 적용한다 — 별도 reconcile API·재시도 워커가 없다(스냅샷 동기화 자체가 정합성 복구라서, 백업 복원·수동 조작 뒤에도 다음 스냅샷이 수렴시킨다). 영구 데이터는 team_id로 키잉하므로 리넘버는 아무것도 옮기지 않는다. 캐시가 비어 있으면 "전원 활성"으로 동작하되(absent-row-means-active), 엔트리 데이터가 필수인 경로(queue 등록·순번 조회, score 집계)는 스냅샷을 한 번도 못 받은 콜드 스타트에서만 503으로 거절한다. entry가 모르는 팀이 로컬 데이터에 있으면 **로그만 남기고 자동 삭제하지 않는다**.
 
 `<NAME>_SERVER` env는 **override 전용**이며 테스트·컨테이너 밖 로컬 실행에서만 쓴다. 예전에는 env가 있을 때만 대상이 활성화되는 구조라, 배포 설정에서 URL이 빠지면 해당 연동이 조용히 사라졌다(k3s entry 매니페스트에서 inspection/score/traffic이 누락돼 팀 비활성화가 전달되지 않은 사고). 이제 기본값이 코드에 있어 **inter-service URL에 한해서는** 설정 누락이 불가능하다. 코드로 옮길 수 없는 값(`PUBLIC_URL`·`VWORLD_KEY`·시크릿)에는 "설정 없음 ⇒ 조용히 아무것도 안 함"이 그대로 남아 있으므로, 그쪽은 부팅 시 fail-fast로 막는다.
 
