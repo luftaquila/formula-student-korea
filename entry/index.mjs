@@ -1,6 +1,7 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { createServiceSkeleton, runIfDirect } from "../shared/service-bootstrap.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum } from "../shared/validation.mjs";
 import { VEHICLE_COLORS } from "../shared/constants.js";
@@ -107,8 +108,17 @@ function ensureYearTable(year) {
   catch { /* column already exists */ }
   try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN active_revision INTEGER NOT NULL DEFAULT 0`); }
   catch { /* column already exists */ }
+  try { db.exec(`ALTER TABLE '${tableName}' ADD COLUMN id INTEGER`); }
+  catch { /* column already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_type ON '${tableName}'(type)`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_entry_${y}_active ON '${tableName}'(active)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_entry_${y}_id ON '${tableName}'(id)`);
+  // 레거시 행에 불변 id 발급 (프로세스당 1회, 멱등 — id IS NULL인 행만)
+  db.transaction(() => {
+    for (const row of db.prepare(`SELECT num FROM '${tableName}' WHERE id IS NULL`).all()) {
+      db.prepare(`UPDATE '${tableName}' SET id = ? WHERE num = ?`).run(nextTeamId(), row.num);
+    }
+  })();
   _ensuredYearTables.add(tableName);
   return tableName;
 }
@@ -118,6 +128,59 @@ function getAvailableYears() {
     .all()
     .map(t => Number(t.name.replace('entry_', '')))
     .filter(y => !isNaN(y));
+}
+
+// 불변 team_id 발급 카운터 — 연도를 통틀어 유일하다. num(차량 번호)은 사람이 보는
+// 가변 식별자이고, id는 다운스트림 서비스가 데이터를 키잉하는 불변 식별자다.
+// (entry_active_revision과 같은 singleton-row 패턴)
+db.exec(`CREATE TABLE IF NOT EXISTS entry_team_seq (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  value INTEGER NOT NULL DEFAULT 0
+)`);
+db.prepare("INSERT OR IGNORE INTO entry_team_seq (id, value) VALUES (1, 0)").run();
+
+// 연도별 상태 버전 — 해당 연도의 팀 상태(엔트리 CRUD·활성·차량유형 변경)가 바뀔 때마다
+// 변이 트랜잭션 안에서 +1. 다운스트림 team-state 캐시가 "바뀌었는가"만 판단하는 데 쓴다.
+db.exec(`CREATE TABLE IF NOT EXISTS entry_state_version (
+  year INTEGER PRIMARY KEY,
+  value INTEGER NOT NULL DEFAULT 0
+)`);
+
+// 삭제된 팀의 tombstone. 상태 스냅샷 동기화에서 "스냅샷에 없음"은 삭제가 아니라
+// 미지(unknown)로 취급되므로, 삭제 cascade는 반드시 명시적 tombstone으로 전달한다.
+// 크기가 작아 프루닝하지 않는다.
+db.exec(`CREATE TABLE IF NOT EXISTS team_tombstone (
+  team_id INTEGER PRIMARY KEY,
+  year INTEGER NOT NULL,
+  num INTEGER NOT NULL,
+  univ TEXT NOT NULL,
+  team TEXT NOT NULL,
+  deleted_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+)`);
+db.exec("CREATE INDEX IF NOT EXISTS idx_tombstone_year ON team_tombstone(year, deleted_at)");
+
+function nextTeamId() {
+  db.prepare("UPDATE entry_team_seq SET value = value + 1 WHERE id = 1").run();
+  return db.prepare("SELECT value FROM entry_team_seq WHERE id = 1").get().value;
+}
+
+function bumpStateVersion(year) {
+  db.prepare(`INSERT INTO entry_state_version (year, value) VALUES (?, 1)
+    ON CONFLICT(year) DO UPDATE SET value = value + 1`).run(Number(year));
+}
+
+function getStateVersion(year) {
+  return db.prepare("SELECT value FROM entry_state_version WHERE year = ?").get(Number(year))?.value || 0;
+}
+
+// 삭제·교체된 팀의 tombstone 기록. rows: { id, num, univ, team }[]
+function insertTombstones(rows, year) {
+  const stmt = db.prepare(
+    "INSERT OR REPLACE INTO team_tombstone (team_id, year, num, univ, team) VALUES (?, ?, ?, ?, ?)",
+  );
+  for (const r of rows) {
+    if (r.id != null) stmt.run(r.id, Number(year), r.num, r.univ, r.team);
+  }
 }
 
 // 올해 테이블 보장
@@ -160,7 +223,8 @@ for (const year of getAvailableYears()) {
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function broadcastEntries(year, change, detail = {}) {
-  broadcastEvent("entries", { year: Number(year), change, ...detail });
+  // version: 다운스트림 team-state 캐시가 이미 반영한 버전이면 재조회를 생략할 수 있게 동봉
+  broadcastEvent("entries", { year: Number(year), change, version: getStateVersion(year), ...detail });
 }
 
 app.get("/api/events", sseHandler());
@@ -222,6 +286,10 @@ function validateBulkData(data) {
     }
     if (value.active !== undefined && typeof value.active !== "boolean") {
       return { valid: false, error: `엔트리 ${key}: active는 boolean이어야 합니다.` };
+    }
+    // id는 선택 필드 — ?download 산출물의 왕복 업로드에서 권위 매칭 키로 쓰인다.
+    if (value.id !== undefined && value.id !== null && (!Number.isInteger(value.id) || value.id < 1)) {
+      return { valid: false, error: `엔트리 ${key}: 올바르지 않은 id입니다.` };
     }
   }
 
@@ -1173,6 +1241,39 @@ app.get("/api/years", (req, res) => {
   res.json(getAvailableYears());
 });
 
+// GET /api/internal/team-state - 다운스트림 team-state 캐시가 pull하는 권위 스냅샷.
+// { year, version, teams: {<team_id>: {num, univ, team, type, active}}, tombstones }
+// 존재하지 않는 연도는 테이블을 만들지 않고 빈 스냅샷(version 0)을 돌려준다.
+app.get("/api/internal/team-state", (req, res) => {
+  if (!requireInternalRequest(req, res)) return;
+
+  const y = Number(req.query.year);
+  if (!Number.isInteger(y) || y < 2000 || y > 2099) {
+    return res.status(400).send("올바르지 않은 연도입니다.");
+  }
+
+  const result = dbRun(() => {
+    if (!getAvailableYears().includes(y)) {
+      return { year: y, version: 0, teams: {}, tombstones: [] };
+    }
+    const tableName = ensureYearTable(y);
+    const teams = {};
+    for (const row of db.prepare(`SELECT id, num, univ, team, type, active FROM '${tableName}'`).all()) {
+      teams[row.id] = { num: row.num, univ: row.univ, team: row.team, type: row.type, active: !!row.active };
+    }
+    const tombstones = db.prepare(
+      "SELECT team_id AS id, num, deleted_at FROM team_tombstone WHERE year = ?",
+    ).all(y);
+    return { year: y, version: getStateVersion(y), teams, tombstones };
+  });
+
+  if (!result.success) {
+    logger.warn(req, "entry.team_state", { error: result.error, year: y });
+    return res.status(result.status).send(result.error);
+  }
+  res.json(result.result);
+});
+
 // GET /api/entries - 모든 엔트리 조회
 app.get("/api/entries", withYearTable, (req, res) => {
   const { tableName, year } = req;
@@ -1181,12 +1282,13 @@ app.get("/api/entries", withYearTable, (req, res) => {
   const result = dbRun(() => {
     const data = {};
     const rows = db.prepare(`
-      SELECT num, univ, team, type, active
+      SELECT id, num, univ, team, type, active
       FROM '${tableName}'
       ${includeInactive ? "" : "WHERE active = 1"}
     `).all();
     for (const row of rows) {
-      data[row.num] = { univ: row.univ, team: row.team, type: row.type, active: !!row.active };
+      // id: 불변 team_id. ?download JSON에도 실려 재업로드 시 권위 매칭 키가 된다.
+      data[row.num] = { id: row.id, univ: row.univ, team: row.team, type: row.type, active: !!row.active };
     }
     return data;
   });
@@ -1226,9 +1328,10 @@ app.post("/api/entries", withYearTable, async (req, res) => {
       assertNoPendingLifecycleRefs([numValidation.value], year);
       const revision = nextActiveRevision();
       const insertResult = db
-        .prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, 1, ?)`)
-        .run(numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type, revision);
+        .prepare(`INSERT INTO '${tableName}' (id, num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, ?, 1, ?)`)
+        .run(nextTeamId(), numValidation.value, dataValidation.univ, dataValidation.team, dataValidation.type, revision);
       const eventIds = insertLifecycleEvents(buildEntryActiveEvents(numValidation.value, year, true, revision));
+      bumpStateVersion(year);
       return { insertResult, revision, eventIds };
     })(),
   );
@@ -1298,7 +1401,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
         // 번호가 그대로일 때 identity 변경 여부를 확인한다. 명칭 정정인지 팀 교체인지
         // 페이로드만으로 알 수 없으므로, intent 미선언이면 bulk와 동일하게 ambiguous(409)로 보고하고
         // 아무것도 쓰지 않는다(읽기 전용 트랜잭션). 다른 팀이 downstream을 조용히 승계하지 못하게 막는다.
-        const existing = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(newNum);
+        const existing = db.prepare(`SELECT id, num, univ, team FROM '${tableName}' WHERE num = ?`).get(newNum);
         if (!existing) {
           throw { status: 404, message: "존재하지 않는 엔트리 번호입니다." };
         }
@@ -1306,6 +1409,10 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
           if (intent === "replacement") {
             assertNoPendingLifecycleRefs([newNum], year);
             events = buildEntryDeletedEvents([newNum], year); // 팀 교체 확정 → 기존 downstream 삭제
+            // 팀 교체 = 이전 팀 삭제 + 같은 번호의 새 팀. 이전 id는 tombstone으로 보내고
+            // 새 id를 발급한다 — id가 불변이려면 다른 팀이 id를 승계해선 안 된다.
+            insertTombstones([existing], year);
+            db.prepare(`UPDATE '${tableName}' SET id = ? WHERE num = ?`).run(nextTeamId(), newNum);
             replaced = true;
           } else if (intent !== "retain") {
             return {
@@ -1355,6 +1462,7 @@ app.patch("/api/entries/:num", withYearTable, async (req, res) => {
         events.push(...buildEntryActiveEvents(newNum, year, !!status.active, revision));
       }
 
+      bumpStateVersion(year);
       return { eventIds: insertLifecycleEvents(events) };
     })();
   });
@@ -1408,6 +1516,7 @@ app.patch("/api/entries/:num/active", withYearTable, async (req, res) => {
     db.prepare(`UPDATE '${tableName}' SET active = ?, active_revision = ? WHERE num = ?`)
       .run(active ? 1 : 0, revision, num);
     const eventIds = insertLifecycleEvents(buildEntryActiveEvents(num, year, active, revision));
+    bumpStateVersion(year);
     return { changed: true, revision, eventIds };
   })());
 
@@ -1440,12 +1549,15 @@ app.delete("/api/entries/:num", withYearTable, async (req, res) => {
   }
 
   const result = dbRun(() => db.transaction(() => {
-    const entry = db.prepare(`SELECT univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
+    const entry = db.prepare(`SELECT id, num, univ, team FROM '${tableName}' WHERE num = ?`).get(numValidation.value);
     if (entry) assertNoPendingLifecycleRefs([numValidation.value], year);
     const deleteResult = db.prepare(`DELETE FROM '${tableName}' WHERE num = ?`).run(numValidation.value);
-    const eventIds = deleteResult.changes
-      ? insertLifecycleEvents(buildEntryDeletedEvents([numValidation.value], year))
-      : [];
+    let eventIds = [];
+    if (deleteResult.changes) {
+      eventIds = insertLifecycleEvents(buildEntryDeletedEvents([numValidation.value], year));
+      insertTombstones([entry], year);
+      bumpStateVersion(year);
+    }
     return { deleteResult, entry, eventIds };
   })());
 
@@ -1474,12 +1586,16 @@ app.delete("/api/entries", withYearTable, async (req, res) => {
   const { tableName, year } = req;
 
   const result = dbRun(() => db.transaction(() => {
-    const existingNums = db.prepare(`SELECT num FROM '${tableName}'`).all().map(r => r.num);
+    const existingRows = db.prepare(`SELECT id, num, univ, team FROM '${tableName}'`).all();
+    const existingNums = existingRows.map(r => r.num);
     assertNoPendingLifecycleRefs(existingNums, year);
     const deleteResult = db.prepare(`DELETE FROM '${tableName}'`).run();
-    const eventIds = existingNums.length > 0
-      ? insertLifecycleEvents(buildEntryDeletedEvents(existingNums, year))
-      : [];
+    let eventIds = [];
+    if (existingNums.length > 0) {
+      eventIds = insertLifecycleEvents(buildEntryDeletedEvents(existingNums, year));
+      insertTombstones(existingRows, year);
+      bumpStateVersion(year);
+    }
     return { existingNums, deleteResult, eventIds };
   })());
 
@@ -1523,11 +1639,11 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      const oldRows = db.prepare(`SELECT num, univ, team, type, active, active_revision FROM '${tableName}'`).all();
+      const oldRows = db.prepare(`SELECT id, num, univ, team, type, active, active_revision FROM '${tableName}'`).all();
       const vtTable = ensureVtTable(year);
       const validTypes = new Set(db.prepare(`SELECT name FROM '${vtTable}'`).all().map(t => t.name));
       const newRowsByNum = new Map();
-      const query = db.prepare(`INSERT INTO '${tableName}' (num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, ?, ?)`);
+      const query = db.prepare(`INSERT INTO '${tableName}' (id, num, univ, team, type, active, active_revision) VALUES (?, ?, ?, ?, ?, ?, ?)`);
       for (const [k, v] of Object.entries(validation.data)) {
         const validatedType = v.type || null;
         if (validatedType && !validTypes.has(validatedType)) {
@@ -1535,6 +1651,7 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         }
         newRowsByNum.set(Number(k), {
           num: Number(k),
+          uploadedId: v.id ?? null,
           univ: v.univ.trim(),
           team: v.team.trim(),
           type: validatedType,
@@ -1543,12 +1660,42 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         });
       }
 
+      // 업로드 행의 id는 권위 매칭 키다(?download 산출물 왕복). id가 가리키는 기존 행과
+      // 같은 팀으로 확정한다: 번호가 다르면 explicit renumber로, 같은 번호에서 정체성이
+      // 바뀌었으면 명칭 정정(retain)으로 — 같은 id = 같은 팀이므로 모호성이 없다.
+      const oldRowsById = new Map(oldRows.filter((r) => r.id != null).map((r) => [r.id, r]));
+      const seenUploadedIds = new Set();
+      const renumbers = new Map(renumberValidation.renumbers);
+      const retains = new Set(retainsValidation.nums);
+      for (const row of newRowsByNum.values()) {
+        if (row.uploadedId == null) continue;
+        if (seenUploadedIds.has(row.uploadedId)) {
+          throw { status: 400, message: `엔트리 ${row.num}: id ${row.uploadedId}가 중복되었습니다.` };
+        }
+        seenUploadedIds.add(row.uploadedId);
+        const oldRow = oldRowsById.get(row.uploadedId);
+        if (!oldRow) {
+          throw { status: 400, message: `엔트리 ${row.num}: 존재하지 않는 id ${row.uploadedId}입니다.` };
+        }
+        if (oldRow.num !== row.num) {
+          // 명시 renumbers가 같은 목적지 번호를 다른 팀에게 배정했다면 모순된 입력이다
+          for (const [prevNum, targetNum] of renumbers) {
+            if (targetNum === row.num && prevNum !== oldRow.num) {
+              throw { status: 400, message: `엔트리 ${row.num}: id 매칭과 번호 변경 매핑이 충돌합니다.` };
+            }
+          }
+          renumbers.set(oldRow.num, row.num);
+        } else {
+          retains.add(row.num);
+        }
+      }
+
       assertNoPendingLifecycleRefs([
         ...oldRows.map((row) => row.num),
         ...newRowsByNum.keys(),
       ], year);
       const { events, deletedNums, renumberCount, ambiguous, retainedOldRowsByNewNum } = buildBulkLifecycleEvents(
-        oldRows, newRowsByNum, year, renumberValidation.renumbers, replacementsValidation.nums, retainsValidation.nums,
+        oldRows, newRowsByNum, year, renumbers, replacementsValidation.nums, retains,
       );
       // 동일 번호의 팀 변경이 미선언 상태면 아무것도 쓰지 않고(읽기 전용 트랜잭션)
       // 운영자에게 의도 확인을 요청한다.
@@ -1567,10 +1714,21 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         }
       }
 
+      // id 계승: identity/explicit/id 매칭된 행은 기존 팀의 id를 상속하고(리넘버·명칭
+      // 정정에도 불변), 매칭되지 않은 신규·교체 행은 새 id를 발급한다. 삭제·교체로
+      // 사라지는 기존 팀은 tombstone에 기록한다.
+      const oldRowsByNum = new Map(oldRows.map((r) => [r.num, r]));
+      insertTombstones(deletedNums.map((n) => oldRowsByNum.get(n)).filter(Boolean), year);
+      for (const row of newRowsByNum.values()) {
+        const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
+        row.id = oldRow?.id ?? nextTeamId();
+      }
+
       db.prepare(`DELETE FROM '${tableName}'`).run();
       for (const row of newRowsByNum.values()) {
-        query.run(row.num, row.univ, row.team, row.type, row.active ? 1 : 0, row.active_revision);
+        query.run(row.id, row.num, row.univ, row.team, row.type, row.active ? 1 : 0, row.active_revision);
       }
+      bumpStateVersion(year);
       const activeSnapshotRows = [...newRowsByNum.values()].filter((row) => {
         const oldRow = retainedOldRowsByNewNum.get(row.num) || null;
         // 번호가 바뀐 retained 팀에는 활성 상태가 같아도 snapshot 이벤트를 보낸다.
@@ -1707,7 +1865,9 @@ app.patch("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
       const newName = name?.trim();
       if (newName && newName !== type.name) {
         const entryTable = getTableName(vtYear);
-        db.prepare(`UPDATE '${entryTable}' SET type = ? WHERE type = ?`).run(newName, type.name);
+        const changed = db.prepare(`UPDATE '${entryTable}' SET type = ? WHERE type = ?`).run(newName, type.name);
+        // 팀 상태(type)가 실제로 바뀌었을 때만 상태 버전을 올린다
+        if (changed.changes > 0) bumpStateVersion(vtYear);
       }
     })();
   });
@@ -1737,7 +1897,8 @@ app.delete("/api/vehicle-types/:id", withYearVtTable, (req, res) => {
     db.transaction(() => {
       db.prepare(`DELETE FROM '${vtTableName}' WHERE id = ?`).run(id);
       const entryTable = getTableName(vtYear);
-      db.prepare(`UPDATE '${entryTable}' SET type = NULL WHERE type = ?`).run(type.name);
+      const changed = db.prepare(`UPDATE '${entryTable}' SET type = NULL WHERE type = ?`).run(type.name);
+      if (changed.changes > 0) bumpStateVersion(vtYear);
     })();
   });
 
