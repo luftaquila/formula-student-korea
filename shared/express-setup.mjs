@@ -30,7 +30,10 @@ export function ensureDataDir() {
 export function createJWT(payload, secret, expiresInSec = 7 * 24 * 3600) {
   const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
-  const body = { ...payload, iat: now, exp: now + expiresInSec };
+  // payload가 마지막이므로 명시된 iat/exp가 기본값을 이긴다(테스트의 발급 시각 백데이트용).
+  // 디코드한 토큰을 통째로 spread해 넘기면 낡은 iat/exp가 그대로 실려 가므로 금지 —
+  // 호출자는 항상 필요한 클레임만 명시적으로 구성한다.
+  const body = { iat: now, exp: now + expiresInSec, ...payload };
   const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
   const bodyB64 = Buffer.from(JSON.stringify(body)).toString("base64url");
   const data = `${headerB64}.${bodyB64}`;
@@ -180,11 +183,12 @@ export function createApp(deps, authRoleFn) {
       try {
         req.user = verifyJWT(token, process.env.JWT_SECRET);
 
-        // Sliding session: 만료(발급 후 7일)까지 6일 미만 남으면, 즉 발급 후 하루가
-        // 지난 첫 요청에서 토큰 자동 갱신 (role은 validateUser 블록에서 처리)
-        const remaining = req.user.exp - Math.floor(Date.now() / 1000);
-        const threshold = 6 * 24 * 3600; // 6일
-        if (remaining < threshold) {
+        // Sliding session: 발급(iat) 후 하루가 지난 첫 요청에서만 토큰 자동 갱신 —
+        // 재서명·Set-Cookie를 하루 최대 1회로 제한한다. 잔여기간 기준(만료까지 6일 미만)
+        // 이었을 때는 발급 하루 뒤부터 "매 요청"이 재서명이었다. iat 없는 외부 토큰은
+        // age가 커져 갱신 경로를 타므로 안전하다. (role은 validateUser 블록에서 처리)
+        const age = Math.floor(Date.now() / 1000) - (req.user.iat || 0);
+        if (age > 24 * 3600) {
           const { email, name, role } = req.user;
           const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
           const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));

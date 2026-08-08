@@ -328,20 +328,28 @@ describe('createApp auth middleware', () => {
     assert.ok(setCookie.includes('fsk_session='), 'should include new session token');
   });
 
-  // Sliding session: token near expiry gets refreshed
-  it('sliding session refreshes token when remaining time < 6 days', async () => {
+  // Sliding session: refresh happens at most once per day, keyed on token age (iat)
+  it('sliding session refreshes token when issued more than a day ago', async () => {
     validateUserResult = { valid: true, role: null };
-    // Create a token that expires in 5 days (less than 6-day threshold)
-    const shortLived = createJWT(
-      { email: 'user@test.com', name: 'User', role: 'admin' },
+    // Backdate iat by 2 days (explicit iat wins over createJWT's default)
+    const now = Math.floor(Date.now() / 1000);
+    const aged = createJWT(
+      { email: 'user@test.com', name: 'User', role: 'admin', iat: now - 2 * 24 * 3600 },
       TEST_SECRET,
-      5 * 24 * 3600,
     );
-    const res = await client.get('/admin', { cookie: `fsk_session=${shortLived}` });
+    const res = await client.get('/admin', { cookie: `fsk_session=${aged}` });
     assert.equal(res.status, 200);
     const setCookie = res.headers.get('set-cookie');
     assert.ok(setCookie, 'should have Set-Cookie for sliding session');
     assert.ok(setCookie.includes('fsk_session='), 'should include refreshed session token');
+  });
+
+  it('sliding session does NOT re-sign a token issued less than a day ago', async () => {
+    validateUserResult = { valid: true, role: null };
+    const fresh = createJWT({ email: 'user@test.com', name: 'User', role: 'admin' }, TEST_SECRET);
+    const res = await client.get('/admin', { cookie: `fsk_session=${fresh}` });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('set-cookie'), null, 'fresh token must not trigger a re-sign');
   });
 
   // ─── Path canonicalization: gate must not be slipped by case / trailing slash ──
