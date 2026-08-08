@@ -1368,7 +1368,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
         if (!newTeamsSet.has(oldTeam)) {
           const subs = db.prepare("SELECT id, session_id, team_num, storage_dir FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
           if (subs.length) {
-            db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam);
+            removedSubmissions += db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam).changes;
           }
           if (subs.length) removedSubmissions.push(...subs);
         }
@@ -2027,6 +2027,7 @@ async function runScheduledNotifications() {
       // 수신자별 개별 발송 — 이미 성공한 수신자는 스킵(부분 실패 재시도 시 중복 방지).
       const alreadySent = new Set(JSON.parse(n.sent_recipients || "[]"));
       const todo = recipientRows.filter((r) => !alreadySent.has(r.email));
+      const failed = []; // 이번 시도의 실패 내역 { email, error } (로그 폭주 방지를 위해 10건까지만 저장)
       for (const { email, team_num } of todo) {
         const teamHeader = teamHeaderHtml(team_num, entries);
         let htmlContent;
@@ -2099,10 +2100,10 @@ async function runScheduledNotifications() {
         const MAX_SEND_ATTEMPTS = 5;
         if (attempts >= MAX_SEND_ATTEMPTS) {
           db.prepare("UPDATE scheduled_notification SET sent = 1, sent_recipients = ?, attempts = ? WHERE id = ?").run(sentList, attempts, n.id);
-          logger.warn(null, `schedule.${n.type}`, { error: "gave_up_after_max_attempts", sent: alreadySent.size, remaining: remaining.length, attempts }, n.name);
+          logger.warn(null, `schedule.${n.type}`, { error: "gave_up_after_max_attempts", sent: alreadySent.size, remaining: remaining.length, attempts, failed }, n.name);
         } else {
           db.prepare("UPDATE scheduled_notification SET sent_recipients = ?, attempts = ? WHERE id = ?").run(sentList, attempts, n.id);
-          logger.warn(null, `schedule.${n.type}`, { error: "partial_send", sent: alreadySent.size, remaining: remaining.length, attempts }, n.name);
+          logger.warn(null, `schedule.${n.type}`, { error: "partial_send", sent: alreadySent.size, remaining: remaining.length, attempts, failed }, n.name);
         }
       }
     } catch (e) {

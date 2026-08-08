@@ -755,6 +755,10 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
   });
 
   if (!result.success) {
+    // 전화번호 불일치는 인증 실패에 준하는 보안 이벤트 — 무차별 대입 시도를 추적 가능하게 남긴다.
+    if (result.error === "전화번호가 일치하지 않습니다.") {
+      logger.warn(req, "queue.state_verify", { error: "전화번호 불일치" }, `#${num}`);
+    }
     return res.status(result.status).send(result.error);
   }
 

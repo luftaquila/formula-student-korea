@@ -2187,6 +2187,8 @@ app.delete("/api/wireless/lease/:event", (req, res) => {
       context: { event_type, controller: controllerEmail(sess.controller), requested_actor: req.user?.email ?? null },
     });
   }
+  // admin이 타인의 lease를 강제 회수할 수 있는 경로 — 감사 추적을 위해 이전 점유자를 기록.
+  const prevController = sess?.controller ? controllerEmail(sess.controller) : null;
   const result = dbRun(() => {
     db.prepare("UPDATE wireless_session SET controller = NULL, lease_expires_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(event_type);
     return getSession(event_type);
@@ -2201,6 +2203,7 @@ app.delete("/api/wireless/lease/:event", (req, res) => {
     after: { controller: null, lease_expires_at: null },
   }, event_type);
   broadcastEvent("wireless:session", result.result);
+  logger.log(req, "wireless.lease.release", { previous_controller: prevController, forced: !!(prevController && prevController !== (req.user?.email || null)) }, event_type);
   res.json(result.result);
 });
 

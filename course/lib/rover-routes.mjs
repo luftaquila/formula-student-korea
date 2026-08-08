@@ -48,6 +48,10 @@ export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcast
     return _broadcastRaw(event, data, filterFn);
   };
 
+  // 백그라운드(요청 컨텍스트 없는) 로깅용 시스템 액터. 부팅 1회성 이벤트는 별도의
+  // name: "boot" 액터를 그대로 쓴다(아래 orphan recovery 참고) — 통합하지 않는다.
+  const SYS = { email: "system", name: "system", role: "admin" };
+
 /* ============================================
    API 라우트: /api/rover
    ============================================ */
@@ -130,7 +134,6 @@ if (orphanRecoveryResult.changes > 0) {
 }
 
 function startMission(waypoints, actor, courseId) {
-  const SYS = { email: "system", name: "system", role: "admin" };
   // 이전 미션 종료 + 새 미션 삽입을 한 트랜잭션으로 원자화한다. 삽입이 실패해도(디스크 풀,
   // 존재하지 않는 course_id의 FK 위반 등) 이전 미션이 조용히 닫히거나 currentMissionId가
   // 닫힌 미션을 가리키는 상태 오염을 막는다. 실패 시 로깅 후 false 반환(호출부가 500 처리).
@@ -165,8 +168,7 @@ function endMission(status) {
   try {
     finishMission.run(Date.now(), status, Date.now(), currentMissionId);
   } catch (e) {
-    logger.warn(null, "mission.end", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.end", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover", SYS);
   }
   currentMissionId = null;
   // The mission is over — any obstacle hold is moot; clear the operator alert.
@@ -196,8 +198,7 @@ function persistProgress() {
   } catch (e) {
     // 포지션·텔레메트리 이벤트마다 로버가 호출하는 고빈도 경로다. DB 오류가 로버 POST를
     // 500으로 터뜨리지 않도록 삼키고 구조화 로그만 남긴다(로깅 정책 준수).
-    logger.warn(null, "mission.persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover", SYS);
   }
 }
 
@@ -208,8 +209,7 @@ function updateMissionStatus(status, ts = Date.now()) {
   try {
     setMissionStatus.run(status, ts, currentMissionId);
   } catch (e) {
-    logger.warn(null, "mission.status", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.status", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover", SYS);
   }
 }
 
@@ -265,8 +265,7 @@ function recordTelemetrySample() {
       roverState.gps && typeof roverState.gps.v_acc === "number" ? roverState.gps.v_acc : null,
     );
   } catch (e) {
-    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover", SYS);
   }
 }
 const roverState = {
@@ -594,6 +593,10 @@ app.get("/api/rover/stream", (req, res) => {
     receiverState.last_seen = Date.now();
     receiverState.last_disconnect_reason = null;
     receiverState.last_disconnect_at = 0;
+    // 수신기 커맨드 채널의 attach/clean detach 감사 — 카메라 control_connected/closed와
+    // 같은 이유다: replaced/stale만 로깅하면 정상 연결·해제 이력이 로그에 없어 "기기가
+    // 붙어 있긴 했나"를 triage할 수 없다. 재연결 처닝이 warn 필터를 채우지 않도록 info.
+    logger.log(req, "receiver.stream.connected", null, "receiver");
     // A fresh connection can't be continuing a prior in-flight survey (the survey
     // worker lived in the previous session) — abort a stale "surveying" state.
     if (receiverState.base.state === "surveying") {
@@ -613,6 +616,7 @@ app.get("/api/rover/stream", (req, res) => {
       if (receiverClient === res) {
         receiverClient = null;
         markReceiverDisconnected("sse_closed");
+        logger.log(req, "receiver.stream.closed", null, "receiver");
         // A survey can't continue without the device — abort it so the UI doesn't
         // stay stuck on "surveying" (device telemetry no longer resets base.state).
         if (receiverState.base.state === "surveying") {
@@ -713,6 +717,10 @@ app.get("/api/rover/stream", (req, res) => {
   roverState.last_disconnect_at = 0;
   // The rover boots the pump off; keep the UI toggle in sync on (re)connect.
   roverState.pump_on = false;
+  // 로버 커맨드 채널의 attach/clean detach 감사 — 카메라 control_connected/closed와
+  // 같은 이유다: replaced/stale만 로깅하면 정상 연결·해제 이력이 로그에 없어 "로버가
+  // 붙어 있긴 했나"를 triage할 수 없다. 재연결 처닝이 warn 필터를 채우지 않도록 info.
+  logger.log(req, "rover.stream.connected", null, "rover");
   broadcastRoverStatus();
 
   // Re-apply the operator's nav-light choice so it survives a pilot restart.
@@ -773,6 +781,7 @@ app.get("/api/rover/stream", (req, res) => {
     if (roverClient === res) {
       roverClient = null;
       markRoverDisconnected("sse_closed");
+      logger.log(req, "rover.stream.closed", null, "rover");
       // The rover dropped off mid-mission. It keeps driving on its own and
       // will reconnect, so DON'T end the mission — flag it 'interrupted'
       // (resumable) and keep the persisted progress. The reconnecting rover's
@@ -2767,6 +2776,10 @@ function sendCameraControl(event, data) {
     cameraControlClient.write(`event: ${event}\ndata: ${data ? JSON.stringify(data) : "{}"}\n\n`);
     return true;
   } catch {
+    // perception 제어 채널이 죽었다. 슬롯을 비우면 close 핸들러의 control_closed 로그도
+    // 못 남으므로(guard가 false) 여기서 흔적을 남긴다. 비워진 슬롯이 이후 send를
+    // 즉시 false로 단락시키므로 teardown당 warn 1건 — 플러딩 없음.
+    logger.warn(null, "rover.camera.control_write_failed", { event }, "rover", SYS);
     try { cameraControlClient.end(); } catch {}
     cameraControlClient = null;
     return false;
@@ -2811,8 +2824,14 @@ app.get("/api/rover/camera/control", (req, res) => {
   });
   res.write("event: connected\ndata: {}\n\n");
   // Async socket errors (peer reset) don't throw — without a listener they'd
-  // crash the process. Just drop the slot.
-  res.on("error", () => { if (cameraControlClient === res) cameraControlClient = null; });
+  // crash the process. Drop the slot, and leave a trail: nulling the slot means
+  // the close handler's control_closed log can never fire for this connection.
+  res.on("error", () => {
+    if (cameraControlClient === res) {
+      cameraControlClient = null;
+      logger.warn(req, "rover.camera.control_write_failed", { reason: "socket_error" }, "rover");
+    }
+  });
   if (cameraControlClient && cameraControlClient !== res) {
     // Session takeover (e.g. a perception container replaced by auto-update) —
     // leave an audit trail, mirroring /api/rover/stream's rover.stream.replaced.
@@ -2967,6 +2986,7 @@ app.get("/api/rover/camera/hold", (req, res) => {
   // mode=vr → stereo (rover-vr); anything else → 2D mono/composite (rover-2d).
   const set = req.query.mode === "vr" ? holdViewersVr : holdViewers2d;
   if (set.size >= MAX_CAMERA_VIEWERS) {
+    logger.warn(req, "rover.camera.view", { error: "too_many_viewers", viewers: set.size }, "rover");
     return res.status(503).send("too many viewers");
   }
   res.writeHead(200, {

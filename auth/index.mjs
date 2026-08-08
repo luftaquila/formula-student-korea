@@ -162,7 +162,7 @@ async function notifyNewUser(emails) {
   try {
     const list = Array.isArray(emails) ? emails : [emails];
     const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
-    await fetch(`${EMAIL_SERVER}/api/internal/send`, {
+    const r = await fetch(`${EMAIL_SERVER}/api/internal/send`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -178,6 +178,8 @@ async function notifyNewUser(emails) {
       }),
       signal: AbortSignal.timeout(5000),
     });
+    // 네트워크 예외만 잡으면 email 서비스의 4xx/5xx 거절이 무기록으로 유실된다.
+    if (!r.ok) logger.warn(null, "email.notify", { error: `email service ${r.status}`, emails });
   } catch (e) {
     logger.warn(null, "email.notify", { error: e.message, emails });
   }
@@ -552,8 +554,13 @@ app.get("/api/apply/me", (req, res) => {
 app.post("/api/apply", (req, res) => {
   const applicant = getApplicant(req);
   if (!applicant) return res.status(401).send("인증이 필요합니다.");
-  if (!isApplicationsOpen()) return res.status(403).send("현재 신청이 마감되었습니다.");
+  // 아래 duplicate 409와 같은 DB 기반 비즈니스 거절 — 셋 다 warn으로 관측 가능해야 한다.
+  if (!isApplicationsOpen()) {
+    logger.warn(req, "applicant.apply", { error: "closed" }, applicant.email, { email: applicant.email, name: applicant.name });
+    return res.status(403).send("현재 신청이 마감되었습니다.");
+  }
   if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(applicant.email)) {
+    logger.warn(req, "applicant.apply", { error: "already registered" }, applicant.email, { email: applicant.email, name: applicant.name });
     return res.status(409).send("이미 등록된 계정입니다.");
   }
 

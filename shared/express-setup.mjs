@@ -198,6 +198,9 @@ export function createApp(deps, authRoleFn) {
   app.use((req, res, next) => {
     if (CSRF_SAFE_METHODS.has(req.method)) return next();
     if (req.headers["sec-fetch-site"] === "cross-site") {
+      // 차단 발동 = 공격 아니면 연동 버그 — 둘 다 봐야 한다. 이 계층에는 logger가 없어
+      // (createLogger는 서비스 DB 필요, 여기는 앱 골격 조립 시점) 콘솔로 남긴다.
+      console.warn(`[csrf] blocked cross-site ${req.method} ${req.originalUrl || req.url} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("cross-site 요청은 허용되지 않습니다.");
     }
     next();
@@ -235,6 +238,9 @@ export function createApp(deps, authRoleFn) {
         req.user = { email: "internal", name: "Service", role: "admin" };
         return next();
       }
+      // Caddy가 외부의 이 헤더를 벗기므로, 불일치는 시크릿 로테이션 실수(장애급 설정
+      // 오류)거나 내부망 탐색이다. 이 계층에는 logger가 없어 콘솔로 남긴다.
+      console.warn(`[auth] internal-secret mismatch on ${req.method} ${req.originalUrl || req.url} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("Forbidden");
     }
     const token = req.cookies.fsk_session;

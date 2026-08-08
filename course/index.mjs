@@ -431,7 +431,7 @@ function roleFn(req) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
+const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager(200, { logger });
 
 function getCourses() {
   return db.prepare(`
