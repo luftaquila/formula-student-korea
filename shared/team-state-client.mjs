@@ -16,9 +16,11 @@ import { serviceUrl } from "./services.mjs";
 //
 // registerBackfill(fn(year, state)): 연도별 1회, 첫 "사용 가능한"(팀이 있는) 스냅샷에서
 //   플래그 기록과 같은 트랜잭션으로 실행 — 레거시 (year, num) 키 데이터에 team_id를 채운다.
-// registerEnforcement(fn(year, state) -> postCommit?): 스냅샷 version이 마지막 적용
-//   version과 다를 때 1 트랜잭션으로 실행 — tombstone cascade, 비활성 정리, 비정규화 갱신,
-//   모르는 팀 로깅. 반환한 함수(또는 배열)는 커밋 후 실행된다(SSE 브로드캐스트용).
+// registerEnforcement(fn(year, state, prevState) -> postCommit?): 스냅샷 version이 마지막
+//   적용 version과 다를 때 1 트랜잭션으로 실행 — tombstone cascade, 비활성 정리, 비정규화
+//   갱신, 모르는 팀 로깅. prevState는 이 스냅샷 직전에 적용돼 있던 상태(없으면 null) —
+//   "이전 번호 체계로 쓰인 team_id NULL 행"을 이전 num→id 매핑으로 귀속(adopt)하는 데 쓴다.
+//   반환한 함수(또는 배열)는 커밋 후 실행된다(SSE 브로드캐스트용).
 export function createTeamStateClient({
   db,
   logger,
@@ -96,20 +98,21 @@ export function createTeamStateClient({
   // applied_version 갱신이 강제 실행과 원자적이어야 재실행/미실행이 갈리지 않는다.
   function applySnapshot(year, snapshot) {
     const state = buildState(snapshot);
+    const prevState = cache.get(year) || null; // 스왑 전의 상태 — enforcement의 adoption용
     db.transaction(() => {
       const existing = db.prepare("SELECT applied_version FROM team_state_checkpoint WHERE year = ?").get(year);
       db.prepare(`INSERT INTO team_state_checkpoint (year, version, applied_version, payload, fetched_at)
         VALUES (?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
         ON CONFLICT(year) DO UPDATE SET version = excluded.version, payload = excluded.payload,
           fetched_at = excluded.fetched_at`).run(year, snapshot.version, existing?.applied_version ?? -1, JSON.stringify(snapshot));
-      runHooks(year, state);
+      runHooks(year, state, prevState);
     })();
     cache.set(year, state);
     return state;
   }
 
   // 백필(1회) + 강제(version 변경 시). 호출자는 트랜잭션 안이다.
-  function runHooks(year, state) {
+  function runHooks(year, state, prevState = null) {
     const postCommit = [];
     if (backfillFn && state.teams.size > 0
       && !db.prepare("SELECT 1 FROM team_id_backfill WHERE year = ?").get(year)) {
@@ -120,7 +123,7 @@ export function createTeamStateClient({
     }
     const cp = db.prepare("SELECT applied_version FROM team_state_checkpoint WHERE year = ?").get(year);
     if (enforcementFn && cp && cp.applied_version !== state.version) {
-      const r = enforcementFn(year, state);
+      const r = enforcementFn(year, state, prevState);
       for (const f of [].concat(r || [])) {
         if (typeof f === "function") postCommit.push(f);
       }

@@ -9,8 +9,7 @@ import {
   cleanup,
   setupTestEnv,
   TRUST_JWT,
-  TEST_SECRET,
-  TEST_INTERNAL_SECRET,
+  startFakeEntryServer,
 } from '../helpers/test-utils.mjs';
 
 setupTestEnv();
@@ -27,8 +26,12 @@ const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Offic
 let server, baseUrl, client, db, dbPath;
 
 before(async () => {
+  // 메인 스위트는 entry 없이 돈다 — 캐시 미로드 = 전원 활성(fail-open)이 기존
+  // team_status 부재 시맨틱과 동일함을 그대로 검증한다. 백그라운드 refresh가
+  // 즉시 실패하도록 도달 불가 주소를 명시한다.
+  process.env.ENTRY_SERVER = 'http://127.0.0.1:1';
   dbPath = tmpDbPath();
-  const result = createInspectionApp({ dbPath, validateUser: TRUST_JWT });
+  const result = createInspectionApp({ dbPath, skipTeamStateSync: true, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -1505,114 +1508,180 @@ describe('Auth enforcement', () => {
   });
 });
 
-// ─── Internal API: entry lifecycle ──────────────────────────────────────
-describe('Internal entry lifecycle sync', () => {
-  it('renumbers and deletes sheet data for a team', async () => {
-    const categoryId = db.prepare(
-      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, ?)"
-    ).run(CURRENT_YEAR, 'LifecycleCat').lastInsertRowid;
-    const itemId = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, ?, 'text')"
-    ).run(CURRENT_YEAR, categoryId, 'LifecycleItem').lastInsertRowid;
+// ─── Team-state 수렴형 강제 (구 내부 라이프사이클 라우트 대체) ─────────────
+// entry가 이벤트를 push하는 대신, inspection이 team-state 스냅샷을 pull해서 version
+// 변경 시 tombstone cascade·비정규화 갱신·비활성 필터를 멱등하게 적용한다.
+describe('Team-state convergent enforcement', () => {
+  let fake, srv, cli, database, dp, teamState;
+  let categoryId, itemId;
+  let version = 0;
 
-    db.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value, memo) VALUES (?, ?, ?, ?, ?)")
-      .run(CURRENT_YEAR, 901, itemId, 'OK', 'memo');
-    db.prepare("INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, 'PASS')")
-      .run(CURRENT_YEAR, 901, categoryId);
-    db.prepare("INSERT INTO sheet_inspector (year, team_num, category_id, inspector) VALUES (?, ?, ?, ?)")
-      .run(CURRENT_YEAR, 901, categoryId, 'Inspector');
-
-    const patchRes = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { prevNum: 901, newNum: 902, year: CURRENT_YEAR },
-    });
-    assert.equal(patchRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_category_result WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
-
-    const deleteRes = await client.delete(`/api/internal/team/902?year=${CURRENT_YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(deleteRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_category_result WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
+  const baseTeams = () => ({
+    301: { num: 31, univ: 'A대', team: '팀A', type: 'EV', active: true },
+    302: { num: 32, univ: 'B대', team: '팀B', type: 'EV', active: true },
   });
-});
 
-describe('Entry active-state synchronization', () => {
-  it('preserves sheet data while hiding and blocking an inactive team', async () => {
-    const num = 990;
-    const categoryId = db.prepare(
-      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, ?)"
-    ).run(CURRENT_YEAR, 'InactiveCat').lastInsertRowid;
-    const itemId = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, ?, 'text')"
-    ).run(CURRENT_YEAR, categoryId, 'InactiveItem').lastInsertRowid;
-    db.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value, memo) VALUES (?, ?, ?, 'kept', 'memo')")
-      .run(CURRENT_YEAR, num, itemId);
-    db.prepare("INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, 'PASS')")
-      .run(CURRENT_YEAR, num, categoryId);
+  function publish(mutate = (s) => s) {
+    version++;
+    const snap = mutate({ version, teams: baseTeams(), tombstones: [] });
+    snap.version = version;
+    fake.setSnapshot(CURRENT_YEAR, snap);
+    return teamState.refresh(CURRENT_YEAR);
+  }
 
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year: CURRENT_YEAR, active: false, revision: 20 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.equal(db.prepare("SELECT value FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?").get(CURRENT_YEAR, num, itemId).value, 'kept');
-    assert.equal((await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).status, 404);
-    const summary = await (await client.get(`/api/sheet/summary?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
-    assert.equal(summary.teams[num], undefined);
-    const bulk = await (await client.get(`/api/sheet/bulk-answers?year=${CURRENT_YEAR}&item_ids=${itemId}`, { cookie: officialCookie })).json();
-    assert.equal(bulk[num], undefined);
-    assert.equal((await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: num, item_id: Number(itemId), value: 'blocked' },
+  before(async () => {
+    fake = await startFakeEntryServer();
+    process.env.ENTRY_SERVER = fake.url;
+
+    dp = tmpDbPath();
+    const result = createInspectionApp({ dbPath: dp, skipTeamStateSync: true, validateUser: TRUST_JWT });
+    database = result.db;
+    teamState = result.teamState;
+
+    categoryId = database.prepare(
+      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, 'ConvCat')"
+    ).run(CURRENT_YEAR).lastInsertRowid;
+    itemId = database.prepare(
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, 'ConvItem', 'text')"
+    ).run(CURRENT_YEAR, categoryId).lastInsertRowid;
+
+    // 레거시 행: 백필 검증용 — 팀 31의 옛 답변(team_id NULL) + entry가 모르는 번호 99
+    database.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value) VALUES (?, 31, ?, 'legacy')")
+      .run(CURRENT_YEAR, itemId);
+    database.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value) VALUES (?, 99, ?, 'orphan')")
+      .run(CURRENT_YEAR, itemId);
+
+    const started = await startServer(result.app);
+    srv = started.server;
+    cli = createClient(started.baseUrl);
+    await publish();
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    await fake.close();
+    database.close();
+    cleanup(dp);
+  });
+
+  it('backfills team_id for legacy rows and leaves unknown teams NULL (never deleted)', () => {
+    assert.equal(
+      database.prepare("SELECT team_id FROM sheet_answer WHERE year = ? AND team_num = 31").get(CURRENT_YEAR).team_id,
+      301,
+    );
+    const orphan = database.prepare("SELECT team_id, value FROM sheet_answer WHERE year = ? AND team_num = 99").get(CURRENT_YEAR);
+    assert.equal(orphan.team_id, null, 'unknown team stays NULL');
+    assert.equal(orphan.value, 'orphan', 'unknown team row must not be deleted');
+  });
+
+  it('writes adopt the resolved team_id on the num-key upsert', async () => {
+    const answer = await cli.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 31, item_id: Number(itemId), value: 'v1' },
       cookie: officialCookie,
-    })).status, 409);
+    });
+    assert.equal(answer.status, 200);
+    const catResult = await cli.put('/api/sheet/category-result', {
+      body: { year: CURRENT_YEAR, team_num: 31, category_id: Number(categoryId), result: 'PASS' },
+      cookie: officialCookie,
+    });
+    assert.equal(catResult.status, 200);
+    const inspector = await cli.put('/api/sheet/inspector', {
+      body: { year: CURRENT_YEAR, team_num: 31, category_id: Number(categoryId), inspector: 'Insp A' },
+      cookie: officialCookie,
+    });
+    assert.equal(inspector.status, 200);
 
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year: CURRENT_YEAR, active: true, revision: 19 },
-    });
-    assert.equal((await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).status, 404, 'stale activation ignored');
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year: CURRENT_YEAR, active: true, revision: 21 },
-    });
-    const restored = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).json();
-    assert.equal(restored.answers[itemId].value, 'kept');
+    assert.deepEqual(
+      database.prepare("SELECT team_id, value FROM sheet_answer WHERE year = ? AND team_num = 31").get(CURRENT_YEAR),
+      { team_id: 301, value: 'v1' },
+    );
+    assert.equal(database.prepare("SELECT team_id FROM sheet_category_result WHERE year = ? AND team_num = 31").get(CURRENT_YEAR).team_id, 301);
+    assert.equal(database.prepare("SELECT team_id FROM sheet_inspector WHERE year = ? AND team_num = 31").get(CURRENT_YEAR).team_id, 301);
   });
 
-  it('preserves the old revision on renumber so a following deactivation is applied', async () => {
-    const prevNum = 991;
-    const newNum = 992;
-    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 30)")
-      .run(CURRENT_YEAR, prevNum);
-
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: {
-        prevNum,
-        newNum,
-        year: CURRENT_YEAR,
-        entry: { univ: 'U', team: 'T', active: false, active_revision: 31 },
-      },
+  it('renumber converges: denormalized num follows the immutable id in all 3 tables', async () => {
+    await publish((s) => {
+      s.teams[301] = { num: 33, univ: 'A대', team: '팀A(정정)', type: 'EV', active: true };
+      return s;
     });
-    assert.equal(renumber.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
-      { active: 1, revision: 30 },
+    for (const table of ['sheet_answer', 'sheet_category_result', 'sheet_inspector']) {
+      assert.equal(
+        database.prepare(`SELECT team_num FROM ${table} WHERE year = ? AND team_id = 301`).get(CURRENT_YEAR).team_num,
+        33,
+        `${table} must follow the id after a renumber`,
+      );
+    }
+
+    const summary = await (await cli.get(`/api/sheet/summary?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
+    assert.equal(summary.teams[31], undefined);
+    assert.equal(summary.teams[33].results[categoryId], 'PASS');
+    assert.equal(summary.teams[33].inspectors[categoryId], 'Insp A');
+
+    const bulk = await (await cli.get(`/api/sheet/bulk-answers?year=${CURRENT_YEAR}&item_ids=${itemId}`, { cookie: officialCookie })).json();
+    assert.equal(bulk[31], undefined);
+    assert.equal(bulk[33][itemId], 'v1');
+  });
+
+  it('deactivation hides rows and blocks writes; reactivation restores (idempotent re-run safe)', async () => {
+    // 팀 32의 데이터 준비 (활성 상태에서)
+    await publish();
+    for (const [path, body] of [
+      ['/api/sheet/answer', { year: CURRENT_YEAR, team_num: 32, item_id: Number(itemId), value: 'keep32' }],
+      ['/api/sheet/category-result', { year: CURRENT_YEAR, team_num: 32, category_id: Number(categoryId), result: 'FAIL' }],
+      ['/api/sheet/inspector', { year: CURRENT_YEAR, team_num: 32, category_id: Number(categoryId), inspector: 'Insp B' }],
+    ]) {
+      assert.equal((await cli.put(path, { body, cookie: officialCookie })).status, 200);
+    }
+
+    await publish((s) => { s.teams[302].active = false; return s; });
+    const summary = await (await cli.get(`/api/sheet/summary?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
+    assert.equal(summary.teams[32], undefined, 'inactive team hidden from summary');
+    const bulk = await (await cli.get(`/api/sheet/bulk-answers?year=${CURRENT_YEAR}&item_ids=${itemId}`, { cookie: officialCookie })).json();
+    assert.equal(bulk[32], undefined, 'inactive team hidden from bulk-answers');
+    assert.equal((await cli.get(`/api/sheet/data/${CURRENT_YEAR}/32`, { cookie: officialCookie })).status, 404);
+    assert.equal((await cli.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 32, item_id: Number(itemId), value: 'blocked' },
+      cookie: officialCookie,
+    })).status, 409, 'writes to an inactive team are rejected');
+    assert.equal(
+      database.prepare("SELECT value FROM sheet_answer WHERE year = ? AND team_num = 32").get(CURRENT_YEAR).value,
+      'keep32',
+      'deactivation must preserve data',
     );
 
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: newNum, year: CURRENT_YEAR, active: false, revision: 31 },
+    // 같은 스냅샷 재적용(멱등) 후 재활성화
+    await teamState.refresh(CURRENT_YEAR);
+    await publish();
+    const restored = await (await cli.get(`/api/sheet/data/${CURRENT_YEAR}/32`, { cookie: officialCookie })).json();
+    assert.equal(restored.answers[itemId].value, 'keep32', 'reactivation restores preserved data');
+  });
+
+  it('tombstones cascade-delete the team rows by id in all 3 tables', async () => {
+    await publish((s) => {
+      delete s.teams[302];
+      s.tombstones = [{ id: 302, num: 32, deleted_at: '2026-01-01T00:00:00.000Z' }];
+      return s;
     });
-    assert.equal(deactivate.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
-      { active: 0, revision: 31 },
-    );
+    for (const table of ['sheet_answer', 'sheet_category_result', 'sheet_inspector']) {
+      assert.equal(
+        database.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE year = ? AND team_id = 302`).get(CURRENT_YEAR).c,
+        0,
+        `${table} rows must be cascade-deleted`,
+      );
+    }
+    // 모르는 팀(99)은 여전히 보존
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = 99").get(CURRENT_YEAR).c, 1);
+  });
+
+  it('unknown teams stay writable (fail-open, no entry dependency) and are never deleted', async () => {
+    // score와 달리 inspection 쓰기는 entry 의존이 없다 — 미지의 번호도 num 키로 저장된다
+    // (기존 absent-row-means-active 시맨틱 유지). team_id는 NULL로 남는다.
+    const res = await cli.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 99, item_id: Number(itemId), value: 'orphan2' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 200);
+    const row = database.prepare("SELECT team_id, value FROM sheet_answer WHERE year = ? AND team_num = 99").get(CURRENT_YEAR);
+    assert.deepEqual(row, { team_id: null, value: 'orphan2' });
   });
 });

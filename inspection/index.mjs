@@ -1,11 +1,10 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
-import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
+import { createTeamStateClient } from "../shared/team-state-client.mjs";
 import {
   parseCalculationConfig,
   serializeCalculationConfig,
@@ -18,7 +17,6 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "inspection", express, Database, options, dbFile: "sheet.db",
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path.startsWith("/api/internal/")) return "admin";
     if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
     if (req.path === "/api/logs") return "admin";
     if (req.path.startsWith("/api/")) return "official";
@@ -123,8 +121,12 @@ db.transaction(() => {
     ON sheet_template(year, field_key) WHERE field_key != ''`);
 
   // 검차 시트 답변 테이블
+  // team_id = entry의 불변 팀 id(리넘버·개명에도 불변). 레거시 행은 NULL로 남았다가
+  // team-state 백필이 (year, team_num) 매칭으로 채운다. team_num은 표시·레거시 키.
+  // PK 대신 rowid 테이블 + 이중 UNIQUE 인덱스(아래, 마이그레이션 뒤에 생성).
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_answer (
     year INTEGER NOT NULL,
+    team_id INTEGER,
     team_num INTEGER NOT NULL,
     item_id INTEGER NOT NULL,
     value TEXT DEFAULT '',
@@ -135,7 +137,6 @@ db.transaction(() => {
     memo_version INTEGER NOT NULL DEFAULT 0,
     memo_updated_at TEXT,
     memo_updated_by TEXT,
-    PRIMARY KEY (year, team_num, item_id),
     FOREIGN KEY (item_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
   const answerCols = db.prepare("PRAGMA table_info(sheet_answer)").all();
@@ -152,33 +153,83 @@ db.transaction(() => {
       db.exec(`ALTER TABLE sheet_answer ADD COLUMN ${name} ${type}`);
     }
   }
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_item ON sheet_answer(item_id);`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_year_item_team_value
-    ON sheet_answer(year, item_id, team_num, value);`);
-
   // 검차 시트 큰 카테고리별 결과 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_category_result (
     year INTEGER NOT NULL,
+    team_id INTEGER,
     team_num INTEGER NOT NULL,
     category_id INTEGER NOT NULL,
     result TEXT DEFAULT '' CHECK(result IN ('PASS', 'FAIL', '')),
-    PRIMARY KEY (year, team_num, category_id),
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_scr_category ON sheet_category_result(category_id);`);
 
   // 검차 시트 큰 카테고리별 검차관 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS sheet_inspector (
     year INTEGER NOT NULL,
+    team_id INTEGER,
     team_num INTEGER NOT NULL,
     category_id INTEGER NOT NULL,
     inspector TEXT DEFAULT '',
-    PRIMARY KEY (year, team_num, category_id),
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
+
+  // 기존 배포 DB의 (year, team_num, item_id|category_id) PK 테이블을 team_id 병기
+  // 스키마로 재구축. PK 대신 rowid 테이블 + 이중 UNIQUE 인덱스(id 키 = 새 조인 키,
+  // num 키 = 기존 불변식 "연도·번호·항목당 1행" 유지 + 백필 전 안전망). 테이블 RENAME은
+  // 기존 인덱스를 _old 쪽에 남기므로(DROP과 함께 소멸) 모든 인덱스는 이 아래에서
+  // 새 테이블에 다시 만든다. FK(sheet_template ON DELETE CASCADE)는 그대로 보존.
+  runMigrationOnce(db, "inspection.team_id_rekey.v1", () => {
+    const REBUILD = {
+      sheet_answer: {
+        create: `CREATE TABLE sheet_answer (
+          year INTEGER NOT NULL, team_id INTEGER, team_num INTEGER NOT NULL,
+          item_id INTEGER NOT NULL, value TEXT DEFAULT '', memo TEXT DEFAULT '',
+          answer_version INTEGER NOT NULL DEFAULT 0, answer_updated_at TEXT, answer_updated_by TEXT,
+          memo_version INTEGER NOT NULL DEFAULT 0, memo_updated_at TEXT, memo_updated_by TEXT,
+          FOREIGN KEY (item_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+        )`,
+        copyCols: "year, team_num, item_id, value, memo, answer_version, answer_updated_at, answer_updated_by, memo_version, memo_updated_at, memo_updated_by",
+      },
+      sheet_category_result: {
+        create: `CREATE TABLE sheet_category_result (
+          year INTEGER NOT NULL, team_id INTEGER, team_num INTEGER NOT NULL,
+          category_id INTEGER NOT NULL, result TEXT DEFAULT '' CHECK(result IN ('PASS', 'FAIL', '')),
+          FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+        )`,
+        copyCols: "year, team_num, category_id, result",
+      },
+      sheet_inspector: {
+        create: `CREATE TABLE sheet_inspector (
+          year INTEGER NOT NULL, team_id INTEGER, team_num INTEGER NOT NULL,
+          category_id INTEGER NOT NULL, inspector TEXT DEFAULT '',
+          FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
+        )`,
+        copyCols: "year, team_num, category_id, inspector",
+      },
+    };
+    for (const [table, { create, copyCols }] of Object.entries(REBUILD)) {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      if (cols.includes("team_id")) continue; // 신규 DB — 위 CREATE가 이미 새 스키마
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}_old`);
+      db.exec(create);
+      db.exec(`INSERT INTO ${table} (${copyCols}) SELECT ${copyCols} FROM ${table}_old`);
+      db.exec(`DROP TABLE ${table}_old`);
+    }
+  }, { transaction: false });
+
+  // 이중 UNIQUE 인덱스 + 보조 인덱스 — 마이그레이션 밖(멱등), 새 테이블 기준으로 생성
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sa_id_key ON sheet_answer(year, team_id, item_id)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sa_num_key ON sheet_answer(year, team_num, item_id)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_scr_id_key ON sheet_category_result(year, team_id, category_id)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_scr_num_key ON sheet_category_result(year, team_num, category_id)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_si_id_key ON sheet_inspector(year, team_id, category_id)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_si_num_key ON sheet_inspector(year, team_num, category_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_sa_item ON sheet_answer(item_id)");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sa_year_item_team_value
+    ON sheet_answer(year, item_id, team_num, value)`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_scr_category ON sheet_category_result(category_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id)");
 })();
-ensureTeamStatusTable(db);
 
 function templateItemsForYear(year) {
   return db.prepare(`
@@ -205,6 +256,82 @@ const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 // SSE 엔드포인트
 app.get("/api/sheet/events", sseHandler());
+
+/* ============================================
+   Entry team-state (미러 대체 캐시 + 수렴형 강제)
+   ============================================ */
+const teamState = createTeamStateClient({ db, logger, service: "inspection" });
+
+const SHEET_TABLES = ["sheet_answer", "sheet_category_result", "sheet_inspector"];
+
+// 백필: 레거시 (year, team_num) 행에 team_id를 채운다 (연도별 1회, 첫 유효 스냅샷)
+teamState.registerBackfill((year, state) => {
+  const updates = SHEET_TABLES.map((t) =>
+    db.prepare(`UPDATE ${t} SET team_id = ? WHERE year = ? AND team_num = ? AND team_id IS NULL`));
+  for (const team of state.teams.values()) {
+    for (const upd of updates) upd.run(team.id, year, team.num);
+  }
+  let orphans = 0;
+  for (const t of SHEET_TABLES) {
+    orphans += db.prepare(`SELECT COUNT(*) AS c FROM ${t} WHERE year = ? AND team_id IS NULL`).get(year).c;
+  }
+  if (orphans > 0) {
+    // entry가 모르는 팀의 행 — 삭제하지 않고 로그만 (기존 reconcile 철학)
+    logger.warn(null, "inspection.team_id_backfill", { year, unmatched_rows: orphans });
+  }
+});
+
+// 수렴형 강제: 스냅샷 version이 바뀔 때마다 멱등 실행
+teamState.registerEnforcement((year, state) => {
+  // ① tombstone cascade — 삭제·교체된 팀의 시트 데이터 삭제 (기존 DELETE /api/internal/team 시맨틱)
+  const deleters = SHEET_TABLES.map((t) =>
+    db.prepare(`DELETE FROM ${t} WHERE year = ? AND team_id = ?`));
+  let deletedRows = 0;
+  const deletedIds = [];
+  for (const t of state.tombstones) {
+    let n = 0;
+    for (const del of deleters) n += del.run(year, t.id).changes;
+    if (n > 0) {
+      deletedRows += n;
+      deletedIds.push(t.id);
+    }
+  }
+  if (deletedRows > 0) {
+    logger.log(null, "team.delete", { year, team_ids: deletedIds, rows: deletedRows });
+  }
+
+  // ② 비활성 정리 훅 없음 — inspection은 조회 필터로만 제외한다 (기존과 동일)
+
+  // ③ 비정규화 갱신: 리넘버된 팀의 team_num을 id 기준으로 최신화
+  const renumbers = SHEET_TABLES.map((t) =>
+    db.prepare(`UPDATE ${t} SET team_num = ? WHERE year = ? AND team_id = ? AND team_num != ?`));
+  let renumbered = 0;
+  for (const team of state.teams.values()) {
+    for (const upd of renumbers) renumbered += upd.run(team.num, year, team.id, team.num).changes;
+  }
+  if (renumbered > 0) logger.log(null, "team.renumber", { year, rows: renumbered });
+
+  // ④ 모르는 팀(스냅샷·tombstone 어디에도 없는 team_id) — 로그만, 삭제 금지
+  const knownIds = new Set([...state.teams.keys(), ...state.tombstones.map((t) => t.id)]);
+  const localIds = db.prepare(`
+    SELECT DISTINCT team_id FROM (
+      SELECT team_id FROM sheet_answer WHERE year = ? AND team_id IS NOT NULL
+      UNION SELECT team_id FROM sheet_category_result WHERE year = ? AND team_id IS NOT NULL
+      UNION SELECT team_id FROM sheet_inspector WHERE year = ? AND team_id IS NOT NULL
+    )`).all(year, year, year).map((r) => r.team_id);
+  const unknown = localIds.filter((id) => !knownIds.has(id));
+  if (unknown.length > 0 && teamState.throttled(`unknown:${year}`)) {
+    logger.warn(null, "inspection.team_state_unknown", { year, team_ids: unknown });
+  }
+
+  if (deletedRows > 0 || renumbered > 0) {
+    return () => {
+      broadcastEvent("answer", { year });
+      broadcastEvent("category-result", { year });
+      broadcastEvent("inspector", { year });
+    };
+  }
+});
 
 /* ============================================
    API 라우트: 검차 시트
@@ -579,6 +706,10 @@ app.get("/api/sheet/summary", (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
 
+  // 비활성 팀 제외 — 캐시의 비활성 번호 목록을 파라미터로 바인딩 (미로드 시 '[]' = 전원 노출,
+  // 기존 absent-row-means-active와 동일한 fail-open)
+  const { inactiveNumsJson } = teamState.getStateSync(year);
+
   const result = dbRun(() => {
     // excluded_types를 함께 내려 목록·성적표가 팀 유형에 해당하지 않는 칸을 비울 수 있게 한다.
     const categories = db.prepare(
@@ -587,19 +718,13 @@ app.get("/api/sheet/summary", (req, res) => {
 
     const inspectors = db.prepare(
       `SELECT i.team_num, i.category_id, i.inspector FROM sheet_inspector i
-       WHERE i.year = ? AND NOT EXISTS (
-         SELECT 1 FROM team_status s
-         WHERE s.year = i.year AND s.team_num = i.team_num AND s.active = 0
-       )`
-    ).all(year);
+       WHERE i.year = ? AND i.team_num NOT IN (SELECT value FROM json_each(?))`
+    ).all(year, inactiveNumsJson);
 
     const results = db.prepare(
       `SELECT r.team_num, r.category_id, r.result FROM sheet_category_result r
-       WHERE r.year = ? AND NOT EXISTS (
-         SELECT 1 FROM team_status s
-         WHERE s.year = r.year AND s.team_num = r.team_num AND s.active = 0
-       )`
-    ).all(year);
+       WHERE r.year = ? AND r.team_num NOT IN (SELECT value FROM json_each(?))`
+    ).all(year, inactiveNumsJson);
 
     const teams = {};
     for (const row of inspectors) {
@@ -628,16 +753,16 @@ app.get("/api/sheet/bulk-answers", (req, res) => {
   if (!itemIds.length) return res.status(400).send("유효한 item_ids가 없습니다.");
   if (itemIds.length > 1000) return res.status(400).send("item_ids는 1000개를 초과할 수 없습니다.");
 
+  // 비활성 팀 제외 — summary와 동일한 fail-open 필터
+  const { inactiveNumsJson } = teamState.getStateSync(year);
+
   const result = dbRun(() => {
     const placeholders = itemIds.map(() => "?").join(",");
     const rows = db.prepare(
       `SELECT a.team_num, a.item_id, a.value FROM sheet_answer a
        WHERE a.year = ? AND a.item_id IN (${placeholders}) AND a.value != ''
-         AND NOT EXISTS (
-           SELECT 1 FROM team_status s
-           WHERE s.year = a.year AND s.team_num = a.team_num AND s.active = 0
-         )`
-    ).all(year, ...itemIds);
+         AND a.team_num NOT IN (SELECT value FROM json_each(?))`
+    ).all(year, ...itemIds, inactiveNumsJson);
 
     const teams = {};
     for (const row of rows) {
@@ -658,7 +783,7 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
   if (!Number.isInteger(year) || !Number.isInteger(num) || num < 1) {
     return res.status(400).send("올바르지 않은 연도 또는 팀 번호입니다.");
   }
-  if (!isTeamActive(db, year, num)) return res.status(404).send("엔트리를 찾을 수 없습니다.");
+  if (!teamState.isActive(year, num)) return res.status(404).send("엔트리를 찾을 수 없습니다.");
 
   const result = dbRun(() => {
     const answers = db.prepare(`
@@ -712,7 +837,7 @@ app.put("/api/sheet/answer", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  if (!teamState.isActive(year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateItem = db.prepare("SELECT id, name, answer_type, calculation FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
@@ -735,6 +860,10 @@ app.put("/api/sheet/answer", (req, res) => {
 
   const updatedAt = new Date().toISOString();
   const updatedBy = req.user?.name || req.user?.email || "";
+  // 저장은 기존 num 키 upsert를 그대로 쓰되(엔트리 미가용 시에도 동작해야 한다 — 503 금지),
+  // 캐시로 num→id가 풀리면 team_id를 함께 채워 레거시 행을 현재 팀에 귀속시킨다.
+  // 캐시 미로드·미지의 팀이면 NULL — 백필/다음 쓰기가 채운다.
+  const teamId = teamState.resolveTeamId(year, team_num);
 
   const result = dbRun(() => {
     const prev = db.prepare(
@@ -760,14 +889,15 @@ app.put("/api/sheet/answer", (req, res) => {
 
     db.prepare(
       `INSERT INTO sheet_answer
-         (year, team_num, item_id, value, answer_version, answer_updated_at, answer_updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (year, team_id, team_num, item_id, value, answer_version, answer_updated_at, answer_updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(year, team_num, item_id) DO UPDATE SET
          value = excluded.value,
          answer_version = excluded.answer_version,
          answer_updated_at = excluded.answer_updated_at,
-         answer_updated_by = excluded.answer_updated_by`
-    ).run(year, team_num, item_id, newValue, nextVersion, updatedAt, updatedBy);
+         answer_updated_by = excluded.answer_updated_by,
+         team_id = COALESCE(excluded.team_id, sheet_answer.team_id)`
+    ).run(year, teamId, team_num, item_id, newValue, nextVersion, updatedAt, updatedBy);
 
     return {
       changed: true,
@@ -815,7 +945,7 @@ app.put("/api/sheet/memo", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  if (!teamState.isActive(year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateItem = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
   if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
@@ -826,6 +956,8 @@ app.put("/api/sheet/memo", (req, res) => {
   const newMemo = memo ?? "";
   const updatedAt = new Date().toISOString();
   const updatedBy = req.user?.name || req.user?.email || "";
+  // answer와 동일: num 키 upsert + 해석되면 team_id 병기 (미해석 시 NULL 폴백)
+  const teamId = teamState.resolveTeamId(year, team_num);
   const result = dbRun(() => {
     const prev = db.prepare(
       `SELECT memo, memo_version, memo_updated_at, memo_updated_by
@@ -849,14 +981,15 @@ app.put("/api/sheet/memo", (req, res) => {
     const nextVersion = current.version + 1;
     db.prepare(
       `INSERT INTO sheet_answer
-         (year, team_num, item_id, memo, memo_version, memo_updated_at, memo_updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (year, team_id, team_num, item_id, memo, memo_version, memo_updated_at, memo_updated_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(year, team_num, item_id) DO UPDATE SET
          memo = excluded.memo,
          memo_version = excluded.memo_version,
          memo_updated_at = excluded.memo_updated_at,
-         memo_updated_by = excluded.memo_updated_by`
-    ).run(year, team_num, item_id, newMemo, nextVersion, updatedAt, updatedBy);
+         memo_updated_by = excluded.memo_updated_by,
+         team_id = COALESCE(excluded.team_id, sheet_answer.team_id)`
+    ).run(year, teamId, team_num, item_id, newMemo, nextVersion, updatedAt, updatedBy);
 
     return {
       changed: true,
@@ -904,7 +1037,7 @@ app.put("/api/sheet/category-result", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  if (!teamState.isActive(year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (catResult !== undefined && catResult !== null && catResult !== "" && !["PASS", "FAIL"].includes(catResult)) {
     return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
   }
@@ -912,10 +1045,14 @@ app.put("/api/sheet/category-result", (req, res) => {
   const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
   if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
 
+  // answer와 동일: num 키 upsert + 해석되면 team_id 병기 (미해석 시 NULL 폴백)
+  const teamId = teamState.resolveTeamId(year, team_num);
   const r = dbRun(() =>
     db.prepare(
-      "INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, category_id) DO UPDATE SET result = excluded.result"
-    ).run(year, team_num, category_id, catResult ?? "")
+      `INSERT INTO sheet_category_result (year, team_id, team_num, category_id, result) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(year, team_num, category_id) DO UPDATE SET result = excluded.result,
+         team_id = COALESCE(excluded.team_id, sheet_category_result.team_id)`
+    ).run(year, teamId, team_num, category_id, catResult ?? "")
   );
 
   if (!r.success) {
@@ -937,15 +1074,19 @@ app.put("/api/sheet/inspector", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  if (!teamState.isActive(year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
   if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
   const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
   if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
 
+  // answer와 동일: num 키 upsert + 해석되면 team_id 병기 (미해석 시 NULL 폴백)
+  const teamId = teamState.resolveTeamId(year, team_num);
   const result = dbRun(() =>
     db.prepare(
-      "INSERT INTO sheet_inspector (year, team_num, category_id, inspector) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, category_id) DO UPDATE SET inspector = excluded.inspector"
-    ).run(year, team_num, category_id, inspector ?? "")
+      `INSERT INTO sheet_inspector (year, team_id, team_num, category_id, inspector) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(year, team_num, category_id) DO UPDATE SET inspector = excluded.inspector,
+         team_id = COALESCE(excluded.team_id, sheet_inspector.team_id)`
+    ).run(year, teamId, team_num, category_id, inspector ?? "")
   );
 
   if (!result.success) {
@@ -959,24 +1100,13 @@ app.put("/api/sheet/inspector", (req, res) => {
   res.status(200).send();
 });
 
-/* ============================================
-   Internal API: 엔트리 라이프사이클 연동
-   ============================================ */
-
-registerTeamStatusRoute(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-});
-
-registerTeamLifecycleRoutes(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  tables: ["sheet_answer", "sheet_category_result", "sheet_inspector"],
-  channels: ["answer", "category-result", "inspector"],
-  statusTable: "team_status",
-});
+// entry 팀 상태 동기화 기동 (SSE 구독 + 부팅 fetch). 테스트는 skipTeamStateSync로
+// 네트워크 구독을 끄고 teamState.refresh(year)를 직접 호출한다.
+if (!options.skipTeamStateSync) teamState.start();
 
 addSpaFallback(app);
 
-return { app, db };
+return { app, db, teamState };
 }
 
 runIfDirect(import.meta, "inspection", createInspectionApp);
