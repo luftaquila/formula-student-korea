@@ -661,7 +661,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
       return record;
     })());
     if (!r.success) {
-      logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
+      logger.warn(null, "wireless.record", { error: r.error, cause: r.cause, event_type: eventType }, name, SYS);
       return;
     }
     run.recordName = name;
@@ -1162,7 +1162,7 @@ app.post("/api/records", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "record.create", { error: result.error, entry_num: data.entry.num }, name);
+    logger.warn(req, "record.create", { error: result.error, cause: result.cause, entry_num: data.entry.num }, name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1446,7 +1446,7 @@ app.delete("/api/controllers", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM controller").run());
 
   if (!result.success) {
-    logger.warn(req, "controller.clear", { error: result.error });
+    logger.warn(req, "controller.clear", { error: result.error, cause: result.cause });
     return res.status(result.status).send(result.error);
   }
 
@@ -1488,7 +1488,7 @@ app.put("/api/event-modes/:type", (req, res) => {
     db.prepare("UPDATE event_mode SET enabled = ? WHERE event_type = ?").run(newEnabled, eventType),
   );
   if (!result.success) {
-    logger.warn(req, "event_mode.toggle", { error: result.error }, eventType);
+    logger.warn(req, "event_mode.toggle", { error: result.error, cause: result.cause }, eventType);
     return res.status(result.status).send(result.error);
   }
 
@@ -1770,7 +1770,7 @@ app.put("/api/wireless/physical-event", (req, res) => {
     return { row: getLightState(), prev: prev?.owner_event || null };
   });
   if (!result.success) {
-    logger.warn(req, "wireless.physical_event", { error: result.error, requested: value });
+    logger.warn(req, "wireless.physical_event", { error: result.error, cause: result.cause, requested: value });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.physical_event", { event_type: value, prev: result.result.prev });
@@ -1790,7 +1790,7 @@ app.put("/api/wireless/debounce", (req, res) => {
     return getLightState();
   });
   if (!result.success) {
-    logger.warn(req, "wireless.debounce", { error: result.error, ms }, "settings");
+    logger.warn(req, "wireless.debounce", { error: result.error, cause: result.cause, ms }, "settings");
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.debounce", { ms }, "settings");
@@ -2229,7 +2229,7 @@ app.put("/api/wireless/mapping/:node_id", (req, res) => {
     return { row: db.prepare("SELECT node_id, event_type, role, label, enabled, updated_at FROM wireless_mapping WHERE node_id = ?").get(node), prev };
   });
   if (!result.success) {
-    logger.warn(req, "wireless.mapping", { error: result.error, event_type, role }, node);
+    logger.warn(req, "wireless.mapping", { error: result.error, cause: result.cause, event_type, role }, node);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.mapping", { event_type, role, label, enabled, prev: result.result.prev }, node);
@@ -2247,7 +2247,7 @@ app.delete("/api/wireless/mapping/:node_id", (req, res) => {
     return prev;
   });
   if (!result.success) {
-    logger.warn(req, "wireless.mapping.delete", { error: result.error }, node);
+    logger.warn(req, "wireless.mapping.delete", { error: result.error, cause: result.cause }, node);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.mapping.delete", { prev: result.result }, node);

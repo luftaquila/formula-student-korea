@@ -410,7 +410,7 @@ app.post("/api/sheet/template", (req, res) => {
   })());
 
   if (!result.success) {
-    logger.warn(req, "template.create", { error: result.error, year }, name);
+    logger.warn(req, "template.create", { error: result.error, cause: result.cause, year }, name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.create", { year, level }, name);
@@ -654,7 +654,7 @@ app.post("/api/sheet/template/copy", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.copy", { error: result.error, from_year, to_year });
+    logger.warn(req, "template.copy", { error: result.error, cause: result.cause, from_year, to_year });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.copy", { from_year, to_year });
@@ -716,7 +716,7 @@ app.post("/api/sheet/template/import", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.import", { error: result.error, year });
+    logger.warn(req, "template.import", { error: result.error, cause: result.cause, year });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.import", { year });

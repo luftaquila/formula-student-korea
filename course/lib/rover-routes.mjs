@@ -140,7 +140,7 @@ function startMission(waypoints, actor, courseId) {
     return insertMission.run(courseId || null, Date.now(), JSON.stringify(waypoints), actor || null);
   })());
   if (!r.success) {
-    logger.warn(null, "mission.start", { error: r.error, course_id: courseId }, "rover", SYS);
+    logger.warn(null, "mission.start", { error: r.error, cause: r.cause, course_id: courseId }, "rover", SYS);
     return false;
   }
   if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior }, "rover");
@@ -1889,7 +1889,7 @@ app.put("/api/gps/config", (req, res) => {
     setGpsConfigStmt.run("active_base_point_id", point ? String(point.id) : "");
   });
   if (!result.success) {
-    logger.warn(req, "gps.config.update", { error: result.error }, "gps");
+    logger.warn(req, "gps.config.update", { error: result.error, cause: result.cause }, "gps");
     return res.status(result.status).send(result.error);
   }
   ntripSourceCache = ntrip_source;
@@ -1923,7 +1923,7 @@ app.post("/api/gps/survey-points", (req, res) => {
     return getSurveyPointStmt.get(Number(info.lastInsertRowid));
   });
   if (!result.success) {
-    logger.warn(req, "gps.survey_point.create", { error: result.error }, name);
+    logger.warn(req, "gps.survey_point.create", { error: result.error, cause: result.cause }, name);
     return res.status(result.status).send(
       result.error?.includes("UNIQUE") ? "이미 존재하는 측량점 이름입니다." : result.error);
   }
@@ -1945,7 +1945,7 @@ app.delete("/api/gps/survey-points/:id", (req, res) => {
   }
   const result = dbRun(() => deleteSurveyPointStmt.run(id));
   if (!result.success) {
-    logger.warn(req, "gps.survey_point.delete", { error: result.error, id }, point.name);
+    logger.warn(req, "gps.survey_point.delete", { error: result.error, cause: result.cause, id }, point.name);
     return res.status(result.status).send(result.error);
   }
   // 측량 중이던 측량점을 지웠으면 base 상태를 즉시 idle로 되돌린다(수신기 survey-result를
@@ -2056,7 +2056,7 @@ app.post("/api/rover/base/survey-result", (req, res) => {
   const result = dbRun(() =>
     updateSurveyPointResultStmt.run(lat, lng, altValue, hAccValue, sampleCount, id));
   if (!result.success) {
-    logger.warn(req, "gps.survey.result", { error: result.error, id }, point.name);
+    logger.warn(req, "gps.survey.result", { error: result.error, cause: result.cause, id }, point.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "gps.survey.result",

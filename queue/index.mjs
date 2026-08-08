@@ -841,7 +841,7 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "inspection.toggle", { error: result.error }, req.params.type);
+    logger.warn(req, "inspection.toggle", { error: result.error, cause: result.cause }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -867,7 +867,7 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "inspection.visibility", { error: result.error }, req.params.type);
+    logger.warn(req, "inspection.visibility", { error: result.error, cause: result.cause }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -956,7 +956,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "queue.register", denyReason ? { error: result.error, reason: denyReason } : { error: result.error }, `#${num}`);
+    logger.warn(req, "queue.register", denyReason ? { error: result.error, cause: result.cause, reason: denyReason } : { error: result.error, cause: result.cause }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1139,7 +1139,7 @@ app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.restore", { error: result.error, inspection: type, year }, `#${num}`);
+    logger.warn(req, "penalty.restore", { error: result.error, cause: result.cause, inspection: type, year }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1176,7 +1176,7 @@ app.delete("/api/admin/penalties/:type/:num", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.clear", { error: result.error, inspection: type, year }, `#${num}`);
+    logger.warn(req, "penalty.clear", { error: result.error, cause: result.cause, inspection: type, year }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1261,7 +1261,7 @@ app.post("/api/admin/priority/:type", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "priority.set", { error: result.error }, `#${numValidation.value}`);
+    logger.warn(req, "priority.set", { error: result.error, cause: result.cause }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1328,7 +1328,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM team_priority WHERE inspection = ? AND year = ?").run(req.params.type, currentYear()));
 
   if (!result.success) {
-    logger.warn(req, "priority.clear", { error: result.error }, req.params.type);
+    logger.warn(req, "priority.clear", { error: result.error, cause: result.cause }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1380,7 +1380,7 @@ app.delete("/api/admin/history/:type", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "history.clear", { error: result.error }, type);
+    logger.warn(req, "history.clear", { error: result.error, cause: result.cause }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1416,7 +1416,7 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "inspection.ignore", { error: result.error }, type);
+    logger.warn(req, "inspection.ignore", { error: result.error, cause: result.cause }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1500,7 +1500,7 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "booth.count", { error: result.error }, type);
+    logger.warn(req, "booth.count", { error: result.error, cause: result.cause }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1544,7 +1544,7 @@ app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "booth.toggle", { error: result.error }, type);
+    logger.warn(req, "booth.toggle", { error: result.error, cause: result.cause }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -2129,7 +2129,7 @@ app.patch("/api/admin/settings/sms", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "settings.sms", { error: result.error });
+    logger.warn(req, "settings.sms", { error: result.error, cause: result.cause });
     return res.status(result.status).send(result.error);
   }
 
@@ -2158,7 +2158,7 @@ app.patch("/api/admin/settings/sms-rank", (req, res) => {
   const result = dbRun(() => db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(String(rank), "sms_rank"));
 
   if (!result.success) {
-    logger.warn(req, "settings.sms_rank", { error: result.error });
+    logger.warn(req, "settings.sms_rank", { error: result.error, cause: result.cause });
     return res.status(result.status).send(result.error);
   }
 
@@ -2189,7 +2189,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "settings.cancel_penalty", { error: result.error });
+    logger.warn(req, "settings.cancel_penalty", { error: result.error, cause: result.cause });
     return res.status(result.status).send(result.error);
   }
 

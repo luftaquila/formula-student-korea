@@ -1298,7 +1298,7 @@ app.post("/api/admin/sessions", (req, res) => {
     return tx();
   });
 
-  if (!txResult.success) { logger.warn(req, "session.create", { error: txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
+  if (!txResult.success) { logger.warn(req, "session.create", { error: txResult.error, cause: txResult.cause }, name.trim()); return res.status(txResult.status).send(txResult.error); }
   logger.log(req, "session.create", { year: numYear, teams: teams.length }, name.trim());
   res.status(201).json(txResult.result);
 
@@ -1696,7 +1696,7 @@ app.post("/api/admin/student-teams", (req, res) => {
       logger.warn(req, "student_team.create", { error: "duplicate", team_num: numTeam, year: numYear }, email.trim().toLowerCase());
       return res.status(400).send("이미 등록된 이메일이거나 해당 팀에 이미 학생이 있습니다.");
     }
-    logger.warn(req, "student_team.create", { error: result.error }, email.trim().toLowerCase());
+    logger.warn(req, "student_team.create", { error: result.error, cause: result.cause }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
 

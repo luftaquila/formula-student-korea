@@ -454,7 +454,7 @@ app.put("/api/score/publication", (req, res) => {
   `).run(year, enabled ? 1 : 0));
 
   if (!result.success) {
-    logger.warn(req, "score_publication.update", { error: result.error, year, enabled }, String(year));
+    logger.warn(req, "score_publication.update", { error: result.error, cause: result.cause, year, enabled }, String(year));
     return res.status(result.status).send(result.error);
   }
 
@@ -798,7 +798,7 @@ app.put("/api/score/penalty", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.update", { error: result.error, year: numYear }, event_type);
+    logger.warn(req, "penalty.update", { error: result.error, cause: result.cause, year: numYear }, event_type);
     return res.status(result.status).send(result.error);
   }
 
@@ -838,7 +838,7 @@ app.put("/api/score/setting", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "setting.update", { error: result.error, year: numYear, key: setting_key }, event_type);
+    logger.warn(req, "setting.update", { error: result.error, cause: result.cause, year: numYear, key: setting_key }, event_type);
     return res.status(result.status).send(result.error);
   }
 

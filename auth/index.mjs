@@ -474,13 +474,13 @@ app.get("/api/callback", async (req, res) => {
     // Update name from Google profile (best-effort: a sync failure must not block login)
     if (name && name !== user.name) {
       const r = dbRun(() => db.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, user.id));
-      if (!r.success) logger.warn(req, "user.name_sync", { error: r.error }, email, { email, name, role: user.role });
+      if (!r.success) logger.warn(req, "user.name_sync", { error: r.error, cause: r.cause }, email, { email, name, role: user.role });
     }
 
     // 최초 로그인 시 created_at 기록
     if (!user.created_at) {
       const r = dbRun(() => db.prepare("UPDATE users SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(user.id));
-      if (!r.success) logger.warn(req, "user.created_at_init", { error: r.error }, email, { email, name, role: user.role });
+      if (!r.success) logger.warn(req, "user.created_at_init", { error: r.error, cause: r.cause }, email, { email, name, role: user.role });
     }
 
     // Set JWT cookie
@@ -573,7 +573,7 @@ app.post("/api/apply", (req, res) => {
       logger.warn(req, "applicant.apply", { error: "duplicate" }, applicant.email);
       return res.status(409).send("이미 신청서를 제출했습니다.");
     }
-    logger.warn(req, "applicant.apply", { error: result.error }, applicant.email);
+    logger.warn(req, "applicant.apply", { error: result.error, cause: result.cause }, applicant.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -601,7 +601,7 @@ app.patch("/api/apply", (req, res) => {
   ).run(realname, phone, affiliation, applicant.email));
 
   if (!result.success) {
-    logger.warn(req, "applicant.apply_edit", { error: result.error }, applicant.email);
+    logger.warn(req, "applicant.apply_edit", { error: result.error, cause: result.cause }, applicant.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -630,7 +630,7 @@ app.patch("/api/applications/config", (req, res) => {
     "INSERT INTO settings (key, value) VALUES ('applications_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(open ? "1" : "0"));
   if (!result.success) {
-    logger.warn(req, "applications.config", { error: result.error });
+    logger.warn(req, "applications.config", { error: result.error, cause: result.cause });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "applications.config", { open });
@@ -670,7 +670,7 @@ app.post("/api/applications/approve", (req, res) => {
   })());
 
   if (!txResult.success) {
-    logger.warn(req, "applications.approve", { error: txResult.error });
+    logger.warn(req, "applications.approve", { error: txResult.error, cause: txResult.cause });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -697,7 +697,7 @@ app.delete("/api/applications", (req, res) => {
   })());
 
   if (!txResult.success) {
-    logger.warn(req, "applications.delete", { error: txResult.error, ids: numIds });
+    logger.warn(req, "applications.delete", { error: txResult.error, cause: txResult.cause, ids: numIds });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -742,7 +742,7 @@ app.post("/api/users", (req, res) => {
       logger.warn(req, "user.create", { error: "duplicate" }, email.trim().toLowerCase());
       return res.status(400).send("이미 등록된 이메일입니다.");
     }
-    logger.warn(req, "user.create", { error: result.error }, email.trim().toLowerCase());
+    logger.warn(req, "user.create", { error: result.error, cause: result.cause }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
 
@@ -785,7 +785,7 @@ app.post("/api/users/bulk", (req, res) => {
 
   const txResult = dbRun(() => run());
   if (!txResult.success) {
-    logger.warn(req, "user.create_bulk", { error: txResult.error });
+    logger.warn(req, "user.create_bulk", { error: txResult.error, cause: txResult.cause });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -831,7 +831,7 @@ app.patch("/api/users/bulk", (req, res) => {
 
   const txResult = dbRun(() => run());
   if (!txResult.success) {
-    logger.warn(req, "user.bulk_toggle", { error: txResult.error });
+    logger.warn(req, "user.bulk_toggle", { error: txResult.error, cause: txResult.cause });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -875,7 +875,7 @@ app.delete("/api/users/bulk", (req, res) => {
     return { changes: delResult.changes, emails };
   })());
   if (!txResult.success) {
-    logger.warn(req, "user.bulk_delete", denyReason ? { error: txResult.error, reason: denyReason, ids: numIds } : { error: txResult.error });
+    logger.warn(req, "user.bulk_delete", denyReason ? { error: txResult.error, cause: txResult.cause, reason: denyReason, ids: numIds } : { error: txResult.error, cause: txResult.cause });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -935,7 +935,7 @@ app.patch("/api/users/:id", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "user.update", denyReason ? { error: result.error, reason: denyReason, role } : { error: result.error }, user.email);
+    logger.warn(req, "user.update", denyReason ? { error: result.error, cause: result.cause, reason: denyReason, role } : { error: result.error, cause: result.cause }, user.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -978,7 +978,7 @@ app.delete("/api/users/:id", (req, res) => {
     return db.prepare("DELETE FROM users WHERE id = ?").run(id);
   })());
   if (!result.success) {
-    logger.warn(req, "user.delete", { error: result.error }, user.email);
+    logger.warn(req, "user.delete", { error: result.error, cause: result.cause }, user.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "user.delete", { role: user.role, name: user.name }, user.email);
@@ -1018,7 +1018,7 @@ app.post("/api/ops-contacts", (req, res) => {
     return db.prepare("INSERT OR IGNORE INTO ops_display (user_id, sort_order) VALUES (?, ?)").run(user_id, nextOrder);
   })());
   if (!result.success) {
-    logger.warn(req, "ops_contact.create", { error: result.error }, user.email);
+    logger.warn(req, "ops_contact.create", { error: result.error, cause: result.cause }, user.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.create", { name: user.name, role: user.role }, user.email);
@@ -1053,7 +1053,7 @@ app.post("/api/ops-contacts/reorder", (req, res) => {
     })();
   });
   if (!result.success) {
-    logger.warn(req, "ops_contact.reorder", { error: result.error, count: userIds.length });
+    logger.warn(req, "ops_contact.reorder", { error: result.error, cause: result.cause, count: userIds.length });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.reorder", { count: userIds.length });
@@ -1074,7 +1074,7 @@ app.patch("/api/ops-contacts/:userId", (req, res) => {
 
   const result = dbRun(() => db.prepare("UPDATE ops_display SET description = ? WHERE user_id = ?").run(normalizedDescription, userId));
   if (!result.success) {
-    logger.warn(req, "ops_contact.update", { error: result.error }, row.email);
+    logger.warn(req, "ops_contact.update", { error: result.error, cause: result.cause }, row.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.update", { name: row.name, description: normalizedDescription }, row.email);
@@ -1088,7 +1088,7 @@ app.delete("/api/ops-contacts/:userId", (req, res) => {
   if (!row) return res.status(404).send("표시 목록에 없는 사용자입니다.");
   const result = dbRun(() => db.prepare("DELETE FROM ops_display WHERE user_id = ?").run(userId));
   if (!result.success) {
-    logger.warn(req, "ops_contact.delete", { error: result.error }, row.email);
+    logger.warn(req, "ops_contact.delete", { error: result.error, cause: result.cause }, row.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.delete", { name: row.name }, row.email);
