@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -522,6 +523,50 @@ describe('createApp validateUser caching integration', () => {
     } finally {
       await stopServer(server);
     }
+  });
+});
+
+// ─── public /assets serving (before auth) ───────────────────────────────
+describe('public /assets serving', () => {
+  let server, baseUrl, calls;
+
+  before(async () => {
+    // express.static은 cwd 기준 ./web/dist/assets를 읽는다. 테스트 프로세스 cwd(리포 루트)에
+    // 픽스처를 만들고 after에서 정리한다.
+    fs.mkdirSync('./web/dist/assets', { recursive: true });
+    fs.writeFileSync('./web/dist/assets/fixture-abc123.js', 'export const x = 1;\n');
+    calls = 0;
+    const app = createApp({
+      express,
+      validateUser: async () => { calls++; return { valid: true, role: null }; },
+    }, () => 'admin'); // 모든 경로를 게이트 (entry처럼 정적 파일까지 admin)
+    const started = await startServer(app);
+    server = started.server;
+    baseUrl = started.baseUrl;
+  });
+
+  after(async () => {
+    if (server) await stopServer(server);
+    fs.rmSync('./web/dist', { recursive: true, force: true });
+  });
+
+  it('serves content-hashed assets without auth and without hitting the validator', async () => {
+    const cookie = makeAuthCookie({ email: 'u@t.co', name: 'U', role: 'admin' });
+    const res = await fetch(`${baseUrl}/assets/fixture-abc123.js`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.equal(calls, 0, 'asset request must not trigger revalidation');
+  });
+
+  it('missing asset falls through to the gate (redirect for non-API path)', async () => {
+    const res = await fetch(`${baseUrl}/assets/nope.js`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/');
+  });
+
+  it('non-asset paths are still gated', async () => {
+    const res = await fetch(`${baseUrl}/index.html`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
   });
 });
 

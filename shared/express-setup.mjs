@@ -130,6 +130,18 @@ export function createApp(deps, authRoleFn) {
 
   const app = express();
   app.disable("x-powered-by");
+
+  // 0. 콘텐츠 해시 자산 공개 서빙. Vite가 낸 /assets/*는 파일명이 콘텐츠에 종속된
+  // 불변 번들이라 인증·재검증보다 먼저 서빙해도 정보 노출이 없다 — 로그인한 브라우저의
+  // 매 자산 요청이 auth 왕복(아래 3c)을 태우던 비용을 없앤다. index.html 등 나머지 정적
+  // 파일은 기존대로 게이트 뒤(아래 5)에서 서빙한다. 미존재 자산은 fallthrough로 기존
+  // 401/redirect 경로를 그대로 탄다.
+  app.use("/assets", express.static("./web/dist/assets", {
+    index: false,
+    fallthrough: true,
+    setHeaders: (res) => res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
+  }));
+
   app.use(express.json({ limit: "100kb" }));
   app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
