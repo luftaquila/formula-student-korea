@@ -285,7 +285,8 @@ function checkLoginRate(req, res) {
   entry.count++;
   loginLimiter.set(ip, entry);
   if (entry.count > 20) {
-    logger.warn(req, "auth.rate_limit", { count: entry.count, ip });
+    // 무차별 대입 중 매 요청 warn을 남기면 초당 수십 행으로 뷰어가 침수된다 — 윈도우당 첫 위반만 기록.
+    if (entry.count === 21) logger.warn(req, "auth.rate_limit", { count: entry.count, ip });
     res.redirect("/?login_error=rate_limit");
     return false;
   }

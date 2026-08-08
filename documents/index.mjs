@@ -755,6 +755,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
   const filesInfo = [];
   const filePromises = [];
+  const mimeMismatches = [];
   let totalSize = 0;
   let aborted = false;
 
@@ -795,7 +796,8 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     };
     const ext = path.extname(info.filename || "").toLowerCase();
     if (MIME_MAP[ext] && !MIME_MAP[ext].includes(info.mimeType)) {
-      logger.warn(req, "submission.create", { warning: "mime_mismatch", filename: info.filename, ext, mime: info.mimeType }, session.name);
+      // 파일당 warn을 남기면 한 제출(최대 100파일)로 로그가 도배되므로 모아서 완료 시 1건만 남긴다
+      mimeMismatches.push({ filename: info.filename, ext, mime: info.mimeType });
     }
 
     const storedName = crypto.randomUUID() + safeExt(info.filename);

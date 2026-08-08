@@ -481,7 +481,8 @@ app.get("/api/score/public/:year", async (req, res) => {
     if (!isScorePublished(year)) return res.status(404).send("공개 중인 성적표가 아닙니다.");
     res.json(payload);
   } catch (e) {
-    logger.warn(req, "score.public_aggregate", { error: e.message, year }, String(year));
+    // 비인증 공개 라우트라 상류 장애 시 요청마다 로그가 폭주할 수 있어 throttle한다.
+    warnThrottled("score.public_aggregate", { error: e.message, year });
     res.status(500).send("데이터 집계 오류가 발생했습니다.");
   }
 });

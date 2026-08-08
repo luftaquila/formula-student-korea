@@ -2675,6 +2675,15 @@ app.post("/api/rover/pump-duration", (req, res) => {
 });
 
 // POST /api/rover/control - 수동 제어
+// 조이스틱 입력은 초당 수십 패킷으로 들어오므로 패킷 단위로 로깅하지 않는다.
+// 성공은 "운전 세션" 경계에서만 한 줄 남긴다 — 직전 패킷에서 5분 넘게 지났거나
+// 다른 사용자가 조종을 시작하면 새 세션으로 본다(세션당 감사 로그 1건).
+// 로버 미연결 warn도 같은 이유로 사용자별 60초에 한 번만 남긴다.
+const CONTROL_SESSION_GAP_MS = 5 * 60 * 1000;
+const CONTROL_NO_ROVER_WARN_INTERVAL_MS = 60 * 1000;
+let lastControlAt = 0;
+let lastControlActor = null;
+const controlNoRoverWarnAt = new Map(); // actor email → 마지막 warn 시각 (epoch ms)
 app.post("/api/rover/control", (req, res) => {
   const { throttle, steering } = req.body;
   if (typeof throttle !== "number" || typeof steering !== "number" || !Number.isFinite(throttle) || !Number.isFinite(steering)) {
@@ -2703,6 +2712,13 @@ app.post("/api/rover/control", (req, res) => {
     logger.warn(req, "rover.control", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
+
+  // 세션 경계 감사 로그: 사람이 실물 로버를 수동 조종했다는 기록.
+  if (now - lastControlAt > CONTROL_SESSION_GAP_MS || actor !== lastControlActor) {
+    logger.log(req, "rover.control", {}, "rover");
+  }
+  lastControlAt = now;
+  lastControlActor = actor;
 
   res.json({ throttle: t, steering: s });
 });
@@ -3077,6 +3093,23 @@ app.post("/api/rover/camera/detection", (req, res) => {
 // view can't draw VWorld/Google tiles onto its minimap canvas directly — proxy
 // them here (server-side VWORLD_KEY, else a Google fallback) so the canvas stays
 // same-origin. z/x/y are slippy-map (XYZ) tile indices.
+//
+// 실패 warn은 실패 원인별로 60초에 한 번만 남긴다. 미니맵은 화면당 수십 장의
+// 타일을 요청하므로, VWORLD_KEY 만료 같은 지속 장애를 타일마다 기록하면 warn
+// 필터가 브라우저 요청 속도로 밀려난다. 억눌린 횟수는 다음 로그의 suppressed에 합산.
+const MAP_TILE_WARN_INTERVAL_MS = 60 * 1000;
+const mapTileWarnState = new Map(); // 실패 원인 키 → { at: 마지막 기록 시각, suppressed: 그 후 억눌린 횟수 }
+function warnMapTile(req, key, detail) {
+  const now = Date.now();
+  const state = mapTileWarnState.get(key);
+  if (state && now - state.at < MAP_TILE_WARN_INTERVAL_MS) {
+    state.suppressed += 1;
+    return;
+  }
+  const suppressed = state?.suppressed || 0;
+  mapTileWarnState.set(key, { at: now, suppressed: 0 });
+  logger.warn(req, "rover.map_tile", suppressed > 0 ? { ...detail, suppressed } : detail, "rover");
+}
 app.get("/api/rover/map-tile", async (req, res) => {
   const z = Number(req.query.z), x = Number(req.query.x), y = Number(req.query.y);
   const okInt = (v, hi) => Number.isInteger(v) && v >= 0 && v <= hi;
@@ -3090,14 +3123,16 @@ app.get("/api/rover/map-tile", async (req, res) => {
   try {
     const upstream = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!upstream.ok) {
-      logger.warn(req, "rover.map_tile", { error: `upstream ${upstream.status}`, z, x, y }, "rover");
+      warnMapTile(req, `upstream-${upstream.status}`, { error: `upstream ${upstream.status}`, z, x, y });
       return res.status(502).send("tile upstream error");
     }
     res.set("Content-Type", upstream.headers.get("content-type") || "image/jpeg");
     res.set("Cache-Control", "public, max-age=86400");
     res.send(Buffer.from(await upstream.arrayBuffer()));
   } catch (e) {
-    logger.warn(req, "rover.map_tile", { error: String(e?.message || e), z, x, y }, "rover");
+    // 키는 에러 종류(TimeoutError 등)로 묶는다 — 메시지 원문은 타일 좌표가 섞여
+    // 키가 무한히 늘어나므로 detail에만 담는다.
+    warnMapTile(req, `fetch-${e?.name || "error"}`, { error: String(e?.message || e), z, x, y });
     res.status(502).send("tile fetch failed");
   }
 });

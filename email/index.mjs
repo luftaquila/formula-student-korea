@@ -168,8 +168,9 @@ app.put("/api/config", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  for (const key of updated) {
-    logger.log(req, "config.update", { key, value: maskValue(key, getConfig(key)) });
+  // 한 번의 저장은 한 행으로 — 키당 행을 남기면 성공/실패 로그 형태도 어긋난다(실패는 배치 1행).
+  if (updated.length > 0) {
+    logger.log(req, "config.update", { updated: updated.map((key) => ({ key, value: maskValue(key, getConfig(key)) })) });
   }
   res.json({ updated });
 });
