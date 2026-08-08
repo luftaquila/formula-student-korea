@@ -580,6 +580,8 @@ function getDebounceMs() {
   const row = db.prepare("SELECT debounce_ms FROM wireless_light WHERE id = 1").get();
   return Number.isFinite(row?.debounce_ms) ? row.debounce_ms : 300;
 }
+// 백그라운드(기록 엔진·워치독) 로그의 actorOverride. 사용자 요청 경로에서는 쓰지 않는다.
+const SYS_ACTOR = { email: "system", name: "system", role: "admin" };
 // 동적 기록 테이블에 한 줄 저장 + records 브로드캐스트.
 // binding = 귀속 정보 {team, event_name}: arm 스냅샷(run.bound) 또는 live 세션.
 // 선택 정보(team·event_name) 자체가 없으면 = 테스트 모드 → 조용히 skip(경고 없음).
@@ -629,12 +631,11 @@ function engineSaveRecord(eventType, binding, result, detail, audit = null) {
 // 내구: 랩을 기록 1건에 이어붙인다. run.laps 전체로 result(총합)·detail(랩 목록)을 매 랩 갱신 —
 // 첫 저장은 INSERT(rowid 보관), 이후는 같은 행 UPDATE. 귀속(team+event_name) 없으면 skip(테스트 모드).
 function enduranceUpsertRecord(eventType, binding, run) {
-  const SYS = { email: "system", name: "system", role: "admin" };
   const t = binding?.team;
   if (!binding?.event_name || !t) return; // 미선택 = 테스트 모드(표시만)
   const nv = validateRecordName(binding.event_name);
   if (!nv.valid) {
-    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS);
+    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS_ACTOR);
     return;
   }
   const total = enduranceTotal(run.laps);
@@ -646,7 +647,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
     const data = { time: new Date().toISOString(), type: eventType, entry: t, result: total, detail };
     const dv = validateRecordData(data);
     if (!dv.valid) {
-      logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS);
+      logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS_ACTOR);
       return;
     }
     const r = dbRun(() => db.transaction(() => {
@@ -661,7 +662,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
       return record;
     })());
     if (!r.success) {
-      logger.warn(null, "wireless.record", { error: r.error, cause: r.cause, event_type: eventType }, name, SYS);
+      logger.warn(null, "wireless.record", { error: r.error, cause: r.cause, event_type: eventType }, name, SYS_ACTOR);
       return;
     }
     run.recordName = name;
@@ -813,10 +814,11 @@ function runBridgeWatch() {
       db.prepare("UPDATE wireless_light SET bridge_online = 0 WHERE id = 1").run();
       bridgeOnline = false;
       broadcastEvent("wireless:bridge", getBridgeState());
-      logger.log(null, "wireless.bridge", { online: false, last_seen: lastBridgeSeenIso }, "bridge",
-        { email: "system", name: "system", role: "admin" });
+      // 명시적 offline 신고(POST /bridge/offline)와 달리 워치독 감지는 브리지가 예기치 않게
+      // 죽었다는 뜻 — 운영자가 레벨 필터로 찾아야 하므로 warn.
+      logger.warn(null, "wireless.bridge", { online: false, watchdog: true, last_seen: lastBridgeSeenIso }, "bridge", SYS_ACTOR);
     } catch (e) {
-      logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", { email: "system", name: "system", role: "admin" });
+      logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", SYS_ACTOR);
       console.error("[wireless] bridge watch:", e.message || e);
     }
   }
@@ -845,7 +847,7 @@ function runLeaseWatch() {
     }
     return { skipped: false, expired: expired.length };
   } catch (e) {
-    logger.warn(null, "wireless.lease.watch", { error: e.message || String(e) }, "lease", { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "wireless.lease.watch", { error: e.message || String(e) }, "lease", SYS_ACTOR);
     console.error("[wireless] lease watch:", e.message || e);
   }
   return { skipped: false, expired: 0 };
@@ -867,7 +869,7 @@ function runEventRetention() {
     }
     return { skipped: false, ...result };
   } catch (e) {
-    logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", SYS_ACTOR);
     console.error("[wireless] event retention:", e.message || e);
   }
   return { skipped: false, removed: 0, cutoff: null };
@@ -2000,6 +2002,7 @@ app.post("/api/wireless/dnf", (req, res) => {
   }
   // 내구는 이미 랩을 이어붙인 누적 행(run.recordRowid)이 있으면 그 행의 result를 -1로 UPDATE한다
   // — 별도 DNF 행을 INSERT하면 누적 행과 공존해 이중 기록이 된다. 그 외 종목/누적 행 없으면 신규 -1.
+  // DNF는 사용자 요청 파괴적 조작(result → -1)이므로 로그를 요청자에게 귀속한다(system 아님).
   let ok;
   if (event_type === "내구" && run?.recordRowid != null && run?.recordName) {
     const r = dbRun(() => {
