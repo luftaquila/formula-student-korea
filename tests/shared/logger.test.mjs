@@ -123,8 +123,8 @@ describe('createLogger', () => {
     assert.ok(res.body.total >= 2);
   });
 
-  it('auto-cleanup removes oldest rows when maxRows is exceeded', (t) => {
-    t.mock.timers.enable({ apis: ['setInterval'] });
+  // 보존은 AFTER INSERT 트리거(setupRowCapRetention)라 삽입 즉시 적용된다 — 타이머 없음.
+  it('row-cap retention keeps only the newest maxRows rows as inserts happen', () => {
     const cleanDb = new Database(':memory:');
     const cleanLogger = createLogger(cleanDb, 'clean-test', 5);
 
@@ -132,19 +132,24 @@ describe('createLogger', () => {
       cleanLogger.log(null, `action_${i}`, `detail_${i}`);
     }
 
-    const countBefore = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
-    assert.equal(countBefore, 10);
-
-    t.mock.timers.tick(3_600_000);
-
-    const countAfter = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
-    assert.equal(countAfter, 5);
+    const count = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    assert.equal(count, 5);
 
     const remaining = cleanDb.prepare('SELECT action FROM logs ORDER BY id ASC').all();
     assert.equal(remaining[0].action, 'action_5');
     assert.equal(remaining[4].action, 'action_9');
 
     cleanDb.close();
+  });
+
+  it('row-cap retention trims pre-existing overflow at logger creation', () => {
+    const preDb = new Database(':memory:');
+    const first = createLogger(preDb, 'pre-test', 50000);
+    for (let i = 0; i < 10; i++) first.log(null, `old_${i}`, null);
+    createLogger(preDb, 'pre-test', 5); // 재생성 시 낮아진 cap으로 초기 catch-up
+    const count = preDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    assert.equal(count, 5);
+    preDb.close();
   });
 });
 

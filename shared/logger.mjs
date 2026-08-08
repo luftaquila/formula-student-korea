@@ -1,4 +1,4 @@
-import { runMigrationOnce, normalizeUtcTextTimestamp } from "./db-setup.mjs";
+import { runMigrationOnce, normalizeUtcTextTimestamp, setupRowCapRetention } from "./db-setup.mjs";
 import { createSecretChecker } from "./express-setup.mjs";
 
 // logs 테이블 필터 쿼리 파라미터(level/action/actor/from/to/search)를 WHERE 절과
@@ -88,18 +88,11 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     }
   }
 
-  // Auto-cleanup: delete oldest rows beyond maxRows every hour
-  const cleanup = () => {
-    try {
-      const count = db.prepare("SELECT COUNT(*) as cnt FROM logs").get().cnt;
-      if (count > maxRows) {
-        db.prepare("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id ASC LIMIT ?)").run(count - maxRows);
-      }
-    } catch (e) {
-      console.error(`[logger] cleanup error: ${e.message}`);
-    }
-  };
-  setInterval(cleanup, 3600000).unref();
+  // 보존은 다른 row-cap 테이블(queue_log, booth_log 등)과 같은 AFTER INSERT 트리거로
+  // 통일한다. 시간별 COUNT+DELETE sweep은 스윕 사이 무제한 초과를 허용했고, 리포에
+  // 보존 메커니즘이 두 벌 존재하게 만들었다. 트리거의 삽입당 비용은 PK MAX 조회 +
+  // 대부분 no-op인 범위 DELETE라 이 시스템의 로그 쓰기 빈도에서 무시 가능하다.
+  setupRowCapRetention(db, "logs", maxRows);
 
   const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
