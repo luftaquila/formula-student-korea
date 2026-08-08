@@ -14,6 +14,7 @@ import {
   TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
+  startFakeEntryServer,
 } from '../helpers/test-utils.mjs';
 import { createScoreApp } from '../../score/index.mjs';
 
@@ -22,15 +23,24 @@ import { createScoreApp } from '../../score/index.mjs';
 let mockEntryRequestCount = 0;
 let mockEntryResponseDelayMs = 0;
 let mockEntryTeamName = '팀A';
+let mockEntryVersion = 1;
 
+// entry의 team-state 스냅샷을 흉내낸다 (num 키 /api/entries가 아니라 id 키 team-state —
+// score는 이제 HTTP /api/entries를 호출하지 않는다). 팀 1=id 101, 팀 2=id 102.
 function createMockEntryServer() {
   const app = express();
-  app.get('/api/entries', (req, res) => {
+  app.get('/api/internal/team-state', (req, res) => {
     mockEntryRequestCount++;
-    const energyIntegration = [2087, 2088].includes(Number(req.query.year));
+    const year = Number(req.query.year);
+    const energyIntegration = [2087, 2088].includes(year);
     const payload = {
-      1: { univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV' },
-      2: { univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV' },
+      year,
+      version: mockEntryVersion,
+      teams: {
+        101: { num: 1, univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV', active: true },
+        102: { num: 2, univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV', active: true },
+      },
+      tombstones: [],
     };
     if (mockEntryResponseDelayMs > 0) setTimeout(() => res.json(payload), mockEntryResponseDelayMs);
     else res.json(payload);
@@ -38,13 +48,21 @@ function createMockEntryServer() {
   return app;
 }
 
+// 집계마다 호출되므로(재집계 관측점) 카운터·지연을 노출한다 — entry는 이제
+// team-state 캐시라 집계 횟수와 무관하다.
+let mockInspectionRequestCount = 0;
+let mockInspectionResponseDelayMs = 0;
+
 function createMockInspectionServer() {
   const app = express();
   app.get('/api/sheet/summary', (req, res) => {
-    res.json({
+    mockInspectionRequestCount++;
+    const payload = {
       categories: [{ id: 1, name: '코너웨이트' }],
       teams: {}
-    });
+    };
+    if (mockInspectionResponseDelayMs > 0) setTimeout(() => res.json(payload), mockInspectionResponseDelayMs);
+    else res.json(payload);
   });
   app.get('/api/sheet/template', (req, res) => {
     res.json([]);
@@ -909,7 +927,9 @@ describe('Public score publication', () => {
 
     const cached = await client.get('/api/score/public/2026');
     assert.equal(cached.status, 200);
-    assert.equal(mockEntryRequestCount, 1, 'sequential public requests should reuse the short-lived snapshot');
+    // team-state 캐시(TTL 30s)로 엔트리 스냅샷은 요청 수와 무관하게 최대 1회만 fetch된다
+    // (다른 스위트가 이미 캐시를 데웠으면 0회).
+    assert.ok(mockEntryRequestCount <= 1, 'sequential public requests must reuse the cached team state');
   });
 
   it('publishes refresh notifications over the public SSE stream', async () => {
@@ -942,32 +962,37 @@ describe('Public score publication', () => {
     ]);
     assert.match(message, /event: refresh/);
 
+    const before = mockInspectionRequestCount;
     const refreshed = await client.get('/api/score/public/2026');
     assert.equal(refreshed.status, 200);
-    assert.equal(mockEntryRequestCount, 2, 'score updates should invalidate the public snapshot');
+    // penalty 변경이 공개 스냅샷을 무효화했으므로 재집계(= inspection 재조회)가 일어나야 한다
+    assert.ok(mockInspectionRequestCount > before, 'score updates should invalidate the public snapshot');
     await reader.cancel();
     controller.abort();
   });
 
+  // 집계 진행 중 무효화가 끼어들면 stale 스냅샷이 캐시로 남지 않아야 한다. 예전에는
+  // entry fetch 타이밍으로 관측했지만 entry는 이제 team-state 캐시라, 집계마다 호출되는
+  // inspection fetch로 "집계 시작"을 감지하고 점수-로컬 데이터(penalty)로 신선도를 검증한다.
+  // 가속 기록(팀 1): 50000ms/콘 0, 48000ms/콘 1 → cone_penalty 1이면 48000이 최고 기록
+  // (공개 payload 결과 49000), 3이면 50000이 최고 기록 (payload 50000).
   it('does not restore a stale snapshot when invalidated during aggregation', async () => {
     const initialUpdate = await client.put('/api/score/penalty', {
       cookie: adminCookie,
-      body: { year: 2026, event_type: '가속', cone_penalty: 4, oc_penalty: 10, start_delay: 0 },
+      body: { year: 2026, event_type: '가속', cone_penalty: 1, oc_penalty: 10, start_delay: 0 },
     });
     assert.equal(initialUpdate.status, 200);
 
-    const requestCountBefore = mockEntryRequestCount;
-    mockEntryTeamName = '기존 팀';
-    mockEntryResponseDelayMs = 100;
+    const requestCountBefore = mockInspectionRequestCount;
+    mockInspectionResponseDelayMs = 100;
     const requestBeforeInvalidation = client.get('/api/score/public/2026');
-    while (mockEntryRequestCount === requestCountBefore) {
+    while (mockInspectionRequestCount === requestCountBefore) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
 
-    mockEntryTeamName = '최신 팀';
     const invalidatingUpdate = await client.put('/api/score/penalty', {
       cookie: adminCookie,
-      body: { year: 2026, event_type: '가속', cone_penalty: 5, oc_penalty: 10, start_delay: 0 },
+      body: { year: 2026, event_type: '가속', cone_penalty: 3, oc_penalty: 10, start_delay: 0 },
     });
     assert.equal(invalidatingUpdate.status, 200);
     const requestAfterInvalidation = client.get('/api/score/public/2026');
@@ -979,28 +1004,31 @@ describe('Public score publication', () => {
       ]);
       assert.equal(beforeResponse.status, 200);
       assert.equal(afterResponse.status, 200);
-      assert.equal((await beforeResponse.json()).entries['1'].team, '최신 팀');
-      assert.equal((await afterResponse.json()).entries['1'].team, '최신 팀');
-      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
+      // 공개 경로는 세대(generation)가 최신일 때까지 재집계하므로 둘 다 새 penalty 기준
+      assert.equal((await beforeResponse.json()).events.find((e) => e.type === '가속').records['1'].result, 50000);
+      assert.equal((await afterResponse.json()).events.find((e) => e.type === '가속').records['1'].result, 50000);
     } finally {
-      mockEntryResponseDelayMs = 0;
-      mockEntryTeamName = '팀A';
+      mockInspectionResponseDelayMs = 0;
     }
   });
 
   it('does not reuse an invalidated in-flight aggregate for authenticated requests', async () => {
-    const requestCountBefore = mockEntryRequestCount;
-    mockEntryTeamName = '변경 전 팀';
-    mockEntryResponseDelayMs = 100;
+    const first = await client.put('/api/score/penalty', {
+      cookie: adminCookie,
+      body: { year: 2026, event_type: '가속', cone_penalty: 1, oc_penalty: 10, start_delay: 0 },
+    });
+    assert.equal(first.status, 200);
+
+    const requestCountBefore = mockInspectionRequestCount;
+    mockInspectionResponseDelayMs = 100;
     const requestBeforeInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
-    while (mockEntryRequestCount === requestCountBefore) {
+    while (mockInspectionRequestCount === requestCountBefore) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
 
-    mockEntryTeamName = '변경 후 팀';
     const invalidatingUpdate = await client.put('/api/score/penalty', {
       cookie: adminCookie,
-      body: { year: 2026, event_type: '가속', cone_penalty: 6, oc_penalty: 10, start_delay: 0 },
+      body: { year: 2026, event_type: '가속', cone_penalty: 3, oc_penalty: 10, start_delay: 0 },
     });
     assert.equal(invalidatingUpdate.status, 200);
     const requestAfterInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
@@ -1012,12 +1040,12 @@ describe('Public score publication', () => {
       ]);
       assert.equal(beforeResponse.status, 200);
       assert.equal(afterResponse.status, 200);
-      assert.equal((await beforeResponse.json()).entries['1'].team, '변경 전 팀');
-      assert.equal((await afterResponse.json()).entries['1'].team, '변경 후 팀');
-      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
+      // 핵심 불변식: 무효화 이후의 요청이 무효화 이전에 시작한 in-flight 집계를 재사용하면
+      // 안 된다 → after는 반드시 새 penalty(3)를 본다. before는 찢긴 집계라 1/3 어느 쪽도
+      // 가능(admin 경로는 재시도하지 않음) — 값 단언은 after에만 건다.
+      assert.equal((await afterResponse.json()).penalties['가속'].cone_penalty, 3);
     } finally {
-      mockEntryResponseDelayMs = 0;
-      mockEntryTeamName = '팀A';
+      mockInspectionResponseDelayMs = 0;
     }
   });
 
@@ -1044,13 +1072,18 @@ describe('Score aggregation business logic', () => {
   const YEAR = new Date().getFullYear();
 
   before(async () => {
-    // Rich entry mock with 3 teams
+    // Rich entry mock with 3 teams (team-state 스냅샷 형태)
     const richEntryApp = express();
-    richEntryApp.get('/api/entries', (req, res) => {
+    richEntryApp.get('/api/internal/team-state', (req, res) => {
       res.json({
-        1: { univ: '서울대', team: '팀A', type: 'EV' },
-        2: { univ: '카이스트', team: '팀B', type: 'EV' },
-        3: { univ: '연세대', team: '팀C', type: 'EV' },
+        year: Number(req.query.year),
+        version: 1,
+        teams: {
+          201: { num: 1, univ: '서울대', team: '팀A', type: 'EV', active: true },
+          202: { num: 2, univ: '카이스트', team: '팀B', type: 'EV', active: true },
+          203: { num: 3, univ: '연세대', team: '팀C', type: 'EV', active: true },
+        },
+        tombstones: [],
       });
     });
 
@@ -1176,8 +1209,12 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
 
   before(async () => {
     const entryApp = express();
-    entryApp.get('/api/entries', (req, res) => {
-      res.json({ 1: { univ: 'A대', team: '팀A', type: 'EV' } });
+    entryApp.get('/api/internal/team-state', (req, res) => {
+      res.json({
+        year: Number(req.query.year), version: 1,
+        teams: { 301: { num: 1, univ: 'A대', team: '팀A', type: 'EV', active: true } },
+        tombstones: [],
+      });
     });
 
     const inspApp = createMockInspectionServer();
@@ -1237,86 +1274,157 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
   });
 });
 
-// ─── Internal API: entry lifecycle ──────────────────────────────────────
-describe('Score internal entry lifecycle sync', () => {
-  it('renumbers and deletes manual/endurance rows', async () => {
-    const year = 2026;
-    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
-      .run(year, 901, 'report', 12.5);
-    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
-      .run(year, 901, 'DNF', 12345);
+// ─── Team-state 수렴형 강제 (구 내부 라이프사이클 라우트 대체) ─────────────
+// entry가 이벤트를 push하는 대신, score가 team-state 스냅샷을 pull해서 version 변경 시
+// tombstone cascade·비정규화 갱신·비활성 필터를 멱등하게 적용한다.
+describe('Team-state convergent enforcement', () => {
+  let fake, srv, cli, database, dp, teamState;
+  let mInsp, mTraffic;
+  const YEAR = new Date().getFullYear();
+  let version = 0;
 
-    const patchRes = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year, prevNum: 901, newNum: 902 },
-    });
-    assert.equal(patchRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 1);
-
-    const deleteRes = await client.delete(`/api/internal/team/902?year=${year}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(deleteRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
+  const baseTeams = () => ({
+    301: { num: 31, univ: 'A대', team: '팀A', type: 'EV', active: true },
+    302: { num: 32, univ: 'B대', team: '팀B', type: 'EV', active: true },
   });
 
-  it('treats prevNum === newNum as a no-op and preserves score rows', async () => {
-    const year = 2026;
-    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
-      .run(year, 905, 'report', 33.3);
-    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
-      .run(year, 905, 'FINISH', 54321);
+  function publish(mutate = (s) => s) {
+    version++;
+    const snap = mutate({ version, teams: baseTeams(), tombstones: [] });
+    snap.version = version;
+    fake.setSnapshot(YEAR, snap);
+    return teamState.refresh(YEAR);
+  }
 
-    const res = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year, prevNum: 905, newNum: 905 },
+  before(async () => {
+    fake = await startFakeEntryServer();
+    const [i, t] = await Promise.all([
+      startServer(createMockInspectionServer()),
+      startServer(createMockTrafficServer()),
+    ]);
+    mInsp = i.server; mTraffic = t.server;
+    process.env.ENTRY_SERVER = fake.url;
+    process.env.INSPECTION_SERVER = i.baseUrl;
+    process.env.TRAFFIC_SERVER = t.baseUrl;
+
+    dp = tmpDbPath();
+    // 레거시 행: 백필 검증용 — 팀 31의 옛 점수(team_id NULL) + entry가 모르는 번호 99
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true, validateUser: TRUST_JWT });
+    database = result.db;
+    teamState = result.teamState;
+    database.prepare("INSERT INTO score_manual (year, team_num, score_type, value) VALUES (?, 31, 'report', 11)").run(YEAR);
+    database.prepare("INSERT INTO score_manual (year, team_num, score_type, value) VALUES (?, 99, 'report', 1)").run(YEAR);
+    const started = await startServer(result.app);
+    srv = started.server;
+    cli = createClient(started.baseUrl);
+    await publish();
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    await Promise.all([stopServer(mInsp), stopServer(mTraffic)]);
+    await fake.close();
+    database.close();
+    cleanup(dp);
+  });
+
+  it('backfills team_id for legacy rows and leaves unknown teams NULL (never deleted)', () => {
+    assert.equal(database.prepare("SELECT team_id FROM score_manual WHERE year = ? AND team_num = 31").get(YEAR).team_id, 301);
+    const orphan = database.prepare("SELECT team_id, value FROM score_manual WHERE year = ? AND team_num = 99").get(YEAR);
+    assert.equal(orphan.team_id, null, 'unknown team stays NULL');
+    assert.equal(orphan.value, 1, 'unknown team row must not be deleted');
+  });
+
+  it('writes key by team_id and adopt legacy num rows', async () => {
+    const res = await cli.put('/api/score/manual', {
+      body: { year: YEAR, team_num: 31, score_type: 'report', value: 22 }, cookie: adminCookie,
     });
     assert.equal(res.status, 200);
+    const row = database.prepare("SELECT team_id, value FROM score_manual WHERE year = ? AND team_num = 31 AND score_type = 'report'").get(YEAR);
+    assert.deepEqual(row, { team_id: 301, value: 22 });
+  });
 
-    // self-renumber는 목적지(=자기 번호) 행을 먼저 삭제하므로, 가드가 없으면 점수가 사라진다.
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
+  it('renumber+rename converge: denormalized num follows the immutable id', async () => {
+    await publish((s) => {
+      s.teams[301] = { num: 33, univ: 'A대', team: '팀A(정정)', type: 'EV', active: true };
+      return s;
+    });
+    const row = database.prepare("SELECT team_num FROM score_manual WHERE year = ? AND team_id = 301 AND score_type = 'report'").get(YEAR);
+    assert.equal(row.team_num, 33, 'team_num must follow the id after a renumber');
+    // 집계에서도 새 번호 아래에 점수가 귀속된다
+    const data = await (await cli.get(`/api/score?year=${YEAR}`, { cookie: adminCookie })).json();
+    assert.equal(data.manualScores[33].report, 22);
+    assert.equal(data.manualScores[31], undefined);
+  });
+
+  it('deactivation hides rows and blocks writes; reactivation restores (idempotent re-run safe)', async () => {
+    const put = (v) => cli.put('/api/score/endurance', {
+      body: { year: YEAR, team_num: 32, field: 'driver1_time', value: v }, cookie: adminCookie,
+    });
+    assert.equal((await put(1000)).status, 200);
+
+    await publish((s) => { s.teams[302].active = false; return s; });
+    const hidden = await (await cli.get(`/api/score/endurance?year=${YEAR}`, { cookie: adminCookie })).json();
+    assert.equal(hidden[32], undefined, 'inactive team hidden from endurance list');
+    assert.equal((await put(2000)).status, 409, 'writes to an inactive team are rejected');
+    const aggregate = await (await cli.get(`/api/score?year=${YEAR}`, { cookie: adminCookie })).json();
+    assert.equal(aggregate.entries[32], undefined);
+
+    // 같은 스냅샷 재적용(멱등) 후 재활성화
+    await teamState.refresh(YEAR);
+    await publish();
+    const restored = await (await cli.get(`/api/score/endurance?year=${YEAR}`, { cookie: adminCookie })).json();
+    assert.equal(restored[32].driver1_time, 1000, 'reactivation restores preserved data');
+  });
+
+  it('tombstones cascade-delete the team rows by id', async () => {
+    await publish((s) => {
+      delete s.teams[302];
+      s.tombstones = [{ id: 302, num: 32, deleted_at: '2026-01-01T00:00:00.000Z' }];
+      return s;
+    });
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_id = 302").get(YEAR).c, 0);
+    // 모르는 팀(99)은 여전히 보존
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = 99").get(YEAR).c, 1);
+  });
+
+  it('unknown teams to entry are only excluded from writes (404), not deleted', async () => {
+    const res = await cli.put('/api/score/manual', {
+      body: { year: YEAR, team_num: 99, score_type: 'report', value: 5 }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 404);
   });
 });
 
-describe('Entry active-state synchronization', () => {
-  it('preserves score rows, blocks writes, and restores them after reactivation', async () => {
-    const year = new Date().getFullYear();
-    const num = 1;
-    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, 'inactive-test', 7.5)")
-      .run(year, num);
-    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time, driver2_time) VALUES (?, ?, NULL, 1000, 2000)")
-      .run(year, num);
+describe('Cold-start without entry (503 semantics)', () => {
+  let srv, cli, database, dp;
 
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: false, revision: 40 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.equal(db.prepare("SELECT value FROM score_manual WHERE year = ? AND team_num = ? AND score_type = 'inactive-test'").get(year, num).value, 7.5);
-    const endurance = await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(endurance[num], undefined);
-    assert.equal((await client.put('/api/score/manual', {
-      body: { year, team_num: num, score_type: 'inactive-test', value: 8 }, cookie: adminCookie,
-    })).status, 409);
-    const hiddenAggregate = await (await client.get(`/api/score?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(hiddenAggregate.entries[num], undefined);
-    assert.equal(hiddenAggregate.manualScores[num], undefined);
+  before(async () => {
+    process.env.ENTRY_SERVER = 'http://127.0.0.1:1'; // 연결 불가
+    dp = tmpDbPath();
+    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true, validateUser: TRUST_JWT });
+    database = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    cli = createClient(started.baseUrl);
+  });
 
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 39 },
+  after(async () => {
+    await stopServer(srv);
+    database.close();
+    cleanup(dp);
+  });
+
+  it('score aggregation returns 503 (not 500) when no snapshot was ever loaded', async () => {
+    const res = await cli.get(`/api/score?year=${new Date().getFullYear()}`, { cookie: adminCookie });
+    assert.equal(res.status, 503);
+  });
+
+  it('manual score writes return 503 when no snapshot was ever loaded', async () => {
+    const res = await cli.put('/api/score/manual', {
+      body: { year: new Date().getFullYear(), team_num: 1, score_type: 'report', value: 1 },
+      cookie: adminCookie,
     });
-    assert.equal((await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json())[num], undefined);
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 41 },
-    });
-    const restored = await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(restored[num].driver1_time, 1000);
-    const restoredAggregate = await (await client.get(`/api/score?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(restoredAggregate.manualScores[num]['inactive-test'], 7.5);
+    assert.equal(res.status, 503);
   });
 });

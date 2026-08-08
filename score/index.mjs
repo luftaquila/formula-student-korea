@@ -1,12 +1,10 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { addColumn } from "../shared/db-setup.mjs";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { addColumn, runMigrationOnce } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { createSSESubscriber } from "../shared/sse-client.mjs";
-import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
-import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
+import { createTeamStateClient } from "../shared/team-state-client.mjs";
 import { serviceUrl } from "../shared/services.mjs";
 import { calculateEnergyScores } from "./lib/energy-score.mjs";
 
@@ -34,12 +32,14 @@ db.transaction(() => {
   }
 
   // 수동 입력 점수 (보고서, 가점, 감점). 기존 energy 행은 호환성을 위해 보존만 한다.
+  // team_id = entry의 불변 팀 id(리넘버·개명에도 불변). 레거시 행은 NULL로 남았다가
+  // team-state 백필이 (year, team_num) 매칭으로 채운다. team_num은 표시·레거시 키.
   db.exec(`CREATE TABLE IF NOT EXISTS score_manual (
     year INTEGER NOT NULL,
+    team_id INTEGER,
     team_num INTEGER NOT NULL,
     score_type TEXT NOT NULL,
-    value REAL,
-    PRIMARY KEY (year, team_num, score_type)
+    value REAL
   )`);
 
   // 경기 종목별 페널티 설정 (콘터치/코스이탈/출발지연 초)
@@ -73,6 +73,7 @@ db.transaction(() => {
   // 내구 기록 입력
   db.exec(`CREATE TABLE IF NOT EXISTS score_endurance (
     year INTEGER NOT NULL,
+    team_id INTEGER,
     team_num INTEGER NOT NULL,
     status TEXT,
     driver1_time INTEGER,
@@ -89,15 +90,51 @@ db.transaction(() => {
     fuel_consumed REAL,
     fuel_extra REAL,
     electric_net_energy REAL,
-    energy_dsq INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (year, team_num)
+    energy_dsq INTEGER NOT NULL DEFAULT 0
   )`);
   addColumn(db, "score_endurance", "fuel_consumed REAL");
   addColumn(db, "score_endurance", "fuel_extra REAL");
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
+
+  // 기존 배포 DB의 (year, team_num[, score_type]) PK 테이블을 team_id 병기 스키마로 재구축.
+  // PK 대신 rowid 테이블 + 이중 UNIQUE 인덱스(id 키 = 새 조인 키, num 키 = 기존 불변식
+  // "연도·번호당 1행" 유지 + 백필 전 안전망).
+  runMigrationOnce(db, "score.team_id_rekey.v1", () => {
+    for (const [table, keyCols] of [["score_manual", "score_type"], ["score_endurance", null]]) {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+      if (cols.includes("team_id")) continue; // 신규 DB — 위 CREATE가 이미 새 스키마
+      db.exec(`ALTER TABLE ${table} RENAME TO ${table}_old`);
+      if (table === "score_manual") {
+        db.exec(`CREATE TABLE score_manual (
+          year INTEGER NOT NULL, team_id INTEGER, team_num INTEGER NOT NULL,
+          score_type TEXT NOT NULL, value REAL
+        )`);
+        db.exec(`INSERT INTO score_manual (year, team_num, score_type, value)
+                 SELECT year, team_num, score_type, value FROM score_manual_old`);
+      } else {
+        const dataCols = cols.filter((c) => !["year", "team_num", "energy_type", "energy_dsq_reason"].includes(c));
+        db.exec(`CREATE TABLE score_endurance (
+          year INTEGER NOT NULL, team_id INTEGER, team_num INTEGER NOT NULL,
+          status TEXT, driver1_time INTEGER, driver1_start_delay INTEGER DEFAULT 0,
+          driver1_cones INTEGER DEFAULT 0, driver1_oc INTEGER DEFAULT 0, driver1_penalty REAL DEFAULT 0,
+          driver_change_time INTEGER, driver2_time INTEGER, driver2_start_delay INTEGER DEFAULT 0,
+          driver2_cones INTEGER DEFAULT 0, driver2_oc INTEGER DEFAULT 0, driver2_penalty REAL DEFAULT 0,
+          fuel_consumed REAL, fuel_extra REAL, electric_net_energy REAL,
+          energy_dsq INTEGER NOT NULL DEFAULT 0
+        )`);
+        const copyCols = dataCols.filter((c) => c !== "team_id").join(", ");
+        db.exec(`INSERT INTO score_endurance (year, team_num, ${copyCols})
+                 SELECT year, team_num, ${copyCols} FROM score_endurance_old`);
+      }
+      db.exec(`DROP TABLE ${table}_old`);
+    }
+  }, { transaction: false });
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_id_key ON score_manual(year, team_id, score_type)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_sm_num_key ON score_manual(year, team_num, score_type)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_se_id_key ON score_endurance(year, team_id)");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_se_num_key ON score_endurance(year, team_num)");
 })();
-ensureTeamStatusTable(db);
 
 const ENDURANCE_SQL = {
   status: "UPDATE score_endurance SET status = ? WHERE year = ? AND team_num = ?",
@@ -178,6 +215,81 @@ function invalidatePublicScoreCache(year = null) {
 const ENTRY_SERVER = serviceUrl("entry");
 const INSPECTION_SERVER = serviceUrl("inspection");
 const TRAFFIC_SERVER = serviceUrl("traffic");
+
+/* ============================================
+   Entry team-state (미러 대체 캐시 + 수렴형 강제)
+   ============================================ */
+const teamState = createTeamStateClient({ db, logger, service: "score" });
+
+// 백필: 레거시 (year, team_num) 행에 team_id를 채운다 (연도별 1회, 첫 유효 스냅샷)
+teamState.registerBackfill((year, state) => {
+  const updManual = db.prepare("UPDATE score_manual SET team_id = ? WHERE year = ? AND team_num = ? AND team_id IS NULL");
+  const updEndur = db.prepare("UPDATE score_endurance SET team_id = ? WHERE year = ? AND team_num = ? AND team_id IS NULL");
+  for (const team of state.teams.values()) {
+    updManual.run(team.id, year, team.num);
+    updEndur.run(team.id, year, team.num);
+  }
+  const orphans = db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_id IS NULL").get(year).c
+    + db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_id IS NULL").get(year).c;
+  if (orphans > 0) {
+    // entry가 모르는 팀의 행 — 삭제하지 않고 로그만 (기존 reconcile 철학)
+    logger.warn(null, "score.team_id_backfill", { year, unmatched_rows: orphans });
+  }
+});
+
+// 수렴형 강제: 스냅샷 version이 바뀔 때마다 멱등 실행
+teamState.registerEnforcement((year, state) => {
+  // ① tombstone cascade — 삭제·교체된 팀의 점수 삭제 (기존 DELETE /api/internal/team 시맨틱)
+  const delManual = db.prepare("DELETE FROM score_manual WHERE year = ? AND team_id = ?");
+  const delEndur = db.prepare("DELETE FROM score_endurance WHERE year = ? AND team_id = ?");
+  let deletedRows = 0;
+  const deletedIds = [];
+  for (const t of state.tombstones) {
+    const n = delManual.run(year, t.id).changes + delEndur.run(year, t.id).changes;
+    if (n > 0) {
+      deletedRows += n;
+      deletedIds.push(t.id);
+    }
+  }
+  if (deletedRows > 0) {
+    logger.log(null, "team.delete", { year, team_ids: deletedIds, rows: deletedRows });
+  }
+
+  // ② 비활성 정리 훅 없음 — score는 조회 필터로만 제외한다 (기존과 동일)
+
+  // ③ 비정규화 갱신: 리넘버·개명된 팀의 team_num을 id 기준으로 최신화
+  const updNumManual = db.prepare("UPDATE score_manual SET team_num = ? WHERE year = ? AND team_id = ? AND team_num != ?");
+  const updNumEndur = db.prepare("UPDATE score_endurance SET team_num = ? WHERE year = ? AND team_id = ? AND team_num != ?");
+  let renumbered = 0;
+  for (const team of state.teams.values()) {
+    renumbered += updNumManual.run(team.num, year, team.id, team.num).changes
+      + updNumEndur.run(team.num, year, team.id, team.num).changes;
+  }
+  if (renumbered > 0) logger.log(null, "team.renumber", { year, rows: renumbered });
+
+  // ④ 모르는 팀(스냅샷·tombstone 어디에도 없는 team_id) — 로그만, 삭제 금지
+  const knownIds = new Set([...state.teams.keys(), ...state.tombstones.map((t) => t.id)]);
+  const localIds = db.prepare(`
+    SELECT DISTINCT team_id FROM (
+      SELECT team_id FROM score_manual WHERE year = ? AND team_id IS NOT NULL
+      UNION SELECT team_id FROM score_endurance WHERE year = ? AND team_id IS NOT NULL
+    )`).all(year, year).map((r) => r.team_id);
+  const unknown = localIds.filter((id) => !knownIds.has(id));
+  if (unknown.length > 0 && teamState.throttled(`unknown:${year}`)) {
+    logger.warn(null, "score.team_state_unknown", { year, team_ids: unknown });
+  }
+
+  // 상태가 바뀌었으므로 집계 캐시 무효화 (기존 team-active onApplied와 동일)
+  invalidatePublicScoreCache(year);
+  invalidateInflightScore(year);
+
+  if (deletedRows > 0 || renumbered > 0) {
+    return () => {
+      broadcastEvent("manual-score", { year });
+      broadcastEvent("endurance", { year });
+    };
+  }
+});
 
 // 내부 서비스 호출 타임아웃 — 집계 시 기록 테이블이 커서 5초보다 여유 있게 둔다
 const INTERNAL_FETCH_TIMEOUT_MS = 10000;
@@ -446,7 +558,7 @@ app.get("/api/score/public/:year", async (req, res) => {
     res.json(payload);
   } catch (e) {
     logger.warn(req, "score.public_aggregate", { error: e.message, year }, String(year));
-    res.status(500).send("데이터 집계 오류가 발생했습니다.");
+    res.status(e.status || 500).send(e.status === 503 ? e.message : "데이터 집계 오류가 발생했습니다.");
   }
 });
 
@@ -458,26 +570,23 @@ app.get("/api/score", async (req, res) => {
     res.json(await getComputedScore(year));
   } catch (e) {
     logger.warn(req, "score.aggregate", { error: e.message, year }, String(year));
-    res.status(500).send("데이터 집계 오류가 발생했습니다.");
+    res.status(e.status || 500).send(e.status === 503 ? e.message : "데이터 집계 오류가 발생했습니다.");
   }
 });
 
-// 연도별 성적 집계(엔트리·검차·경기기록·수동점수·설정). 실패 시 throw(라우트가 500 처리).
+// 연도별 성적 집계(엔트리·검차·경기기록·수동점수·설정). 실패 시 throw(라우트가 e.status 처리).
 async function computeScore(year) {
-    // 1. Entry 서비스에서 엔트리 목록 fetch
-    const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, {
-      headers: internalHeaders(),
-      signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-    });
-    if (!entryRes.ok) {
-      warnThrottled("score.fetch_entries", { status: entryRes.status, year });
-      throw new Error("엔트리 정보를 가져올 수 없습니다.");
+    // 1. 엔트리 목록 = team-state 캐시 (serve-stale이라 entry 장애 중에도 집계가 계속된다).
+    // 콜드 스타트에서 아직 한 번도 스냅샷을 못 받았을 때만 503.
+    const state = await teamState.getState(year);
+    if (!state.loaded) {
+      const err = new Error("엔트리 정보를 아직 불러오지 못했습니다. 잠시 후 다시 시도하세요.");
+      err.status = 503;
+      throw err;
     }
-    const entries = await entryRes.json();
-    // The local lifecycle snapshot is an additional fail-closed guard for a rolling deploy or
-    // an upstream cache that briefly still contains a just-deactivated entry.
-    for (const num of Object.keys(entries)) {
-      if (!isTeamActive(db, year, Number(num))) delete entries[num];
+    const entries = {};
+    for (const t of state.teams.values()) {
+      if (t.active) entries[t.num] = { id: t.id, univ: t.univ, team: t.team, type: t.type, active: true };
     }
 
     // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
@@ -629,15 +738,10 @@ async function computeScore(year) {
       events.push({ type: eventType, records });
     }
 
-    // 6b. 내구 기록: score_endurance 테이블에서 조회
+    // 6b. 내구 기록: score_endurance 테이블에서 조회 (활성·존재 필터는 entries가 담당)
     const enduranceRecords = {};
-    const enduranceRows = db.prepare(`
-      SELECT e.* FROM score_endurance e
-      WHERE e.year = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = e.year AND s.team_num = e.team_num AND s.active = 0
-      )
-    `).all(year).filter((row) => entries[row.team_num]);
+    const enduranceRows = db.prepare("SELECT e.* FROM score_endurance e WHERE e.year = ?")
+      .all(year).filter((row) => entries[row.team_num]);
     const endurancePen = penalties["내구"] || { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
     for (const row of enduranceRows) {
       if (row.status === "DNS") continue; // DNS → 기록 없음
@@ -659,13 +763,8 @@ async function computeScore(year) {
     events.push({ type: "내구", records: enduranceRecords });
 
     // 7. 수동 입력 점수 조회. 레거시 energy 행은 보존하되 자동계산 결과와 섞지 않는다.
-    const manualRows = db.prepare(`
-      SELECT m.team_num, m.score_type, m.value FROM score_manual m
-      WHERE m.year = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = m.year AND s.team_num = m.team_num AND s.active = 0
-      )
-    `).all(year).filter((row) => entries[row.team_num]);
+    const manualRows = db.prepare("SELECT m.team_num, m.score_type, m.value FROM score_manual m WHERE m.year = ?")
+      .all(year).filter((row) => entries[row.team_num]);
     const manualScores = {};
     for (const row of manualRows) {
       if (row.score_type === "energy") continue;
@@ -693,7 +792,7 @@ async function computeScore(year) {
 }
 
 // PUT /api/score/manual — 수동 입력 점수 저장 (보고서, 가점, 감점)
-app.put("/api/score/manual", (req, res) => {
+app.put("/api/score/manual", async (req, res) => {
   const { year, team_num, score_type, value } = req.body;
   if (!year || team_num == null || !score_type) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
@@ -702,11 +801,20 @@ app.put("/api/score/manual", (req, res) => {
   const numTeamNum = Number(team_num);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, numYear, numTeamNum)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
 
   const keyErr = validateKey(score_type, "score_type");
   if (keyErr) return res.status(400).send(keyErr);
   if (score_type === "energy") return res.status(400).send("에너지 점수는 내구 계측값으로 자동 계산됩니다.");
+
+  // 쓰기는 team_id로 키잉하므로 num→id 해석이 필요하다. 관리자 액션이라 핫패스가 아니므로
+  // 콜드 캐시에서는 fetch를 기다린다(serve-stale). 그래도 스냅샷이 없으면 503, 스냅샷에
+  // 없는 번호는 404, 비활성 팀은 409 — 오늘의 "entry 다운이면 500"보다 정확하고 좁은 실패다.
+  const writeState = await teamState.getState(numYear);
+  if (!writeState.loaded) return res.status(503).send("엔트리 정보를 아직 불러오지 못했습니다. 잠시 후 다시 시도하세요.");
+  const writeTeam = writeState.byNum.get(numTeamNum);
+  if (!writeTeam) return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
+  if (!writeTeam.active) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  const teamId = writeTeam.id;
 
   const numValue = value === null || value === "" ? null : Number(value);
   if (numValue !== null && !Number.isFinite(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
@@ -719,14 +827,18 @@ app.put("/api/score/manual", (req, res) => {
   }
 
   const result = dbRun(() =>
-    db
-      .prepare(
-        `INSERT INTO score_manual (year, team_num, score_type, value)
-         VALUES (?, ?, ?, ?)
-         ON CONFLICT(year, team_num, score_type)
-         DO UPDATE SET value = excluded.value`,
-      )
-      .run(numYear, numTeamNum, score_type, numValue),
+    db.transaction(() => {
+      // 백필을 못 받은 레거시 행(같은 번호, team_id NULL)이 있으면 현재 팀으로 귀속시킨다 —
+      // 예전 num-키 체계에서 번호가 곧 소유였던 것과 같은 시맨틱.
+      db.prepare("UPDATE score_manual SET team_id = ? WHERE year = ? AND team_num = ? AND team_id IS NULL")
+        .run(teamId, numYear, numTeamNum);
+      db.prepare(
+        `INSERT INTO score_manual (year, team_id, team_num, score_type, value)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(year, team_id, score_type)
+         DO UPDATE SET value = excluded.value, team_num = excluded.team_num`,
+      ).run(numYear, teamId, numTeamNum, score_type, numValue);
+    })(),
   );
 
   if (!result.success) {
@@ -821,17 +933,17 @@ app.put("/api/score/setting", (req, res) => {
 });
 
 // GET /api/score/endurance?year=YYYY — 내구 기록 조회
-app.get("/api/score/endurance", (req, res) => {
+app.get("/api/score/endurance", async (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
 
+  // 비활성 팀 제외 — 캐시의 비활성 번호 목록을 파라미터로 바인딩 (미로드 시 '[]' = 전원 노출,
+  // 기존 absent-row-means-active와 동일한 fail-open)
+  const state = await teamState.getState(year);
   const rows = db.prepare(`
     SELECT e.* FROM score_endurance e
-    WHERE e.year = ? AND NOT EXISTS (
-      SELECT 1 FROM team_status s
-      WHERE s.year = e.year AND s.team_num = e.team_num AND s.active = 0
-    )
-  `).all(year);
+    WHERE e.year = ? AND e.team_num NOT IN (SELECT value FROM json_each(?))
+  `).all(year, state.inactiveNumsJson);
   const result = {};
   for (const row of rows) {
     const {
@@ -847,7 +959,7 @@ app.get("/api/score/endurance", (req, res) => {
 });
 
 // PUT /api/score/endurance — 내구 기록 단일 필드 저장
-app.put("/api/score/endurance", (req, res) => {
+app.put("/api/score/endurance", async (req, res) => {
   const { year, team_num, field, value } = req.body;
   if (!year || team_num == null || !field) {
     return res.status(400).send("필수 필드가 누락되었습니다.");
@@ -856,7 +968,13 @@ app.put("/api/score/endurance", (req, res) => {
   const numTeamNum = Number(team_num);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, numYear, numTeamNum)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+
+  const enduranceState = await teamState.getState(numYear);
+  if (!enduranceState.loaded) return res.status(503).send("엔트리 정보를 아직 불러오지 못했습니다. 잠시 후 다시 시도하세요.");
+  const enduranceTeam = enduranceState.byNum.get(numTeamNum);
+  if (!enduranceTeam) return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
+  if (!enduranceTeam.active) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  const enduranceTeamId = enduranceTeam.id;
 
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
@@ -884,7 +1002,11 @@ app.put("/api/score/endurance", (req, res) => {
 
   const result = dbRun(() => {
     db.transaction(() => {
-      db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(numYear, numTeamNum);
+      // 레거시 행 귀속 후 id 키 upsert (manual과 동일한 시맨틱)
+      db.prepare("UPDATE score_endurance SET team_id = ? WHERE year = ? AND team_num = ? AND team_id IS NULL")
+        .run(enduranceTeamId, numYear, numTeamNum);
+      db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_id, team_num) VALUES (?, ?, ?)")
+        .run(numYear, enduranceTeamId, numTeamNum);
       db.prepare(ENDURANCE_SQL[field]).run(dbValue, numYear, numTeamNum);
     })();
   });
@@ -900,24 +1022,9 @@ app.put("/api/score/endurance", (req, res) => {
   res.status(200).send();
 });
 
-/* ============================================
-   Internal API: 엔트리 라이프사이클 연동
-   ============================================ */
-
-registerTeamStatusRoute(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  onApplied: ({ year }) => {
-    invalidatePublicScoreCache(year);
-    invalidateInflightScore(year);
-  },
-});
-
-registerTeamLifecycleRoutes(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  tables: ["score_manual", "score_endurance"],
-  channels: ["manual-score", "endurance"],
-  statusTable: "team_status",
-});
+// entry 팀 상태 동기화 기동 (SSE 구독 + 부팅 fetch). 테스트는 skipSSESubscriptions로
+// 네트워크 구독을 끄고 teamState.refresh(year)를 직접 호출한다.
+if (!options.skipSSESubscriptions) teamState.start();
 
 /* ============================================
    SPA Fallback - Vue Router 지원
@@ -932,7 +1039,7 @@ app.get("/public/:year", (req, res) => {
 
 addSpaFallback(app);
 
-return { app, db };
+return { app, db, teamState };
 }
 
 runIfDirect(import.meta, "score", createScoreApp);
