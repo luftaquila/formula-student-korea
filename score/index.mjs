@@ -1,10 +1,10 @@
-import http from "http";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn } from "../shared/db-setup.mjs";
 import { requireInternalRequest } from "../shared/express-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { createSSESubscriber } from "../shared/sse-client.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 import { serviceUrl } from "../shared/services.mjs";
@@ -260,115 +260,33 @@ app.get("/api/score/public/:year/events", (req, res) => {
   handlePublicSSE(req, res);
 });
 
-// SSE 메시지 파싱용 정규식 (모듈 스코프에 캐싱)
-const EVENT_RE = /^event:\s*(.+)$/m;
-const DATA_RE = /^data:\s*(.*)$/gm;
-
-// SSE 구독 팩토리 (중복 연결 방지 + exponential backoff)
-// allowedEvents: 재전파할 이벤트 이름 화이트리스트(Set). null=전부. score 프론트가 실제로
-// 구독하는 이벤트만 재전파해 traffic의 wireless 텔레메트리/이벤트 firehose(초당 다수)가
-// 핸들러도 없는 모든 score 클라로 흘러가 대역폭·CPU를 낭비하는 것을 막는다.
-function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents = null) {
-  let reconnecting = false;
-  let connected = false;
-  let backoff = 3000;
-  const MAX_BACKOFF = 30000;
-
-  function subscribe() {
-    if (reconnecting) return;
-
-    const url = new URL(`${serverUrl}${eventPath}`);
-    const options = { headers: internalHeaders() };
-    const req = http.get(url, options, (res) => {
-      if (res.statusCode !== 200) {
-        // 비200 응답(403 시크릿 불일치, 503 maxClients 등)은 연결 성공이 아니다.
-        // backoff를 리셋하지 않아야 영구 실패가 3초 간격 무한 재시도로 상대 서비스를
-        // 두드리지 않고, 로깅해야 설정 오류가 조용히 묻히지 않는다.
-        warnThrottled("score.sse_subscribe_failed", { source: name, status: res.statusCode });
-        res.resume();
-        res.on("end", () => scheduleReconnect());
-        return;
-      }
-
-      connected = true;
-      const wasReconnect = backoff > 3000;
-      backoff = 3000; // 연결 성공 시 backoff 리셋
-      if (wasReconnect) {
-        broadcastEvent("refresh", { source: name });
-      }
-      let buffer = "";
-
-      res.on("data", (chunk) => {
-        buffer += chunk.toString();
-        if (buffer.length > 1024 * 1024) {
-          logger.warn(null, "score.sse_overflow", { source: name });
-          buffer = "";
-          return;
-        }
-        const messages = buffer.split("\n\n");
-        buffer = messages.pop();
-
-        for (const msg of messages) {
-          try {
-            const eventMatch = msg.match(EVENT_RE);
-            if (!eventMatch) continue;
-            const evName = eventMatch[1].trim();
-            // 화이트리스트 밖 이벤트는 파싱·재전파하지 않는다(firehose 차단).
-            if (allowedEvents && !allowedEvents.has(evName)) continue;
-            const dataLines = msg.match(DATA_RE);
-            if (!dataLines) continue;
-            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
-            broadcastEvent(`${prefix}:${evName}`, JSON.parse(jsonStr));
-          } catch (e) {
-            logger.warn(null, "score.sse_parse_error", { source: name, error: e.message });
-          }
-        }
-      });
-
-      res.on("end", () => {
-        scheduleReconnect();
-      });
-    });
-
-    req.setTimeout(60000, () => {
-      // 유휴 타임아웃(keepalive 두절/half-open 소켓)에서 인자 없는 destroy()는 'error'를
-      // emit하지 않고, 스트리밍 중이던 res도 'end' 대신 'aborted'/'close'로 끝나므로 여기서
-      // 재연결을 직접 예약해야 한다. scheduleReconnect의 reconnecting 가드가 중복을 막는다.
-      req.destroy();
-      scheduleReconnect();
-    });
-    req.on("error", () => {
-      scheduleReconnect();
-    });
-  }
-
-  function scheduleReconnect() {
-    if (connected) {
-      logger.warn(null, "score.sse_disconnect", { source: name });
-      connected = false;
-    }
-    if (reconnecting) return;
-    reconnecting = true;
-    setTimeout(() => {
-      reconnecting = false;
-      backoff = Math.min(backoff * 2, MAX_BACKOFF);
-      subscribe();
-    }, backoff);
-  }
-
-  return subscribe;
+// 업스트림 SSE를 score 클라이언트로 재전파하는 구독 래퍼 (공유 sse-client 사용).
+// allowedEvents: score 프론트가 실제로 구독하는 이벤트만 재전파해 traffic의 wireless
+// 텔레메트리/이벤트 firehose(초당 다수)가 핸들러도 없는 모든 score 클라로 흘러가
+// 대역폭·CPU를 낭비하는 것을 막는다.
+function createUpstreamRelay(name, serverUrl, eventPath, prefix, allowedEvents) {
+  return createSSESubscriber({
+    name,
+    url: `${serverUrl}${eventPath}`,
+    headers: internalHeaders,
+    allowedEvents,
+    onEvent: (evName, data) => broadcastEvent(`${prefix}:${evName}`, data),
+    // 재연결 = 끊긴 동안의 이벤트 유실 가능 → 클라에 전체 재조회 신호
+    onReconnect: () => broadcastEvent("refresh", { source: name }),
+    onWarn: (kind, detail) => {
+      if (kind === "subscribe_failed") warnThrottled("score.sse_subscribe_failed", detail);
+      else logger.warn(null, `score.sse_${kind}`, detail);
+    },
+  });
 }
 
 if (!options.skipSSESubscriptions) {
   // score 프론트(useSSE.js)가 실제 구독하는 이벤트만 재전파.
-  const subscribeEntrySSE = createSSESubscriber("Entry", ENTRY_SERVER, "/api/events", "entry", new Set(["entries"]));
-  const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection", new Set(["category-result", "answer"]));
+  createUpstreamRelay("Entry", ENTRY_SERVER, "/api/events", "entry", new Set(["entries"])).start();
+  createUpstreamRelay("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection", new Set(["category-result", "answer"])).start();
   // event-mode: 활성 종목이 바뀌면 computeScore의 집계 대상이 달라지므로 재전파해야 프론트가
   // 스코어를 다시 계산한다(재전파 누락 시 새로고침 전까지 stale).
-  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility", "event-mode"]));
-  subscribeEntrySSE();
-  subscribeInspectionSSE();
-  subscribeTrafficSSE();
+  createUpstreamRelay("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility", "event-mode"])).start();
 }
 
 /* ============================================
