@@ -21,6 +21,7 @@ setupTestEnv();
 import {
   createJWT,
   createApp,
+  createCachedValidator,
   createDbRun,
   isSecureConnection,
   formatCookieOpts,
@@ -163,7 +164,10 @@ describe('createApp auth middleware', () => {
   };
 
   before(async () => {
-    const app = createApp({ express, validateUser }, (req) => {
+    // validateUserCacheTtl: 0 — 이 스위트는 요청 사이에 validateUserResult를 바꿔가며
+    // 미들웨어 시맨틱을 검증하므로 캐시가 끼면 직전 테스트의 유효 결과가 새어 들어온다.
+    // 캐시 자체는 아래 'validateUser cache' 스위트가 전담한다.
+    const app = createApp({ express, validateUser, validateUserCacheTtl: 0 }, (req) => {
       if (req.path === '/public') return null;
       if (req.path === '/admin' || req.path === '/api/admin') return 'admin';
       if (req.path === '/official' || req.path === '/api/official') return 'official';
@@ -381,6 +385,143 @@ describe('createApp auth middleware', () => {
   it('uppercase public path still resolves as public (canonicalization must not over-gate)', async () => {
     const res = await client.get('/PUBLIC');
     assert.equal(res.status, 200);
+  });
+});
+
+// ─── createCachedValidator ──────────────────────────────────────────────
+describe('createCachedValidator', () => {
+  const counting = (results) => {
+    let calls = 0;
+    const fn = async (email) => {
+      calls++;
+      const r = results[Math.min(calls - 1, results.length - 1)];
+      if (r instanceof Error) throw r;
+      return r;
+    };
+    fn.calls = () => calls;
+    return fn;
+  };
+
+  it('caches a positive result for the TTL', async () => {
+    const inner = counting([{ valid: true, role: 'admin' }]);
+    const validate = createCachedValidator(inner, 5000);
+    assert.deepEqual(await validate('a@t.co'), { valid: true, role: 'admin' });
+    assert.deepEqual(await validate('a@t.co'), { valid: true, role: 'admin' });
+    assert.equal(inner.calls(), 1);
+  });
+
+  it('re-validates after the TTL expires', async () => {
+    const inner = counting([{ valid: true, role: 'admin' }, { valid: true, role: 'student' }]);
+    const validate = createCachedValidator(inner, 20);
+    assert.equal((await validate('a@t.co')).role, 'admin');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal((await validate('a@t.co')).role, 'student');
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('does NOT cache a definitive-invalid (404) result', async () => {
+    const inner = counting([{ valid: false, role: null }, { valid: false, role: null }]);
+    const validate = createCachedValidator(inner, 5000);
+    await validate('gone@t.co');
+    await validate('gone@t.co');
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('does NOT cache a transient failure', async () => {
+    const inner = counting([{ valid: false, role: null, transient: true }, { valid: true, role: 'admin' }]);
+    const validate = createCachedValidator(inner, 5000);
+    assert.equal((await validate('a@t.co')).valid, false);
+    assert.equal((await validate('a@t.co')).valid, true);
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('does NOT cache a thrown error and propagates it to all concurrent callers', async () => {
+    const inner = counting([new Error('db down'), { valid: true, role: 'admin' }]);
+    const validate = createCachedValidator(inner, 5000);
+    const [r1, r2] = await Promise.allSettled([validate('a@t.co'), validate('a@t.co')]);
+    assert.equal(r1.status, 'rejected');
+    assert.equal(r2.status, 'rejected');
+    assert.equal(inner.calls(), 1); // 병합된 한 번의 호출이 둘 다에게 전파
+    assert.equal((await validate('a@t.co')).valid, true); // 예외는 캐시되지 않음
+  });
+
+  it('coalesces concurrent validations of the same email into one inner call', async () => {
+    let resolveInner;
+    let calls = 0;
+    const inner = () => {
+      calls++;
+      return new Promise((r) => { resolveInner = r; });
+    };
+    const validate = createCachedValidator(inner, 5000);
+    const p1 = validate('a@t.co');
+    const p2 = validate('a@t.co');
+    resolveInner({ valid: true, role: 'chief' });
+    assert.equal((await p1).role, 'chief');
+    assert.equal((await p2).role, 'chief');
+    assert.equal(calls, 1);
+  });
+
+  it('invalidate(email) drops the cached entry', async () => {
+    const inner = counting([{ valid: true, role: 'admin' }, { valid: false, role: null }]);
+    const validate = createCachedValidator(inner, 5000);
+    await validate('a@t.co');
+    validate.invalidate('a@t.co');
+    assert.equal((await validate('a@t.co')).valid, false);
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('evicts when the entry cap is reached', async () => {
+    const inner = async () => ({ valid: true, role: null });
+    const validate = createCachedValidator(inner, 5000, 2);
+    await validate('a@t.co');
+    await validate('b@t.co');
+    await validate('c@t.co'); // 캡 도달 → 최고령(a) 축출
+    let calls = 0;
+    const probe = createCachedValidator(async () => { calls++; return { valid: true, role: null }; }, 5000, 2);
+    await probe('x@t.co');
+    await probe('x@t.co');
+    assert.equal(calls, 1);
+  });
+});
+
+describe('createApp validateUser caching integration', () => {
+  it('wraps the validator with a cache by default (one inner call for two requests)', async () => {
+    let calls = 0;
+    const app = createApp({
+      express,
+      validateUser: async () => { calls++; return { valid: true, role: null }; },
+    }, () => 'student');
+    app.get('/api/x', (req, res) => res.json({ ok: true }));
+    const { server, baseUrl } = await startServer(app);
+    try {
+      const client = createClient(baseUrl);
+      const cookie = makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'student' });
+      assert.equal((await client.get('/api/x', { cookie })).status, 200);
+      assert.equal((await client.get('/api/x', { cookie })).status, 200);
+      assert.equal(calls, 1);
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it('validateUserCacheTtl: 0 disables the cache', async () => {
+    let calls = 0;
+    const app = createApp({
+      express,
+      validateUser: async () => { calls++; return { valid: true, role: null }; },
+      validateUserCacheTtl: 0,
+    }, () => 'student');
+    app.get('/api/x', (req, res) => res.json({ ok: true }));
+    const { server, baseUrl } = await startServer(app);
+    try {
+      const client = createClient(baseUrl);
+      const cookie = makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'student' });
+      await client.get('/api/x', { cookie });
+      await client.get('/api/x', { cookie });
+      assert.equal(calls, 2);
+    } finally {
+      await stopServer(server);
+    }
   });
 });
 

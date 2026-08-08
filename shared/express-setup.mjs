@@ -71,6 +71,43 @@ export function createSecretChecker(secret) {
   };
 }
 
+// 재검증 결과 캐시. **유효(valid:true) 결과만** TTL 동안 캐시한다 — 404(확정 무효)와
+// transient 실패는 절대 캐시하지 않는다. 무효 응답을 캐시하면 일시 장애가 TTL만큼
+// 고착되고, 반대로 유효 캐시는 삭제·강등 전파를 최대 TTL(기본 5초)만큼만 늦춘다.
+// 같은 이메일의 동시 검증은 한 번의 inner 호출을 공유한다(동시 API 요청·SSE 재검증
+// 루프의 중복 왕복 제거). inner의 예외는 그대로 전파한다 — 요청 미들웨어는 transient
+// fail-close로, sse.mjs 재검증은 fail-open으로 각자의 계약대로 처리한다.
+export function createCachedValidator(inner, ttlMs = 5000, maxEntries = 10000) {
+  const cache = new Map();    // email -> { role, expires }
+  const inflight = new Map(); // email -> Promise<result>
+  async function validate(email) {
+    const hit = cache.get(email);
+    if (hit && hit.expires > Date.now()) return { valid: true, role: hit.role };
+    if (inflight.has(email)) return inflight.get(email);
+    const p = (async () => {
+      try {
+        const result = await inner(email);
+        if (result?.valid) {
+          if (cache.size >= maxEntries) {
+            const now = Date.now();
+            for (const [k, v] of cache) if (v.expires <= now) cache.delete(k);
+            // 만료분 청소로도 모자라면 최고령 삽입분부터 축출(Map은 삽입 순서 유지)
+            if (cache.size >= maxEntries) cache.delete(cache.keys().next().value);
+          }
+          cache.set(email, { role: result.role ?? null, expires: Date.now() + ttlMs });
+        }
+        return result;
+      } finally {
+        inflight.delete(email);
+      }
+    })();
+    inflight.set(email, p);
+    return p;
+  }
+  validate.invalidate = (email) => (email == null ? cache.clear() : cache.delete(email));
+  return validate;
+}
+
 export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
@@ -153,8 +190,7 @@ export function createApp(deps, authRoleFn) {
         if (res.status === 404) return { valid: false, role: null };
         // 404(사용자 삭제/비활성)만 확정 무효다. 5xx/네트워크 오류는 auth 일시 장애이므로
         // transient로 표시 — 이 요청은 fail-close로 거부(req.user=null)하되 세션 쿠키는
-        // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다. 거부는 유지되므로 즉시 권한
-        // 반영(캐싱 없음) 원칙과 충돌하지 않는다.
+        // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다.
         console.warn(`[auth] fail-close: auth returned ${res.status} for ${email}`);
         return { valid: false, role: null, transient: true };
       } catch (e) {
@@ -163,6 +199,13 @@ export function createApp(deps, authRoleFn) {
       }
     };
   }
+
+  // 유효 결과만 5초 캐시. N개 서비스 × 매 요청이 auth로 동기 왕복하던 비용을 없애되,
+  // 삭제·강등 전파 지연 상한은 TTL로 유계된다(5초, 운영 승인값). 무효·transient는
+  // 캐시하지 않으므로 fail-close 계약(위)은 그대로다. auth 자신은 로컬 DB 조회라
+  // 캐시가 무익하고 자기 UI의 즉시 반영을 잃으므로 validateUserCacheTtl: 0으로 끈다.
+  const cacheTtl = deps.validateUserCacheTtl ?? 5000;
+  if (cacheTtl > 0) validateUser = createCachedValidator(validateUser, cacheTtl);
 
   // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
   const internalSecret = process.env.INTERNAL_SECRET;
