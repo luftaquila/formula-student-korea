@@ -78,10 +78,8 @@ async function loadEntries() {
 async function handleAdd(entry) {
   addingEntry.value = true;
   try {
-    const result = await addEntry(entry, selectedYear.value);
-    success(result.pending
-      ? `${entry.num}번 엔트리를 추가했습니다. (서비스 동기화 진행 중)`
-      : `${entry.num}번 엔트리를 추가했습니다.`);
+    await addEntry(entry, selectedYear.value);
+    success(`${entry.num}번 엔트리를 추가했습니다.`);
     await loadEntries();
   } catch (e) {
     error(e.message);
@@ -137,10 +135,8 @@ onUnmounted(() => window.removeEventListener("keydown", onIntentKeydown));
 
 async function handleUpdate(entry) {
   try {
-    const result = await updateEntry(entry, selectedYear.value);
-    success(result?.pending
-      ? `${entry.num}번 엔트리를 수정했습니다. (서비스 동기화 진행 중)`
-      : `${entry.num}번 엔트리를 수정했습니다.`);
+    await updateEntry(entry, selectedYear.value);
+    success(`${entry.num}번 엔트리를 수정했습니다.`);
     entries.value = await fetchEntries(selectedYear.value);
   } catch (e) {
     // 번호를 그대로 둔 채 팀이 바뀐 경우: 명칭 정정인지 팀 교체인지 운영자가 정해야
@@ -165,10 +161,8 @@ async function handleActive(entry) {
   }
   activeUpdating.value = new Set(activeUpdating.value).add(entry.num);
   try {
-    const result = await setEntryActive(entry.num, entry.active, selectedYear.value);
-    success(result?.pending
-      ? `${entry.num}번 엔트리 상태를 변경했습니다. (서비스 동기화 진행 중)`
-      : `${entry.num}번 엔트리를 ${entry.active ? "활성화" : "비활성화"}했습니다.`);
+    await setEntryActive(entry.num, entry.active, selectedYear.value);
+    success(`${entry.num}번 엔트리를 ${entry.active ? "활성화" : "비활성화"}했습니다.`);
     const current = entries.value[entry.num];
     if (current) {
       entries.value = {
@@ -187,10 +181,8 @@ async function handleActive(entry) {
 
 async function handleDelete(num) {
   try {
-    const result = await deleteEntry(num, selectedYear.value);
-    success(result?.pending
-      ? `${num}번 엔트리를 삭제했습니다. (서비스 동기화 진행 중)`
-      : `${num}번 엔트리를 삭제했습니다.`);
+    await deleteEntry(num, selectedYear.value);
+    success(`${num}번 엔트리를 삭제했습니다.`);
     await loadEntries();
   } catch (e) {
     error(e.message);
@@ -199,10 +191,8 @@ async function handleDelete(num) {
 
 async function handleUpload(data, intents) {
   try {
-    const result = await uploadEntries(data, selectedYear.value, intents);
-    success(result?.pending
-      ? "엔트리 목록을 업로드했습니다. (서비스 동기화 진행 중)"
-      : "엔트리 목록을 업로드했습니다.");
+    await uploadEntries(data, selectedYear.value, intents);
+    success("엔트리 목록을 업로드했습니다.");
     await loadEntries();
   } catch (e) {
     // 동일 번호에서 팀이 바뀐 항목은 명칭 정정인지 팀 교체인지 운영자가 정해야
@@ -218,10 +208,8 @@ async function handleUpload(data, intents) {
 
 async function handleDeleteAll() {
   try {
-    const result = await deleteAllEntries(selectedYear.value);
-    success(result?.pending
-      ? "모든 엔트리를 삭제했습니다. (서비스 동기화 진행 중)"
-      : "모든 엔트리를 삭제했습니다.");
+    await deleteAllEntries(selectedYear.value);
+    success("모든 엔트리를 삭제했습니다.");
     await loadEntries();
   } catch (e) {
     error(e.message);

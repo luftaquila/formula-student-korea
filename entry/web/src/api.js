@@ -9,11 +9,10 @@ function yearParam(year, prefix = "?") {
 /**
  * 엔트리 변경(PATCH/bulk) 응답 처리.
  *
- * 409 본문은 두 형태다: ambiguous JSON(`{message, ambiguous}`) 또는 일반 텍스트
- * (라이프사이클 동기화 대기 등). 스트림은 한 번만 읽을 수 있으므로 텍스트로 받아 JSON
- * 파싱을 시도한다. (res.json()을 먼저 호출하면 텍스트 본문에서 스트림이 소비돼 이후
- * res.text()가 "Body is unusable"로 던진다.) 202는 변경은 반영됐고 일부 서비스 동기화가
- * 재시도 대기 중인 상태이므로 성공으로 보고 pending 플래그만 돌려준다.
+ * 409 본문은 두 형태다: ambiguous JSON(`{message, ambiguous}`) 또는 일반 텍스트.
+ * 스트림은 한 번만 읽을 수 있으므로 텍스트로 받아 JSON 파싱을 시도한다. (res.json()을
+ * 먼저 호출하면 텍스트 본문에서 스트림이 소비돼 이후 res.text()가 "Body is unusable"로
+ * 던진다.)
  */
 async function handleEntryMutationResponse(res) {
   if (res.status === 401) {
@@ -34,7 +33,6 @@ async function handleEntryMutationResponse(res) {
   if (!res.ok) {
     throw new Error((await res.text()) || `요청 실패 (${res.status})`);
   }
-  return { pending: res.status === 202 };
 }
 
 /**
@@ -57,22 +55,20 @@ export async function fetchEntries(year) {
  * 엔트리 활성 상태 변경
  */
 export async function setEntryActive(num, active, year) {
-  const res = await request(`/api/entries/${num}/active${yearParam(year)}`, {
+  await request(`/api/entries/${num}/active${yearParam(year)}`, {
     method: "PATCH",
     body: JSON.stringify({ active }),
   });
-  return { pending: res.status === 202 };
 }
 
 /**
  * 엔트리 추가
  */
 export async function addEntry({ num, univ, team, type }, year) {
-  const res = await request(`/api/entries${yearParam(year)}`, {
+  await request(`/api/entries${yearParam(year)}`, {
     method: "POST",
     body: JSON.stringify({ num, univ, team, type }),
   });
-  return { pending: res.status === 202 };
 }
 
 /**
@@ -99,20 +95,18 @@ export async function updateEntry({ num, univ, team, type, prev, intent }, year)
  * 엔트리 삭제
  */
 export async function deleteEntry(num, year) {
-  const res = await request(`/api/entries/${num}${yearParam(year)}`, {
+  await request(`/api/entries/${num}${yearParam(year)}`, {
     method: "DELETE",
   });
-  return { pending: res.status === 202 };
 }
 
 /**
  * 모든 엔트리 삭제
  */
 export async function deleteAllEntries(year) {
-  const res = await request(`/api/entries${yearParam(year)}`, {
+  await request(`/api/entries${yearParam(year)}`, {
     method: "DELETE",
   });
-  return { pending: res.status === 202 };
 }
 
 /**

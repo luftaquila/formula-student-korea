@@ -1,6 +1,5 @@
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -20,26 +19,12 @@ import { createEntryApp } from '../../entry/index.mjs';
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const YEAR = 2031; // 다른 스위트와 격리된 과거/미래 연도
 
-let server, baseUrl, client, db, dbPath, stopLifecycleOutboxRetry;
-let lifecycleSink;
+let server, baseUrl, client, db, dbPath;
 
 before(async () => {
-  // 아웃박스 팬아웃이 컨테이너 DNS로 나가지 않도록 전부 200 sink로 (entry.test.mjs와 동일 패턴)
-  lifecycleSink = http.createServer((req, res) => {
-    req.resume();
-    res.statusCode = 200;
-    res.end();
-  });
-  await new Promise((resolve) => lifecycleSink.listen(0, '127.0.0.1', resolve));
-  const sinkUrl = `http://127.0.0.1:${lifecycleSink.address().port}`;
-  for (const key of ['QUEUE_SERVER', 'DOCUMENTS_SERVER', 'INSPECTION_SERVER', 'SCORE_SERVER', 'TRAFFIC_SERVER']) {
-    process.env[key] = sinkUrl;
-  }
-
   dbPath = tmpDbPath();
-  const result = createEntryApp({ dbPath, validateUser: TRUST_JWT, skipReconcileOnBoot: true });
+  const result = createEntryApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
-  stopLifecycleOutboxRetry = result.stopLifecycleOutboxRetry;
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
@@ -47,9 +32,7 @@ before(async () => {
 });
 
 after(async () => {
-  stopLifecycleOutboxRetry?.();
   await stopServer(server);
-  await new Promise((resolve) => lifecycleSink.close(resolve));
   db.close();
   cleanup(dbPath);
 });
@@ -166,12 +149,11 @@ describe('immutable team id', () => {
     )`);
     db.prepare(`INSERT INTO entry_${legacyYear} (num, univ, team) VALUES (1, 'U', 'Legacy')`).run();
 
-    const second = createEntryApp({ dbPath, validateUser: TRUST_JWT, skipReconcileOnBoot: true });
+    const second = createEntryApp({ dbPath, validateUser: TRUST_JWT });
     try {
       const row = second.db.prepare(`SELECT id FROM entry_${legacyYear} WHERE num = 1`).get();
       assert.ok(Number.isInteger(row.id) && row.id >= 1, 'legacy row must receive a minted id');
     } finally {
-      second.stopLifecycleOutboxRetry?.();
       second.db.close();
       db.exec(`DROP TABLE entry_${legacyYear}`);
     }
