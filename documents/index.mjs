@@ -3,20 +3,29 @@ import path from "path";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn, parseLegacyTimestamp } from "../shared/db-setup.mjs";
+import { addColumn, runMigrationOnce, normalizeTimestampColumn, parseLegacyTimestamp } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
 import archiver from "archiver";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { validateYear } from "../shared/validation.mjs";
 import { parseDbTimestamp } from "../shared/parse-timestamp.js";
 import { serviceUrl } from "../shared/services.mjs";
 
-const PORT = 9700;
-
 export function createDocumentsApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/documents.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "documents", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path.startsWith("/api/internal/")) return "admin";
+    if (req.path.startsWith("/api/admin")) return "chief";
+    if (req.path === "/api/logs") return "admin";
+    if (req.path.startsWith("/api/")) return "student";
+    if (req.path.startsWith("/admin")) return "chief";
+    return "student";
+  },
+});
 db.pragma("foreign_keys = ON");
 
 db.exec(`CREATE TABLE IF NOT EXISTS student_team (
@@ -197,25 +206,6 @@ fs.mkdirSync(TMP_DIR, { recursive: true });
   }
 }
 
-/* ============================================
-   Express 앱 설정
-   ============================================ */
-const logger = createLogger(db, "documents");
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path.startsWith("/api/internal/")) return "admin";
-  if (req.path.startsWith("/api/admin")) return "chief";
-  if (req.path === "/api/logs") return "admin";
-  if (req.path.startsWith("/api/")) return "student";
-  if (req.path.startsWith("/admin")) return "chief";
-  return "student";
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
-
 // Documents에서는 엔트리 활성 상태와 무관하게 계정 할당과 제출을 허용한다.
 // 학생에게는 자신의 매핑 팀만, chief에게는 관리에 필요한 전체 목록만 반환한다.
 // 두 경로 모두 브라우저가 Entry의 관리자 전용 includeInactive API를 직접 호출하지
@@ -237,8 +227,6 @@ app.get("/api/admin/entries", async (req, res) => {
   if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
   res.json(await fetchEntries(yearCheck.value, req, "entry.admin_list"));
 });
-
-const dbRun = createDbRun();
 
 /* ============================================
    헬퍼
@@ -1890,20 +1878,9 @@ async function notifyOpenSessions(req, email, teamNum, year) {
   }
 }
 
-/* ============================================
-   SPA Fallback
-   ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db, _schedulerInterval, _renumberFileWorkInterval, _renumberFileWorkStartupTimer };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createDocumentsApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Documents service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "documents", createDocumentsApp);

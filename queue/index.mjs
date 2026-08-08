@@ -2,15 +2,13 @@ import https from "https";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { serviceUrl } from "../shared/services.mjs";
 import { registerTeamStatusSnapshotRoute } from "../shared/team-status.mjs";
-
-const PORT = 9300;
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -63,7 +61,33 @@ function rateLimit(req, res, next) {
   next();
 }
 
-const db = createDatabase(Database, options.dbPath || "./data/queue.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "queue", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path.startsWith("/api/internal/")) return "admin";
+    // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
+    if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
+    if (req.path.startsWith("/api/admin/priority")) return "chief";
+    if (req.path.startsWith("/api/admin/history")) return "chief";
+    if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
+    if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
+    if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
+    if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
+    // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
+    if (req.path.startsWith("/api/admin")) return "official";
+    // SPA routes
+    if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
+    if (/^\/(admin|stats)/.test(req.path)) return "official";
+    if (req.path === "/api/logs") return "admin";
+    if (req.path === "/api/events") return null;
+    if (req.path === "/api/active") return null;
+    if (req.path.startsWith("/api/booths/")) return null;
+    if (req.path.startsWith("/api/state/")) return null;
+    if (req.path.startsWith("/api/")) return "official"; // API 기본값: default-close
+    return null; // SPA (public display)
+  },
+});
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
@@ -485,37 +509,6 @@ function renumberLogRows(table, prevNum, newNum, year) {
   return db.prepare(`UPDATE ${table} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
 }
 
-const logger = createLogger(db, "queue");
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path.startsWith("/api/internal/")) return "admin";
-  // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
-  if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
-  if (req.path.startsWith("/api/admin/priority")) return "chief";
-  if (req.path.startsWith("/api/admin/history")) return "chief";
-  if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
-  if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
-  if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
-  if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
-  // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
-  if (req.path.startsWith("/api/admin")) return "official";
-  // SPA routes
-  if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
-  if (/^\/(admin|stats)/.test(req.path)) return "official";
-  if (req.path === "/api/logs") return "admin";
-  if (req.path === "/api/events") return null;
-  if (req.path === "/api/active") return null;
-  if (req.path.startsWith("/api/booths/")) return null;
-  if (req.path.startsWith("/api/state/")) return null;
-  if (req.path.startsWith("/api/")) return "official"; // API 기본값: default-close
-  return null; // SPA (public display)
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
-
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
@@ -579,8 +572,6 @@ function validatePriority(priority) {
 /* ============================================
    DB 헬퍼
    ============================================ */
-const dbRun = createDbRun();
-
 /**
  * 대기열 조회 쿼리 (정렬 순서: 초검 > 재검, 우선순위 높음 > 낮음, 선착순)
  * 파라미터 순서: [inspection, year] × 3 (재검 CASE, priority JOIN, WHERE 순)
@@ -2444,21 +2435,14 @@ app.patch("/api/internal/team-num", (req, res) => {
 /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db, loadSmsConfig };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db, loadSmsConfig: load } = createQueueApp();
-  setupProcessHandlers(db);
-  // Serve immediately; SMS config loads in the background and retries through
-  // the startup window so a co-restart with the email service doesn't block
-  // listening or log a spurious "fetch failed" warning.
-  app.listen(PORT, () => console.log(`Queue service running on port ${PORT}`));
-  load({ retries: 10, delayMs: 3000 });
-}
+// Serve immediately; SMS config loads in the background and retries through
+// the startup window so a co-restart with the email service doesn't block
+// listening or log a spurious "fetch failed" warning.
+runIfDirect(import.meta, "queue", createQueueApp, {
+  postListen: ({ loadSmsConfig }) => loadSmsConfig({ retries: 10, delayMs: 3000 }),
+});

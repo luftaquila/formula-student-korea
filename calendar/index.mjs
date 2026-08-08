@@ -1,11 +1,9 @@
 import crypto from "node:crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce } from "../shared/db-setup.mjs";
-import { createApp, createDbRun, setupProcessHandlers, ensureDataDir } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { runMigrationOnce } from "../shared/db-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 
-const PORT = 11000;
 const EVENT_ROLE_LEVELS = { public: 0, student: 1, official: 2, chief: 3, admin: 4 };
 const ALLOWED_EVENT_ROLES = ["public", "student", "official", "chief", "admin"];
 
@@ -14,7 +12,18 @@ const ALLOWED_EVENT_ROLES = ["public", "student", "official", "chief", "admin"];
    ============================================ */
 export function createCalendarApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/calendar.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "calendar", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path === "/api/logs") return "admin";
+    if (req.method === "GET" && req.path === "/api/events") return null;
+    if (req.path === "/api/events/ical") return null;
+    if (req.path === "/api/events/subscribe") return "student";
+    if (req.path.startsWith("/api/")) return "chief";
+    return null;
+  },
+});
 
 db.exec(`CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -32,22 +41,6 @@ db.exec("DROP INDEX IF EXISTS idx_events_start_end");
 db.exec("DROP INDEX IF EXISTS idx_events_end_start");
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_role_start ON events(role, start)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_events_all_day_end_start ON events(all_day, end, start)");
-
-const logger = createLogger(db, "calendar");
-const dbRun = createDbRun();
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path === "/api/logs") return "admin";
-  if (req.method === "GET" && req.path === "/api/events") return null;
-  if (req.path === "/api/events/ical") return null;
-  if (req.path === "/api/events/subscribe") return "student";
-  if (req.path.startsWith("/api/")) return "chief";
-  return null;
-});
-
-app.get("/api/health", (req, res) => res.send("ok"));
-app.get("/api/logs", logger.queryHandler);
 
 function toEventResponse(row) {
   return {
@@ -415,19 +408,10 @@ function generateICal(events) {
   return lines.join("\r\n");
 }
 
-// SPA fallback
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db };
 
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createCalendarApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Calendar service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "calendar", createCalendarApp);

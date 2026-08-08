@@ -2,12 +2,11 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
+import { createApp, createDbRun, createJWT, verifyJWT, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { createLogger, buildLogFilter, parseLogCursor } from "../shared/logger.mjs";
 import { serviceUrl, logAggregationTargets } from "../shared/services.mjs";
-
-const PORT = 9100;
+import { runIfDirect } from "../shared/service-bootstrap.mjs";
 
 export function createAuthApp(options = {}) {
 
@@ -1255,10 +1254,7 @@ app.get("/{*splat}", (req, res) => {
 return { app, db };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createAuthApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Auth service running on port ${PORT}`));
-}
+// auth는 골격(createServiceSkeleton)을 쓰지 않는다 — 검증기를 자기 DB 함수로 주입하고
+// (validateUserCacheTtl: 0) db가 검증기 클로저보다 먼저 만들어져야 해서 createApp 호출이
+// 수동이다. 부팅 블록만 공용 runIfDirect를 쓴다.
+runIfDirect(import.meta, "auth", createAuthApp);

@@ -2,12 +2,10 @@ import express from "express";
 import crypto from "node:crypto";
 import https from "node:https";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "../shared/db-setup.mjs";
-import { createApp, createDbRun, setupProcessHandlers, ensureDataDir, requireInternalRequest, createSecretChecker } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "../shared/db-setup.mjs";
+import { requireInternalRequest, createSecretChecker } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { serviceUrl } from "../shared/services.mjs";
-
-const PORT = 9900;
 
 const BREVO_API_BASE = "https://api.brevo.com/v3";
 
@@ -34,7 +32,17 @@ const MASKED_KEYS = new Set([
 export function createEmailApp(options = {}) {
 
 const fetchFn = options.fetchFn || globalThis.fetch;
-const db = createDatabase(Database, options.dbPath || "./data/email.db");
+
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "email", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path === "/api/logs") return "admin";
+    if (req.path.startsWith("/api/")) return "admin";
+    return "admin"; // SPA — admin only (redirect non-admins instead of serving a dead shell)
+  },
+});
+
 const EMAIL_LOG_MAX_ROWS = Number.parseInt(process.env.EMAIL_LOG_MAX_ROWS || "50000", 10);
 
 db.exec(`CREATE TABLE IF NOT EXISTS config (
@@ -100,19 +108,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_el_status_sent_at ON email_log(status, s
 const insertConfig = db.prepare("INSERT OR IGNORE INTO config (key, value) VALUES (?, '')");
 for (const key of CONFIG_KEYS) insertConfig.run(key);
 
-const logger = createLogger(db, "email");
-const dbRun = createDbRun();
 const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path === "/api/logs") return "admin";
-  if (req.path.startsWith("/api/")) return "admin";
-  return "admin"; // SPA — admin only (redirect non-admins instead of serving a dead shell)
-});
-
-app.get("/api/health", (req, res) => res.send("ok"));
-app.get("/api/logs", logger.queryHandler);
 
 // AFTER INSERT 트리거로 매 발송 로그 삽입마다 최신 N행만 보존한다(인터벌 prune과 달리
 // 한도를 초과하는 구간이 생기지 않음).
@@ -689,21 +685,10 @@ app.post("/api/test-sms", async (req, res) => {
   }
 });
 
-/* ============================================
-   SPA fallback
-   ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db };
 
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createEmailApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Email service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "email", createEmailApp);

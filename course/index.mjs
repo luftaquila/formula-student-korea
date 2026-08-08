@@ -1,13 +1,11 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, runMigrationOnce, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, createSecretChecker } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { runMigrationOnce, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
+import { createSecretChecker } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
-
-const PORT = 10000;
 
 const parsedMissionTelemetryMaxRows = Number.parseInt(process.env.MISSION_TELEMETRY_MAX_ROWS || "500000", 10);
 const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRows) && parsedMissionTelemetryMaxRows > 0
@@ -16,7 +14,12 @@ const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRow
 
 export function createCourseApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/course.db");
+// roleFn은 아래 "Express 앱 설정" 섹션에 hoisted function으로 선언되어 있다.
+// 게이트는 요청 시점에 호출되므로 골격 호출 뒤에 선언되어도 안전하다.
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "course", express, Database, options,
+  authRoleFn: roleFn,
+});
 
 db.pragma("foreign_keys = ON");
 
@@ -274,8 +277,6 @@ db.exec(`CREATE TABLE IF NOT EXISTS survey_point (
 /* ============================================
    Express 앱 설정
    ============================================ */
-const logger = createLogger(db, "course");
-
 // Timing-safe internal secret check (shared helper)
 const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 // 로버 전용 시크릿(선택적). 설정되면 로버 라우트에서 X-Rover-Secret 헤더로도 인증할 수 있다.
@@ -289,7 +290,7 @@ function isInternalRequest(req) {
   return isInternalSecret(req.headers["x-internal-service"]) || isRoverSecret(req.headers["x-rover-secret"]);
 }
 
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
+function roleFn(req) {
   // Normalize before matching: Express 5 routing is case-insensitive and
   // trailing-slash-insensitive by default, so `/API/rover/camera` and
   // `/api/rover/camera/` reach the same handlers. A raw `req.path ===` gate
@@ -357,11 +358,7 @@ const app = createApp({ express, validateUser: options.validateUser }, (req) => 
   // with snapshot delete above. Create/rename and cone editing stay chief.
   if (req.method === "DELETE" && /^\/api\/courses\/\d+$/.test(p)) return "admin";
   return "chief";
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
+}
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -494,11 +491,6 @@ function getConeById(id) {
 function getMemoById(id) {
   return db.prepare("SELECT * FROM memo WHERE id = ?").get(id);
 }
-
-/* ============================================
-   DB 헬퍼
-   ============================================ */
-const dbRun = createDbRun();
 
 /* ============================================
    API 라우트: /api/courses
@@ -1211,17 +1203,9 @@ app.use("/api", (req, res) => {
   res.status(404).send("API endpoint not found.");
 });
 
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createCourseApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Course service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "course", createCourseApp);
