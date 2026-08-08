@@ -14,17 +14,24 @@ import {
   TRUST_JWT,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
+  startFakeEntryServer,
 } from '../helpers/test-utils.mjs';
 import { createQueueApp, INSPECTIONS } from '../../queue/index.mjs';
 
+// entry의 team-state 스냅샷 mock (팀 1/2/3 = id 401/402/403). queue는 이제 HTTP
+// /api/entries가 아니라 /api/internal/team-state를 pull한다.
 function createMockEntryServer() {
   const app = express();
-  // Return entries for the current year
-  app.get('/api/entries', (req, res) => {
+  app.get('/api/internal/team-state', (req, res) => {
     res.json({
-      1: { univ: '서울대', team: '팀A' },
-      2: { univ: '카이스트', team: '팀B' },
-      3: { univ: '연세대', team: '팀C' },
+      year: Number(req.query.year),
+      version: 1,
+      teams: {
+        401: { num: 1, univ: '서울대', team: '팀A', type: null, active: true },
+        402: { num: 2, univ: '카이스트', team: '팀B', type: null, active: true },
+        403: { num: 3, univ: '연세대', team: '팀C', type: null, active: true },
+      },
+      tombstones: [],
     });
   });
   return app;
@@ -49,7 +56,7 @@ before(async () => {
 
   // Then start queue service
   dbPath = tmpDbPath();
-  const result = createQueueApp({ dbPath, validateUser: TRUST_JWT });
+  const result = createQueueApp({ dbPath, validateUser: TRUST_JWT, skipTeamStateSync: true });
   db = result.db;
   loadSmsConfig = result.loadSmsConfig;
   const started = await startServer(result.app);
@@ -1493,182 +1500,6 @@ describe('POST /api/state/:num (with registered entry)', () => {
 });
 
 // ─── Internal API: team deletion ─────────────────────────────────────────
-describe('DELETE /api/internal/team/:num', () => {
-  before(async () => {
-    // Activate noise inspection and register entry 2 for cleanup tests
-    await client.patch('/api/admin/inspection/noise', {
-      body: { active: true },
-      cookie: chiefCookie,
-    });
-    await client.post('/api/admin/register/noise', {
-      body: { num: 2, phone: '01022222222' },
-      cookie: chiefCookie,
-    });
-    // Set priority for entry 2 in noise
-    await client.post('/api/admin/priority/noise', {
-      body: { num: 2, priority: 1 },
-      cookie: chiefCookie,
-    });
-  });
-
-  it('requires admin auth (internal service header)', async () => {
-    const res = await client.delete('/api/internal/team/2?year=' + new Date().getFullYear());
-    assert.equal(res.status, 401);
-  });
-
-  it('cleans up all queue data for the team', async () => {
-    const year = new Date().getFullYear();
-
-    // Verify entry 2 is in noise queue before cleanup
-    const queueBefore = await client.get('/api/admin/inspection/noise', { cookie: officialCookie });
-    const beforeData = await queueBefore.json();
-    assert.ok(beforeData.some(e => e.num === 2), 'entry 2 should be in noise queue before cleanup');
-
-    // Call internal delete
-    const res = await client.delete(`/api/internal/team/2?year=${year}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-
-    // Verify entry 2 is removed from noise queue
-    const queueAfter = await client.get('/api/admin/inspection/noise', { cookie: officialCookie });
-    const afterData = await queueAfter.json();
-    assert.ok(!afterData.some(e => e.num === 2), 'entry 2 should be removed from noise queue');
-
-    // Verify priority is removed
-    const priorities = await client.get('/api/admin/priority/noise', { cookie: chiefCookie });
-    const prioData = await priorities.json();
-    assert.ok(!prioData.some(e => e.num === 2), 'entry 2 priority should be removed');
-  });
-
-  it('returns 400 for invalid entry number', async () => {
-    const res = await client.delete('/api/internal/team/abc?year=' + new Date().getFullYear(), {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('returns 400 when year is missing or invalid', async () => {
-    const missing = await client.delete('/api/internal/team/2', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(missing.status, 400);
-
-    const invalid = await client.delete('/api/internal/team/2?year=abc', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(invalid.status, 400);
-  });
-});
-
-// ─── Internal API: team renumber ────────────────────────────────────────
-describe('PATCH /api/internal/team-num', () => {
-  it('renumbers queue rows, priorities, penalties, history, booths, and logs', async () => {
-    const year = new Date().getFullYear();
-    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-      .run('braking', 903, '01033333333', Date.now(), year);
-    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
-      .run(903, 'braking', '01033333333', year);
-    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
-      .run(903, 'braking', year, 2);
-    db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until) VALUES (?, ?, ?, ?)")
-      .run(903, 'braking', year, Date.now() + 60000);
-    db.prepare("INSERT OR IGNORE INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)")
-      .run(903, 'braking', Date.now(), year);
-    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(903, 'braking', 1, Date.now(), Date.now(), year);
-    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-      .run('register', 903, 'braking', Date.now(), year);
-    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(904, 'braking', 2, Date.now() - 1000, Date.now(), Date.now(), year);
-    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-      .run('cancel', 904, 'braking', Date.now(), year);
-    db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = ? AND booth_num = 1")
-      .run(903, Date.now(), 'braking');
-
-    const res = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { prevNum: 903, newNum: 904, year },
-    });
-    assert.equal(res.status, 200);
-
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").get('braking', 904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE inspection = ? AND num = ? AND year = ?").get('braking', 904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM cancel_penalty WHERE num = ? AND year = ?").get(904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = ? AND year = ?").get(904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ?").get(904, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'cancel' AND num = ? AND year = ?").get(904, year).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'register' AND num = ? AND year = ?").get(904, year).c, 1);
-    assert.equal(db.prepare("SELECT occupied_by FROM booth WHERE inspection = ? AND booth_num = 1").get('braking').occupied_by, 904);
-    assert.ok(db.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'renumber' AND num = ? AND year = ?").get(904, year).c >= 1);
-  });
-
-  it('treats prevNum === newNum as a no-op and preserves the team\'s rows', async () => {
-    const year = new Date().getFullYear();
-    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-      .run('braking', 905, '01055555555', Date.now(), year);
-    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
-      .run(905, 'braking', '01055555555', year);
-    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
-      .run(905, 'braking', year, 1);
-
-    const res = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { prevNum: 905, newNum: 905, year },
-    });
-    assert.equal(res.status, 200);
-
-    // self-renumber는 목적지(=자기 번호) 행을 먼저 지우므로, 가드가 없으면 데이터가 사라진다.
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").get('braking', 905, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE inspection = ? AND num = ? AND year = ?").get('braking', 905, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(905, year).c, 1);
-  });
-
-  it('applies deactivation cleanup after renumbering in the same bulk lifecycle sequence', async () => {
-    const year = new Date().getFullYear();
-    const prevNum = 906;
-    const newNum = 907;
-    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-      .run('braking', prevNum, '01077777777', Date.now(), year);
-    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, ?, ?, ?)")
-      .run(prevNum, 'braking', '01077777777', year);
-    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, ?, ?, ?)")
-      .run(prevNum, 'braking', year, 1);
-    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 60)")
-      .run(year, prevNum);
-
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: {
-        prevNum,
-        newNum,
-        year,
-        entry: { univ: 'U', team: 'T', active: false, active_revision: 61 },
-      },
-    });
-    assert.equal(renumber.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, newNum),
-      { active: 1, revision: 60 },
-      'renumber must preserve the previous status so the following event is not deduplicated',
-    );
-
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: newNum, year, active: false, revision: 61 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE num = ? AND year = ?").get(newNum, year).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE num = ? AND year = ?").get(newNum, year).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_priority WHERE num = ? AND year = ?").get(newNum, year).c, 0);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, newNum),
-      { active: 0, revision: 61 },
-    );
-  });
-});
-
 // ─── Year isolation ──────────────────────────────────────────────────────
 describe('Year isolation', () => {
   it('queue queries filter by current year', async () => {
@@ -1814,96 +1645,179 @@ describe('Queue legacy → normalized migration', () => {
   });
 });
 
-describe('Entry active-state synchronization', () => {
-  const year = new Date().getFullYear();
-  const num = 990;
+// ─── Team-state 수렴형 강제 (구 내부 라이프사이클 라우트 대체) ─────────────
+// entry가 이벤트를 push하는 대신 queue가 team-state 스냅샷을 pull해서 version 변경 시
+// 비활성 정리·리넘버·tombstone cascade를 멱등하게 적용한다. 전용 앱 인스턴스라 메인
+// 스위트의 rate limit·큐 상태와 격리된다.
+describe('Team-state convergent enforcement', () => {
+  let fake, srv, cli, database, dp, teamState;
+  const YEAR = new Date().getFullYear();
+  let version = 0;
 
-  it('clears only transient state, hides history, and ignores stale revisions', async () => {
+  const baseTeams = () => ({
+    501: { num: 51, univ: 'A대', team: '팀A', type: null, active: true },
+    502: { num: 52, univ: 'B대', team: '팀B', type: null, active: true },
+    503: { num: 53, univ: 'C대', team: '팀C', type: null, active: true },
+  });
+
+  function publish(mutate = (s) => s) {
+    version++;
+    const snap = mutate({ version, teams: baseTeams(), tombstones: [] });
+    snap.version = version;
+    fake.setSnapshot(YEAR, snap);
+    return teamState.refresh(YEAR);
+  }
+
+  before(async () => {
+    fake = await startFakeEntryServer();
+    process.env.ENTRY_SERVER = fake.url;
+
+    dp = tmpDbPath();
+    const result = createQueueApp({ dbPath: dp, validateUser: TRUST_JWT, skipTeamStateSync: true });
+    database = result.db;
+    teamState = result.teamState;
+    // 레거시 행: 백필 검증용 — 팀 51의 옛 이력(team_id NULL) + entry가 모르는 번호 99
+    database.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (51, 'battery', 1000, ?)").run(YEAR);
+    database.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES ('register', 99, 'battery', 1000, ?)").run(YEAR);
+    const started = await startServer(result.app);
+    srv = started.server;
+    cli = createClient(started.baseUrl);
+    await publish();
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    await fake.close();
+    database.close();
+    cleanup(dp);
+  });
+
+  it('backfills team_id for legacy rows and leaves unknown teams NULL (never deleted)', () => {
+    assert.equal(database.prepare("SELECT team_id FROM inspection_history WHERE num = 51 AND year = ?").get(YEAR).team_id, 501);
+    const orphan = database.prepare("SELECT team_id FROM queue_log WHERE num = 99 AND year = ?").get(YEAR);
+    assert.equal(orphan.team_id, null, 'unknown team stays NULL and is not deleted');
+  });
+
+  it('rows written through the API are adopted and follow a renumber (prevState adoption)', async () => {
+    // 팀 52를 API로 등록 — 쓰기 경로는 team_id를 스탬핑하지 않는다
+    const reg = await cli.post('/api/admin/register/battery', {
+      body: { num: 52, phone: '01052525252' },
+      cookie: makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'chief' }),
+    });
+    assert.equal(reg.status, 201);
+    assert.equal(database.prepare("SELECT team_id FROM inspection_queue WHERE num = 52 AND year = ?").get(YEAR).team_id, null);
+
+    // 리넘버 52 → 62: adoption(직전 상태 매핑)이 먼저 귀속시키고, 그 다음 num이 수렴한다
+    await publish((s) => {
+      s.teams[502] = { ...s.teams[502], num: 62 };
+      return s;
+    });
+    const row = database.prepare("SELECT num, team_id FROM inspection_queue WHERE team_id = 502 AND year = ?").get(YEAR);
+    assert.deepEqual(row, { num: 62, team_id: 502 }, 'queue row must follow the immutable id to the new number');
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE num = 52 AND year = ?").get(YEAR).c, 0);
+    // 대기열 조회도 새 번호로 노출
+    const queue = await (await cli.get('/api/admin/inspection/battery', {
+      cookie: makeAuthCookie({ email: 'o@t.co', name: 'O', role: 'official' }),
+    })).json();
+    assert.ok(queue.some((e) => e.num === 62));
+    // renumber 감사 마커
+    assert.ok(database.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE event = 'renumber' AND year = ?").get(YEAR).c >= 1);
+  });
+
+  it('two teams swapping numbers converge without collisions', async () => {
+    database.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority, team_id) VALUES (51, 'battery', ?, 1, 501)").run(YEAR);
+    database.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority, team_id) VALUES (53, 'battery', ?, 2, 503)").run(YEAR);
+    await publish((s) => {
+      s.teams[501] = { ...s.teams[501], num: 53 };
+      s.teams[503] = { ...s.teams[503], num: 51 };
+      s.teams[502] = { ...s.teams[502], num: 62 };
+      return s;
+    });
+    assert.equal(database.prepare("SELECT num FROM team_priority WHERE team_id = 501 AND year = ?").get(YEAR).num, 53);
+    assert.equal(database.prepare("SELECT num FROM team_priority WHERE team_id = 503 AND year = ?").get(YEAR).num, 51);
+    // 스왑 원복 (이후 테스트를 위해)
+    await publish((s) => { s.teams[502] = { ...s.teams[502], num: 62 }; return s; });
+    assert.equal(database.prepare("SELECT num FROM team_priority WHERE team_id = 501 AND year = ?").get(YEAR).num, 51);
+  });
+
+  it('deactivation clears only transient state; completed history is preserved and hidden', async () => {
     const now = Date.now();
-    db.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES ('battery', ?, '01099999999', ?, ?)").run(num, now, year);
-    db.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year) VALUES (?, 'battery', '01099999999', ?)").run(num, year);
-    db.prepare("INSERT OR REPLACE INTO team_priority (num, inspection, year, priority) VALUES (?, 'battery', ?, 1)").run(num, year);
-    db.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until, phone, queue_timestamp) VALUES (?, 'battery', ?, ?, '01099999999', ?)").run(num, year, now + 60000, now);
-    db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, 'battery', ?, ?)").run(num, now, year);
-    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year) VALUES (?, 'battery', 1, ?, ?, ?, ?)").run(num, now - 2000, now - 1000, now - 2000, year);
-    db.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at, year) VALUES (?, 'battery', 1, ?, ?, ?)").run(num, now, now, year);
-    db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = 'battery' AND booth_num = 1").run(num, now);
-    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES ('register', ?, 'battery', ?, ?)").run(num, now, year);
+    const num = 51;
+    database.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year, team_id) VALUES ('battery', ?, '01051515151', ?, ?, 501)").run(num, now, YEAR);
+    database.prepare("INSERT OR REPLACE INTO current_inspection (num, inspection, phone, year, team_id) VALUES (?, 'battery', '01051515151', ?, 501)").run(num, YEAR);
+    database.prepare("INSERT OR REPLACE INTO cancel_penalty (num, inspection, year, until, team_id) VALUES (?, 'battery', ?, ?, 501)").run(num, YEAR, now + 60000);
+    database.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, exited_at, created_at, year, team_id) VALUES (?, 'battery', 1, ?, ?, ?, ?, 501)").run(num, now - 2000, now - 1000, now - 2000, YEAR);
+    database.prepare("INSERT INTO booth_log (num, inspection, booth_num, entered_at, created_at, year, team_id) VALUES (?, 'battery', 1, ?, ?, ?, 501)").run(num, now, now, YEAR);
+    database.prepare("UPDATE booth SET occupied_by = ?, occupied_by_team_id = 501, entered_at = ? WHERE inspection = 'battery' AND booth_num = 1").run(num, now);
 
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: false, revision: 10 },
-    });
-    assert.equal(deactivate.status, 200);
+    await publish((s) => { s.teams[501] = { ...s.teams[501], active: false }; return s; });
+
     for (const table of ['inspection_queue', 'current_inspection', 'team_priority', 'cancel_penalty']) {
-      assert.equal(db.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE num = ? AND year = ?`).get(num, year).c, 0, `${table} cleared`);
+      assert.equal(database.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE team_id = 501 AND year = ?`).get(YEAR).c, 0, `${table} cleared`);
     }
-    assert.equal(db.prepare("SELECT occupied_by FROM booth WHERE inspection = 'battery' AND booth_num = 1").get().occupied_by, null);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NULL").get(num, year).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NOT NULL").get(num, year).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = ? AND year = ?").get(num, year).c, 1);
+    assert.equal(database.prepare("SELECT occupied_by FROM booth WHERE inspection = 'battery' AND booth_num = 1").get().occupied_by, null);
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE team_id = 501 AND year = ? AND exited_at IS NULL").get(YEAR).c, 0, 'open booth session removed');
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM booth_log WHERE team_id = 501 AND year = ? AND exited_at IS NOT NULL").get(YEAR).c, 1, 'completed session preserved');
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE team_id = 501 AND year = ?").get(YEAR).c, 1, 'history preserved');
 
-    const history = await (await client.get('/api/admin/history/status', { cookie: chiefCookie })).json();
+    // 조회에서 숨김 + 통계 404
+    const officialCookie2 = makeAuthCookie({ email: 'o@t.co', name: 'O', role: 'official' });
+    const history = await (await cli.get('/api/admin/history/status', { cookie: makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'chief' }) })).json();
     assert.ok(!(history.battery || []).includes(num));
-    const stats = await (await client.get(`/api/admin/stats?year=${year}`, { cookie: officialCookie })).json();
-    assert.ok(!stats.some((row) => row.num === num));
-    assert.equal((await client.get(`/api/admin/stats/${num}?year=${year}`, { cookie: officialCookie })).status, 404);
+    assert.equal((await cli.get(`/api/admin/stats/${num}?year=${YEAR}`, { cookie: officialCookie2 })).status, 404);
 
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 9 },
-    });
-    assert.equal(db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, num).active, 0);
-
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 11 },
-    });
-    assert.equal(db.prepare("SELECT active FROM team_status WHERE year = ? AND team_num = ?").get(year, num).active, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE num = ? AND year = ?").get(num, year).c, 0, 'transient queue is not restored');
-    const restoredHistory = await (await client.get('/api/admin/history/status', { cookie: chiefCookie })).json();
+    // 멱등 재적용 후 재활성화: transient는 복원되지 않고 이력은 다시 보인다
+    await teamState.refresh(YEAR);
+    await publish();
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE team_id = 501 AND year = ?").get(YEAR).c, 0, 'transient queue is not restored');
+    const restoredHistory = await (await cli.get('/api/admin/history/status', { cookie: makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'chief' }) })).json();
     assert.ok((restoredHistory.battery || []).includes(num), 'preserved history is visible again');
+  });
+
+  it('tombstones cascade-delete the team rows by id, leaving unknown teams alone', async () => {
+    database.prepare("INSERT OR REPLACE INTO inspection_queue (inspection, num, phone, timestamp, year, team_id) VALUES ('battery', 53, '01053535353', ?, ?, 503)").run(Date.now(), YEAR);
+    await publish((s) => {
+      delete s.teams[503];
+      s.teams[502] = { ...s.teams[502], num: 62 };
+      s.tombstones = [{ id: 503, num: 53, deleted_at: '2026-01-01T00:00:00.000Z' }];
+      return s;
+    });
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE team_id = 503").get().c, 0);
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE team_id = 503").get().c, 0);
+    // entry가 모르는 번호 99의 행은 여전히 보존
+    assert.equal(database.prepare("SELECT COUNT(*) AS c FROM queue_log WHERE num = 99 AND year = ?").get(YEAR).c, 1);
   });
 });
 
-// entry의 정합성 점검이 읽는 라우트. 앞선 리뷰에서 placeholder 테스트를 지웠고, 네 서비스에
-// 등록되는 실제 핸들러는 커버리지가 0이 됐다 — 가드·검증·응답 형태를 여기서 고정한다.
-describe('GET /api/internal/team-status', () => {
-  const YEAR = new Date().getFullYear();
+describe('Queue cold-start without entry (503 semantics)', () => {
+  let srv, cli, database, dp;
 
-  it('rejects a request without the internal secret', async () => {
-    const res = await client.get(`/api/internal/team-status?year=${YEAR}`);
-    assert.notEqual(res.status, 200);
+  before(async () => {
+    process.env.ENTRY_SERVER = 'http://127.0.0.1:1'; // 연결 불가
+    dp = tmpDbPath();
+    const result = createQueueApp({ dbPath: dp, validateUser: TRUST_JWT, skipTeamStateSync: true });
+    database = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    cli = createClient(started.baseUrl);
   });
 
-  it('rejects an invalid year', async () => {
-    const res = await client.get('/api/internal/team-status?year=nope', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
+  after(async () => {
+    await stopServer(srv);
+    database.close();
+    cleanup(dp);
   });
 
-  it('renders stored rows as { num: { active, revision } }', async () => {
-    const applied = await client.patch('/api/internal/team-active', {
-      body: { num: 4242, year: YEAR, active: false, revision: 7 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+  it('registration returns 503 (not 500) when no snapshot was ever loaded', async () => {
+    const res = await cli.post('/api/admin/register/battery', {
+      body: { num: 1, phone: '01011111111' },
+      cookie: makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'chief' }),
     });
-    assert.equal(applied.status, 200);
-
-    const res = await client.get(`/api/internal/team-status?year=${YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    const snapshot = await res.json();
-    assert.deepEqual(snapshot['4242'], { active: false, revision: 7 },
-      'active must be a boolean, not the stored 0/1');
+    assert.equal(res.status, 503);
   });
 
-  it('scopes the snapshot to the requested year', async () => {
-    const res = await client.get(`/api/internal/team-status?year=${YEAR - 1}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json())['4242'], undefined);
+  it('queue state lookup returns 503 when no snapshot was ever loaded', async () => {
+    const res = await cli.post('/api/state/1', { body: { phone: '01011111111' } });
+    assert.equal(res.status, 503);
   });
 });

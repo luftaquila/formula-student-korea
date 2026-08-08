@@ -3,12 +3,11 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
+import { createTeamStateClient } from "../shared/team-state-client.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { serviceUrl } from "../shared/services.mjs";
-import { registerTeamStatusSnapshotRoute } from "../shared/team-status.mjs";
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -213,16 +212,6 @@ db.transaction(() => {
     timestamp INTEGER
   );`);
 
-  // Entry 서비스가 전파한 최신 활성 상태. 행이 없으면 하위 호환을 위해 활성으로 본다.
-  db.exec(`CREATE TABLE IF NOT EXISTS team_status (
-    year INTEGER NOT NULL,
-    team_num INTEGER NOT NULL,
-    active INTEGER NOT NULL CHECK(active IN (0, 1)),
-    revision INTEGER NOT NULL,
-    PRIMARY KEY (year, team_num)
-  );`);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_team_status_inactive ON team_status(year, active, team_num)");
-
   // 검차 종류 메타 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
@@ -348,6 +337,19 @@ db.transaction(() => {
     db.exec(`DROP TABLE '${k}'`);
   }
 
+  // team_id: entry의 불변 팀 id. num이 운영 키(PK)로 남고, team_id는 team-state 수렴형
+  // 강제(tombstone cascade·리넘버·비활성 정리)가 행을 팀에 귀속시키는 태그다. 레거시/
+  // 신규 행 모두 NULL로 시작해 backfill·adoption이 채운다 — NULL이면 num 기준 폴백.
+  addColumn(db, "team_priority", "team_id INTEGER");
+  addColumn(db, "inspection_history", "team_id INTEGER");
+  addColumn(db, "current_inspection", "team_id INTEGER");
+  addColumn(db, "inspection_queue", "team_id INTEGER");
+  addColumn(db, "cancel_penalty", "team_id INTEGER");
+  addColumn(db, "booth_log", "team_id INTEGER");
+  addColumn(db, "queue_log", "team_id INTEGER");
+  addColumn(db, "booth", "occupied_by_team_id INTEGER");
+  // 미러(team_status)는 team-state 캐시로 대체됐다 — 남은 테이블은 다음 릴리스에서 DROP.
+
   db.exec(`DROP INDEX IF EXISTS idx_ih_num_insp`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_ih_year_num_insp ON inspection_history(year, num, inspection)`);
   db.exec(`DROP INDEX IF EXISTS idx_tp_insp_prio`);
@@ -374,10 +376,180 @@ function currentYear() {
   return new Date().getFullYear();
 }
 
+/* ============================================
+   Entry team-state (미러 대체 캐시 + 수렴형 강제)
+   ============================================ */
+const teamState = createTeamStateClient({ db, logger, service: "queue" });
+
+// 미로드·모르는 팀 = 활성 (기존 미러의 absent-row-means-active와 동일한 fail-open)
 function isTeamActive(num, year = currentYear()) {
-  const row = db.prepare("SELECT active FROM team_status WHERE year = ? AND team_num = ?").get(year, num);
-  return !row || !!row.active;
+  return teamState.isActive(year, num);
 }
+
+// team_id를 가진 큐 테이블 전부. (테이블, PK에 num이 포함되는지) — PK 테이블의 리넘버는
+// 두 팀이 번호를 맞바꾸는 경우 때문에 두 단계(임시 음수 번호 경유)로 처리한다.
+const TEAM_TABLES = [
+  { table: "inspection_queue" },
+  { table: "current_inspection" },
+  { table: "team_priority" },
+  { table: "cancel_penalty" },
+  { table: "inspection_history" },
+  { table: "booth_log" },
+  { table: "queue_log" },
+];
+
+teamState.registerBackfill((year, state) => {
+  for (const { table } of TEAM_TABLES) {
+    const upd = db.prepare(`UPDATE ${table} SET team_id = ? WHERE year = ? AND num = ? AND team_id IS NULL`);
+    for (const team of state.teams.values()) upd.run(team.id, year, team.num);
+  }
+  if (year === currentYear()) {
+    const updBooth = db.prepare("UPDATE booth SET occupied_by_team_id = ? WHERE occupied_by = ? AND occupied_by_team_id IS NULL");
+    for (const team of state.teams.values()) updBooth.run(team.id, team.num);
+  }
+  const orphans = TEAM_TABLES.reduce((acc, { table }) =>
+    acc + db.prepare(`SELECT COUNT(*) AS c FROM ${table} WHERE year = ? AND team_id IS NULL`).get(year).c, 0);
+  if (orphans > 0) {
+    // entry가 모르는 팀의 행 — 삭제하지 않고 로그만 (기존 reconcile 철학)
+    logger.warn(null, "queue.team_id_backfill", { year, unmatched_rows: orphans });
+  }
+});
+
+teamState.registerEnforcement((year, state, prevState) => {
+  // ⓪ 귀속(adoption): team_id NULL인 행을 "직전 상태의 번호 체계"로 팀에 귀속시킨다.
+  // 쓰기 경로는 team_id를 스탬핑하지 않으므로(등록·페널티 등은 num만 안다), 이 단계가
+  // 있어야 그 사이 쓰인 행이 이후의 리넘버·cascade를 따라간다. 첫 강제(prevState 없음)는
+  // 현재 상태로 귀속한다.
+  const adoptState = prevState || state;
+  for (const { table } of TEAM_TABLES) {
+    const upd = db.prepare(`UPDATE ${table} SET team_id = ? WHERE year = ? AND num = ? AND team_id IS NULL`);
+    for (const team of adoptState.teams.values()) upd.run(team.id, year, team.num);
+  }
+  if (year === currentYear()) {
+    const updBooth = db.prepare("UPDATE booth SET occupied_by_team_id = ? WHERE occupied_by = ? AND occupied_by_team_id IS NULL");
+    for (const team of adoptState.teams.values()) updBooth.run(team.id, team.num);
+  }
+
+  const freedTypes = new Set();
+  let queueChanged = false;
+
+  // ① tombstone cascade — 삭제·교체된 팀의 큐 데이터 정리 (기존 DELETE /api/internal/team 시맨틱).
+  // id로만 지운다: 같은 번호가 새 팀에 재사용됐어도 새 팀의 행(다른 id)은 건드리지 않는다.
+  for (const t of state.tombstones) {
+    let removed = 0;
+    for (const { table } of TEAM_TABLES) {
+      removed += db.prepare(`DELETE FROM ${table} WHERE year = ? AND team_id = ?`).run(year, t.id).changes;
+    }
+    const booths = db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by_team_id = ?").all(t.id);
+    for (const b of booths) {
+      db.prepare("UPDATE booth SET occupied_by = NULL, occupied_by_team_id = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?")
+        .run(b.inspection, b.booth_num);
+      freedTypes.add(b.inspection);
+    }
+    if (removed > 0 || booths.length > 0) {
+      queueChanged = true;
+      // 파괴적 작업은 성공도 로깅한다 (감사 추적)
+      logger.log(null, "team.cascade_delete", { year, team_id: t.id, rows: removed }, `#${t.num}`);
+    }
+  }
+
+  // ② 리넘버 수렴 — id 기준으로 num을 최신화. PK(num, ...) 테이블은 번호 맞교환 때문에
+  // 임시 음수 번호(-team_id)를 경유한다. 목적지에 남은 남의 행(레거시/미지 팀)은 기존
+  // renumber 시맨틱대로 밀어낸다(delete-dest).
+  const moved = [];
+  for (const team of state.teams.values()) {
+    for (const { table } of TEAM_TABLES) {
+      const n = db.prepare(`UPDATE ${table} SET num = -team_id WHERE year = ? AND team_id = ? AND num != ?`)
+        .run(year, team.id, team.num).changes;
+      if (n > 0) moved.push(team);
+    }
+  }
+  const movedTeams = [...new Set(moved)];
+  for (const team of movedTeams) {
+    for (const { table } of TEAM_TABLES) {
+      // 목적지 번호에 남은 남의 행(레거시·미지 팀)은 기존 renumber와 동일하게 밀어낸다 —
+      // 이동한 팀들의 행은 이미 임시 번호로 비켜나 있어 서로를 지우지 않는다.
+      db.prepare(`DELETE FROM ${table} WHERE year = ? AND num = ? AND (team_id IS NULL OR team_id != ?)`)
+        .run(year, team.num, team.id);
+      db.prepare(`UPDATE ${table} SET num = ? WHERE year = ? AND team_id = ? AND num = -team_id`)
+        .run(team.num, year, team.id);
+    }
+  }
+  if (year === currentYear()) {
+    for (const team of state.teams.values()) {
+      db.prepare("UPDATE booth SET occupied_by = ? WHERE occupied_by_team_id = ? AND occupied_by != ?")
+        .run(team.num, team.id, team.num);
+    }
+  }
+  if (movedTeams.length > 0) {
+    queueChanged = true;
+    db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
+      .run("renumber", movedTeams[0].num, null, Date.now(), year);
+    logger.log(null, "team_num.update", { year, teams: movedTeams.map((t) => ({ id: t.id, num: t.num })) });
+  }
+
+  // ③ 비활성 정리 — 라이브 운영 상태만 제거, 완료 이력은 보존 (기존 team-active 시맨틱).
+  // 멱등: 이미 정리된 팀에는 전부 no-op.
+  for (const team of state.teams.values()) {
+    if (team.active) continue;
+    let removed = 0;
+    removed += db.prepare("DELETE FROM inspection_queue WHERE year = ? AND (team_id = ? OR (team_id IS NULL AND num = ?))")
+      .run(year, team.id, team.num).changes;
+    removed += db.prepare("DELETE FROM current_inspection WHERE year = ? AND (team_id = ? OR (team_id IS NULL AND num = ?))")
+      .run(year, team.id, team.num).changes;
+    removed += db.prepare("DELETE FROM team_priority WHERE year = ? AND (team_id = ? OR (team_id IS NULL AND num = ?))")
+      .run(year, team.id, team.num).changes;
+    removed += db.prepare("DELETE FROM cancel_penalty WHERE year = ? AND (team_id = ? OR (team_id IS NULL AND num = ?))")
+      .run(year, team.id, team.num).changes;
+
+    // booth에는 연도 컬럼이 없으므로 현재 연도 이벤트는 점유 자체를 기준으로 정리한다.
+    // 과거 연도 이벤트는 같은 번호의 현재 팀 부스를 건드리지 않도록 해당 연도의 미종료
+    // 로그가 연결된 부스만 해제한다. (기존 team-active 핸들러와 동일)
+    const occupied = year === currentYear()
+      ? db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by_team_id = ? OR (occupied_by_team_id IS NULL AND occupied_by = ?)").all(team.id, team.num)
+      : db.prepare(`
+          SELECT inspection, booth_num FROM booth
+          WHERE (occupied_by_team_id = ? OR (occupied_by_team_id IS NULL AND occupied_by = ?)) AND EXISTS (
+            SELECT 1 FROM booth_log l
+            WHERE l.num = ? AND l.year = ? AND l.inspection = booth.inspection
+              AND l.booth_num = booth.booth_num AND l.exited_at IS NULL
+          )
+        `).all(team.id, team.num, team.num, year);
+    for (const b of occupied) {
+      db.prepare("UPDATE booth SET occupied_by = NULL, occupied_by_team_id = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?")
+        .run(b.inspection, b.booth_num);
+      freedTypes.add(b.inspection);
+    }
+    // 완료되지 않은 부스 세션은 현재 운영 상태이므로 제거한다. 완료 이력은 그대로 보존한다.
+    removed += db.prepare("DELETE FROM booth_log WHERE year = ? AND exited_at IS NULL AND (team_id = ? OR (team_id IS NULL AND num = ?))")
+      .run(year, team.id, team.num).changes;
+    if (removed > 0 || occupied.length > 0) {
+      queueChanged = true;
+      logger.log(null, "team.active", { year, active: false, cleaned_rows: removed }, `#${team.num}`);
+    }
+  }
+
+  // ④ 모르는 팀 — 로그만, 삭제 금지
+  const knownIds = new Set([...state.teams.keys(), ...state.tombstones.map((t) => t.id)]);
+  const localIds = db.prepare(`
+    SELECT DISTINCT team_id FROM (
+      SELECT team_id FROM inspection_queue WHERE year = ? AND team_id IS NOT NULL
+      UNION SELECT team_id FROM team_priority WHERE year = ? AND team_id IS NOT NULL
+      UNION SELECT team_id FROM cancel_penalty WHERE year = ? AND team_id IS NOT NULL
+    )`).all(year, year, year).map((r) => r.team_id);
+  const unknown = localIds.filter((id) => !knownIds.has(id));
+  if (unknown.length > 0 && teamState.throttled(`unknown:${year}`)) {
+    logger.warn(null, "queue.team_state_unknown", { year, team_ids: unknown });
+  }
+
+  if (queueChanged || freedTypes.size > 0) {
+    return () => {
+      broadcastQueue(null);
+      if (year === currentYear()) broadcastPenalties();
+      for (const type of freedTypes) broadcastBooth(type);
+    };
+  }
+});
 
 function parseYearQuery(value) {
   if (value == null || value === "") return currentYear();
@@ -462,22 +634,7 @@ function addCurrentInspection(num, phone, type, year) {
   throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
 }
 
-function renumberCurrentRows(prevNum, newNum, year) {
-  const current = getCurrentEntry(prevNum, year);
-  if (!current) return 0;
-  db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(newNum, year);
-  db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(prevNum, year);
-  setCurrentInspections(newNum, current.phone, current.inspections, year);
-  return 1;
-}
 
-function renumberNumYearRows(table, prevNum, newNum, year, quoted = false) {
-  const tableRef = quoted ? `'${table}'` : table;
-  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${tableRef} WHERE num = ? AND year = ?`).get(prevNum, year).count;
-  if (existing === 0) return 0;
-  db.prepare(`DELETE FROM ${tableRef} WHERE num = ? AND year = ?`).run(newNum, year);
-  return db.prepare(`UPDATE ${tableRef} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
-}
 
 function insertQueueRow(type, num, phone, timestamp, year) {
   db.prepare("INSERT INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
@@ -493,21 +650,7 @@ function getQueueRow(type, num, year) {
     .get(type, num, year);
 }
 
-function renumberQueueRows(type, prevNum, newNum, year) {
-  const existing = db.prepare("SELECT COUNT(*) AS count FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?")
-    .get(type, prevNum, year).count;
-  if (existing === 0) return 0;
-  db.prepare("DELETE FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").run(type, newNum, year);
-  return db.prepare("UPDATE inspection_queue SET num = ? WHERE inspection = ? AND num = ? AND year = ?")
-    .run(newNum, type, prevNum, year).changes;
-}
 
-function renumberLogRows(table, prevNum, newNum, year) {
-  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE num = ? AND year = ?`).get(prevNum, year).count;
-  if (existing === 0) return 0;
-  db.prepare(`DELETE FROM ${table} WHERE num = ? AND year = ?`).run(newNum, year);
-  return db.prepare(`UPDATE ${table} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
-}
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -604,10 +747,7 @@ function buildQueueQuery({ ignoreReinspection, ignorePriority }) {
     FROM inspection_queue AS t
     LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
     WHERE t.inspection = ? AND t.year = ?
-      AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = t.year AND s.team_num = t.num AND s.active = 0
-      )
+      AND t.num NOT IN (SELECT value FROM json_each(?))
     ORDER BY ${orderClauses.join(", ")}
   `;
 }
@@ -625,7 +765,9 @@ function getQueueStmt(inspection, variant = "list") {
 }
 
 function getQueueParams(inspection, year) {
-  return [inspection, year, inspection, year, inspection, year];
+  // 마지막 파라미터: 비활성 팀 번호 JSON 배열 (json_each 바인딩 — 파라미터 수가 팀 수와
+  // 무관하게 고정이라 위의 준비문 캐시가 유효하다). 캐시 미로드면 '[]' = 전원 활성.
+  return [inspection, year, inspection, year, inspection, year, teamState.getStateSync(year).inactiveNumsJson];
 }
 
 /**
@@ -653,10 +795,7 @@ function getQueueRank(inspection, num, year) {
       FROM inspection_queue AS t
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
       WHERE t.inspection = ? AND t.year = ?
-        AND NOT EXISTS (
-          SELECT 1 FROM team_status s
-          WHERE s.year = t.year AND s.team_num = t.num AND s.active = 0
-        )
+        AND t.num NOT IN (SELECT value FROM json_each(?))
     ) AS sub WHERE sub.num = ?
   `);
     queueRankStmtCache.set(key, stmt);
@@ -666,6 +805,7 @@ function getQueueRank(inspection, num, year) {
   if (!ignoreReinspection) params.push(inspection, year);
   params.push(inspection, year); // for LEFT JOIN team_priority
   params.push(inspection, year); // for WHERE t.inspection = ? AND t.year = ?
+  params.push(teamState.getStateSync(year).inactiveNumsJson); // 비활성 팀 제외
   params.push(num); // for WHERE sub.num = ?
 
   const result = stmt.get(...params);
@@ -704,8 +844,8 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
-    logger.warn(req, "queue.entry_lookup", { error: e.message, num });
-    return res.status(500).send("엔트리를 조회할 수 없습니다.");
+    logger.warn(req, "queue.entry_lookup", { error: e.message || String(e), num });
+    return res.status(e.status || 500).send(e.message || "엔트리를 조회할 수 없습니다.");
   }
 
   const year = currentYear();
@@ -896,8 +1036,8 @@ app.post("/api/admin/register/:type", async (req, res) => {
       return res.status(400).send("존재하지 않는 엔트리 번호입니다.");
     }
   } catch (e) {
-    logger.warn(req, "queue.entry_lookup", { error: e.message, num });
-    return res.status(500).send("엔트리를 조회할 수 없습니다.");
+    logger.warn(req, "queue.entry_lookup", { error: e.message || String(e), num });
+    return res.status(e.status || 500).send(e.message || "엔트리를 조회할 수 없습니다.");
   }
 
   let denyReason = null;
@@ -1046,12 +1186,9 @@ app.get("/api/admin/penalties", (req, res) => {
       FROM cancel_penalty cp
       JOIN inspection i ON i.type = cp.inspection
       WHERE cp.year = ? AND cp.until > ?
-        AND NOT EXISTS (
-          SELECT 1 FROM team_status s
-          WHERE s.year = cp.year AND s.team_num = cp.num AND s.active = 0
-        )
+        AND cp.num NOT IN (SELECT value FROM json_each(?))
       ORDER BY cp.until ASC, cp.num ASC, cp.inspection ASC
-    `).all(year, now),
+    `).all(year, now, teamState.getStateSync(year).inactiveNumsJson),
   );
 
   if (!result.success) {
@@ -1178,12 +1315,9 @@ app.get("/api/admin/priority/:type", (req, res) => {
     db.prepare(`
       SELECT p.* FROM team_priority p
       WHERE p.inspection = ? AND p.year = ?
-        AND NOT EXISTS (
-          SELECT 1 FROM team_status s
-          WHERE s.year = p.year AND s.team_num = p.num AND s.active = 0
-        )
+        AND p.num NOT IN (SELECT value FROM json_each(?))
       ORDER BY p.priority ASC, p.num ASC
-    `).all(req.params.type, currentYear()),
+    `).all(req.params.type, currentYear(), teamState.getStateSync(currentYear()).inactiveNumsJson),
   );
 
   if (!result.success) {
@@ -1298,11 +1432,8 @@ app.get("/api/admin/history/status", (req, res) => {
     SELECT DISTINCT h.num, h.inspection
     FROM inspection_history h
     WHERE h.year = ?
-      AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = h.year AND s.team_num = h.num AND s.active = 0
-      )
-  `).all(year);
+      AND h.num NOT IN (SELECT value FROM json_each(?))
+  `).all(year, teamState.getStateSync(year).inactiveNumsJson);
 
   const result = {};
   for (const row of rows) {
@@ -1676,22 +1807,17 @@ app.get("/api/admin/stats/timerange", (req, res) => {
   const yearEnd = new Date(year + 1, 0, 1).getTime() - 1;
 
   const result = dbRun(() => {
+    const inactiveJson = teamState.getStateSync(year).inactiveNumsJson;
     const q = db.prepare(
       `SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log
        WHERE year = ? AND timestamp >= ? AND timestamp <= ?
-         AND NOT EXISTS (
-           SELECT 1 FROM team_status s
-           WHERE s.year = queue_log.year AND s.team_num = queue_log.num AND s.active = 0
-         )`
-    ).get(year, yearStart, yearEnd);
+         AND num NOT IN (SELECT value FROM json_each(?))`
+    ).get(year, yearStart, yearEnd, inactiveJson);
     const b = db.prepare(
       `SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log
        WHERE year = ? AND entered_at >= ? AND entered_at <= ?
-         AND NOT EXISTS (
-           SELECT 1 FROM team_status s
-           WHERE s.year = booth_log.year AND s.team_num = booth_log.num AND s.active = 0
-         )`
-    ).get(year, yearStart, yearEnd);
+         AND num NOT IN (SELECT value FROM json_each(?))`
+    ).get(year, yearStart, yearEnd, inactiveJson);
 
     const mins = [q?.minTs, b?.minTs].filter(Boolean);
     const maxs = [q?.maxTs, b?.maxTs].filter(Boolean);
@@ -1722,16 +1848,11 @@ app.get("/api/admin/stats", (req, res) => {
     }
   }
 
-  const queueLogConditions = ["year = ?", `NOT EXISTS (
-    SELECT 1 FROM team_status s
-    WHERE s.year = queue_log.year AND s.team_num = queue_log.num AND s.active = 0
-  )`];
-  const queueLogParams = [year];
-  const boothLogConditions = ["year = ?", "exited_at IS NOT NULL", `NOT EXISTS (
-    SELECT 1 FROM team_status s
-    WHERE s.year = booth_log.year AND s.team_num = booth_log.num AND s.active = 0
-  )`];
-  const boothLogParams = [year];
+  const inactiveJson = teamState.getStateSync(year).inactiveNumsJson;
+  const queueLogConditions = ["year = ?", "num NOT IN (SELECT value FROM json_each(?))"];
+  const queueLogParams = [year, inactiveJson];
+  const boothLogConditions = ["year = ?", "exited_at IS NOT NULL", "num NOT IN (SELECT value FROM json_each(?))"];
+  const boothLogParams = [year, inactiveJson];
 
   if (from) {
     queueLogConditions.push("timestamp >= ?");
@@ -2052,13 +2173,19 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
 /* ============================================
    유틸리티 함수
    ============================================ */
+// 활성 엔트리 목록 — team-state 캐시에서. 예전에는 요청마다 entry로 HTTP 왕복이라
+// entry 다운 = 등록·순번 조회 전면 500이었다. 이제 serve-stale 캐시라 entry 장애 중에도
+// 동작하고, 스냅샷을 한 번도 못 받은 콜드 스타트에서만 503으로 거절한다.
 async function getEntries() {
-  const entryServer = serviceUrl("entry");
-  const headers = {};
-  if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
-  const res = await fetch(`${entryServer}/api/entries`, { headers, signal: AbortSignal.timeout(5000) });
-  if (!res.ok) throw new Error("엔트리를 조회할 수 없습니다.");
-  return res.json();
+  const state = await teamState.getState(currentYear());
+  if (!state.loaded) {
+    throw { status: 503, message: "엔트리 정보를 아직 불러오지 못했습니다. 잠시 후 다시 시도하세요." };
+  }
+  const entries = {};
+  for (const t of state.byNum.values()) {
+    if (t.active) entries[t.num] = { id: t.id, univ: t.univ, team: t.team, type: t.type };
+  }
+  return entries;
 }
 
 let smsConfig = null;
@@ -2198,246 +2325,16 @@ function sendSmsNotification(type, prev) {
   }
 }
 
-/* ============================================
-   Internal API: 엔트리 상태/삭제 연동
-   ============================================ */
-
-// queue는 team_status를 자체 스키마로 관리하지만(부스·우선순위 정리 같은 부수효과가
-// 딸려서), entry의 정합성 점검 대상인 건 같다. 스냅샷 라우트만 공유 모듈에서 가져온다.
-registerTeamStatusSnapshotRoute(app, { db, dbRun, requireInternalRequest });
-
-// PATCH /api/internal/team-active - 엔트리 활성 상태 동기화
-app.patch("/api/internal/team-active", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const numValidation = validateEntryNum(req.body.num);
-  const yearCheck = validateYear(req.body.year);
-  const revision = Number(req.body.revision);
-  if (!numValidation.valid || !yearCheck.valid || typeof req.body.active !== "boolean" ||
-      !Number.isInteger(revision) || revision < 0) {
-    return res.status(400).send("올바르지 않은 엔트리 상태 요청입니다.");
-  }
-  const num = numValidation.value;
-  const year = yearCheck.value;
-  const active = req.body.active;
-
-  const result = dbRun(() => db.transaction(() => {
-    const current = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, num);
-    if (current && current.revision >= revision) return { applied: false, freedTypes: [] };
-
-    db.prepare(`
-      INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)
-      ON CONFLICT(year, team_num) DO UPDATE SET active = excluded.active, revision = excluded.revision
-    `).run(year, num, active ? 1 : 0, revision);
-
-    const freedTypes = [];
-    if (!active) {
-      for (const type of Object.keys(inspections)) deleteQueueRow(type, num, year);
-      db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
-      db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);
-      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND year = ?").run(num, year);
-
-      // booth에는 연도 컬럼이 없으므로 현재 연도 이벤트는 점유 자체를 기준으로
-      // 정리한다. 과거 연도 이벤트는 같은 번호의 현재 팀 부스를 건드리지 않도록
-      // 해당 연도의 미종료 로그가 연결된 부스만 해제한다.
-      const occupied = year === currentYear()
-        ? db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by = ?").all(num)
-        : db.prepare(`
-            SELECT inspection, booth_num FROM booth
-            WHERE occupied_by = ? AND EXISTS (
-              SELECT 1 FROM booth_log l
-              WHERE l.num = ? AND l.year = ? AND l.inspection = booth.inspection
-                AND l.booth_num = booth.booth_num AND l.exited_at IS NULL
-            )
-          `).all(num, num, year);
-      for (const booth of occupied) {
-        db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?")
-          .run(booth.inspection, booth.booth_num);
-        freedTypes.push(booth.inspection);
-      }
-      // 완료되지 않은 부스 세션은 현재 운영 상태이므로 제거한다. 완료 이력은 그대로 보존한다.
-      db.prepare("DELETE FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NULL").run(num, year);
-    }
-    return { applied: true, freedTypes: [...new Set(freedTypes)] };
-  })());
-
-  if (!result.success) {
-    logger.warn(req, "team.active", { error: result.error, year, active, revision }, `#${num}`);
-    return res.status(result.status).send(result.error);
-  }
-  if (result.result.applied) {
-    logger.log(req, "team.active", { year, active, revision }, `#${num}`);
-    broadcastQueue(null);
-    if (year === currentYear()) broadcastPenalties();
-    for (const type of result.result.freedTypes) broadcastBooth(type);
-  }
-  res.status(200).send();
-});
-
-// DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
-app.delete("/api/internal/team/:num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const numValidation = validateEntryNum(req.params.num);
-  if (!numValidation.valid) {
-    logger.warn(req, "team.cascade_delete", { error: numValidation.error, num: req.params.num });
-    return res.status(400).send(numValidation.error);
-  }
-
-  const num = numValidation.value;
-  const yearCheck = validateYear(req.query.year);
-  if (!yearCheck.valid) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-  const year = yearCheck.value;
-
-  const result = dbRun(() => {
-    db.transaction(() => {
-      // 모든 검차 대기열에서 제거
-      for (const type of Object.keys(inspections)) {
-        deleteQueueRow(type, num, year);
-      }
-
-      // current에서 제거
-      db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
-
-      // 우선순위 제거
-      db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);
-
-      // 취소 페널티 제거
-      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND year = ?").run(num, year);
-
-      // 검차 이력 제거
-      db.prepare("DELETE FROM inspection_history WHERE num = ? AND year = ?").run(num, year);
-
-      // 활성 상태 스냅샷 제거
-      db.prepare("DELETE FROM team_status WHERE team_num = ? AND year = ?").run(num, year);
-
-      // 부스 점유 해제
-      const booths = db.prepare(`
-        SELECT inspection, booth_num
-        FROM booth
-        WHERE occupied_by = ?
-          AND EXISTS (
-            SELECT 1 FROM booth_log l
-            WHERE l.num = ?
-              AND l.year = ?
-              AND l.inspection = booth.inspection
-              AND l.booth_num = booth.booth_num
-              AND l.exited_at IS NULL
-          )
-      `).all(num, num, year);
-      for (const b of booths) {
-        db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?").run(b.inspection, b.booth_num);
-      }
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team.cascade_delete", { error: result.error, year }, "#" + num);
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team.cascade_delete", { year }, "#" + num);
-
-  // SSE 브로드캐스트
-  broadcastQueue(null);
-  if (year === currentYear()) broadcastPenalties();
-
-  res.status(200).send();
-});
-
-// PATCH /api/internal/team-num - 엔트리 번호 변경 시 대기열 관련 num 일괄 갱신
-app.patch("/api/internal/team-num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const prevNumValidation = validateEntryNum(req.body.prevNum);
-  const newNumValidation = validateEntryNum(req.body.newNum);
-  const year = Number(req.body.year);
-  if (!prevNumValidation.valid) {
-    logger.warn(req, "team_num.update", { error: prevNumValidation.error, prevNum: req.body.prevNum });
-    return res.status(400).send(prevNumValidation.error);
-  }
-  if (!newNumValidation.valid) {
-    logger.warn(req, "team_num.update", { error: newNumValidation.error, newNum: req.body.newNum });
-    return res.status(400).send(newNumValidation.error);
-  }
-  if (!validateYear(year).valid) {
-    logger.warn(req, "team_num.update", { error: "invalid year", year: req.body.year });
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-
-  const prevNum = prevNumValidation.value;
-  const newNum = newNumValidation.value;
-  // self-renumber는 helper가 목적지(=자기 번호) 행을 먼저 지운 뒤 갱신하므로 데이터 손실. 조기 반환.
-  if (prevNum === newNum) return res.status(200).send();
-
-  const result = dbRun(() => {
-    return db.transaction(() => {
-      let changed = 0;
-      for (const type of Object.keys(inspections)) {
-        changed += renumberQueueRows(type, prevNum, newNum, year);
-      }
-      changed += renumberCurrentRows(prevNum, newNum, year);
-      changed += renumberNumYearRows("team_priority", prevNum, newNum, year);
-      changed += renumberNumYearRows("cancel_penalty", prevNum, newNum, year);
-      changed += renumberNumYearRows("inspection_history", prevNum, newNum, year);
-      const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
-      // 새 활성 상태/revision은 뒤따르는 team.active 이벤트가 적용해야 비활성화
-      // 정리 작업이 생략되지 않는다. 재전달 때 source가 없으면 destination도 보존한다.
-      if (previousStatus) {
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, newNum);
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, prevNum);
-        db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
-          .run(year, newNum, previousStatus.active, previousStatus.revision);
-        changed += 1;
-      }
-      changed += db.prepare(`
-        UPDATE booth
-        SET occupied_by = ?
-        WHERE occupied_by = ?
-          AND EXISTS (
-            SELECT 1 FROM booth_log l
-            WHERE l.num = ?
-              AND l.year = ?
-              AND l.inspection = booth.inspection
-              AND l.booth_num = booth.booth_num
-              AND l.exited_at IS NULL
-          )
-      `).run(newNum, prevNum, prevNum, year).changes;
-      changed += renumberLogRows("booth_log", prevNum, newNum, year);
-      changed += renumberLogRows("queue_log", prevNum, newNum, year);
-      if (changed > 0) {
-        db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-          .run("renumber", newNum, null, Date.now(), year);
-      }
-      return changed;
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team_num.update", { year, prevNum, newNum });
-
-  broadcastQueue(null);
-  if (year === currentYear()) broadcastPenalties();
-  for (const type of Object.keys(inspections)) {
-    broadcastBooth(type);
-  }
-
-  res.status(200).send();
-});
+// entry 팀 상태 동기화 기동 (SSE 구독 + 부팅 fetch). 테스트는 skipTeamStateSync로
+// 네트워크 구독을 끄고 teamState.refresh(year)를 직접 호출한다.
+if (!options.skipTeamStateSync) teamState.start();
 
 /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
 addSpaFallback(app);
 
-return { app, db, loadSmsConfig };
+return { app, db, loadSmsConfig, teamState };
 }
 
 // Serve immediately; SMS config loads in the background and retries through
