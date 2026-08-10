@@ -124,23 +124,28 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     // keyset 커서가 페이지 경계에서 행을 빠뜨리거나 중복시키지 않는다. id는 rowid alias라
     // idx_logs_timestamp가 사실상 (timestamp, rowid) 복합 인덱스로 동작한다.
     const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
+    // limit+1행을 가져와 초과분 존재 여부로 hasMore를 판정한다. logs.length === limit
+    // 휴리스틱은 "정확히 limit개 매칭"과 "다음 페이지 있음"을 구분하지 못해, 딱 limit개인
+    // 결과에서 다음 버튼이 열리고 빈 2페이지가 나온다.
     let logs;
     if (cursor) {
       const cond = `${where ? `${where} AND` : "WHERE"} (timestamp, id) < (?, ?)`;
       logs = db.prepare(`SELECT * FROM logs ${cond} ORDER BY timestamp DESC, id DESC LIMIT ?`)
-        .all(...params, cursor.ts, cursor.id, limit);
+        .all(...params, cursor.ts, cursor.id, limit + 1);
     } else {
       // offset은 레거시 호환(내부 소비자 전환기)용. 커서가 오면 무시된다.
       const offset = Number(req.query.offset) || 0;
       logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`)
-        .all(...params, limit, offset);
+        .all(...params, limit + 1, offset);
     }
 
+    const hasMore = logs.length > limit;
+    if (hasMore) logs.length = limit;
     const last = logs[logs.length - 1];
     res.json({
       logs, total, service: serviceName,
-      nextCursor: logs.length === limit && last ? `${last.timestamp},${last.id}` : null,
-      hasMore: logs.length === limit,
+      nextCursor: hasMore && last ? `${last.timestamp},${last.id}` : null,
+      hasMore,
     });
   }
 

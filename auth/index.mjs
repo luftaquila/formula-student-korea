@@ -1157,7 +1157,8 @@ app.get("/api/admin/logs", async (req, res) => {
   const fetches = Object.entries(targetServices).map(async ([name, url]) => {
     const before = typeof cursors[name] === "string" ? cursors[name] : null;
     if (name === "auth") {
-      // Local query (no HTTP) — 원격 queryHandler와 동일한 keyset SQL
+      // Local query (no HTTP) — 원격 queryHandler와 동일한 keyset SQL.
+      // limit+1행으로 hasMore를 판정한다(정확히 limit개 매칭 ≠ 다음 페이지 있음).
       try {
         const { where, params } = buildLogFilter(filters);
         const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
@@ -1166,12 +1167,14 @@ app.get("/api/admin/logs", async (req, res) => {
         if (parsed) {
           const cond = `${where ? `${where} AND` : "WHERE"} (timestamp, id) < (?, ?)`;
           logs = db.prepare(`SELECT * FROM logs ${cond} ORDER BY timestamp DESC, id DESC LIMIT ?`)
-            .all(...params, parsed.ts, parsed.id, limit);
+            .all(...params, parsed.ts, parsed.id, limit + 1);
         } else {
           logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY timestamp DESC, id DESC LIMIT ?`)
-            .all(...params, limit);
+            .all(...params, limit + 1);
         }
-        return { name, logs: logs.map(l => ({ ...l, _service: name })), total, hasMore: logs.length === limit };
+        const hasMore = logs.length > limit;
+        if (hasMore) logs.length = limit;
+        return { name, logs: logs.map(l => ({ ...l, _service: name })), total, hasMore };
       } catch (e) {
         logger.warn(null, "logs.query_failed", { error: e.message }, "auth");
         return { name, logs: [], total: 0, hasMore: false, failed: true };

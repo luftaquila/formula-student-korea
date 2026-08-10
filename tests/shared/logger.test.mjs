@@ -144,7 +144,8 @@ describe('createLogger', () => {
     const res2 = mockRes();
     curLogger.queryHandler(mockReq({ limit: '2', before: res1.body.nextCursor }, { role: 'admin' }), res2);
     assert.deepEqual(res2.body.logs.map(l => l.action), ['same_a', 'older']);
-    assert.equal(res2.body.hasMore, res2.body.logs.length === 2);
+    // 남은 행이 정확히 limit개였으므로 다음 페이지는 없다 (limit+1 판정)
+    assert.equal(res2.body.hasMore, false);
 
     curDb.close();
   });
@@ -173,6 +174,34 @@ describe('createLogger', () => {
     logger.queryHandler(mockReq({ limit: '1', before: 'garbage-no-comma' }, { role: 'admin' }), res);
     assert.equal(res.statusCode, 200);
     assert.equal(res.body.logs.length, 1);
+  });
+
+  // 회귀: 정확히 limit개가 매칭되면 다음 페이지가 없다 — logs.length === limit 휴리스틱은
+  // 이 경우를 "다음 페이지 있음"으로 오판해 빈 2페이지를 만들었다. limit+1 조회로 판정한다.
+  it('queryHandler reports hasMore=false when the result set is exactly limit rows', () => {
+    const exactDb = new Database(':memory:');
+    const exactLogger = createLogger(exactDb, 'exact-test');
+    const insert = exactDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)");
+    insert.run('2026-03-01T00:00:01.000Z', 'row_a');
+    insert.run('2026-03-01T00:00:02.000Z', 'row_b');
+
+    const res = mockRes();
+    exactLogger.queryHandler(mockReq({ limit: '2' }, { role: 'admin' }), res);
+    assert.equal(res.body.logs.length, 2);
+    assert.equal(res.body.hasMore, false, 'exactly-limit rows must not promise another page');
+    assert.equal(res.body.nextCursor, null);
+
+    // 커서 페이지의 마지막 장도 동일: 첫 페이지(limit 1) 뒤에 딱 1행 남은 경우
+    const res1 = mockRes();
+    exactLogger.queryHandler(mockReq({ limit: '1' }, { role: 'admin' }), res1);
+    assert.equal(res1.body.hasMore, true, 'a genuine extra row still reports hasMore');
+    const res2 = mockRes();
+    exactLogger.queryHandler(mockReq({ limit: '1', before: res1.body.nextCursor }, { role: 'admin' }), res2);
+    assert.equal(res2.body.logs.length, 1);
+    assert.equal(res2.body.hasMore, false, 'the final cursor page must close pagination');
+    assert.equal(res2.body.nextCursor, null);
+
+    exactDb.close();
   });
 
   // 보존은 AFTER INSERT 트리거(setupRowCapRetention)라 삽입 즉시 적용된다 — 타이머 없음.

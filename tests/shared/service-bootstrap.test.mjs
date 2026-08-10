@@ -112,11 +112,21 @@ describe('runIfDirect', () => {
 describe('servicePort', () => {
   it('matches the ports declared in compose.yml (registry drift guard)', () => {
     const compose = fs.readFileSync('./compose.yml', 'utf8');
+    // 파일 전체 검색은 "포트가 어딘가에 존재"만 증명해 서비스 간 포트 스왑을 못 잡는다.
+    // services: 아래의 해당 서비스 블록(2칸 들여쓰기 키 ~ 다음 2칸 들여쓰기 키)만 잘라
+    // 그 안에서 PORT 빌드 인자 또는 헬스체크 포트를 확인한다.
+    const servicesSection = compose.slice(compose.indexOf('\nservices:\n') + 1);
+    function composeBlock(name) {
+      const m = servicesSection.match(new RegExp(`^  ${name}:\\n((?:(?:    .*)?\\n)*)`, 'm'));
+      assert.ok(m, `compose.yml must define a '${name}' service`);
+      return m[1];
+    }
     for (const name of SERVICE_NAMES) {
       const port = servicePort(name);
+      const block = composeBlock(name);
       assert.ok(
-        compose.includes(`PORT: ${port}`) || compose.includes(`:${port}/api/health`),
-        `compose.yml should reference port ${port} for ${name}`,
+        block.includes(`PORT: ${port}`) || block.includes(`:${port}/api/health`),
+        `compose.yml service '${name}' should declare port ${port} in its own block`,
       );
     }
   });
