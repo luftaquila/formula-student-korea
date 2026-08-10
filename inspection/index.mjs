@@ -17,6 +17,8 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "inspection", express, Database, options, dbFile: "sheet.db",
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
+    // 예약된 내부 네임스페이스 심층방어 (documents와 동일한 이유)
+    if (req.path.startsWith("/api/internal/")) return "admin";
     if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
     if (req.path === "/api/logs") return "admin";
     if (req.path.startsWith("/api/")) return "official";

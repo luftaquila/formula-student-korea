@@ -56,25 +56,8 @@ test.describe("Entry CRUD operations", () => {
     await waitForPageReady(page);
   });
 
-  test("surfaces pending lifecycle synchronization when adding an entry", async ({ page }) => {
-    await page.route("**/entry/api/entries?year=*", async (route) => {
-      if (route.request().method() !== "POST") return route.continue();
-      await route.fulfill({
-        status: 202,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "pending_lifecycle", pending: 1 }),
-      });
-    });
-
-    const sidebar = page.locator(".sidebar");
-    await sidebar.locator('input[type="number"]').fill("998");
-    await sidebar.locator('input[type="text"]').first().fill("동기화대학교");
-    await sidebar.locator('input[type="text"]').nth(1).fill("동기화팀");
-    await sidebar.locator("select.form-input").selectOption("EV");
-    await sidebar.locator(".submit-btn").click();
-
-    await expectNotification(page, "success", "998번 엔트리를 추가했습니다. (서비스 동기화 진행 중)");
-  });
+  // 202 pending_lifecycle 계약은 team-state pull 동기화로 대체되며 사라졌다 — 엔트리
+  // 변이는 항상 200/201이고 "(서비스 동기화 진행 중)" 토스트도 없다. 관련 테스트 삭제.
 
   test("inline edits an entry university name", async ({ page }) => {
     const table = page.locator(".entry-table");

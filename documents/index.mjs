@@ -18,6 +18,9 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "documents", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
+    // 내부 라우트는 team-state 전환으로 사라졌지만, 예약 네임스페이스는 심층방어로
+    // admin 게이트를 유지한다 — 미래에 라우트가 생겨도 기본 student 캐치올로 새지 않게.
+    if (req.path.startsWith("/api/internal/")) return "admin";
     if (req.path.startsWith("/api/admin")) return "chief";
     if (req.path === "/api/logs") return "admin";
     if (req.path.startsWith("/api/")) return "student";

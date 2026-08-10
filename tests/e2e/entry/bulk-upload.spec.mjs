@@ -64,10 +64,15 @@ test.describe("Entry bulk upload and download", () => {
     await download.saveAs(tmpPath);
     const content = JSON.parse(fs.readFileSync(tmpPath, "utf-8"));
 
-    // Verify the downloaded JSON contains all 5 seeded entries
+    // Verify the downloaded JSON contains all 5 seeded entries.
+    // 각 행은 불변 team id를 포함한다(재업로드 시 권위 매칭 키) — 값은 발급 순서에
+    // 의존하므로 존재·타입만 확인하고 나머지 필드는 정확히 비교한다.
     expect(Object.keys(content)).toHaveLength(5);
-    expect(content["1"]).toEqual({ univ: "서울대학교", team: "SNU Racing", type: "EV", active: true });
-    expect(content["2"]).toEqual({ univ: "한양대학교", team: "ACES", type: "EV", active: true });
+    for (const num of ["1", "2"]) {
+      expect(Number.isInteger(content[num].id)).toBe(true);
+    }
+    expect(content["1"]).toEqual({ id: content["1"].id, univ: "서울대학교", team: "SNU Racing", type: "EV", active: true });
+    expect(content["2"]).toEqual({ id: content["2"].id, univ: "한양대학교", team: "ACES", type: "EV", active: true });
 
     // Clean up temp file
     fs.unlinkSync(tmpPath);
