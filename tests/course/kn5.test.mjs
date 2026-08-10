@@ -74,6 +74,7 @@ describe("kn5 reader — round-trip", () => {
     assert.equal(road.vertices, 4);
     assert.equal(road.indices, 6);
     assert.equal(road.materialId, 0);
+    assert.deepEqual(road.positionBounds, { min: [-5, 0, -5], max: [5, 0, 5] });
   });
 });
 
