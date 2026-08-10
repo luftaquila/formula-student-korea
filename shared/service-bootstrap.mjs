@@ -24,9 +24,9 @@ export function createServiceSkeleton({
 }
 
 // SPA fallback은 모든 서비스 라우트 **뒤에** 등록해야 하므로 골격이 아니라 각 팩토리
-// 말미에서 서비스가 직접 호출한다.
-export function addSpaFallback(app) {
-  app.get("/{*splat}", (req, res) => res.sendFile("index.html", { root: "./web/dist" }));
+// 말미에서 서비스가 직접 호출한다. root override는 테스트 픽스처 격리용.
+export function addSpaFallback(app, root = "./web/dist") {
+  app.get("/{*splat}", (req, res) => res.sendFile("index.html", { root }));
 }
 
 // 직접 실행(`node index.mjs`) 부팅 블록. factory는 { app, db, ...extras }를 반환해야

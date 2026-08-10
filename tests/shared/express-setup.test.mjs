@@ -1,6 +1,8 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -528,16 +530,18 @@ describe('createApp validateUser caching integration', () => {
 
 // ─── public /assets serving (before auth) ───────────────────────────────
 describe('public /assets serving', () => {
-  let server, baseUrl, calls;
+  let server, baseUrl, calls, staticRoot;
 
   before(async () => {
-    // express.static은 cwd 기준 ./web/dist/assets를 읽는다. 테스트 프로세스 cwd(리포 루트)에
-    // 픽스처를 만들고 after에서 정리한다.
-    fs.mkdirSync('./web/dist/assets', { recursive: true });
-    fs.writeFileSync('./web/dist/assets/fixture-abc123.js', 'export const x = 1;\n');
+    // 공유 ./web/dist를 쓰면 병렬로 도는 다른 테스트 파일의 픽스처와 teardown이 충돌하고
+    // 리포 루트의 기존 내용도 지울 수 있다 — 스위트 전용 임시 디렉토리로 격리한다.
+    staticRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fsk-assets-test-'));
+    fs.mkdirSync(path.join(staticRoot, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(staticRoot, 'assets', 'fixture-abc123.js'), 'export const x = 1;\n');
     calls = 0;
     const app = createApp({
       express,
+      staticRoot,
       validateUser: async () => { calls++; return { valid: true, role: null }; },
     }, () => 'admin'); // 모든 경로를 게이트 (entry처럼 정적 파일까지 admin)
     const started = await startServer(app);
@@ -547,7 +551,7 @@ describe('public /assets serving', () => {
 
   after(async () => {
     if (server) await stopServer(server);
-    fs.rmSync('./web/dist', { recursive: true, force: true });
+    fs.rmSync(staticRoot, { recursive: true, force: true });
   });
 
   it('serves content-hashed assets without auth and without hitting the validator', async () => {

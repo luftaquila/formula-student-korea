@@ -131,12 +131,15 @@ export function createApp(deps, authRoleFn) {
   const app = express();
   app.disable("x-powered-by");
 
+  // 정적 루트. 프로덕션은 항상 기본값 — override는 테스트 픽스처 격리용(dbPath와 동일 패턴).
+  const staticRoot = deps.staticRoot || "./web/dist";
+
   // 0. 콘텐츠 해시 자산 공개 서빙. Vite가 낸 /assets/*는 파일명이 콘텐츠에 종속된
   // 불변 번들이라 인증·재검증보다 먼저 서빙해도 정보 노출이 없다 — 로그인한 브라우저의
   // 매 자산 요청이 auth 왕복(아래 3c)을 태우던 비용을 없앤다. index.html 등 나머지 정적
   // 파일은 기존대로 게이트 뒤(아래 5)에서 서빙한다. 미존재 자산은 fallthrough로 기존
   // 401/redirect 경로를 그대로 탄다.
-  app.use("/assets", express.static("./web/dist/assets", {
+  app.use("/assets", express.static(`${staticRoot}/assets`, {
     index: false,
     fallthrough: true,
     setHeaders: (res) => res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
@@ -349,7 +352,7 @@ export function createApp(deps, authRoleFn) {
   // Vite가 낸 해시 자산(/assets/*)은 파일명이 콘텐츠에 종속되므로 1년 immutable 캐시로
   // 매 페이지 로드의 재검증(304) 왕복을 없앤다. 그 외(index.html 등)는 no-cache라 재배포가
   // 즉시 반영된다.
-  app.use(express.static("./web/dist", {
+  app.use(express.static(staticRoot, {
     setHeaders: (res, filePath) => {
       if (/[\\/]assets[\\/]/.test(filePath)) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");

@@ -1,6 +1,8 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -79,11 +81,13 @@ describe('createServiceSkeleton', () => {
 
 describe('addSpaFallback', () => {
   it('registers a catch-all that serves index.html', async () => {
-    fs.mkdirSync('./web/dist', { recursive: true });
-    fs.writeFileSync('./web/dist/index.html', '<html>spa</html>');
+    // 공유 ./web/dist 대신 스위트 전용 임시 루트 — 병렬 파일의 픽스처/teardown과 충돌 방지.
+    // sendFile은 절대 경로 root를 요구하므로 mkdtemp 결과를 그대로 쓴다.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fsk-spa-test-'));
+    fs.writeFileSync(path.join(root, 'index.html'), '<html>spa</html>');
     try {
       const app = express();
-      addSpaFallback(app);
+      addSpaFallback(app, root);
       const { server, baseUrl } = await startServer(app);
       try {
         const res = await fetch(`${baseUrl}/some/deep/route`);
@@ -93,7 +97,7 @@ describe('addSpaFallback', () => {
         await stopServer(server);
       }
     } finally {
-      fs.rmSync('./web/dist', { recursive: true, force: true });
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });
@@ -124,9 +128,15 @@ describe('servicePort', () => {
     for (const name of SERVICE_NAMES) {
       const port = servicePort(name);
       const block = composeBlock(name);
+      // 빌드 PORT와 헬스체크 포트는 독립적으로 드리프트할 수 있다(예: 헬스체크만 다른
+      // 포트로 바뀌면 컨테이너가 unhealthy) — 둘 다 각각 요구한다.
       assert.ok(
-        block.includes(`PORT: ${port}`) || block.includes(`:${port}/api/health`),
-        `compose.yml service '${name}' should declare port ${port} in its own block`,
+        block.includes(`PORT: ${port}`),
+        `compose.yml service '${name}' should declare build arg PORT: ${port}`,
+      );
+      assert.ok(
+        block.includes(`:${port}/api/health`),
+        `compose.yml service '${name}' healthcheck should probe port ${port}`,
       );
     }
   });
