@@ -1,4 +1,4 @@
-import { runMigrationOnce, normalizeUtcTextTimestamp } from "./db-setup.mjs";
+import { runMigrationOnce, normalizeUtcTextTimestamp, setupRowCapRetention } from "./db-setup.mjs";
 import { createSecretChecker } from "./express-setup.mjs";
 
 // logs 테이블 필터 쿼리 파라미터(level/action/actor/from/to/search)를 WHERE 절과
@@ -46,6 +46,17 @@ export function buildLogFilter(query) {
   return { where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", params };
 }
 
+// keyset 커서 "<timestamp>,<id>" 파서. ISO 타임스탬프에는 콤마가 없으므로 마지막 콤마로
+// 안전하게 분리한다. 형식이 어긋나면 null(= 커서 없음, 첫 페이지)로 조용히 폴백한다.
+export function parseLogCursor(raw) {
+  if (!raw) return null;
+  const s = String(raw);
+  const idx = s.lastIndexOf(",");
+  if (idx < 1) return null;
+  const id = Number(s.slice(idx + 1));
+  return Number.isInteger(id) ? { ts: s.slice(0, idx), id } : null;
+}
+
 export function createLogger(db, serviceName, maxRows = 50000) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,18 +99,11 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     }
   }
 
-  // Auto-cleanup: delete oldest rows beyond maxRows every hour
-  const cleanup = () => {
-    try {
-      const count = db.prepare("SELECT COUNT(*) as cnt FROM logs").get().cnt;
-      if (count > maxRows) {
-        db.prepare("DELETE FROM logs WHERE id IN (SELECT id FROM logs ORDER BY id ASC LIMIT ?)").run(count - maxRows);
-      }
-    } catch (e) {
-      console.error(`[logger] cleanup error: ${e.message}`);
-    }
-  };
-  setInterval(cleanup, 3600000).unref();
+  // 보존은 다른 row-cap 테이블(queue_log, booth_log 등)과 같은 AFTER INSERT 트리거로
+  // 통일한다. 시간별 COUNT+DELETE sweep은 스윕 사이 무제한 초과를 허용했고, 리포에
+  // 보존 메커니즘이 두 벌 존재하게 만들었다. 트리거의 삽입당 비용은 PK MAX 조회 +
+  // 대부분 no-op인 범위 DELETE라 이 시스템의 로그 쓰기 빈도에서 무시 가능하다.
+  setupRowCapRetention(db, "logs", maxRows);
 
   const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
@@ -112,14 +116,37 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     }
 
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
-    const offset = Number(req.query.offset) || 0;
+    const cursor = parseLogCursor(req.query.before);
 
     const { where, params } = buildLogFilter(req.query);
 
+    // 정렬 키는 (timestamp DESC, id DESC)로 통일한다 — auth 집계의 병합 정렬 키와 같아야
+    // keyset 커서가 페이지 경계에서 행을 빠뜨리거나 중복시키지 않는다. id는 rowid alias라
+    // idx_logs_timestamp가 사실상 (timestamp, rowid) 복합 인덱스로 동작한다.
     const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
-    const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    // limit+1행을 가져와 초과분 존재 여부로 hasMore를 판정한다. logs.length === limit
+    // 휴리스틱은 "정확히 limit개 매칭"과 "다음 페이지 있음"을 구분하지 못해, 딱 limit개인
+    // 결과에서 다음 버튼이 열리고 빈 2페이지가 나온다.
+    let logs;
+    if (cursor) {
+      const cond = `${where ? `${where} AND` : "WHERE"} (timestamp, id) < (?, ?)`;
+      logs = db.prepare(`SELECT * FROM logs ${cond} ORDER BY timestamp DESC, id DESC LIMIT ?`)
+        .all(...params, cursor.ts, cursor.id, limit + 1);
+    } else {
+      // offset은 레거시 호환(내부 소비자 전환기)용. 커서가 오면 무시된다.
+      const offset = Number(req.query.offset) || 0;
+      logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`)
+        .all(...params, limit + 1, offset);
+    }
 
-    res.json({ logs, total, service: serviceName });
+    const hasMore = logs.length > limit;
+    if (hasMore) logs.length = limit;
+    const last = logs[logs.length - 1];
+    res.json({
+      logs, total, service: serviceName,
+      nextCursor: hasMore && last ? `${last.timestamp},${last.id}` : null,
+      hasMore,
+    });
   }
 
   return {

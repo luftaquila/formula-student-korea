@@ -1,20 +1,28 @@
 import http from "http";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { addColumn } from "../shared/db-setup.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 import { serviceUrl } from "../shared/services.mjs";
 import { calculateEnergyScores } from "./lib/energy-score.mjs";
 
-const PORT = 9600;
-
 export function createScoreApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/score.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "score", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (/^\/api\/score\/public\/\d{4}(?:\/events)?$/.test(req.path)) return null;
+    if (/^\/public\/\d{4}$/.test(req.path)) return null;
+    // 공개 페이지가 인증 없이 부트스트랩될 수 있도록 Vite 정적 자산도 공개한다.
+    if (req.path.startsWith("/assets/") || req.path === "/env-config.js") return null;
+    return "admin";
+  },
+});
 
 db.transaction(() => {
   // 레거시 테이블 정리
@@ -110,11 +118,6 @@ const ENDURANCE_SQL = {
   energy_dsq: "UPDATE score_endurance SET energy_dsq = ? WHERE year = ? AND team_num = ?",
 };
 
-/* ============================================
-   Express 앱 설정
-   ============================================ */
-const logger = createLogger(db, "score");
-
 // inter-service 실패 로그 폭주 방지: action+year별 최소 60초 간격 throttle
 const _warnThrottle = new Map();
 function warnThrottled(action, detail, windowMs = 60000) {
@@ -169,19 +172,6 @@ function invalidatePublicScoreCache(year = null) {
   }
 }
 
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (/^\/api\/score\/public\/\d{4}(?:\/events)?$/.test(req.path)) return null;
-  if (/^\/public\/\d{4}$/.test(req.path)) return null;
-  // 공개 페이지가 인증 없이 부트스트랩될 수 있도록 Vite 정적 자산도 공개한다.
-  if (req.path.startsWith("/assets/") || req.path === "/env-config.js") return null;
-  return "admin";
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
-
 /* ============================================
    설정
    ============================================ */
@@ -201,8 +191,6 @@ function internalHeaders() {
 /* ============================================
    헬퍼
    ============================================ */
-const dbRun = createDbRun();
-
 function validateKey(key, label) {
   if (!key || typeof key !== "string" || key.trim() === "") return `${label}이(가) 비어있습니다.`;
   if (key.length > 50) return `${label}이(가) 너무 깁니다.`;
@@ -1024,17 +1012,9 @@ app.get("/public/:year", (req, res) => {
   res.sendFile("index.html", { root: "./web/dist" });
 });
 
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createScoreApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Score service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "score", createScoreApp);

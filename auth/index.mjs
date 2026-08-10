@@ -2,12 +2,11 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, createJWT, verifyJWT, ensureDataDir, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
+import { createApp, createDbRun, createJWT, verifyJWT, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
-import { createLogger, buildLogFilter } from "../shared/logger.mjs";
+import { createLogger, buildLogFilter, parseLogCursor } from "../shared/logger.mjs";
 import { serviceUrl, logAggregationTargets } from "../shared/services.mjs";
-
-const PORT = 9100;
+import { runIfDirect } from "../shared/service-bootstrap.mjs";
 
 export function createAuthApp(options = {}) {
 
@@ -184,7 +183,9 @@ async function notifyNewUser(emails) {
   }
 }
 
-const app = createApp({ express, validateUser, db }, (req) => {
+// validateUserCacheTtl: 0 — auth의 검증기는 로컬 인덱스 SELECT라 캐시가 무익하고,
+// auth 자신의 사용자 관리 UI는 역할 변경이 즉시 반영되어야 한다.
+const app = createApp({ express, validateUser, validateUserCacheTtl: 0 }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/forward-auth") return null;
   if (req.path === "/api/session") return null;
@@ -1099,21 +1100,48 @@ app.delete("/api/ops-contacts/:userId", (req, res) => {
    ============================================ */
 const LOG_SERVICES = logAggregationTargets();
 
-// GET /api/admin/logs - 전체 서비스 로그 집계
-app.get("/api/admin/logs", async (req, res) => {
-  const { service, limit: qLimit, offset: qOffset, ...filters } = req.query;
-  const limit = Math.min(Number(qLimit) || 100, 500);
-  const offset = Number(qOffset) || 0;
+// 집계 커서 토큰. 서비스별 keyset 커서("ts,id")를 하나의 opaque 문자열로 묶고,
+// 필터 해시(f)를 동봉해 "필터 A로 만든 커서로 필터 B 페이지를 잇는" 오용을 막는다
+// (프론트는 필터 변경 시 커서를 리셋하므로 이 400은 버그/수제 URL만 잡는다).
+function logFilterHash(service, filters) {
+  const canonical = JSON.stringify({
+    service: service || "",
+    ...Object.fromEntries(Object.entries(filters).filter(([, v]) => v).sort(([a], [b]) => a.localeCompare(b))),
+  });
+  return crypto.createHash("sha256").update(canonical).digest("hex").slice(0, 16);
+}
 
-  // Build query string for forwarding
-  const qs = new URLSearchParams();
-  const fetchLimit = Math.min(offset + limit + 100, 2000);
-  qs.set("limit", String(fetchLimit));
-  for (const [k, v] of Object.entries(filters)) {
-    if (v) qs.set(k, v);
+function encodeAggCursor(filterHash, cursors) {
+  return Buffer.from(JSON.stringify({ v: 1, f: filterHash, c: cursors })).toString("base64url");
+}
+
+function decodeAggCursor(raw) {
+  try {
+    const parsed = JSON.parse(Buffer.from(String(raw), "base64url").toString());
+    if (parsed?.v !== 1 || typeof parsed.f !== "string" || typeof parsed.c !== "object" || parsed.c === null) return null;
+    return parsed;
+  } catch {
+    return null;
   }
+}
 
-  const results = [];
+// GET /api/admin/logs - 전체 서비스 로그 집계 (keyset 커서 k-way 병합)
+// 예전 offset 방식은 서비스당 fetch 상한(2000행) 너머에서 빈 페이지를 돌려주면서
+// total은 더 있다고 말했고, 원격 정렬 키(id)와 병합 정렬 키(timestamp)가 달라 페이지
+// 경계에서 행이 어긋날 수 있었다. 커서는 페이지 깊이와 무관하게 서비스당 limit행만
+// 가져오고, 정렬 키를 (timestamp, id)로 양쪽에서 통일한다.
+app.get("/api/admin/logs", async (req, res) => {
+  const { service, limit: qLimit, cursor: qCursor, offset: _qOffset, ...filters } = req.query;
+  const limit = Math.max(1, Math.min(Number(qLimit) || 100, 500));
+  const filterHash = logFilterHash(service, filters);
+
+  let cursors = {};
+  if (qCursor) {
+    const token = decodeAggCursor(qCursor);
+    if (!token) return res.status(400).send("올바르지 않은 cursor입니다.");
+    if (token.f !== filterHash) return res.status(400).send("cursor가 현재 필터와 일치하지 않습니다.");
+    cursors = token.c;
+  }
 
   // Determine which services to query
   const targetServices = service
@@ -1127,54 +1155,96 @@ app.get("/api/admin/logs", async (req, res) => {
     : { auth: null, ...LOG_SERVICES };
 
   const fetches = Object.entries(targetServices).map(async ([name, url]) => {
+    const before = typeof cursors[name] === "string" ? cursors[name] : null;
     if (name === "auth") {
-      // Local query (no HTTP)
+      // Local query (no HTTP) — 원격 queryHandler와 동일한 keyset SQL.
+      // limit+1행으로 hasMore를 판정한다(정확히 limit개 매칭 ≠ 다음 페이지 있음).
       try {
         const { where, params } = buildLogFilter(filters);
         const total = db.prepare(`SELECT COUNT(*) as cnt FROM logs ${where}`).get(...params).cnt;
-        // Honor the same offset+limit window as remote services (fetchLimit) so
-        // pagination past the first page works — a hardcoded LIMIT 500 here made
-        // pages beyond offset 500 come up empty even though `total` reported more.
-        const logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY id DESC LIMIT ?`).all(...params, fetchLimit);
-        return { name, logs: logs.map(l => ({ ...l, _service: name })), total };
+        const parsed = parseLogCursor(before);
+        let logs;
+        if (parsed) {
+          const cond = `${where ? `${where} AND` : "WHERE"} (timestamp, id) < (?, ?)`;
+          logs = db.prepare(`SELECT * FROM logs ${cond} ORDER BY timestamp DESC, id DESC LIMIT ?`)
+            .all(...params, parsed.ts, parsed.id, limit + 1);
+        } else {
+          logs = db.prepare(`SELECT * FROM logs ${where} ORDER BY timestamp DESC, id DESC LIMIT ?`)
+            .all(...params, limit + 1);
+        }
+        const hasMore = logs.length > limit;
+        if (hasMore) logs.length = limit;
+        return { name, logs: logs.map(l => ({ ...l, _service: name })), total, hasMore };
       } catch (e) {
         logger.warn(null, "logs.query_failed", { error: e.message }, "auth");
-        return { name, logs: [], total: 0 };
+        return { name, logs: [], total: 0, hasMore: false, failed: true };
       }
     }
 
     try {
+      const qs = new URLSearchParams();
+      qs.set("limit", String(limit));
+      if (before) qs.set("before", before);
+      for (const [k, v] of Object.entries(filters)) {
+        if (v) qs.set(k, v);
+      }
       const fetchRes = await fetch(`${url}/api/logs?${qs}`, {
         headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
         signal: AbortSignal.timeout(5000),
       });
       if (!fetchRes.ok) {
         warnAggThrottled("logs.aggregate_failed", { service: name, status: fetchRes.status }, name);
-        return { name, logs: [], total: 0 };
+        return { name, logs: [], total: 0, hasMore: false, failed: true };
       }
       const data = await fetchRes.json();
-      return { name, logs: (data.logs || []).map(l => ({ ...l, _service: name })), total: data.total || 0 };
+      return {
+        name,
+        logs: (data.logs || []).map(l => ({ ...l, _service: name })),
+        total: data.total || 0,
+        hasMore: !!data.hasMore,
+      };
     } catch (e) {
       warnAggThrottled("logs.aggregate_failed", { service: name, error: e.message }, name);
-      return { name, logs: [], total: 0 };
+      return { name, logs: [], total: 0, hasMore: false, failed: true };
     }
   });
 
   const allResults = await Promise.all(fetches);
 
-  // Merge all logs by timestamp descending
-  let merged = [];
+  // k-way 병합: (timestamp DESC, id DESC, service ASC) — 서비스 간 (ts,id) 충돌까지
+  // 결정적으로 갈라야 커서 재개가 안정적이다.
+  const merged = [];
   let totalSum = 0;
   for (const r of allResults) {
     merged.push(...r.logs);
     totalSum += r.total;
   }
-  merged.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+  merged.sort((a, b) =>
+    (b.timestamp || "").localeCompare(a.timestamp || "")
+    || (b.id || 0) - (a.id || 0)
+    || (a._service || "").localeCompare(b._service || ""));
 
-  // Apply offset/limit on merged result
-  const paged = merged.slice(offset, offset + limit);
+  const paged = merged.slice(0, limit);
 
-  res.json({ logs: paged, total: totalSum, services: Object.keys(targetServices) });
+  // 서비스별 다음 커서: 이번 페이지에서 소비된 마지막 행의 키. 하나도 소비되지 않았거나
+  // 실패한 서비스는 이전 커서를 그대로 물려받아, 그 행들이 다음 페이지(또는 복구 후)에
+  // 다시 표면화된다.
+  const nextCursors = { ...cursors };
+  const consumedCount = new Map();
+  for (const row of paged) {
+    nextCursors[row._service] = `${row.timestamp},${row.id}`;
+    consumedCount.set(row._service, (consumedCount.get(row._service) || 0) + 1);
+  }
+  const hasMore = merged.length > limit
+    || allResults.some(r => r.hasMore && (consumedCount.get(r.name) || 0) === r.logs.length);
+
+  res.json({
+    logs: paged,
+    total: totalSum,
+    nextCursor: hasMore ? encodeAggCursor(filterHash, nextCursors) : null,
+    hasMore,
+    services: Object.keys(targetServices),
+  });
 });
 
 /* ============================================
@@ -1187,10 +1257,7 @@ app.get("/{*splat}", (req, res) => {
 return { app, db };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createAuthApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Auth service running on port ${PORT}`));
-}
+// auth는 골격(createServiceSkeleton)을 쓰지 않는다 — 검증기를 자기 DB 함수로 주입하고
+// (validateUserCacheTtl: 0) db가 검증기 클로저보다 먼저 만들어져야 해서 createApp 호출이
+// 수동이다. 부팅 블록만 공용 runIfDirect를 쓴다.
+runIfDirect(import.meta, "auth", createAuthApp);

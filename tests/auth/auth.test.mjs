@@ -1019,11 +1019,34 @@ describe('GET /api/admin/logs', () => {
     assert.equal(data.services.length, 1);
   });
 
-  it('supports limit and offset', async () => {
-    const res = await client.get('/api/admin/logs?limit=2&offset=0', { cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.logs.length, 2);
+  it('supports limit and resumes via nextCursor without overlap', async () => {
+    const page1 = await (await client.get('/api/admin/logs?service=auth&limit=2', { cookie: adminCookie })).json();
+    assert.equal(page1.logs.length, 2);
+    assert.ok(page1.nextCursor, 'page 1 should carry a nextCursor when more rows exist');
+
+    const page2 = await (await client.get(
+      `/api/admin/logs?service=auth&limit=2&cursor=${encodeURIComponent(page1.nextCursor)}`,
+      { cookie: adminCookie },
+    )).json();
+    const ids1 = new Set(page1.logs.map(l => l.id));
+    assert.ok(page2.logs.every(l => !ids1.has(l.id)), 'pages must not overlap');
+    const key = (l) => `${l.timestamp},${String(l.id).padStart(12, '0')}`;
+    assert.ok(key(page2.logs[0]) < key(page1.logs[page1.logs.length - 1]), 'page 2 keys must be strictly older');
+  });
+
+  it('rejects a malformed cursor with 400', async () => {
+    const res = await client.get('/api/admin/logs?cursor=not-a-token', { cookie: adminCookie });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects a cursor made under different filters with 400', async () => {
+    const page1 = await (await client.get('/api/admin/logs?service=auth&limit=2', { cookie: adminCookie })).json();
+    assert.ok(page1.nextCursor);
+    const res = await client.get(
+      `/api/admin/logs?service=auth&level=warn&limit=2&cursor=${encodeURIComponent(page1.nextCursor)}`,
+      { cookie: adminCookie },
+    );
+    assert.equal(res.status, 400);
   });
 
   it('each log entry has _service field', async () => {
@@ -1039,26 +1062,136 @@ describe('GET /api/admin/logs', () => {
     assert.equal(res.status, 401);
   });
 
-  it('paginates auth logs past offset 500 (regression: hardcoded LIMIT 500 emptied later pages)', async () => {
-    // Seed enough auth logs that page 6 (offset 500) must still return rows.
+  it('walks 6 cursor pages past the old 2000-row fetch horizon without gaps or duplicates', async () => {
+    // Seed enough auth logs that page 6 must still return rows (regression: the offset
+    // scheme's per-service fetch cap emptied deep pages while total said otherwise).
     const insert = db.prepare(
       "INSERT INTO logs (timestamp, level, actor_email, action, target) VALUES (?, 'info', 'seed@test.com', 'logs.pagination_seed', ?)",
     );
     const seed = db.transaction(() => {
       for (let i = 0; i < 620; i++) {
-        // Descending, zero-padded timestamps keep a stable merge order.
         insert.run(`2026-01-01T00:00:00.${String(1000 - (i % 1000)).padStart(4, '0')}Z`, `#${i}`);
       }
     });
     seed();
 
-    const total = (await (await client.get('/api/admin/logs?service=auth&limit=100&offset=0', { cookie: adminCookie })).json()).total;
-    assert.ok(total > 500, `precondition: need >500 auth logs, got ${total}`);
+    const seen = new Set();
+    let cursor = null;
+    let lastPage = null;
+    for (let p = 0; p < 6; p++) {
+      const qs = `service=auth&limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+      const res = await client.get(`/api/admin/logs?${qs}`, { cookie: adminCookie });
+      assert.equal(res.status, 200);
+      lastPage = await res.json();
+      for (const log of lastPage.logs) {
+        assert.ok(!seen.has(log.id), `duplicate id ${log.id} across pages`);
+        seen.add(log.id);
+      }
+      cursor = lastPage.nextCursor;
+      if (p < 5) assert.ok(cursor, `page ${p + 1} should have a nextCursor`);
+    }
+    assert.ok(lastPage.logs.length > 0, 'page 6 must not be empty when >600 rows exist');
+  });
+});
 
-    const res = await client.get('/api/admin/logs?service=auth&limit=100&offset=500', { cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(data.logs.length > 0, 'page 6 (offset 500) must not be empty when total > 500');
+// ─── Admin Logs Aggregation: multi-service merge ─────────────────────────
+// LOG_SERVICES는 팩토리 생성 시점에 env를 읽으므로, ENTRY_SERVER를 스텁으로 지정한
+// 별도 앱 인스턴스를 만든다. 스텁은 logger.queryHandler와 같은 응답 형태를 흉내낸다.
+describe('GET /api/admin/logs multi-service merge', () => {
+  let stubServer, stubBehavior, mergeServer, mergeClient, mergeDb, mergeDbPath;
+  const stubRows = [];
+
+  before(async () => {
+    // 스텁 entry: before 커서를 존중하는 keyset 응답
+    for (let i = 0; i < 5; i++) {
+      stubRows.push({
+        id: 100 + i,
+        timestamp: `2026-02-01T00:00:0${i}.000Z`,
+        level: 'info', action: `entry.stub_${i}`, actor_email: null, actor_name: null,
+        actor_role: null, target: null, detail: null, ip: null,
+      });
+    }
+    stubRows.sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id - a.id);
+    stubBehavior = { fail: false };
+    const http = await import('node:http');
+    stubServer = http.createServer((req, res) => {
+      if (stubBehavior.fail) { res.writeHead(500); return res.end('boom'); }
+      const url = new URL(req.url, 'http://x');
+      const limit = Number(url.searchParams.get('limit')) || 100;
+      const before = url.searchParams.get('before');
+      let rows = stubRows;
+      if (before) {
+        const idx = before.lastIndexOf(',');
+        const [ts, id] = [before.slice(0, idx), Number(before.slice(idx + 1))];
+        rows = rows.filter(r => r.timestamp < ts || (r.timestamp === ts && r.id < id));
+      }
+      const page = rows.slice(0, limit);
+      const last = page[page.length - 1];
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        logs: page, total: stubRows.length, service: 'entry',
+        nextCursor: page.length === limit && last ? `${last.timestamp},${last.id}` : null,
+        hasMore: page.length === limit,
+      }));
+    });
+    await new Promise((r) => stubServer.listen(0, r));
+    process.env.ENTRY_SERVER = `http://localhost:${stubServer.address().port}`;
+
+    mergeDbPath = tmpDbPath();
+    const result = createAuthApp({ dbPath: mergeDbPath });
+    mergeDb = result.db;
+    // auth 쪽에도 스텁과 교차하는 타임스탬프의 로그를 심는다
+    const insert = mergeDb.prepare(
+      "INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)",
+    );
+    for (let i = 0; i < 5; i++) {
+      insert.run(`2026-02-01T00:00:0${i}.500Z`, `auth.stub_${i}`);
+    }
+    const started = await startServer(result.app);
+    mergeServer = started.server;
+    mergeClient = createClient(started.baseUrl);
+  });
+
+  after(async () => {
+    delete process.env.ENTRY_SERVER;
+    await stopServer(mergeServer);
+    if (stubServer) await new Promise((r) => stubServer.close(r));
+    mergeDb.close();
+    cleanup(mergeDbPath);
+  });
+
+  it('interleaves services in (timestamp,id) descending order and resumes per-service cursors', async () => {
+    const page1 = await (await mergeClient.get('/api/admin/logs?service=auth,entry&limit=4', { cookie: adminCookie })).json();
+    assert.equal(page1.logs.length, 4);
+    // 병합 정렬 검증
+    for (let i = 1; i < page1.logs.length; i++) {
+      const a = page1.logs[i - 1], b = page1.logs[i];
+      assert.ok(a.timestamp > b.timestamp || (a.timestamp === b.timestamp && a.id >= b.id), 'descending merge order');
+    }
+    assert.ok(page1.logs.some(l => l._service === 'entry'), 'page 1 contains entry rows');
+    assert.ok(page1.logs.some(l => l._service === 'auth'), 'page 1 contains auth rows');
+    assert.ok(page1.nextCursor);
+
+    const page2 = await (await mergeClient.get(
+      `/api/admin/logs?service=auth,entry&limit=4&cursor=${encodeURIComponent(page1.nextCursor)}`,
+      { cookie: adminCookie },
+    )).json();
+    const keys1 = new Set(page1.logs.map(l => `${l._service}:${l.id}`));
+    assert.ok(page2.logs.every(l => !keys1.has(`${l._service}:${l.id}`)), 'no duplicates across pages');
+    assert.ok(page2.logs.length > 0);
+  });
+
+  it('a failing service degrades gracefully: auth rows still return', async () => {
+    stubBehavior.fail = true;
+    try {
+      const res = await mergeClient.get('/api/admin/logs?service=auth,entry&limit=4', { cookie: adminCookie });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.ok(data.logs.length > 0);
+      assert.ok(data.logs.every(l => l._service === 'auth'), 'only auth rows when entry is down');
+    } finally {
+      stubBehavior.fail = false;
+    }
   });
 });
 

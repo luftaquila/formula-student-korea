@@ -45,6 +45,14 @@ const SERVICE_URLS = Object.fromEntries(
 
 export { SERVICE_NAMES };
 
+// 리슨 포트의 단일 소스. 각 서비스 index.mjs가 자기 PORT 상수를 중복 정의하면
+// 여기(inter-service URL)와 어긋나는 드리프트가 가능하다 — 부팅 블록은 이걸 쓴다.
+export function servicePort(name) {
+  const port = SERVICE_PORTS[name];
+  if (!port) throw new Error(`Unknown service: ${name}`);
+  return port;
+}
+
 // `<NAME>_SERVER` env는 override 전용이다. 테스트(임시 포트의 mock 서버)와 컨테이너
 // 밖 로컬 실행에서만 쓰이며, 설정하지 않아도 컨테이너 배포는 정상 동작한다.
 // env는 호출 시점에 읽는다 — 테스트가 app 팩토리 호출 직전에 env를 설정한다.

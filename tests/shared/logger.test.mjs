@@ -123,8 +123,89 @@ describe('createLogger', () => {
     assert.ok(res.body.total >= 2);
   });
 
-  it('auto-cleanup removes oldest rows when maxRows is exceeded', (t) => {
-    t.mock.timers.enable({ apis: ['setInterval'] });
+  it('queryHandler exposes nextCursor/hasMore and a before-cursor returns strictly older rows', () => {
+    const curDb = new Database(':memory:');
+    const curLogger = createLogger(curDb, 'cursor-test');
+    const insert = curDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)");
+    // 동일 timestamp 3행(id로 갈라야 함) + 더 오래된 1행
+    insert.run('2026-03-01T00:00:01.000Z', 'same_a');
+    insert.run('2026-03-01T00:00:01.000Z', 'same_b');
+    insert.run('2026-03-01T00:00:01.000Z', 'same_c');
+    insert.run('2026-03-01T00:00:00.000Z', 'older');
+
+    const res1 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '2' }, { role: 'admin' }), res1);
+    assert.equal(res1.body.logs.length, 2);
+    assert.equal(res1.body.hasMore, true);
+    assert.ok(res1.body.nextCursor);
+    // 최신 정렬: same_c(id 3), same_b(id 2)
+    assert.deepEqual(res1.body.logs.map(l => l.action), ['same_c', 'same_b']);
+
+    const res2 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '2', before: res1.body.nextCursor }, { role: 'admin' }), res2);
+    assert.deepEqual(res2.body.logs.map(l => l.action), ['same_a', 'older']);
+    // 남은 행이 정확히 limit개였으므로 다음 페이지는 없다 (limit+1 판정)
+    assert.equal(res2.body.hasMore, false);
+
+    curDb.close();
+  });
+
+  it('queryHandler combines before-cursor with filters', () => {
+    const curDb = new Database(':memory:');
+    const curLogger = createLogger(curDb, 'cursor-filter-test');
+    const insert = curDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, ?, ?)");
+    insert.run('2026-03-01T00:00:03.000Z', 'warn', 'w1');
+    insert.run('2026-03-01T00:00:02.000Z', 'info', 'i1');
+    insert.run('2026-03-01T00:00:01.000Z', 'warn', 'w2');
+
+    const res1 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '1', level: 'warn' }, { role: 'admin' }), res1);
+    assert.deepEqual(res1.body.logs.map(l => l.action), ['w1']);
+
+    const res2 = mockRes();
+    curLogger.queryHandler(mockReq({ limit: '1', level: 'warn', before: res1.body.nextCursor }, { role: 'admin' }), res2);
+    assert.deepEqual(res2.body.logs.map(l => l.action), ['w2']);
+
+    curDb.close();
+  });
+
+  it('queryHandler silently falls back to page 1 on a malformed before-cursor', () => {
+    const res = mockRes();
+    logger.queryHandler(mockReq({ limit: '1', before: 'garbage-no-comma' }, { role: 'admin' }), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.logs.length, 1);
+  });
+
+  // 회귀: 정확히 limit개가 매칭되면 다음 페이지가 없다 — logs.length === limit 휴리스틱은
+  // 이 경우를 "다음 페이지 있음"으로 오판해 빈 2페이지를 만들었다. limit+1 조회로 판정한다.
+  it('queryHandler reports hasMore=false when the result set is exactly limit rows', () => {
+    const exactDb = new Database(':memory:');
+    const exactLogger = createLogger(exactDb, 'exact-test');
+    const insert = exactDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)");
+    insert.run('2026-03-01T00:00:01.000Z', 'row_a');
+    insert.run('2026-03-01T00:00:02.000Z', 'row_b');
+
+    const res = mockRes();
+    exactLogger.queryHandler(mockReq({ limit: '2' }, { role: 'admin' }), res);
+    assert.equal(res.body.logs.length, 2);
+    assert.equal(res.body.hasMore, false, 'exactly-limit rows must not promise another page');
+    assert.equal(res.body.nextCursor, null);
+
+    // 커서 페이지의 마지막 장도 동일: 첫 페이지(limit 1) 뒤에 딱 1행 남은 경우
+    const res1 = mockRes();
+    exactLogger.queryHandler(mockReq({ limit: '1' }, { role: 'admin' }), res1);
+    assert.equal(res1.body.hasMore, true, 'a genuine extra row still reports hasMore');
+    const res2 = mockRes();
+    exactLogger.queryHandler(mockReq({ limit: '1', before: res1.body.nextCursor }, { role: 'admin' }), res2);
+    assert.equal(res2.body.logs.length, 1);
+    assert.equal(res2.body.hasMore, false, 'the final cursor page must close pagination');
+    assert.equal(res2.body.nextCursor, null);
+
+    exactDb.close();
+  });
+
+  // 보존은 AFTER INSERT 트리거(setupRowCapRetention)라 삽입 즉시 적용된다 — 타이머 없음.
+  it('row-cap retention keeps only the newest maxRows rows as inserts happen', () => {
     const cleanDb = new Database(':memory:');
     const cleanLogger = createLogger(cleanDb, 'clean-test', 5);
 
@@ -132,19 +213,24 @@ describe('createLogger', () => {
       cleanLogger.log(null, `action_${i}`, `detail_${i}`);
     }
 
-    const countBefore = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
-    assert.equal(countBefore, 10);
-
-    t.mock.timers.tick(3_600_000);
-
-    const countAfter = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
-    assert.equal(countAfter, 5);
+    const count = cleanDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    assert.equal(count, 5);
 
     const remaining = cleanDb.prepare('SELECT action FROM logs ORDER BY id ASC').all();
     assert.equal(remaining[0].action, 'action_5');
     assert.equal(remaining[4].action, 'action_9');
 
     cleanDb.close();
+  });
+
+  it('row-cap retention trims pre-existing overflow at logger creation', () => {
+    const preDb = new Database(':memory:');
+    const first = createLogger(preDb, 'pre-test', 50000);
+    for (let i = 0; i < 10; i++) first.log(null, `old_${i}`, null);
+    createLogger(preDb, 'pre-test', 5); // 재생성 시 낮아진 cap으로 초기 catch-up
+    const count = preDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
+    assert.equal(count, 5);
+    preDb.close();
   });
 });
 

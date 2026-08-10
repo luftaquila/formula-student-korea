@@ -1,18 +1,23 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { createServiceSkeleton, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum } from "../shared/validation.mjs";
 import { VEHICLE_COLORS } from "../shared/constants.js";
 import { serviceUrl } from "../shared/services.mjs";
 
-const PORT = 9200;
-
 export function createEntryApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/entry.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "entry", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path === "/api/years") return null;
+    if (req.path === "/api/entries" && req.method === "GET" && req.query.includeInactive !== "true") return null;
+    if (req.path === "/api/vehicle-types" && req.method === "GET") return null;
+    return "admin";
+  },
+});
 
 // 연도별 차량 유형 테이블 헬퍼
 function getVtTableName(year) {
@@ -152,24 +157,12 @@ for (const year of getAvailableYears()) {
 /* ============================================
    Express 앱 설정
    ============================================ */
-const logger = createLogger(db, "entry");
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path === "/api/years") return null;
-  if (req.path === "/api/entries" && req.method === "GET" && req.query.includeInactive !== "true") return null;
-  if (req.path === "/api/vehicle-types" && req.method === "GET") return null;
-  return "admin";
-});
 const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
 
 function broadcastEntries(year, change, detail = {}) {
   broadcastEvent("entries", { year: Number(year), change, ...detail });
 }
 
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
 app.get("/api/events", sseHandler());
 
 /* ============================================
@@ -279,8 +272,6 @@ function validateBulkIntentList(data, label) {
 /* ============================================
    DB 헬퍼
    ============================================ */
-const dbRun = createDbRun();
-
 function nextActiveRevision() {
   db.prepare("UPDATE entry_active_revision SET value = value + 1 WHERE id = 1").run();
   return db.prepare("SELECT value FROM entry_active_revision WHERE id = 1").get().value;
@@ -1766,10 +1757,4 @@ return {
 };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createEntryApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Entry service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "entry", createEntryApp);

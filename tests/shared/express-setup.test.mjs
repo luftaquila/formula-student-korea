@@ -1,5 +1,8 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -21,6 +24,7 @@ setupTestEnv();
 import {
   createJWT,
   createApp,
+  createCachedValidator,
   createDbRun,
   isSecureConnection,
   formatCookieOpts,
@@ -163,7 +167,10 @@ describe('createApp auth middleware', () => {
   };
 
   before(async () => {
-    const app = createApp({ express, validateUser }, (req) => {
+    // validateUserCacheTtl: 0 — 이 스위트는 요청 사이에 validateUserResult를 바꿔가며
+    // 미들웨어 시맨틱을 검증하므로 캐시가 끼면 직전 테스트의 유효 결과가 새어 들어온다.
+    // 캐시 자체는 아래 'validateUser cache' 스위트가 전담한다.
+    const app = createApp({ express, validateUser, validateUserCacheTtl: 0 }, (req) => {
       if (req.path === '/public') return null;
       if (req.path === '/admin' || req.path === '/api/admin') return 'admin';
       if (req.path === '/official' || req.path === '/api/official') return 'official';
@@ -328,20 +335,28 @@ describe('createApp auth middleware', () => {
     assert.ok(setCookie.includes('fsk_session='), 'should include new session token');
   });
 
-  // Sliding session: token near expiry gets refreshed
-  it('sliding session refreshes token when remaining time < 6 days', async () => {
+  // Sliding session: refresh happens at most once per day, keyed on token age (iat)
+  it('sliding session refreshes token when issued more than a day ago', async () => {
     validateUserResult = { valid: true, role: null };
-    // Create a token that expires in 5 days (less than 6-day threshold)
-    const shortLived = createJWT(
-      { email: 'user@test.com', name: 'User', role: 'admin' },
+    // Backdate iat by 2 days (explicit iat wins over createJWT's default)
+    const now = Math.floor(Date.now() / 1000);
+    const aged = createJWT(
+      { email: 'user@test.com', name: 'User', role: 'admin', iat: now - 2 * 24 * 3600 },
       TEST_SECRET,
-      5 * 24 * 3600,
     );
-    const res = await client.get('/admin', { cookie: `fsk_session=${shortLived}` });
+    const res = await client.get('/admin', { cookie: `fsk_session=${aged}` });
     assert.equal(res.status, 200);
     const setCookie = res.headers.get('set-cookie');
     assert.ok(setCookie, 'should have Set-Cookie for sliding session');
     assert.ok(setCookie.includes('fsk_session='), 'should include refreshed session token');
+  });
+
+  it('sliding session does NOT re-sign a token issued less than a day ago', async () => {
+    validateUserResult = { valid: true, role: null };
+    const fresh = createJWT({ email: 'user@test.com', name: 'User', role: 'admin' }, TEST_SECRET);
+    const res = await client.get('/admin', { cookie: `fsk_session=${fresh}` });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('set-cookie'), null, 'fresh token must not trigger a re-sign');
   });
 
   // ─── Path canonicalization: gate must not be slipped by case / trailing slash ──
@@ -373,6 +388,189 @@ describe('createApp auth middleware', () => {
   it('uppercase public path still resolves as public (canonicalization must not over-gate)', async () => {
     const res = await client.get('/PUBLIC');
     assert.equal(res.status, 200);
+  });
+});
+
+// ─── createCachedValidator ──────────────────────────────────────────────
+describe('createCachedValidator', () => {
+  const counting = (results) => {
+    let calls = 0;
+    const fn = async (email) => {
+      calls++;
+      const r = results[Math.min(calls - 1, results.length - 1)];
+      if (r instanceof Error) throw r;
+      return r;
+    };
+    fn.calls = () => calls;
+    return fn;
+  };
+
+  it('caches a positive result for the TTL', async () => {
+    const inner = counting([{ valid: true, role: 'admin' }]);
+    const validate = createCachedValidator(inner, 5000);
+    assert.deepEqual(await validate('a@t.co'), { valid: true, role: 'admin' });
+    assert.deepEqual(await validate('a@t.co'), { valid: true, role: 'admin' });
+    assert.equal(inner.calls(), 1);
+  });
+
+  it('re-validates after the TTL expires', async () => {
+    const inner = counting([{ valid: true, role: 'admin' }, { valid: true, role: 'student' }]);
+    const validate = createCachedValidator(inner, 20);
+    assert.equal((await validate('a@t.co')).role, 'admin');
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal((await validate('a@t.co')).role, 'student');
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('does NOT cache a definitive-invalid (404) result', async () => {
+    const inner = counting([{ valid: false, role: null }, { valid: false, role: null }]);
+    const validate = createCachedValidator(inner, 5000);
+    await validate('gone@t.co');
+    await validate('gone@t.co');
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('does NOT cache a transient failure', async () => {
+    const inner = counting([{ valid: false, role: null, transient: true }, { valid: true, role: 'admin' }]);
+    const validate = createCachedValidator(inner, 5000);
+    assert.equal((await validate('a@t.co')).valid, false);
+    assert.equal((await validate('a@t.co')).valid, true);
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('does NOT cache a thrown error and propagates it to all concurrent callers', async () => {
+    const inner = counting([new Error('db down'), { valid: true, role: 'admin' }]);
+    const validate = createCachedValidator(inner, 5000);
+    const [r1, r2] = await Promise.allSettled([validate('a@t.co'), validate('a@t.co')]);
+    assert.equal(r1.status, 'rejected');
+    assert.equal(r2.status, 'rejected');
+    assert.equal(inner.calls(), 1); // 병합된 한 번의 호출이 둘 다에게 전파
+    assert.equal((await validate('a@t.co')).valid, true); // 예외는 캐시되지 않음
+  });
+
+  it('coalesces concurrent validations of the same email into one inner call', async () => {
+    let resolveInner;
+    let calls = 0;
+    const inner = () => {
+      calls++;
+      return new Promise((r) => { resolveInner = r; });
+    };
+    const validate = createCachedValidator(inner, 5000);
+    const p1 = validate('a@t.co');
+    const p2 = validate('a@t.co');
+    resolveInner({ valid: true, role: 'chief' });
+    assert.equal((await p1).role, 'chief');
+    assert.equal((await p2).role, 'chief');
+    assert.equal(calls, 1);
+  });
+
+  it('invalidate(email) drops the cached entry', async () => {
+    const inner = counting([{ valid: true, role: 'admin' }, { valid: false, role: null }]);
+    const validate = createCachedValidator(inner, 5000);
+    await validate('a@t.co');
+    validate.invalidate('a@t.co');
+    assert.equal((await validate('a@t.co')).valid, false);
+    assert.equal(inner.calls(), 2);
+  });
+
+  it('evicts when the entry cap is reached', async () => {
+    const inner = async () => ({ valid: true, role: null });
+    const validate = createCachedValidator(inner, 5000, 2);
+    await validate('a@t.co');
+    await validate('b@t.co');
+    await validate('c@t.co'); // 캡 도달 → 최고령(a) 축출
+    let calls = 0;
+    const probe = createCachedValidator(async () => { calls++; return { valid: true, role: null }; }, 5000, 2);
+    await probe('x@t.co');
+    await probe('x@t.co');
+    assert.equal(calls, 1);
+  });
+});
+
+describe('createApp validateUser caching integration', () => {
+  it('wraps the validator with a cache by default (one inner call for two requests)', async () => {
+    let calls = 0;
+    const app = createApp({
+      express,
+      validateUser: async () => { calls++; return { valid: true, role: null }; },
+    }, () => 'student');
+    app.get('/api/x', (req, res) => res.json({ ok: true }));
+    const { server, baseUrl } = await startServer(app);
+    try {
+      const client = createClient(baseUrl);
+      const cookie = makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'student' });
+      assert.equal((await client.get('/api/x', { cookie })).status, 200);
+      assert.equal((await client.get('/api/x', { cookie })).status, 200);
+      assert.equal(calls, 1);
+    } finally {
+      await stopServer(server);
+    }
+  });
+
+  it('validateUserCacheTtl: 0 disables the cache', async () => {
+    let calls = 0;
+    const app = createApp({
+      express,
+      validateUser: async () => { calls++; return { valid: true, role: null }; },
+      validateUserCacheTtl: 0,
+    }, () => 'student');
+    app.get('/api/x', (req, res) => res.json({ ok: true }));
+    const { server, baseUrl } = await startServer(app);
+    try {
+      const client = createClient(baseUrl);
+      const cookie = makeAuthCookie({ email: 'c@t.co', name: 'C', role: 'student' });
+      await client.get('/api/x', { cookie });
+      await client.get('/api/x', { cookie });
+      assert.equal(calls, 2);
+    } finally {
+      await stopServer(server);
+    }
+  });
+});
+
+// ─── public /assets serving (before auth) ───────────────────────────────
+describe('public /assets serving', () => {
+  let server, baseUrl, calls, staticRoot;
+
+  before(async () => {
+    // 공유 ./web/dist를 쓰면 병렬로 도는 다른 테스트 파일의 픽스처와 teardown이 충돌하고
+    // 리포 루트의 기존 내용도 지울 수 있다 — 스위트 전용 임시 디렉토리로 격리한다.
+    staticRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'fsk-assets-test-'));
+    fs.mkdirSync(path.join(staticRoot, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(staticRoot, 'assets', 'fixture-abc123.js'), 'export const x = 1;\n');
+    calls = 0;
+    const app = createApp({
+      express,
+      staticRoot,
+      validateUser: async () => { calls++; return { valid: true, role: null }; },
+    }, () => 'admin'); // 모든 경로를 게이트 (entry처럼 정적 파일까지 admin)
+    const started = await startServer(app);
+    server = started.server;
+    baseUrl = started.baseUrl;
+  });
+
+  after(async () => {
+    if (server) await stopServer(server);
+    fs.rmSync(staticRoot, { recursive: true, force: true });
+  });
+
+  it('serves content-hashed assets without auth and without hitting the validator', async () => {
+    const cookie = makeAuthCookie({ email: 'u@t.co', name: 'U', role: 'admin' });
+    const res = await fetch(`${baseUrl}/assets/fixture-abc123.js`, { headers: { Cookie: cookie } });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get('cache-control'), 'public, max-age=31536000, immutable');
+    assert.equal(calls, 0, 'asset request must not trigger revalidation');
+  });
+
+  it('missing asset falls through to the gate (redirect for non-API path)', async () => {
+    const res = await fetch(`${baseUrl}/assets/nope.js`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
+    assert.equal(res.headers.get('location'), '/');
+  });
+
+  it('non-asset paths are still gated', async () => {
+    const res = await fetch(`${baseUrl}/index.html`, { redirect: 'manual' });
+    assert.equal(res.status, 302);
   });
 });
 

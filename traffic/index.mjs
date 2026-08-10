@@ -1,22 +1,26 @@
 import express from "express";
 import Database from "better-sqlite3";
 import crypto from "node:crypto";
-import { createDatabase, runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { EVENT_TYPES } from "../shared/constants.js";
 import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
 import { formatEnduranceDetail, enduranceTotal } from "./lib/event-timing.mjs";
-
-const PORT = 9500;
 
 const CONTROLLER_MAX_ROWS = 100000;
 const RETAIN_EVENTS = 500000;
 
 export function createTrafficApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/traffic.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "traffic", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health" || req.path === "/api/time") return null;
+    return "admin";
+  },
+});
 
 // 동적 기록 테이블과 구분되는 예약 테이블 이름. 동적 테이블을 열거하는 모든
 // 쿼리에서 제외해야 한다(아래 reservedSql).
@@ -274,17 +278,6 @@ runMigrationOnce(db, "traffic.utc_timestamp_normalization.v1", () => {
 /* ============================================
    Express 앱 설정
    ============================================ */
-const logger = createLogger(db, "traffic");
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health" || req.path === "/api/time") return null;
-  return "admin";
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
-
 // 서버 시각(epoch ms). 클라가 자기 시계와의 오프셋을 추정해 라이브 클럭을 전 클라 동기화(공유 클럭).
 app.get("/api/time", (req, res) => res.json({ now: Date.now() }));
 
@@ -937,11 +930,6 @@ function validateControllerData({ timestamp, data }) {
   }
   return { valid: true, timestamp: normalizedTimestamp };
 }
-
-/* ============================================
-   DB 헬퍼
-   ============================================ */
-const dbRun = createDbRun();
 
 /* ============================================
    API 라우트: /api/records
@@ -1965,17 +1953,9 @@ app.get("/api/wireless/events", (req, res) => {
 /* ============================================
    SPA Fallback
    ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createTrafficApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Traffic service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "traffic", createTrafficApp);

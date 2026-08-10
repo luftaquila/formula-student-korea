@@ -1,9 +1,8 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { createDatabase } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
 import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
@@ -13,11 +12,19 @@ import {
   validateCalculationGraph,
 } from "./lib/calculations.mjs";
 
-const PORT = 9400;
-
 export function createInspectionApp(options = {}) {
 
-const db = createDatabase(Database, options.dbPath || "./data/sheet.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "inspection", express, Database, options, dbFile: "sheet.db",
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path.startsWith("/api/internal/")) return "admin";
+    if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
+    if (req.path === "/api/logs") return "admin";
+    if (req.path.startsWith("/api/")) return "official";
+    return "official"; // SPA
+  },
+});
 
 // answer_type CHECK 제약조건에 새 입력 유형을 추가하는 마이그레이션
 // FK CASCADE 문제를 피하기 위해 트랜잭션 밖에서 foreign_keys OFF 상태로 실행
@@ -190,29 +197,6 @@ function validateStoredCalculationGraph(year) {
 
 // 특정 연도나 문항을 기준으로 템플릿 내용을 시작 시 삽입·수정하지 않는다.
 // 업무 템플릿은 관리 API 또는 명시적인 JSON 가져오기를 통해서만 변경한다.
-
-/* ============================================
-   Express 앱 설정
-   ============================================ */
-const logger = createLogger(db, "inspection");
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path.startsWith("/api/internal/")) return "admin";
-  if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
-  if (req.path === "/api/logs") return "admin";
-  if (req.path.startsWith("/api/")) return "official";
-  return "official"; // SPA
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
-
-/* ============================================
-   DB 헬퍼
-   ============================================ */
-const dbRun = createDbRun();
 
 /* ============================================
    SSE (Server-Sent Events) 설정
@@ -990,20 +974,9 @@ registerTeamLifecycleRoutes(app, {
   statusTable: "team_status",
 });
 
-/* ============================================
-   SPA Fallback - Vue Router 지원
-   ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db } = createInspectionApp();
-  setupProcessHandlers(db);
-  app.listen(PORT, () => console.log(`Inspection service running on port ${PORT}`));
-}
+runIfDirect(import.meta, "inspection", createInspectionApp);

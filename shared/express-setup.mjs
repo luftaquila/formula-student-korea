@@ -30,7 +30,10 @@ export function ensureDataDir() {
 export function createJWT(payload, secret, expiresInSec = 7 * 24 * 3600) {
   const header = { alg: "HS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
-  const body = { ...payload, iat: now, exp: now + expiresInSec };
+  // payload가 마지막이므로 명시된 iat/exp가 기본값을 이긴다(테스트의 발급 시각 백데이트용).
+  // 디코드한 토큰을 통째로 spread해 넘기면 낡은 iat/exp가 그대로 실려 가므로 금지 —
+  // 호출자는 항상 필요한 클레임만 명시적으로 구성한다.
+  const body = { iat: now, exp: now + expiresInSec, ...payload };
   const headerB64 = Buffer.from(JSON.stringify(header)).toString("base64url");
   const bodyB64 = Buffer.from(JSON.stringify(body)).toString("base64url");
   const data = `${headerB64}.${bodyB64}`;
@@ -68,6 +71,43 @@ export function createSecretChecker(secret) {
   };
 }
 
+// 재검증 결과 캐시. **유효(valid:true) 결과만** TTL 동안 캐시한다 — 404(확정 무효)와
+// transient 실패는 절대 캐시하지 않는다. 무효 응답을 캐시하면 일시 장애가 TTL만큼
+// 고착되고, 반대로 유효 캐시는 삭제·강등 전파를 최대 TTL(기본 5초)만큼만 늦춘다.
+// 같은 이메일의 동시 검증은 한 번의 inner 호출을 공유한다(동시 API 요청·SSE 재검증
+// 루프의 중복 왕복 제거). inner의 예외는 그대로 전파한다 — 요청 미들웨어는 transient
+// fail-close로, sse.mjs 재검증은 fail-open으로 각자의 계약대로 처리한다.
+export function createCachedValidator(inner, ttlMs = 5000, maxEntries = 10000) {
+  const cache = new Map();    // email -> { role, expires }
+  const inflight = new Map(); // email -> Promise<result>
+  async function validate(email) {
+    const hit = cache.get(email);
+    if (hit && hit.expires > Date.now()) return { valid: true, role: hit.role };
+    if (inflight.has(email)) return inflight.get(email);
+    const p = (async () => {
+      try {
+        const result = await inner(email);
+        if (result?.valid) {
+          if (cache.size >= maxEntries) {
+            const now = Date.now();
+            for (const [k, v] of cache) if (v.expires <= now) cache.delete(k);
+            // 만료분 청소로도 모자라면 최고령 삽입분부터 축출(Map은 삽입 순서 유지)
+            if (cache.size >= maxEntries) cache.delete(cache.keys().next().value);
+          }
+          cache.set(email, { role: result.role ?? null, expires: Date.now() + ttlMs });
+        }
+        return result;
+      } finally {
+        inflight.delete(email);
+      }
+    })();
+    inflight.set(email, p);
+    return p;
+  }
+  validate.invalidate = (email) => (email == null ? cache.clear() : cache.delete(email));
+  return validate;
+}
+
 export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
@@ -90,6 +130,21 @@ export function createApp(deps, authRoleFn) {
 
   const app = express();
   app.disable("x-powered-by");
+
+  // 정적 루트. 프로덕션은 항상 기본값 — override는 테스트 픽스처 격리용(dbPath와 동일 패턴).
+  const staticRoot = deps.staticRoot || "./web/dist";
+
+  // 0. 콘텐츠 해시 자산 공개 서빙. Vite가 낸 /assets/*는 파일명이 콘텐츠에 종속된
+  // 불변 번들이라 인증·재검증보다 먼저 서빙해도 정보 노출이 없다 — 로그인한 브라우저의
+  // 매 자산 요청이 auth 왕복(아래 3c)을 태우던 비용을 없앤다. index.html 등 나머지 정적
+  // 파일은 기존대로 게이트 뒤(아래 5)에서 서빙한다. 미존재 자산은 fallthrough로 기존
+  // 401/redirect 경로를 그대로 탄다.
+  app.use("/assets", express.static(`${staticRoot}/assets`, {
+    index: false,
+    fallthrough: true,
+    setHeaders: (res) => res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
+  }));
+
   app.use(express.json({ limit: "100kb" }));
   app.use(express.urlencoded({ extended: true, limit: "100kb" }));
 
@@ -150,8 +205,7 @@ export function createApp(deps, authRoleFn) {
         if (res.status === 404) return { valid: false, role: null };
         // 404(사용자 삭제/비활성)만 확정 무효다. 5xx/네트워크 오류는 auth 일시 장애이므로
         // transient로 표시 — 이 요청은 fail-close로 거부(req.user=null)하되 세션 쿠키는
-        // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다. 거부는 유지되므로 즉시 권한
-        // 반영(캐싱 없음) 원칙과 충돌하지 않는다.
+        // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다.
         console.warn(`[auth] fail-close: auth returned ${res.status} for ${email}`);
         return { valid: false, role: null, transient: true };
       } catch (e) {
@@ -160,6 +214,13 @@ export function createApp(deps, authRoleFn) {
       }
     };
   }
+
+  // 유효 결과만 5초 캐시. N개 서비스 × 매 요청이 auth로 동기 왕복하던 비용을 없애되,
+  // 삭제·강등 전파 지연 상한은 TTL로 유계된다(5초, 운영 승인값). 무효·transient는
+  // 캐시하지 않으므로 fail-close 계약(위)은 그대로다. auth 자신은 로컬 DB 조회라
+  // 캐시가 무익하고 자기 UI의 즉시 반영을 잃으므로 validateUserCacheTtl: 0으로 끈다.
+  const cacheTtl = deps.validateUserCacheTtl ?? 5000;
+  if (cacheTtl > 0) validateUser = createCachedValidator(validateUser, cacheTtl);
 
   // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
   const internalSecret = process.env.INTERNAL_SECRET;
@@ -180,11 +241,12 @@ export function createApp(deps, authRoleFn) {
       try {
         req.user = verifyJWT(token, process.env.JWT_SECRET);
 
-        // Sliding session: 만료(발급 후 7일)까지 6일 미만 남으면, 즉 발급 후 하루가
-        // 지난 첫 요청에서 토큰 자동 갱신 (role은 validateUser 블록에서 처리)
-        const remaining = req.user.exp - Math.floor(Date.now() / 1000);
-        const threshold = 6 * 24 * 3600; // 6일
-        if (remaining < threshold) {
+        // Sliding session: 발급(iat) 후 하루가 지난 첫 요청에서만 토큰 자동 갱신 —
+        // 재서명·Set-Cookie를 하루 최대 1회로 제한한다. 잔여기간 기준(만료까지 6일 미만)
+        // 이었을 때는 발급 하루 뒤부터 "매 요청"이 재서명이었다. iat 없는 외부 토큰은
+        // age가 커져 갱신 경로를 타므로 안전하다. (role은 validateUser 블록에서 처리)
+        const age = Math.floor(Date.now() / 1000) - (req.user.iat || 0);
+        if (age > 24 * 3600) {
           const { email, name, role } = req.user;
           const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
           const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
@@ -290,7 +352,7 @@ export function createApp(deps, authRoleFn) {
   // Vite가 낸 해시 자산(/assets/*)은 파일명이 콘텐츠에 종속되므로 1년 immutable 캐시로
   // 매 페이지 로드의 재검증(304) 왕복을 없앤다. 그 외(index.html 등)는 no-cache라 재배포가
   // 즉시 반영된다.
-  app.use(express.static("./web/dist", {
+  app.use(express.static(staticRoot, {
     setHeaders: (res, filePath) => {
       if (/[\\/]assets[\\/]/.test(filePath)) {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");

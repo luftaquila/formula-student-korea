@@ -2,15 +2,13 @@ import https from "https";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase, addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { createApp, setupProcessHandlers, createDbRun, ensureDataDir, requireInternalRequest } from "../shared/express-setup.mjs";
-import { createLogger } from "../shared/logger.mjs";
+import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
+import { requireInternalRequest } from "../shared/express-setup.mjs";
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { serviceUrl } from "../shared/services.mjs";
 import { registerTeamStatusSnapshotRoute } from "../shared/team-status.mjs";
-
-const PORT = 9300;
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -63,7 +61,33 @@ function rateLimit(req, res, next) {
   next();
 }
 
-const db = createDatabase(Database, options.dbPath || "./data/queue.db");
+const { app, db, logger, dbRun } = createServiceSkeleton({
+  name: "queue", express, Database, options,
+  authRoleFn: (req) => {
+    if (req.path === "/api/health") return null;
+    if (req.path.startsWith("/api/internal/")) return "admin";
+    // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
+    if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
+    if (req.path.startsWith("/api/admin/priority")) return "chief";
+    if (req.path.startsWith("/api/admin/history")) return "chief";
+    if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
+    if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
+    if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
+    if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
+    // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
+    if (req.path.startsWith("/api/admin")) return "official";
+    // SPA routes
+    if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
+    if (/^\/(admin|stats)/.test(req.path)) return "official";
+    if (req.path === "/api/logs") return "admin";
+    if (req.path === "/api/events") return null;
+    if (req.path === "/api/active") return null;
+    if (req.path.startsWith("/api/booths/")) return null;
+    if (req.path.startsWith("/api/state/")) return null;
+    if (req.path.startsWith("/api/")) return "official"; // API 기본값: default-close
+    return null; // SPA (public display)
+  },
+});
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
@@ -485,37 +509,6 @@ function renumberLogRows(table, prevNum, newNum, year) {
   return db.prepare(`UPDATE ${table} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
 }
 
-const logger = createLogger(db, "queue");
-
-const app = createApp({ express, validateUser: options.validateUser }, (req) => {
-  if (req.path === "/api/health") return null;
-  if (req.path.startsWith("/api/internal/")) return "admin";
-  // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
-  if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
-  if (req.path.startsWith("/api/admin/priority")) return "chief";
-  if (req.path.startsWith("/api/admin/history")) return "chief";
-  if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
-  if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
-  if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
-  if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
-  // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
-  if (req.path.startsWith("/api/admin")) return "official";
-  // SPA routes
-  if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
-  if (/^\/(admin|stats)/.test(req.path)) return "official";
-  if (req.path === "/api/logs") return "admin";
-  if (req.path === "/api/events") return null;
-  if (req.path === "/api/active") return null;
-  if (req.path.startsWith("/api/booths/")) return null;
-  if (req.path.startsWith("/api/state/")) return null;
-  if (req.path.startsWith("/api/")) return "official"; // API 기본값: default-close
-  return null; // SPA (public display)
-});
-
-app.get("/api/logs", logger.queryHandler);
-
-app.get("/api/health", (req, res) => res.send("ok"));
-
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
@@ -579,8 +572,6 @@ function validatePriority(priority) {
 /* ============================================
    DB 헬퍼
    ============================================ */
-const dbRun = createDbRun();
-
 /**
  * 대기열 조회 쿼리 (정렬 순서: 초검 > 재검, 우선순위 높음 > 낮음, 선착순)
  * 파라미터 순서: [inspection, year] × 3 (재검 CASE, priority JOIN, WHERE 순)
@@ -2093,12 +2084,16 @@ async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
           const data = await res.json();
           if (data.naver_cloud_access_key && data.naver_cloud_secret_key && data.naver_cloud_sms_service_id && data.phone_number_sms_sender) {
             smsConfig = data;
-            return;
+          } else {
+            // 200인데 설정이 불완전 = 소스(email)에서 설정이 지워진 확정 상태 — 낡은
+            // 설정으로 발송하지 않도록 무효화한다. (HTTP 오류·연결 실패는 transient라
+            // 기존 smsConfig를 유지한다 — auth 재검증의 404-vs-5xx 구분과 같은 원칙.)
+            smsConfig = null;
           }
-        } else {
-          logger.warn(null, "sms.config_fetch", { status: res.statusCode ?? res.status });
+          return;
         }
-        break; // got a response (incomplete config or HTTP error) — retrying won't help
+        logger.warn(null, "sms.config_fetch", { status: res.status });
+        break; // HTTP error — retrying won't help
       } catch (e) {
         // Connection failure: email not reachable yet. Retry quietly, then warn
         // once the startup grace window is exhausted (a genuine outage).
@@ -2111,13 +2106,23 @@ async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
       break;
     }
   }
-  if (!smsConfig) {
-    db.prepare(`UPDATE settings SET value = ? WHERE key = ?`).run("FALSE", "sms");
-  }
+  // 주의: 어떤 실패 경로에서도 settings의 sms 값은 건드리지 않는다. 예전에는 여기서
+  // sms=FALSE를 영속화해서, email 부팅 레이스 한 번에 관리자가 켠 SMS가 조용히 꺼진 채
+  // 복구되지 않았다. 설정은 관리자만 바꾼다 — 설정 조회 실패는 발송 시점에 skip으로만
+  // 나타난다(sendSmsNotification).
 }
 
 // Refresh SMS config every 5 minutes to pick up admin changes
 setInterval(loadSmsConfig, 5 * 60 * 1000).unref();
+
+// SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게
+let lastSmsSkipWarn = 0;
+function warnSmsSkipThrottled(detail) {
+  const now = Date.now();
+  if (now - lastSmsSkipWarn < 60000) return;
+  lastSmsSkipWarn = now;
+  logger.warn(null, "sms.skip", detail);
+}
 
 function sendSmsNotification(type, prev) {
   let target;
@@ -2131,7 +2136,13 @@ function sendSmsNotification(type, prev) {
     target = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
-      if (!smsConfig) return;
+      if (!smsConfig) {
+        warnSmsSkipThrottled({
+          reason: "SMS 설정을 사용할 수 없습니다(email 서비스 미응답 또는 설정 미완성)",
+          num: target.num, type,
+        });
+        return;
+      }
 
       const payload = {
         hostname: "sens.apigw.ntruss.com",
@@ -2424,21 +2435,14 @@ app.patch("/api/internal/team-num", (req, res) => {
 /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+addSpaFallback(app);
 
 return { app, db, loadSmsConfig };
 }
 
-const isDirectRun = import.meta.filename === process.argv[1];
-if (isDirectRun) {
-  ensureDataDir();
-  const { app, db, loadSmsConfig: load } = createQueueApp();
-  setupProcessHandlers(db);
-  // Serve immediately; SMS config loads in the background and retries through
-  // the startup window so a co-restart with the email service doesn't block
-  // listening or log a spurious "fetch failed" warning.
-  app.listen(PORT, () => console.log(`Queue service running on port ${PORT}`));
-  load({ retries: 10, delayMs: 3000 });
-}
+// Serve immediately; SMS config loads in the background and retries through
+// the startup window so a co-restart with the email service doesn't block
+// listening or log a spurious "fetch failed" warning.
+runIfDirect(import.meta, "queue", createQueueApp, {
+  postListen: ({ loadSmsConfig }) => loadSmsConfig({ retries: 10, delayMs: 3000 }),
+});

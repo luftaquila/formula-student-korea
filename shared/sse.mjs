@@ -55,6 +55,10 @@ export function createSSEManager(maxClients = 200) {
   // 여기서 주기적으로 최신 상태를 meta에 반영하거나(→ filterFn이 재평가) 자격 상실 시 연결을
   // 종료한다. revalidate가 throw하면(auth 일시 오류) 연결을 유지한다(fail-open, validateUser의
   // transient 처리와 동일). null 반환 = 이 SSE 자격 없음 → 종료. meta 객체 반환 = 갱신.
+  //
+  // 루프는 의도적으로 직렬이다. app.validateUser의 5초 캐시 + in-flight 병합 덕에 같은
+  // 이메일은 왕복 한 번으로 합쳐지고, 직렬 순회는 auth로의 동시 요청을 1개로 묶는다 —
+  // 병렬화하면 auth가 느려진 바로 그 순간(재검증이 오래 걸리는 순간)에 herd를 되살린다.
   setInterval(async () => {
     for (const client of clients) {
       if (!client.revalidate) continue;

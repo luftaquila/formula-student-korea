@@ -32,7 +32,7 @@ function createMockEntryServer() {
 
 setupTestEnv();
 
-let server, baseUrl, client, db, dbPath;
+let server, baseUrl, client, db, dbPath, loadSmsConfig;
 let mockEntryServer, mockEntryUrl;
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
@@ -51,6 +51,7 @@ before(async () => {
   dbPath = tmpDbPath();
   const result = createQueueApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
+  loadSmsConfig = result.loadSmsConfig;
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
@@ -1024,6 +1025,17 @@ describe('SMS settings', () => {
       cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  // 회귀: 설정 조회 실패가 settings의 sms 값을 덮어쓰면 안 된다. 예전에는 실패 경로에서
+  // sms=FALSE를 영속화해서 email 부팅 레이스 한 번에 관리자가 켠 SMS가 조용히 꺼졌다.
+  it('a failing loadSmsConfig must not overwrite the admin-controlled sms setting', async () => {
+    db.prepare("UPDATE settings SET value = 'TRUE' WHERE key = 'sms'").run();
+    // EMAIL_SERVER 미지정 → 컨테이너 DNS(http://email:9900)로 나가 연결 실패(transient)
+    await loadSmsConfig();
+    const value = db.prepare("SELECT value FROM settings WHERE key = 'sms'").get().value;
+    assert.equal(value, 'TRUE', 'fetch failure must not flip the setting off');
+    db.prepare("UPDATE settings SET value = 'FALSE' WHERE key = 'sms'").run();
   });
 });
 
