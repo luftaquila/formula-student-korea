@@ -477,17 +477,16 @@ jobs:
           # pushed the repository's Actions cache to 11.5GB against a 10GB limit
           # across 10,811 entries, so the resulting eviction also churned the
           # npm and Playwright caches that do pay off.
-          set: |
-            auth.tags=ghcr.io/${{ github.repository }}/auth:latest
-            entry.tags=ghcr.io/${{ github.repository }}/entry:latest
-            queue.tags=ghcr.io/${{ github.repository }}/queue:latest
-            inspection.tags=ghcr.io/${{ github.repository }}/inspection:latest
-            traffic.tags=ghcr.io/${{ github.repository }}/traffic:latest
-            score.tags=ghcr.io/${{ github.repository }}/score:latest
-            documents.tags=ghcr.io/${{ github.repository }}/documents:latest
-            email.tags=ghcr.io/${{ github.repository }}/email:latest
-            course.tags=ghcr.io/${{ github.repository }}/course:latest
-            caddy-local.tags=ghcr.io/${{ github.repository }}/caddy:latest
+          #
+          # No `set: <target>.tags=...` either. bake takes each target's tag from
+          # that service's `image:` in compose.yml, which is the name `docker
+          # compose up --no-build` then looks for — so overriding it can only
+          # match or break it. It matched: `github.repository` is exactly the
+          # repo path hardcoded in compose.yml. In a fork it would not, and the
+          # override would tag images under the fork path while compose kept
+          # looking for the upstream one. calendar never had an override and was
+          # tagged correctly regardless, which is what proves the rest were dead
+          # weight.
           load: true
 
       # No --wait: services boot in the background while node/playwright install
