@@ -213,133 +213,9 @@ jobs:
               core.info(`Base images for ${baseSha} are available.`);
             }
 
-  # Build each changed image once for the whole run and hand the result to the
-  # e2e shards as an artifact. Every shard used to bake its own copy of the same
-  # images: at 13 shards x 7-10 services that is ~96 redundant builds per run,
-  # ~96 base-image pulls, and 13 concurrent buildx setups — each one an
-  # independent flake surface for the Docker Hub and BuildKit failures the retry
-  # loops below exist to paper over. Skipped entirely when nothing changed
-  # against main, in which case every shard pulls prebuilt :latest images.
-  build:
-    needs: changes
-    if: needs.changes.outputs.bake_targets != ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          submodules: false
-
-      # bake reads compose.yml, which interpolates these.
-      - name: Create .env
-        run: |
-          cat > .env << 'EOF'
-          JWT_SECRET=e2e-test-secret
-          INTERNAL_SECRET=e2e-internal-secret
-          ADMIN_EMAIL=e2e-admin@test.com
-          GOOGLE_CLIENT_ID=dummy
-          GOOGLE_CLIENT_SECRET=dummy
-          PUBLIC_URL=http://localhost:9000
-          EOF
-
-      # Docker Hub intermittently times out the buildkit image manifest/token
-      # (anonymous rate limit), which fails the buildx setup's single pull and
-      # kills the job at the setup step. Pre-pull with retry so the setup below
-      # reuses the local image instead of hitting Docker Hub again.
-      - name: Pre-pull BuildKit image (retry; Docker Hub pulls flake)
-        run: |
-          for i in 1 2 3 4 5; do
-            docker pull moby/buildkit:buildx-stable-1 && exit 0
-            echo "::warning::moby/buildkit pull attempt $i failed; retrying in 15s"
-            sleep 15
-          done
-          exit 1
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-        with:
-          driver-opts: |
-            network=host
-            image=moby/buildkit:buildx-stable-1
-          # Route Docker Hub (docker.io) base-image pulls through Google's
-          # pull-through mirror. There are no Docker Hub creds in this repo, and
-          # anonymous pulls rate-limit / 5xx (auth.docker.io 520, manifest 504).
-          # One build job makes that far less likely than the previous ~96 pulls
-          # per run, but a shared/ change still pulls the base image per target.
-          buildkitd-config-inline: |
-            [registry."docker.io"]
-              mirrors = ["mirror.gcr.io"]
-
-      - name: Build changed images
-        uses: docker/bake-action@v7
-        env:
-          DOCKER_BUILD_SUMMARY: false
-        with:
-          # Build from the checked-out workspace. The action otherwise fetches
-          # github.sha again as a remote Git context, which can fail on a
-          # transient GitHub 5xx response.
-          source: .
-          files: compose.yml
-          targets: ${{ needs.changes.outputs.bake_targets }}
-          # No layer cache, deliberately. Every target shared one gha scope, so
-          # each image's export overwrote the previous one's manifest and the
-          # next run could only hit for whichever wrote last — a measured 3
-          # manifest imports and 4 CACHED layers across 8 images. The export was
-          # not a free bet either: it was 593s of a 621s bake step (the images
-          # themselves build in ~30s), and at 13 shards x ~8 images per run it
-          # pushed the repository's Actions cache to 11.5GB against a 10GB limit
-          # across 10,811 entries, so the resulting eviction also churned the
-          # npm and Playwright caches that do pay off.
-          set: |
-            auth.tags=ghcr.io/${{ github.repository }}/auth:latest
-            entry.tags=ghcr.io/${{ github.repository }}/entry:latest
-            queue.tags=ghcr.io/${{ github.repository }}/queue:latest
-            inspection.tags=ghcr.io/${{ github.repository }}/inspection:latest
-            traffic.tags=ghcr.io/${{ github.repository }}/traffic:latest
-            score.tags=ghcr.io/${{ github.repository }}/score:latest
-            documents.tags=ghcr.io/${{ github.repository }}/documents:latest
-            email.tags=ghcr.io/${{ github.repository }}/email:latest
-            course.tags=ghcr.io/${{ github.repository }}/course:latest
-            calendar.tags=ghcr.io/${{ github.repository }}/calendar:latest
-            caddy-local.tags=ghcr.io/${{ github.repository }}/caddy:latest
-          load: true
-
-      - name: Export built images
-        env:
-          BAKE_TARGETS: ${{ needs.changes.outputs.bake_targets }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          images=()
-          for target in ${BAKE_TARGETS//,/ }; do
-            # caddy-local and the production caddy share one image tag.
-            if [ "$target" = "caddy-local" ]; then target=caddy; fi
-            images+=("ghcr.io/$REPOSITORY/$target:latest")
-          done
-          echo "Saving: ${images[*]}"
-          docker save "${images[@]}" -o e2e-images.tar
-          ls -lh e2e-images.tar
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: e2e-images
-          path: e2e-images.tar
-          retention-days: 1
-          # docker save writes layers uncompressed. The union of all 11 images is
-          # ~178MB once compressed, so zipping is worth it, but level 1 gets most
-          # of that without spending CPU minutes on a ~500MB archive that is read
-          # once and expires tomorrow.
-          compression-level: 1
-
   e2e:
-    needs: [changes, build]
-    # build is skipped when no image needs rebuilding, and a skipped dependency
-    # would otherwise skip this job too. The workflow has no triggers other than
-    # push and pull_request, so a successful `changes` implies the old event
-    # guard. A failed build must not fall through to stale pulled images.
-    if: >-
-      ${{ !cancelled() && needs.changes.result == 'success'
-      && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    needs: changes
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -481,10 +357,8 @@ jobs:
         with:
           submodules: false
 
-      # Which of this shard's services can be pulled as prebuilt :latest, and
-      # whether any of them was rebuilt and so has to come from the build job's
-      # artifact instead. A changed service this shard never starts leaves it
-      # with nothing to download.
+      # Intersect the services needed by this shard with the global change plan.
+      # Unrelated changed services are neither pulled nor rebuilt in this job.
       - name: Plan shard images
         id: shard-plan
         env:
@@ -492,21 +366,23 @@ jobs:
           GLOBAL_BAKE_TARGETS: ${{ needs.changes.outputs.bake_targets }}
           PULL_CADDY: ${{ needs.changes.outputs.pull_caddy }}
         run: |
-          pull=(); needs_load=false
+          build=(); pull=()
           for svc in $REQUIRED_SERVICES; do
             if [[ ",$GLOBAL_BAKE_TARGETS," == *",$svc,"* ]]; then
-              needs_load=true
+              build+=("$svc")
             else
               pull+=("$svc")
             fi
           done
-          # Every shard starts caddy-local, so a rebuilt caddy always applies.
-          if [[ ",$GLOBAL_BAKE_TARGETS," == *",caddy-local,"* ]]; then needs_load=true; fi
+          if [[ ",$GLOBAL_BAKE_TARGETS," == *",caddy-local,"* ]]; then
+            build+=("caddy-local")
+          fi
+          bake=$(IFS=,; echo "${build[*]}")
           pull_std=$(IFS=' '; echo "${pull[*]}")
+          echo "bake_targets=$bake" >> "$GITHUB_OUTPUT"
           echo "pull_std=$pull_std" >> "$GITHUB_OUTPUT"
           echo "pull_caddy=$PULL_CADDY" >> "$GITHUB_OUTPUT"
-          echo "needs_load=$needs_load" >> "$GITHUB_OUTPUT"
-          echo "Shard plan: pull_std=[$pull_std] pull_caddy=$PULL_CADDY needs_load=$needs_load"
+          echo "Shard plan: build=[$bake] pull_std=[$pull_std] pull_caddy=$PULL_CADDY"
 
       - name: Create .env
         run: |
@@ -526,9 +402,41 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Pull prebuilt :latest for services unchanged vs main; changed ones are
-      # loaded from the build job's artifact below. This is the wall-clock win: a
-      # test-only change pulls every image and builds nothing at all.
+      # Docker Hub intermittently times out the buildkit image manifest/token
+      # (anonymous rate limit), which fails the buildx setup's single pull and
+      # kills the job at the setup step. Pre-pull with retry so the setup below
+      # reuses the local image instead of hitting Docker Hub again. Gated on the
+      # same condition as the buildx setup — skipped when nothing needs building.
+      - name: Pre-pull BuildKit image (retry; Docker Hub pulls flake)
+        if: steps.shard-plan.outputs.bake_targets != ''
+        run: |
+          for i in 1 2 3 4 5; do
+            docker pull moby/buildkit:buildx-stable-1 && exit 0
+            echo "::warning::moby/buildkit pull attempt $i failed; retrying in 15s"
+            sleep 15
+          done
+          exit 1
+
+      - name: Set up Docker Buildx
+        if: steps.shard-plan.outputs.bake_targets != ''
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver-opts: |
+            network=host
+            image=moby/buildkit:buildx-stable-1
+          # Route Docker Hub (docker.io) base-image pulls through Google's
+          # pull-through mirror. A shared/ change rebuilds all 10 images on every
+          # shard (~60 builds/run), and anonymous Docker Hub pulls rate-limit /
+          # 5xx (auth.docker.io 520, manifest 504) at that volume — there are no
+          # Docker Hub creds in this repo. The mirror serves the same official
+          # base images without the anonymous per-IP limit.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      # Pull prebuilt :latest for services unchanged vs main; build only changed
+      # ones below. This is the wall-clock win: a test-only change pulls every
+      # image and builds nothing.
       - name: Pull prebuilt images for unchanged services
         run: |
           retry_pull() {
@@ -548,19 +456,39 @@ jobs:
             retry_pull docker compose --profile local pull caddy-local
           fi
 
-      # The artifact holds every image the run rebuilt, so a shard also loads
-      # images it does not start. Unpacking those extra layers costs a few
-      # seconds; a per-service artifact would instead duplicate the ~55MB of base
-      # layers they all share, on both the upload and every download.
-      - name: Download built images
-        if: steps.shard-plan.outputs.needs_load == 'true'
-        uses: actions/download-artifact@v8
+      - name: Build changed images
+        if: steps.shard-plan.outputs.bake_targets != ''
+        uses: docker/bake-action@v7
+        env:
+          DOCKER_BUILD_SUMMARY: false
         with:
-          name: e2e-images
-
-      - name: Load built images
-        if: steps.shard-plan.outputs.needs_load == 'true'
-        run: docker load -i e2e-images.tar
+          # Build from the checked-out workspace. The action otherwise fetches
+          # github.sha again as a remote Git context, which can fail every shard
+          # independently on a transient GitHub 5xx response.
+          source: .
+          files: compose.yml
+          targets: ${{ steps.shard-plan.outputs.bake_targets }}
+          # No layer cache, deliberately. Every target shared one gha scope, so
+          # each image's export overwrote the previous one's manifest and the
+          # next run could only hit for whichever wrote last — a measured 3
+          # manifest imports and 4 CACHED layers across 8 images. The export was
+          # not a free bet either: it was 593s of a 621s bake step (the images
+          # themselves build in ~30s), and at 13 shards x ~8 images per run it
+          # pushed the repository's Actions cache to 11.5GB against a 10GB limit
+          # across 10,811 entries, so the resulting eviction also churned the
+          # npm and Playwright caches that do pay off.
+          set: |
+            auth.tags=ghcr.io/${{ github.repository }}/auth:latest
+            entry.tags=ghcr.io/${{ github.repository }}/entry:latest
+            queue.tags=ghcr.io/${{ github.repository }}/queue:latest
+            inspection.tags=ghcr.io/${{ github.repository }}/inspection:latest
+            traffic.tags=ghcr.io/${{ github.repository }}/traffic:latest
+            score.tags=ghcr.io/${{ github.repository }}/score:latest
+            documents.tags=ghcr.io/${{ github.repository }}/documents:latest
+            email.tags=ghcr.io/${{ github.repository }}/email:latest
+            course.tags=ghcr.io/${{ github.repository }}/course:latest
+            caddy-local.tags=ghcr.io/${{ github.repository }}/caddy:latest
+          load: true
 
       # No --wait: services boot in the background while node/playwright install
       # below, and global-setup polls every 2s for readiness. The compose
