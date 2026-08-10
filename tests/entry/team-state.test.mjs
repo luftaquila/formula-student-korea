@@ -373,6 +373,41 @@ describe('bulk upload id preservation', () => {
     assert.equal(res.status, 400);
   });
 
+  // 회귀: 두 행 모두 id를 실어 "현 배치 유지"를 선언했는데 renumbers가 한 팀을 다른 팀의
+  // 번호로 옮기라고 하면, 예전에는 renumbers가 조용히 이겨 유지하려던 팀이 tombstone되고
+  // 남의 id가 승계됐다(3@num1, 1@num2 + id2 tombstone). 모순 입력은 400이어야 한다.
+  it('rejects explicit renumbers that contradict same-number id declarations (either order)', async () => {
+    await addEntry(1, 'Univ A', 'Team A');
+    await addEntry(2, 'Univ B', 'Team B');
+    const entries = await getEntries();
+    const [id1, id2] = [entries[1].id, entries[2].id];
+
+    const res = await bulkUpload(
+      {
+        1: { id: id1, univ: 'Univ A', team: 'Team A' },
+        2: { id: id2, univ: 'Univ B', team: 'Team B' },
+      },
+      { renumbers: { 1: 2 } },
+    );
+    assert.equal(res.status, 400);
+    // 아무것도 쓰지 않았어야 한다
+    const after = await getEntries();
+    assert.equal(after[1].id, id1);
+    assert.equal(after[2].id, id2);
+    assert.equal((await getTeamState()).tombstones.length, 0);
+  });
+
+  it('rejects an id-declared move whose source number is explicitly mapped elsewhere', async () => {
+    await addEntry(1, 'Univ A', 'Team A');
+    const id1 = (await getEntries())[1].id;
+    // id는 팀1을 num 21로 옮기라는데 renumbers는 num 1을 30으로 보내라 함 — 모순
+    const res = await bulkUpload(
+      { 21: { id: id1, univ: 'Univ A', team: 'Team A' }, 30: { univ: 'X', team: 'Y' } },
+      { renumbers: { 1: 30 } },
+    );
+    assert.equal(res.status, 400);
+  });
+
   it('rejects an id match that contradicts an explicit renumber mapping', async () => {
     await addEntry(1, 'Univ A', 'Team A');
     await addEntry(2, 'Univ B', 'Team B');

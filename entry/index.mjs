@@ -810,13 +810,20 @@ app.post("/api/entries/bulk", withYearTable, async (req, res) => {
         if (!oldRow) {
           throw { status: 400, message: `엔트리 ${row.num}: 존재하지 않는 id ${row.uploadedId}입니다.` };
         }
-        if (oldRow.num !== row.num) {
-          // 명시 renumbers가 같은 목적지 번호를 다른 팀에게 배정했다면 모순된 입력이다
-          for (const [prevNum, targetNum] of renumbers) {
-            if (targetNum === row.num && prevNum !== oldRow.num) {
-              throw { status: 400, message: `엔트리 ${row.num}: id 매칭과 번호 변경 매핑이 충돌합니다.` };
-            }
+        // id는 "row.num은 이 팀의 것"이라는 권위 선언이다. 명시 renumbers가 이와 모순되면
+        // (같은 목적지를 다른 팀에 배정, 이 팀을 다른 목적지로 배정, 또는 같은 번호 유지
+        // 선언과 충돌) 조용히 한쪽을 이기게 두지 않고 400으로 거부한다 — 이기게 두면
+        // 유지하려던 팀이 tombstone되고 남의 id가 승계되는 정체성 오염이 생긴다.
+        const mappedTarget = renumbers.get(oldRow.num);
+        if (mappedTarget !== undefined && mappedTarget !== row.num) {
+          throw { status: 400, message: `엔트리 ${row.num}: id 매칭과 번호 변경 매핑이 충돌합니다.` };
+        }
+        for (const [prevNum, targetNum] of renumbers) {
+          if (targetNum === row.num && prevNum !== oldRow.num) {
+            throw { status: 400, message: `엔트리 ${row.num}: id 매칭과 번호 변경 매핑이 충돌합니다.` };
           }
+        }
+        if (oldRow.num !== row.num) {
           renumbers.set(oldRow.num, row.num);
         } else {
           retains.add(row.num);

@@ -843,10 +843,14 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     }
     const isLate = session.late_end_at && submittedTime > session.end_at ? 1 : 0;
 
-    // 팀 id·디렉토리 세그먼트는 생성 시점에 확정한다. 캐시가 콜드면 team_id는 NULL로
-    // 남고(다음 스냅샷 강제가 num 매칭으로 귀속) dir_seg는 레거시 숫자 num을 쓴다.
-    // 트랜잭션 밖에서 해석 — resolveTeamId가 체크포인트 복원 트랜잭션을 열 수 있다.
-    const submitTeamId = teamState.resolveTeamId(session.year, team.team_num);
+    // 팀 id·디렉토리 세그먼트는 생성 시점에 확정한다. num은 가변 식별자라 낡은 캐시로
+    // 해석하면 같은 번호의 팀 교체 직후 옛(tombstone) id에 귀속됐다가 다음 수렴에서
+    // 삭제될 수 있다 — 강제 refresh로 최신 매핑을 받아 해석한다(entry 미가용이면
+    // serve-stale 폴백). 캐시가 아예 콜드면 team_id는 NULL로 남고(다음 스냅샷 강제가
+    // num 매칭으로 귀속) dir_seg는 레거시 숫자 num을 쓴다.
+    // 트랜잭션 밖에서 해석 — refresh가 체크포인트 트랜잭션을 열 수 있다.
+    const submitState = await teamState.refresh(session.year);
+    const submitTeamId = submitState.byNum.get(team.team_num)?.id ?? null;
     const dirSeg = submitTeamId != null ? `t${submitTeamId}` : String(team.team_num);
 
     const txResult = dbRun(() => {
@@ -1374,7 +1378,7 @@ app.get("/api/admin/student-teams", (req, res) => {
 });
 
 // POST /api/admin/student-teams - 학생-팀 매핑 추가
-app.post("/api/admin/student-teams", (req, res) => {
+app.post("/api/admin/student-teams", async (req, res) => {
   const { email, team_num, year } = req.body;
   if (!email?.trim()) return res.status(400).send("이메일을 입력하세요.");
   const numTeam = Number(team_num);
@@ -1383,9 +1387,12 @@ app.post("/api/admin/student-teams", (req, res) => {
   if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
   const numYear = yearCheck.value;
 
-  // num → 불변 id 해석. 캐시 콜드/미지의 번호면 NULL로 저장 — 기존처럼 존재 검증으로
-  // 막지 않고, 다음 스냅샷 강제가 num 매칭으로 귀속한다.
-  const mappedTeamId = teamState.resolveTeamId(numYear, numTeam);
+  // num → 불변 id 해석. 정체성을 영구 확정하는 쓰기이므로 강제 refresh로 최신 매핑을
+  // 쓴다(같은 번호의 팀 교체 직후 옛 id 귀속 방지; entry 미가용이면 serve-stale 폴백).
+  // 캐시 콜드/미지의 번호면 NULL로 저장 — 기존처럼 존재 검증으로 막지 않고, 다음
+  // 스냅샷 강제가 num 매칭으로 귀속한다.
+  const mappedState = await teamState.refresh(numYear);
+  const mappedTeamId = mappedState.byNum.get(numTeam)?.id ?? null;
 
   const result = dbRun(() =>
     db.prepare("INSERT INTO student_team (email, team_id, team_num, year) VALUES (?, ?, ?, ?)").run(email.trim().toLowerCase(), mappedTeamId, numTeam, numYear),

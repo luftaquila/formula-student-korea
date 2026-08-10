@@ -85,7 +85,17 @@ export function createSSESubscriber({
         }
       });
 
+      // 'end'는 정상 종료에만 온다. 소켓 리셋·서버 크래시 같은 비정상 단절은 'end' 없이
+      // 'error'('aborted'/ECONNRESET)와 'close'만 emit하므로, 둘 다 재연결 경로에 태운다 —
+      // 안 잡으면 구독이 조용히 죽은 채 남고('close' 미처리), response 'error'는 미처리 시
+      // 프로세스를 죽인다. scheduleReconnect의 reconnecting 가드가 중복 예약을 막는다.
       res.on("end", () => {
+        scheduleReconnect();
+      });
+      res.on("error", () => {
+        scheduleReconnect();
+      });
+      res.on("close", () => {
         scheduleReconnect();
       });
     });

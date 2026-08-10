@@ -181,6 +181,34 @@ describe('createSSESubscriber', () => {
     assert.ok(warns.every(([kind, status]) => kind === 'subscribe_failed' && status === 403));
   });
 
+  // 회귀: 'end' 없이 소켓이 끊기는 비정상 단절(서버 크래시·TCP 리셋)도 재연결해야 한다.
+  // 예전에는 res 'end'만 재연결을 예약해 socket.destroy() 후 구독이 조용히 죽은 채 남았다.
+  it('reconnects after an abrupt socket destroy (no end event)', async () => {
+    let connections = 0;
+    const started = await startSseServer((req, res) => {
+      connections++;
+      sseHeaders(res);
+      if (connections === 1) {
+        res.write('event: e\ndata: {"n":1}\n\n');
+        // 정상 종료 대신 소켓을 즉시 파괴 — 'end' 없이 'error'/'close'만 발생
+        setTimeout(() => res.socket.destroy(), 20);
+      } else {
+        res.write('event: e\ndata: {"n":2}\n\n');
+      }
+    });
+    server = started.server;
+
+    const events = [];
+    subscriber = createSSESubscriber({
+      name: 'T', url: started.url,
+      initialBackoffMs: 30, maxBackoffMs: 100,
+      onEvent: (name, data) => events.push(data.n),
+    });
+    subscriber.start();
+    await waitFor(() => events.includes(1) && events.includes(2), 5000);
+    assert.ok(connections >= 2, 'must reconnect after the socket reset');
+  });
+
   it('stop() prevents further reconnects', async () => {
     let connections = 0;
     const started = await startSseServer((req, res) => {

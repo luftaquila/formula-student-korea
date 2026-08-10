@@ -814,10 +814,13 @@ app.put("/api/score/manual", async (req, res) => {
   if (keyErr) return res.status(400).send(keyErr);
   if (score_type === "energy") return res.status(400).send("에너지 점수는 내구 계측값으로 자동 계산됩니다.");
 
-  // 쓰기는 team_id로 키잉하므로 num→id 해석이 필요하다. 관리자 액션이라 핫패스가 아니므로
-  // 콜드 캐시에서는 fetch를 기다린다(serve-stale). 그래도 스냅샷이 없으면 503, 스냅샷에
-  // 없는 번호는 404, 비활성 팀은 409 — 오늘의 "entry 다운이면 500"보다 정확하고 좁은 실패다.
-  const writeState = await teamState.getState(numYear);
+  // 쓰기는 team_id로 키잉하므로 num→id 해석이 필요하다. num은 가변 식별자라 TTL 내
+  // 캐시로 해석하면 같은 번호의 팀 교체 직후 tombstone된 옛 id에 점수가 달렸다가 다음
+  // 수렴에서 삭제되는 창이 생긴다 — 정체성을 부여하는 쓰기는 강제 refresh로 최신
+  // 스냅샷을 받아 해석한다(관리자 액션이라 핫패스 아님; entry 미가용이면 serve-stale
+  // 폴백 = 기존 push 시스템의 전달 지연 창과 동일한 잔여 위험). 스냅샷이 아예 없으면
+  // 503, 스냅샷에 없는 번호는 404, 비활성 팀은 409.
+  const writeState = await teamState.refresh(numYear);
   if (!writeState.loaded) return res.status(503).send("엔트리 정보를 아직 불러오지 못했습니다. 잠시 후 다시 시도하세요.");
   const writeTeam = writeState.byNum.get(numTeamNum);
   if (!writeTeam) return res.status(404).send("존재하지 않는 엔트리 번호입니다.");
@@ -977,7 +980,8 @@ app.put("/api/score/endurance", async (req, res) => {
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
 
-  const enduranceState = await teamState.getState(numYear);
+  // manual과 동일: 정체성 부여 쓰기는 강제 refresh로 최신 num→id 매핑을 확보한다
+  const enduranceState = await teamState.refresh(numYear);
   if (!enduranceState.loaded) return res.status(503).send("엔트리 정보를 아직 불러오지 못했습니다. 잠시 후 다시 시도하세요.");
   const enduranceTeam = enduranceState.byNum.get(numTeamNum);
   if (!enduranceTeam) return res.status(404).send("존재하지 않는 엔트리 번호입니다.");

@@ -1622,6 +1622,34 @@ describe('Team-state convergent enforcement', () => {
     assert.equal(bulk[33][itemId], 'v1');
   });
 
+  // 회귀: 두 팀이 번호를 맞바꾸면 단일 패스 UPDATE는 (year, team_num, ...) UNIQUE에
+  // 걸려 강제 전체가 롤백됐다 — 임시 음수 번호 경유 두 단계로 수렴해야 한다.
+  it('two teams swapping numbers converge without UNIQUE collisions', async () => {
+    // 팀 302에도 행을 만들어 두 팀 모두 시트 데이터를 가진 상태에서 스왑
+    const put = await cli.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 32, item_id: itemId, value: 'v32', base_version: 0 },
+      cookie: officialCookie,
+    });
+    assert.equal(put.status, 200);
+
+    // 직전 테스트에서 301은 num 33 — 301↔302가 32/33을 맞바꾼다
+    await publish((s) => {
+      s.teams[301] = { num: 32, univ: 'A대', team: '팀A(정정)', type: 'EV', active: true };
+      s.teams[302] = { num: 33, univ: 'B대', team: '팀B', type: 'EV', active: true };
+      return s;
+    });
+    assert.equal(database.prepare('SELECT team_num FROM sheet_answer WHERE year = ? AND team_id = 301').get(CURRENT_YEAR).team_num, 32);
+    assert.equal(database.prepare('SELECT team_num FROM sheet_answer WHERE year = ? AND team_id = 302').get(CURRENT_YEAR).team_num, 33);
+
+    // 원상 복구 (이후 테스트가 기존 배치를 가정)
+    await publish((s) => {
+      s.teams[301] = { num: 33, univ: 'A대', team: '팀A(정정)', type: 'EV', active: true };
+      s.teams[302] = { num: 32, univ: 'B대', team: '팀B', type: 'EV', active: true };
+      return s;
+    });
+    assert.equal(database.prepare('SELECT team_num FROM sheet_answer WHERE year = ? AND team_id = 301').get(CURRENT_YEAR).team_num, 33);
+  });
+
   it('deactivation hides rows and blocks writes; reactivation restores (idempotent re-run safe)', async () => {
     // 팀 32의 데이터 준비 (활성 상태에서)
     await publish();

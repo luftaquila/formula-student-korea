@@ -1388,6 +1388,38 @@ describe('Team-state convergent enforcement', () => {
     assert.equal(database.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = 99").get(YEAR).c, 1);
   });
 
+  // 회귀: 같은 번호의 팀 교체 직후, 낡은 캐시로 num→id를 해석하면 점수가 tombstone된
+  // 옛 id에 달렸다가 다음 수렴에서 삭제됐다. 정체성 부여 쓰기는 강제 refresh로 최신
+  // 매핑을 받아야 한다 — 캐시를 낡게 만든 채(스냅샷만 교체, refresh 안 함) 쓰기를 보낸다.
+  it('identity-assigning writes resolve against a fresh snapshot, not the stale cache', async () => {
+    // 현재 캐시는 num 31 → id 301. 같은 번호(31)의 새 팀 309로 교체한 스냅샷을 fake에만
+    // 심고 teamState.refresh는 부르지 않는다 — 캐시가 낡은 상태에서 쓰기를 보낸다.
+    version++;
+    fake.setSnapshot(YEAR, {
+      version,
+      teams: { 309: { num: 31, univ: 'C대', team: '팀C', type: 'EV', active: true } },
+      tombstones: [
+        { id: 301, num: 31, deleted_at: '2026-01-02T00:00:00.000Z' },
+        { id: 302, num: 32, deleted_at: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+
+    const res = await cli.put('/api/score/manual', {
+      body: { year: YEAR, team_num: 31, score_type: 'report', value: 77 }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const row = database.prepare(
+      "SELECT team_id FROM score_manual WHERE year = ? AND team_num = 31 AND score_type = 'report'",
+    ).get(YEAR);
+    assert.equal(row.team_id, 309, 'write must land on the fresh team id, not the tombstoned one');
+
+    // 수렴을 한 번 더 돌려도(같은 스냅샷) 점수가 살아남는다
+    await teamState.refresh(YEAR);
+    assert.equal(database.prepare(
+      "SELECT value FROM score_manual WHERE year = ? AND team_id = 309 AND score_type = 'report'",
+    ).get(YEAR).value, 77);
+  });
+
   it('unknown teams to entry are only excluded from writes (404), not deleted', async () => {
     const res = await cli.put('/api/score/manual', {
       body: { year: YEAR, team_num: 99, score_type: 'report', value: 5 }, cookie: adminCookie,

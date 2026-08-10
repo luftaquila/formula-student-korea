@@ -304,12 +304,20 @@ teamState.registerEnforcement((year, state) => {
 
   // ② 비활성 정리 훅 없음 — inspection은 조회 필터로만 제외한다 (기존과 동일)
 
-  // ③ 비정규화 갱신: 리넘버된 팀의 team_num을 id 기준으로 최신화
-  const renumbers = SHEET_TABLES.map((t) =>
-    db.prepare(`UPDATE ${t} SET team_num = ? WHERE year = ? AND team_id = ? AND team_num != ?`));
+  // ③ 비정규화 갱신: 리넘버된 팀의 team_num을 id 기준으로 최신화. 두 팀이 번호를 맞바꾼
+  // 경우 단일 패스는 (year, team_num, item/category) UNIQUE에 걸리므로, 바뀐 행을 먼저
+  // 임시 음수 번호(-team_id, 실번호와 충돌 불가)로 옮긴 뒤 최종 번호를 쓴다 —
+  // score/documents와 동일한 두 단계 처리, 전부 한 트랜잭션 안의 로컬 갱신.
+  const tmpRenumbers = SHEET_TABLES.map((t) =>
+    db.prepare(`UPDATE ${t} SET team_num = -team_id WHERE year = ? AND team_id = ? AND team_num != ?`));
+  const finRenumbers = SHEET_TABLES.map((t) =>
+    db.prepare(`UPDATE ${t} SET team_num = ? WHERE year = ? AND team_id = ? AND team_num = -team_id`));
   let renumbered = 0;
   for (const team of state.teams.values()) {
-    for (const upd of renumbers) renumbered += upd.run(team.num, year, team.id, team.num).changes;
+    for (const upd of tmpRenumbers) renumbered += upd.run(year, team.id, team.num).changes;
+  }
+  for (const team of state.teams.values()) {
+    for (const upd of finRenumbers) upd.run(team.num, year, team.id);
   }
   if (renumbered > 0) logger.log(null, "team.renumber", { year, rows: renumbered });
 
