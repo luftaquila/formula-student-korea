@@ -468,14 +468,16 @@ jobs:
           source: .
           files: compose.yml
           targets: ${{ steps.shard-plan.outputs.bake_targets }}
-          # The 6 e2e shards build concurrently. A shared cache scope races on
-          # the gha manifest ("blob not found"), so each shard owns its scope.
-          # The gha cache backend also intermittently 504s on export under load;
-          # ignore-error keeps a failed cache export from failing the build —
-          # the image is already built and loaded, the cache is just a speedup.
+          # No layer cache, deliberately. Every target shared one gha scope, so
+          # each image's export overwrote the previous one's manifest and the
+          # next run could only hit for whichever wrote last — a measured 3
+          # manifest imports and 4 CACHED layers across 8 images. The export was
+          # not a free bet either: it was 593s of a 621s bake step (the images
+          # themselves build in ~30s), and at 13 shards x ~8 images per run it
+          # pushed the repository's Actions cache to 11.5GB against a 10GB limit
+          # across 10,811 entries, so the resulting eviction also churned the
+          # npm and Playwright caches that do pay off.
           set: |
-            *.cache-from=type=gha,scope=e2e-${{ matrix.shard }}
-            *.cache-to=type=gha,scope=e2e-${{ matrix.shard }},mode=min,ignore-error=true
             auth.tags=ghcr.io/${{ github.repository }}/auth:latest
             entry.tags=ghcr.io/${{ github.repository }}/entry:latest
             queue.tags=ghcr.io/${{ github.repository }}/queue:latest
