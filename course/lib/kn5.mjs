@@ -228,7 +228,16 @@ export function readKn5(data) {
       r.u8(); r.u8(); r.u8();
       const vc = r.u32();
       info.vertices = vc;
-      r.take(vc * (3 + 3 + 2 + 3) * 4);
+      const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+      for (let v = 0; v < vc; v++) {
+        const p = r.vec3();
+        for (let axis = 0; axis < 3; axis++) {
+          if (p[axis] < min[axis]) min[axis] = p[axis];
+          if (p[axis] > max[axis]) max[axis] = p[axis];
+        }
+        r.take((3 + 2 + 3) * 4); // normal + uv + tangent
+      }
+      if (vc) info.positionBounds = { min, max };
       const ic = r.u32();
       info.indices = ic;
       r.take(ic * 2);

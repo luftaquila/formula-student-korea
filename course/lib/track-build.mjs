@@ -62,35 +62,119 @@ function buildRoadMesh(Le, Re, zL, zR, tile = 4.0) {
   return { positions, normals: nrmAc, uvs, indices };
 }
 
-// Big flat grass plane around the track so you can't fall off the world.
-function buildGround(Le, Re, zLevel = -0.05, margin = 60.0, tile = 6.0) {
+// Return a height sampler for the road surface extended laterally past both
+// edges. Longitudinal height follows the nearest centerline segment; across the
+// road it interpolates zR -> zL and outside it keeps the adjacent edge height.
+// This is also how cones and terrain inherit the boundary-cone elevation without
+// ever consulting the (potentially lying-down) center cones' own altitudes.
+function roadSurfaceSampler(Le, Re, zL, zR) {
+  const N = Le.length;
+  const C = Le.map((p, i) => [(p[0] + Re[i][0]) / 2, (p[1] + Re[i][1]) / 2]);
+  return (x, y) => {
+    let best = null, bestD = Infinity;
+    for (let i = 0; i < N; i++) {
+      const j = (i + 1) % N;
+      const ax = C[i][0], ay = C[i][1];
+      const dx = C[j][0] - ax, dy = C[j][1] - ay;
+      const den = dx * dx + dy * dy;
+      const u = den > 1e-12 ? Math.max(0, Math.min(1, ((x - ax) * dx + (y - ay) * dy) / den)) : 0;
+      const px = ax + u * dx, py = ay + u * dy;
+      const d = (x - px) ** 2 + (y - py) ** 2;
+      if (d < bestD) { bestD = d; best = [i, j, u]; }
+    }
+    const [i, j, u] = best;
+    const lerp = (a, b) => a + u * (b - a);
+    const lx = lerp(Le[i][0], Le[j][0]), ly = lerp(Le[i][1], Le[j][1]);
+    const rx = lerp(Re[i][0], Re[j][0]), ry = lerp(Re[i][1], Re[j][1]);
+    const leftZ = lerp(zL[i], zL[j]), rightZ = lerp(zR[i], zR[j]);
+    const wx = lx - rx, wy = ly - ry;
+    const w2 = wx * wx + wy * wy;
+    const across = w2 > 1e-12 ? Math.max(0, Math.min(1, ((x - rx) * wx + (y - ry) * wy) / w2)) : 0.5;
+    return rightZ + across * (leftZ - rightZ);
+  };
+}
+
+// Grass collision terrain around the track. A flat course retains the compact
+// four-vertex plane. An elevated course gets an adaptive height-field grid whose
+// height follows the nearest road segment, a few centimetres below the asphalt,
+// so leaving the road is a small tyre-sized step rather than a fall to z=0.
+function buildGround(Le, Re, zL, zR, {
+  clearance = 0.05, margin = 60.0, tile = 6.0, cellSize = 3.0, maxVertices = 65000,
+} = {}) {
   let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
   for (const arr of [Le, Re]) for (const [x, y] of arr) {
     if (x < minx) minx = x; if (x > maxx) maxx = x;
     if (y < miny) miny = y; if (y > maxy) maxy = y;
   }
   const x0 = minx - margin, x1 = maxx + margin, y0 = miny - margin, y1 = maxy + margin;
-  const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+  const allZ = zL.concat(zR);
+  const minZ = Math.min(...allZ), maxZ = Math.max(...allZ);
+  if (maxZ - minZ < 1e-6) {
+    const zLevel = minZ - clearance;
+    const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+    return {
+      positions: corners.map(([cx, cy]) => [cx, zLevel, -cy]),
+      normals: corners.map(() => [0, 1, 0]),
+      uvs: corners.map(([cx, cy]) => [cx / tile, cy / tile]),
+      indices: [0, 1, 2, 0, 2, 3],
+    };
+  }
+
+  const spanX = x1 - x0, spanY = y1 - y0;
+  let cell = Math.max(0.5, cellSize);
+  let nx = Math.max(2, Math.ceil(spanX / cell) + 1);
+  let ny = Math.max(2, Math.ceil(spanY / cell) + 1);
+  if (nx * ny > maxVertices) {
+    cell *= Math.sqrt((nx * ny) / maxVertices) * 1.001;
+    nx = Math.max(2, Math.ceil(spanX / cell) + 1);
+    ny = Math.max(2, Math.ceil(spanY / cell) + 1);
+    while (nx * ny > maxVertices) {
+      cell *= 1.01;
+      nx = Math.max(2, Math.ceil(spanX / cell) + 1);
+      ny = Math.max(2, Math.ceil(spanY / cell) + 1);
+    }
+  }
+  const dx = spanX / (nx - 1), dy = spanY / (ny - 1);
+  const sampleRoad = roadSurfaceSampler(Le, Re, zL, zR);
+  const heights = new Array(nx * ny);
+  for (let iy = 0; iy < ny; iy++) {
+    const y = y0 + iy * dy;
+    for (let ix = 0; ix < nx; ix++) {
+      const x = x0 + ix * dx;
+      heights[iy * nx + ix] = sampleRoad(x, y) - clearance;
+    }
+  }
+
+  const positions = new Array(nx * ny), normals = new Array(nx * ny), uvs = new Array(nx * ny);
+  for (let iy = 0; iy < ny; iy++) {
+    const y = y0 + iy * dy;
+    for (let ix = 0; ix < nx; ix++) {
+      const x = x0 + ix * dx, k = iy * nx + ix;
+      const il = Math.max(0, ix - 1), ir = Math.min(nx - 1, ix + 1);
+      const ib = Math.max(0, iy - 1), it = Math.min(ny - 1, iy + 1);
+      const dzdx = (heights[iy * nx + ir] - heights[iy * nx + il]) / ((ir - il) * dx || 1);
+      const dzdy = (heights[it * nx + ix] - heights[ib * nx + ix]) / ((it - ib) * dy || 1);
+      const nw = [-dzdx, -dzdy, 1];
+      const nl = norm3(nw) || 1;
+      positions[k] = [x, heights[k], -y];
+      normals[k] = [nw[0] / nl, nw[2] / nl, -nw[1] / nl];
+      uvs[k] = [x / tile, y / tile];
+    }
+  }
+  const indices = [];
+  for (let iy = 0; iy < ny - 1; iy++) for (let ix = 0; ix < nx - 1; ix++) {
+    const a = iy * nx + ix, b = a + 1, c = a + nx, d = c + 1;
+    indices.push(a, b, d, a, d, c);
+  }
   return {
-    positions: corners.map(([cx, cy]) => [cx, zLevel, -cy]),
-    normals: corners.map(() => [0, 1, 0]),
-    uvs: corners.map(([cx, cy]) => [cx / tile, cy / tile]),
-    indices: [0, 1, 2, 0, 2, 3],
+    positions, normals, uvs, indices,
   };
 }
 
 // Small cones (autocross size) at the given cone positions, merged into one
-// AC-space mesh. Each is a base ring + apex, placed on the road at the nearest
-// centerline station's elevation. Visual only (car passes through).
-function buildCones(pts, P, zC, { height = 0.30, radius = 0.12, segs = 8 } = {}) {
-  const groundZ = (cx, cy) => {
-    let bi = 0, bd = Infinity;
-    for (let i = 0; i < P.length; i++) {
-      const d = (P[i][0] - cx) ** 2 + (P[i][1] - cy) ** 2;
-      if (d < bd) { bd = d; bi = i; }
-    }
-    return zC[bi] || 0;
-  };
+// AC-space mesh. Each is a base ring + apex placed on the neighboring road
+// surface's elevation. Visual only (car passes through).
+function buildCones(pts, groundZ, { height = 0.30, radius = 0.12, segs = 8 } = {}) {
   const positions = [], normals = [], uvs = [], indices = [];
   for (const c of pts) {
     const cx = c[0], cy = c[1], z0 = groundZ(cx, cy);
@@ -128,7 +212,7 @@ function buildCones(pts, P, zC, { height = 0.30, radius = 0.12, segs = 8 } = {})
 // 4×4 (row-major, translation in col 3) in AC space: +Z faces the track tangent.
 function spawnMatrix(centerWorld, tangentWorld) {
   const pos = [centerWorld[0], centerWorld[2], -centerWorld[1]];
-  let f = [tangentWorld[0], 0.0, -tangentWorld[1]];
+  let f = [tangentWorld[0], tangentWorld[2] || 0.0, -tangentWorld[1]];
   const fn = norm3(f) || 1.0;
   f = [f[0] / fn, f[1] / fn, f[2] / fn];
   const up = [0, 1, 0];
@@ -159,7 +243,7 @@ function mat(name, texture, diffuse, ambient, specular) {
 // AI racing line arrays from the centerline (matches build_track.write_ai_line,
 // plus real camber from bank). Returns { bytes, data } where data feeds the
 // enriched JSON.
-function buildAiLine(P, zC, halfLeft, halfRight, bank) {
+function buildAiLine(P, zC, Le, Re, zL, zR, halfLeft, halfRight, bank) {
   const N = P.length;
   const posAc = P.map((p, i) => [p[0], zC[i], -p[1]]);
   const fwd = new Array(N);
@@ -169,7 +253,16 @@ function buildAiLine(P, zC, halfLeft, halfRight, bank) {
     const m = norm3(v) + 1e-9;
     fwd[i] = [v[0] / m, v[1] / m, v[2] / m];
   }
-  const normals = P.map(() => [0, 1, 0]);
+  const normals = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const pv = (i - 1 + N) % N, nx = (i + 1) % N;
+    const tangent = [P[nx][0] - P[pv][0], P[nx][1] - P[pv][1], zC[nx] - zC[pv]];
+    const lateral = [Le[i][0] - Re[i][0], Le[i][1] - Re[i][1], zL[i] - zR[i]];
+    let n = cross3(tangent, lateral);
+    if (n[2] < 0) n = n.map((v) => -v);
+    const nl = norm3(n) || 1;
+    normals[i] = [n[0] / nl, n[2] / nl, -n[1] / nl];
+  }
   const radii = new Array(N), speeds = new Array(N), grades = new Array(N);
   for (let i = 0; i < N; i++) {
     const a = P[(i - 1 + N) % N], b = P[i], c = P[(i + 1) % N];
@@ -225,7 +318,7 @@ export function buildTrackModel(cl, edges, opts = {}) {
 
   const roadMesh = buildRoadMesh(Le, Re, zL, zR);
   const road = meshNode("1ROAD", roadMesh.positions, roadMesh.normals, roadMesh.uvs, roadMesh.indices, 0);
-  const ground = buildGround(Le, Re);
+  const ground = buildGround(Le, Re, zL, zR);
   const grass = meshNode("1GRASS", ground.positions, ground.normals, ground.uvs, ground.indices, 1);
 
   // A cone at every cone position, coloured by side: left = yellow, right =
@@ -233,18 +326,19 @@ export function buildTrackModel(cl, edges, opts = {}) {
   // them graphics-only (no collision — the car passes through). Materials 2,3,4
   // in the order of the sides that actually have cones.
   const M = cl.metric || {};
+  const sampleRoad = roadSurfaceSampler(Le, Re, zL, zR);
   const coneSpecs = [
     { tag: "L", pts: M.left, rgb: [240, 205, 15] },   // left  -> yellow
     { tag: "R", pts: M.right, rgb: [30, 90, 235] },   // right -> blue
     { tag: "C", pts: M.centers, rgb: [225, 35, 30] }, // center-> red
   ].filter((s) => s.pts && s.pts.length);
   const coneNodes = coneSpecs.map((s, i) => {
-    const cm = buildCones(s.pts, P, zC);
+    const cm = buildCones(s.pts, sampleRoad);
     return meshNode(`CONE_${s.tag}`, cm.positions, cm.normals, cm.uvs, cm.indices, 2 + i);
   });
 
   const c0 = [(Le[0][0] + Re[0][0]) / 2, (Le[0][1] + Re[0][1]) / 2, zC[0]];
-  const tan = [P[1][0] - P[0][0], P[1][1] - P[0][1]];
+  const tan = [P[1][0] - P[0][0], P[1][1] - P[0][1], zC[1] - zC[0]];
   const nodes = [
     road, grass,
     ...coneNodes,
@@ -267,7 +361,7 @@ export function buildTrackModel(cl, edges, opts = {}) {
   });
   const kn5 = writeKn5({ textures, materials, root });
 
-  const ai = buildAiLine(P, zC, halfLeft, halfRight, bank);
+  const ai = buildAiLine(P, zC, Le, Re, zL, zR, halfLeft, halfRight, bank);
 
   let length = 0;
   for (let i = 0; i < N; i++) length += dist(P[i], P[(i + 1) % N]);

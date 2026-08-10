@@ -81,6 +81,51 @@ describe("buildRoadEdges — banked course (alt tilt)", () => {
   });
 });
 
+describe("buildRoadEdges — center cone altitude isolation", () => {
+  const base = loadFixture("endurance").cones;
+  const meanLat = base.reduce((s, c) => s + c.lat, 0) / base.length;
+  const meanLng = base.reduce((s, c) => s + c.lng, 0) / base.length;
+  const withCenterAlt = (centerAlt) => base.map((c) => ({
+    ...c,
+    alt: c.side === "center"
+      ? centerAlt
+      : 40 + 4000 * (c.lat - meanLat) + 1000 * (c.lng - meanLng),
+  }));
+
+  it("does not let a lying center cone change relief, grade or bank", () => {
+    const low = buildRoadEdges(computeCenterline(withCenterAlt(-1000), { step: 1.0, metric: true }));
+    const high = buildRoadEdges(computeCenterline(withCenterAlt(1000), { step: 1.0, metric: true }));
+    for (const key of ["zC", "zL", "zR", "bank"]) assert.deepEqual(high[key], low[key], key);
+    assert.equal(high.relief, low.relief);
+  });
+
+  it("does not treat center-only altitude as course elevation", () => {
+    const cones = base.map((c, i) => c.side === "center" ? { ...c, alt: 500 + i } : { ...c, alt: null });
+    const e = buildRoadEdges(computeCenterline(cones, { step: 1.0, metric: true }));
+    assert.equal(e.hasElevation, false);
+    assert.ok(e.zC.every((z) => z === 0));
+  });
+});
+
+describe("buildRoadEdges — partial boundary survey", () => {
+  it("keeps longitudinal relief when only one geometric side has altitude", () => {
+    const N = 24;
+    const P = [], inner = [], outer = [];
+    for (let i = 0; i < N; i++) {
+      const a = 2 * Math.PI * i / N;
+      const cx = 10 * Math.cos(a), cy = 10 * Math.sin(a);
+      P.push([cx, cy]);
+      inner.push([8 * Math.cos(a), 8 * Math.sin(a), 50 + 0.1 * cy]);
+      outer.push([12 * Math.cos(a), 12 * Math.sin(a), null]);
+    }
+    const e = buildRoadEdges({ metric: { P, left: inner, right: outer, centers: [], width: 4 } }, { elevSigma: 2 });
+    assert.equal(e.hasElevation, true);
+    assert.ok(e.relief > 1, `relief ${e.relief}`);
+    assert.deepEqual(e.zL, e.zR);
+    assert.ok(e.bank.every((v) => v === 0));
+  });
+});
+
 describe("buildRoadEdges — extra width (except slalom)", () => {
   const cones = loadFixture("endurance").cones;
   const cl = computeCenterline(cones, { step: 1.0, metric: true });

@@ -106,12 +106,56 @@ describe("buildTrackModel — determinism", () => {
 });
 
 describe("buildTrackModel — banked (alt)", () => {
+  const base = loadFixture("endurance").cones;
+  const meanLat = base.reduce((s, c) => s + c.lat, 0) / base.length;
+  const meanLng = base.reduce((s, c) => s + c.lng, 0) / base.length;
+  const elevatedCones = (centerAlt = 999) => base.map((c) => ({
+    ...c,
+    alt: c.side === "center"
+      ? centerAlt
+      : 40 + 4000 * (c.lat - meanLat) + 1000 * (c.lng - meanLng),
+  }));
+  const cl2 = computeCenterline(elevatedCones(), { step: 1.0, metric: true });
+  const e2 = buildRoadEdges(cl2);
+  const t2 = buildTrackModel(cl2, e2, { name: "banked" });
+  const kn5 = readKn5(t2.kn5);
+
+  it("writes longitudinal relief into both the road mesh and AI grade", () => {
+    const road = kn5.nodes.find((n) => n.name === "1ROAD");
+    const meshRelief = road.positionBounds.max[1] - road.positionBounds.min[1];
+    assert.ok(meshRelief > 1, `road relief ${meshRelief}`);
+    assert.ok(Math.abs(meshRelief - (Math.max(...e2.zL, ...e2.zR) - Math.min(...e2.zL, ...e2.zR))) < 1e-4);
+    assert.ok(t2.aiData.grades.some((v) => Math.abs(v) > 1e-3), "no longitudinal grade");
+  });
+
   it("carries non-zero camber when the course is banked", () => {
-    const base = loadFixture("endurance").cones;
-    const meanLng = base.reduce((s, c) => s + c.lng, 0) / base.length;
-    const tilted = base.map((c) => ({ ...c, alt: 2000 * (c.lng - meanLng) }));
-    const cl2 = computeCenterline(tilted, { step: 1.0, metric: true });
-    const t2 = buildTrackModel(cl2, buildRoadEdges(cl2), { name: "banked" });
     assert.ok(t2.aiData.camber.some((v) => Math.abs(v) > 1e-3), "no camber on banked course");
+  });
+
+  it("builds elevated grass terrain close enough to drive off and back on", () => {
+    const road = kn5.nodes.find((n) => n.name === "1ROAD");
+    const grass = kn5.nodes.find((n) => n.name === "1GRASS");
+    const grassRelief = grass.positionBounds.max[1] - grass.positionBounds.min[1];
+    assert.ok(grass.vertices > 4, "elevated grass stayed a flat quad");
+    assert.ok(grass.vertices <= 65000, `grass vertex limit exceeded: ${grass.vertices}`);
+    assert.ok(grassRelief > 1, `grass relief ${grassRelief}`);
+    assert.ok(grass.positionBounds.max[1] >= road.positionBounds.max[1] - 0.5, "grass remains far below the high road");
+    assert.ok(grass.positionBounds.min[1] <= road.positionBounds.min[1] + 0.1, "grass floats above the low road");
+  });
+
+  it("places center cones from adjacent road height, ignoring their raw altitude", () => {
+    const build = (centerAlt) => {
+      const c = computeCenterline(elevatedCones(centerAlt), { step: 1.0, metric: true });
+      return buildTrackModel(c, buildRoadEdges(c), { name: "banked" });
+    };
+    const low = build(-1000), high = build(1000);
+    assert.ok(Buffer.from(low.kn5).equals(Buffer.from(high.kn5)), "center altitude changed the KN5");
+    assert.ok(Buffer.from(low.ai).equals(Buffer.from(high.ai)), "center altitude changed the AI line");
+
+    const parsed = readKn5(high.kn5);
+    const road = parsed.nodes.find((n) => n.name === "1ROAD");
+    const centers = parsed.nodes.find((n) => n.name === "CONE_C");
+    assert.ok(centers.positionBounds.min[1] >= road.positionBounds.min[1] - 0.1);
+    assert.ok(centers.positionBounds.max[1] <= road.positionBounds.max[1] + 0.31);
   });
 });

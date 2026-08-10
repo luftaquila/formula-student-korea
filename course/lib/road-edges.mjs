@@ -85,6 +85,10 @@ export function buildRoadEdges(cl, opts = {}) {
   const extraWidthPerSide = opts.extraWidthPerSide ?? 1.0; // widen each side, except over slalom runs
 
   const P = cl.metric.P;                       // centerline stations [x,y]
+  // Elevation samples deliberately come from wall cones only. Some center cones
+  // are surveyed while lying down, so their antenna height is not comparable to
+  // an upright boundary cone. Centers still shape the 2D slalom/width profile,
+  // but never enter `boundary` or the altitude interpolation below.
   const boundary = cl.metric.left.concat(cl.metric.right); // wall cones [x,y,alt]
   const center = cl.metric.centers;            // center cones [x,y,alt]
   const trackWidth = cl.metric.width;
@@ -196,15 +200,20 @@ export function buildRoadEdges(cl, opts = {}) {
 
   const zLraw = altProfile((v) => v > 0);
   const zRraw = altProfile((v) => v < 0);
-  const hasElevation = zLraw !== null && zRraw !== null;
+  // A partially surveyed course should still retain its longitudinal relief. If
+  // only one geometric side has valid altitude, reuse that adjacent profile for
+  // the other side; this yields grade without inventing cross-track banking.
+  const hasElevation = zLraw !== null || zRraw !== null;
 
   let zC, zL, zR, bank, relief;
   if (hasElevation) {
-    const zCraw = zLraw.map((v, i) => (v + zRraw[i]) / 2);
+    const zLbase = zLraw ?? zRraw;
+    const zRbase = zRraw ?? zLraw;
+    const zCraw = zLbase.map((v, i) => (v + zRbase[i]) / 2);
     const offset = Math.min(...zCraw);
     zC = zCraw.map((v) => v - offset);
-    zL = zLraw.map((v) => v - offset);
-    zR = zRraw.map((v) => v - offset);
+    zL = zLbase.map((v) => v - offset);
+    zR = zRbase.map((v) => v - offset);
     bank = zL.map((v, i) => Math.atan2(v - zR[i], width[i] || 1e-9));
     relief = Math.max(...zC) - Math.min(...zC);
   } else {
