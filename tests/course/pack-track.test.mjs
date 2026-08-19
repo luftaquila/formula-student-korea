@@ -65,6 +65,13 @@ describe("packTrackEntries — text files", () => {
     assert.equal(entries[`${root}/data/surfaces.ini`], SURFACES_INI);
   });
 
+  it("surfaces.ini defaults ROAD grip to 1.05 and keeps GRASS at 0.7", () => {
+    const ini = entries[`${root}/data/surfaces.ini`];
+    const section = (key) => ini.split(/\n\n/).find((s) => s.includes(`KEY=${key}`));
+    assert.match(section("ROAD"), /^FRICTION=1\.05$/m);
+    assert.match(section("GRASS"), /^FRICTION=0\.7$/m);
+  });
+
   it("models.ini references the kn5", () => {
     assert.equal(entries[`${root}/models.ini`],
       `[MODEL_0]\nFILE=${NAME}.kn5\nPOSITION=0,0,0\nROTATION=0,0,0\n`);

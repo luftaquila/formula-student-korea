@@ -6,10 +6,12 @@
 
 import { encodePNG } from "./png.mjs";
 
-// data/surfaces.ini — static (byte-identical to pack_track.py).
+// data/surfaces.ini — static. ROAD FRICTION is 1.05, not the 0.99 the Python
+// original emitted: the venue asphalt grips harder than 0.99 models, so every
+// exported track was being hand-patched to 1.05 after install.
 const SURFACES_INI = `[SURFACE_0]
 KEY=ROAD
-FRICTION=0.99
+FRICTION=1.05
 DAMPING=0
 WAV=
 WAV_PITCH=0
