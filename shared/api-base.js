@@ -1,6 +1,11 @@
 export function createApiClient(basePath) {
-  const BASE_URL = import.meta.env.PROD ? basePath : "";
-  const ENTRY_URL = "/entry";
+  const competitionApi = basePath.startsWith("/competition/api/v1");
+  const BASE_URL = import.meta.env.PROD || competitionApi ? basePath : "";
+  const ENTRY_URL = "/competition/api/v1";
+
+  function serviceEndpoint(endpoint) {
+    return competitionApi ? endpoint.replace(/^\/api(?=\/|$)/, "") : endpoint;
+  }
 
   async function request(endpoint, options = {}) {
     const config = {
@@ -8,7 +13,7 @@ export function createApiClient(basePath) {
       ...options,
     };
 
-    const res = await fetch(`${BASE_URL}${endpoint}`, config);
+    const res = await fetch(`${BASE_URL}${serviceEndpoint(endpoint)}`, config);
 
     if (res.status === 401) {
       window.location.href = `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
@@ -31,21 +36,30 @@ export function createApiClient(basePath) {
   }
 
   async function fetchEntryYears() {
-    const res = await fetch(`${ENTRY_URL}/api/years`);
+    const res = await fetch(`${ENTRY_URL}/meta`);
     if (!res.ok) throw new Error("연도 정보를 가져올 수 없습니다.");
-    return res.json();
+    const data = await res.json();
+    return data.years;
   }
 
   async function fetchEntries(year) {
     const qs = year != null ? `?year=${year}` : "";
-    const res = await fetch(`${ENTRY_URL}/api/entries${qs}`);
+    const res = await fetch(`${ENTRY_URL}/teams${qs}`);
     if (!res.ok) throw new Error("엔트리 정보를 가져올 수 없습니다.");
-    return res.json();
+    const data = await res.json();
+    return Object.fromEntries(data.map(team => [team.number, {
+      id: team.id,
+      teamId: team.id,
+      univ: team.university,
+      team: team.name,
+      type: team.vehicleType,
+      active: team.active,
+    }]));
   }
 
   async function fetchVehicleTypes(year) {
     const qs = year != null ? `?year=${year}` : "";
-    const res = await fetch(`${ENTRY_URL}/api/vehicle-types${qs}`);
+    const res = await fetch(`${ENTRY_URL}/vehicle-types${qs}`);
     if (!res.ok) throw new Error("차량 유형 정보를 가져올 수 없습니다.");
     return res.json();
   }

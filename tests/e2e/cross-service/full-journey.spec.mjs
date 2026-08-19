@@ -1,12 +1,13 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const INSPECTION_TYPE = "noise";
 
 async function apiRegister(num) {
-  return fetch(`${BASE_URL}/queue/api/admin/register/${INSPECTION_TYPE}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${INSPECTION_TYPE}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
@@ -14,7 +15,7 @@ async function apiRegister(num) {
 }
 
 async function apiEnterBooth(num, boothNum = 1) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -22,14 +23,14 @@ async function apiEnterBooth(num, boothNum = 1) {
 }
 
 async function apiExitBooth(boothNum = 1) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
   });
 }
 
 async function apiGetQueue() {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${INSPECTION_TYPE}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${INSPECTION_TYPE}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   return res.json();
@@ -52,18 +53,18 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
 
   test.beforeAll(async () => {
     // Save cancel penalty
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
     });
 
     // Get category ID by name
-    const templateRes = await fetch(`${BASE_URL}/inspection/api/sheet/template?year=${YEAR}`, {
+    const templateRes = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template?year=${YEAR}`, {
       headers: { Cookie: getAuthCookie("admin") },
     });
     const template = await templateRes.json();
@@ -73,7 +74,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
         body: JSON.stringify({ value: originalPenalty }),
@@ -85,7 +86,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
     const headers = { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
 
     // Clear category result for team 30
-    await fetch(`${BASE_URL}/inspection/api/sheet/category-result`, {
+    await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",
       headers,
       body: JSON.stringify({ year: YEAR, team_num: 30, category_id: categoryId, result: "" }),
@@ -110,7 +111,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
 
     // Step 4: Set category result to PASS for team 30
     const headers = { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
-    const setResultRes = await fetch(`${BASE_URL}/inspection/api/sheet/category-result`, {
+    const setResultRes = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",
       headers,
       body: JSON.stringify({ year: YEAR, team_num: 30, category_id: categoryId, result: "PASS" }),

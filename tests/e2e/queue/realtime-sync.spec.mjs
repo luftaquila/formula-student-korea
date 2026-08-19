@@ -3,7 +3,7 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 async function apiRegister(type, num, phone = "01000000000") {
-  return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone }),
@@ -11,7 +11,7 @@ async function apiRegister(type, num, phone = "01000000000") {
 }
 
 async function apiCancel(type, num) {
-  return fetch(`${BASE_URL}/queue/api/admin/cancel/${type}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/cancel/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -19,14 +19,14 @@ async function apiCancel(type, num) {
 }
 
 async function apiExitBooth(type, boothNum) {
-  await fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/exit`, {
+  await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/exit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
   });
 }
 
 async function apiEnterBooth(type, boothNum, num) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/enter`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/enter`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -35,7 +35,7 @@ async function apiEnterBooth(type, boothNum, num) {
 
 async function apiClearQueue(type) {
   // Exit all occupied booths first
-  const boothRes = await fetch(`${BASE_URL}/queue/api/admin/booths/${type}`, {
+  const boothRes = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   if (boothRes.ok) {
@@ -45,7 +45,7 @@ async function apiClearQueue(type) {
     }
   }
   // Clear queued entries via enter+exit (avoids cancel penalty issues)
-  const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   if (!res.ok) return;
@@ -62,11 +62,11 @@ test.describe("Queue SSE real-time sync", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
@@ -80,7 +80,7 @@ test.describe("Queue SSE real-time sync", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
         body: JSON.stringify({ value: originalPenalty }),
@@ -92,7 +92,7 @@ test.describe("Queue SSE real-time sync", () => {
     // Open admin view
     const adminContext = await browser.newContext({ storageState: storageStatePath("official") });
     const adminPage = await adminContext.newPage();
-    const ssePromise = adminPage.waitForResponse((res) => res.url().includes("/api/events"));
+    const ssePromise = adminPage.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/events"));
     await adminPage.goto("/queue/admin");
     await waitForPageReady(adminPage);
     await ssePromise;
@@ -102,7 +102,7 @@ test.describe("Queue SSE real-time sync", () => {
     await expect(reportTab).toBeVisible({ timeout: 10000 });
     const isActive = await reportTab.evaluate((el) => el.classList.contains("active"));
     if (!isActive) {
-      const queueRefresh = adminPage.waitForResponse((res) => res.url().includes("/api/admin/inspection/") && res.status() === 200);
+      const queueRefresh = adminPage.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/admin/inspection/") && res.status() === 200);
       await reportTab.click();
       await queueRefresh;
     }
@@ -124,7 +124,7 @@ test.describe("Queue SSE real-time sync", () => {
     // Open public queue page
     const publicContext = await browser.newContext();
     const publicPage = await publicContext.newPage();
-    const ssePromise = publicPage.waitForResponse((res) => res.url().includes("/api/events"));
+    const ssePromise = publicPage.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/events"));
     await publicPage.goto("/queue");
     await waitForPageReady(publicPage);
     await ssePromise;
@@ -146,13 +146,13 @@ test.describe("Queue SSE real-time sync", () => {
   });
 
   test("active penalty modal reflects penalty changes from another client", async ({ browser }) => {
-    const penaltyUrl = `${BASE_URL}/queue/api/admin/penalties/report/32`;
+    const penaltyUrl = `${BASE_URL}/competition/api/v1/queue/admin/penalties/report/32`;
     await fetch(penaltyUrl, {
       method: "DELETE",
       headers: { Cookie: getAuthCookie("official") },
     });
     await apiClearQueue("report");
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 10 }),
@@ -162,7 +162,7 @@ test.describe("Queue SSE real-time sync", () => {
     const adminPage = await adminContext.newPage();
 
     try {
-      const ssePromise = adminPage.waitForResponse((res) => res.url().includes("/api/events"));
+      const ssePromise = adminPage.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/events"));
       await adminPage.goto("/queue/admin");
       await waitForPageReady(adminPage);
       await ssePromise;
@@ -190,7 +190,7 @@ test.describe("Queue SSE real-time sync", () => {
       await expect(penaltyItem).toHaveCount(0, { timeout: 10000 });
     } finally {
       await adminContext.close();
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
         body: JSON.stringify({ value: 0 }),

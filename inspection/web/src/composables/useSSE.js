@@ -1,14 +1,14 @@
 import { ref } from "vue";
 import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 
-const { on, useSSE: useConnection, reconnected } = createServiceSSE("/inspection", "/api/sheet/events");
+const { on, useSSE: useConnection, reconnected } = createServiceSSE("/competition/api/v1/inspection", "/api/sheet/events");
 
 // Shared state across all components
 const lastUpdate = ref(null);
 const lastInspectorUpdate = ref(null);
 const lastAnswerUpdate = ref(null);
 const lastMemoUpdate = ref(null);
-const lastTeamActiveUpdate = ref(null);
+const lastEntriesUpdate = ref(null);
 
 on("category-result", (e) => {
   const data = parseSSEData(e);
@@ -34,10 +34,10 @@ on("memo", (e) => {
   lastMemoUpdate.value = { ...data, timestamp: Date.now() };
 });
 
-on("team-active", (e) => {
+on("entries", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
-  lastTeamActiveUpdate.value = { ...data, timestamp: Date.now() };
+  lastEntriesUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 export function useSSE() {
@@ -48,7 +48,7 @@ export function useSSE() {
     lastInspectorUpdate,
     lastAnswerUpdate,
     lastMemoUpdate,
-    lastTeamActiveUpdate,
+    lastEntriesUpdate,
     reconnected,
   };
 }

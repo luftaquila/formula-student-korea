@@ -3,5 +3,5 @@ import { createViteConfig } from "../../shared/vite-config.js";
 
 export default (env) => ({
   plugins: [vue()],
-  ...createViteConfig("inspection", 9400, { entryProxy: true })(env),
+  ...createViteConfig("inspection", 9400)(env),
 });

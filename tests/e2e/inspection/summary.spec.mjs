@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Inspection summary dashboard", () => {
   test.use({ storageState: storageStatePath("official") });
@@ -14,15 +15,15 @@ test.describe("Inspection summary dashboard", () => {
     await expect(page.locator("h3")).toContainText("검차 시트");
 
     // Verify entry count badge
-    await expect(page.locator(".count-badge")).toHaveText("8개 팀");
+    await expect(page.locator(".count-badge")).toHaveText("11개 팀");
 
     // Verify the table is visible
     const table = page.locator(".sheet-table");
     await expect(table).toBeVisible();
 
-    // Verify all 5 seeded teams are in the table
+    // Verify all base and inspection-only seeded teams are in the table
     const rows = table.locator("tbody tr.clickable-row");
-    await expect(rows).toHaveCount(8);
+    await expect(rows).toHaveCount(11);
 
     // Verify specific team names
     await expect(table.locator("tbody")).toContainText("서울대학교");
@@ -56,17 +57,17 @@ test.describe("Inspection summary dashboard", () => {
     const apiPage = await context.newPage();
 
     // Get the template to find category IDs
-    const templateRes = await apiPage.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await apiPage.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const firstCatId = template[0].id;
 
     // Set inspector name (required for category result)
-    await apiPage.request.put("/inspection/api/sheet/inspector", {
+    await apiPage.request.put("/competition/api/v1/inspection/sheet/inspector", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "테스트관" },
     });
 
     // Set category result to PASS for the team
-    await apiPage.request.put("/inspection/api/sheet/category-result", {
+    await apiPage.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "PASS" },
     });
 
@@ -84,10 +85,10 @@ test.describe("Inspection summary dashboard", () => {
     // Clean up: clear the result and inspector
     const cleanupCtx = await browser.newContext({ storageState: storageStatePath("official") });
     const cleanupPage = await cleanupCtx.newPage();
-    await cleanupPage.request.put("/inspection/api/sheet/category-result", {
+    await cleanupPage.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "" },
     });
-    await cleanupPage.request.put("/inspection/api/sheet/inspector", {
+    await cleanupPage.request.put("/competition/api/v1/inspection/sheet/inspector", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "" },
     });
     await cleanupCtx.close();
@@ -122,7 +123,7 @@ test.describe("Inspection summary dashboard", () => {
 
     // Clear search restores all entries
     await searchInput.fill("");
-    await expect(rows).toHaveCount(8);
+    await expect(rows).toHaveCount(11);
   });
 
   test("navigates to team sheet on row click", async ({ page }) => {

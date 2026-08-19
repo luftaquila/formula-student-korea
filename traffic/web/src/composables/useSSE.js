@@ -2,13 +2,13 @@ import { ref, watch } from "vue";
 import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 import { fetchWirelessEvents } from "./useApi";
 
-const { on, useSSE: useConnection } = createServiceSSE("/traffic");
+const { on, useSSE: useConnection } = createServiceSSE("/competition/api/v1/traffic");
 
 // Shared state across all components
 const recordFiles = ref([]);
 const selectedFile = ref(localStorage.getItem("traffic-last-file") || null);
 const lastUpdate = ref(null);
-const lastTeamActiveUpdate = ref(null);
+const lastEntriesUpdate = ref(null);
 const eventModes = ref({});
 const recordVisibility = ref({});
 
@@ -181,10 +181,10 @@ on("records", (e) => {
   };
 });
 
-on("team-active", (e) => {
+on("entries", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
-  lastTeamActiveUpdate.value = { ...data, timestamp: Date.now() };
+  lastEntriesUpdate.value = { ...data, timestamp: Date.now() };
 });
 
 on("record-visibility", (e) => {
@@ -206,7 +206,7 @@ export function useSSE() {
     recordFiles,
     selectedFile,
     lastUpdate,
-    lastTeamActiveUpdate,
+    lastEntriesUpdate,
     eventModes,
     recordVisibility,
     connected,

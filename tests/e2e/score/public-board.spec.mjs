@@ -1,12 +1,13 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable, SCORE_TABLE } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 async function setPublication(browser, enabled) {
   const context = await browser.newContext({ storageState: storageStatePath("admin") });
   const page = await context.newPage();
-  const res = await page.request.put("/score/api/score/publication", { data: { year: YEAR, enabled } });
+  const res = await page.request.put("/competition/api/v1/score/score/publication", { data: { year: YEAR, enabled } });
   expect(res.ok()).toBe(true);
   await context.close();
 }

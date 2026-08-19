@@ -26,7 +26,7 @@ const measureToggle = computed(() =>
     ? { to: "/record", label: "🔌 유선 계측" }
     : { to: "/wireless/record", label: "📡 무선 계측" },
 );
-const { recordFiles, selectedFile, lastUpdate, lastTeamActiveUpdate, eventModes, recordVisibility } = useSSE();
+const { recordFiles, selectedFile, lastUpdate, lastEntriesUpdate, eventModes, recordVisibility } = useSSE();
 const entryStore = useEntryStore();
 
 const records = ref([]);
@@ -172,7 +172,7 @@ watch(lastUpdate, (update) => {
   }
 });
 
-watch(lastTeamActiveUpdate, (update) => {
+watch(lastEntriesUpdate, (update) => {
   if (!update || !selectedFile.value) return;
   if (!isActive.value) {
     missedUpdate.value = true;
@@ -521,7 +521,7 @@ async function handleAddRecord() {
     await addRecord(nameForApi, {
       time: new Date().toISOString(),
       type: addType.value,
-      entry: { num: entry.num, univ: entry.univ, team: entry.team },
+      entry: { id: entry.id, num: entry.num, univ: entry.univ, team: entry.team },
       result: resultValue,
       detail: addDetail.value ? `${addDetail.value} (수동)` : "(수동)",
     });

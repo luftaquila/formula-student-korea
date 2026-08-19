@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const express = require('../../documents/node_modules/express/index.js');
@@ -17,7 +18,7 @@ import {
   cleanup,
   setupTestEnv,
   TEST_SECRET,
-  TEST_INTERNAL_SECRET,
+  TRUST_JWT,
 } from '../helpers/test-utils.mjs';
 import { createDocumentsApp } from '../../documents/index.mjs';
 
@@ -51,14 +52,38 @@ function createMockAuthServer() {
    ============================================ */
 setupTestEnv();
 
-let server, baseUrl, client, db, dbPath, uploadsDir;
+let server, baseUrl, client, db, dbPath, uploadsDir, documentsApp;
 let mockAuthServer;
+let rejectedRemovalPath = null;
 
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const studentCookie = makeAuthCookie({ email: 'student1@test.com', name: 'Student 1', role: 'student' });
 const student2Cookie = makeAuthCookie({ email: 'student2@test.com', name: 'Student 2', role: 'student' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+const teamsByYear = new Map([
+  [2025, {
+    1: { id: 1, num: 1, univ: '서울대', team: '팀A', type: 'EV', active: true },
+    10: { id: 10, num: 10, univ: '고려대', team: '팀J', type: 'EV', active: true },
+  }],
+  [2026, {
+    1: { id: 1, num: 1, univ: '서울대', team: '팀A', type: 'EV', active: true },
+    3: { id: 3, num: 3, univ: '연세대', team: '팀C', type: 'EV', active: true },
+  }],
+  [2090, {
+    991: { id: 991, num: 991, univ: 'Inactive Univ', team: 'Inactive Team', type: null, active: false },
+    992: { id: 992, num: 992, univ: 'Other Inactive Univ', team: 'Other Inactive Team', type: null, active: false },
+  }],
+]);
+const teamStore = {
+  moduleEntries: (year) => teamsByYear.get(Number(year)) ?? {},
+  getById: (id) => Object.values(teamsByYear.get(2026) ?? {})
+    .find((team) => team.id === Number(id))
+    ?? Object.values(teamsByYear.get(2025) ?? {}).find((team) => team.id === Number(id))
+    ?? Object.values(teamsByYear.get(2090) ?? {}).find((team) => team.id === Number(id))
+    ?? null,
+  getByNumber: (year, number) => teamsByYear.get(Number(year))?.[Number(number)] ?? null,
+};
 
 describe('student_team migration', () => {
   it('migrates legacy email-only PK once and keeps composite PK on restart', () => {
@@ -101,6 +126,263 @@ describe('student_team migration', () => {
   });
 });
 
+describe('managed upload startup cleanup', () => {
+  it('keeps database-referenced files and removes orphan and temporary files before serving', () => {
+    const cleanupPath = tmpDbPath();
+    const cleanupUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const first = createDocumentsApp({ dbPath: cleanupPath, uploadsDir: cleanupUploads });
+    if (first._schedulerInterval) clearInterval(first._schedulerInterval);
+    const sessionId = first.db.prepare(`
+      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year, created_at)
+      VALUES ('cleanup', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, '', 'test', 2026, '2026-01-01T00:00:00.000Z')
+    `).run().lastInsertRowid;
+    first.db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, 1)").run(sessionId);
+    const submissionId = first.db.prepare(`
+      INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, is_late, storage_dir, attempt_no)
+      VALUES (?, 1, 'test', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 0, ?, 1)
+    `).run(sessionId, `${sessionId}/team-1/1`).lastInsertRowid;
+    first.db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, 'kept.txt', 'kept.txt', 4, 'text/plain')
+    `).run(submissionId);
+    const referenced = path.join(cleanupUploads, String(sessionId), 'team-1', '1', 'kept.txt');
+    const orphan = path.join(cleanupUploads, 'orphan.txt');
+    const temporary = path.join(cleanupUploads, '_tmp', 'partial.upload');
+    fs.mkdirSync(path.dirname(referenced), { recursive: true });
+    fs.writeFileSync(referenced, 'kept');
+    fs.writeFileSync(orphan, 'orphan');
+    fs.writeFileSync(temporary, 'partial');
+    first.db.close();
+
+    const second = createDocumentsApp({ dbPath: cleanupPath, uploadsDir: cleanupUploads });
+    if (second._schedulerInterval) clearInterval(second._schedulerInterval);
+    assert.equal(fs.existsSync(referenced), true);
+    assert.equal(fs.existsSync(orphan), false);
+    assert.equal(fs.existsSync(temporary), false);
+    second.db.close();
+    cleanup(cleanupPath);
+    fs.rmSync(cleanupUploads, { recursive: true, force: true });
+  });
+
+  it('fails startup when a database-referenced upload is missing', () => {
+    const cleanupPath = tmpDbPath();
+    const cleanupUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const first = createDocumentsApp({ dbPath: cleanupPath, uploadsDir: cleanupUploads });
+    if (first._schedulerInterval) clearInterval(first._schedulerInterval);
+    const sessionId = first.db.prepare(`
+      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year, created_at)
+      VALUES ('missing', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, '', 'test', 2026, '2026-01-01T00:00:00.000Z')
+    `).run().lastInsertRowid;
+    const submissionId = first.db.prepare(`
+      INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, is_late, storage_dir, attempt_no)
+      VALUES (?, 1, 'test', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', 0, ?, 1)
+    `).run(sessionId, `${sessionId}/team-1/1`).lastInsertRowid;
+    first.db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, 'missing.txt', 'missing.txt', 7, 'text/plain')
+    `).run(submissionId);
+    first.db.close();
+
+    assert.throws(
+      () => createDocumentsApp({ dbPath: cleanupPath, uploadsDir: cleanupUploads }),
+      /managed upload cleanup failed/,
+    );
+    cleanup(cleanupPath);
+    fs.rmSync(cleanupUploads, { recursive: true, force: true });
+  });
+
+  it('fails before cleanup when a submission storage directory normalizes to the upload root', () => {
+    const cleanupPath = tmpDbPath();
+    const cleanupUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const first = createDocumentsApp({
+      dbPath: cleanupPath, uploadsDir: cleanupUploads, enableNotificationScheduler: false,
+    });
+    const sessionId = Number(first.db.prepare(`
+      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year, created_at)
+      VALUES ('root path', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, '', 'test', 2026, '2026-01-01T00:00:00.000Z')
+    `).run().lastInsertRowid);
+    first.db.prepare(`
+      INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, storage_dir)
+      VALUES (?, 1, 'test', '2026-01-01T00:00:00.000Z', '.')
+    `).run(sessionId);
+    first.db.close();
+    const marker = path.join(cleanupUploads, 'must-remain.txt');
+    fs.writeFileSync(marker, 'kept');
+    const secondDb = new Database(cleanupPath);
+
+    try {
+      assert.throws(
+        () => createDocumentsApp({
+          db: secondDb, uploadsDir: cleanupUploads, enableNotificationScheduler: false,
+        }),
+        /managed upload cleanup failed: submission storage path escapes the uploads directory/,
+      );
+      assert.equal(fs.readFileSync(marker, 'utf8'), 'kept');
+    } finally {
+      secondDb.close();
+      cleanup(cleanupPath);
+      fs.rmSync(cleanupUploads, { recursive: true, force: true });
+    }
+  });
+
+  it('fails before cleanup when a zero-file submission storage directory is only a vertical tab', () => {
+    const cleanupPath = tmpDbPath();
+    const cleanupUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const first = createDocumentsApp({
+      dbPath: cleanupPath, uploadsDir: cleanupUploads, enableNotificationScheduler: false,
+    });
+    const sessionId = Number(first.db.prepare(`
+      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year, created_at)
+      VALUES ('blank path', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, '', 'test', 2026, '2026-01-01T00:00:00.000Z')
+    `).run().lastInsertRowid);
+    first.db.prepare(`
+      INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, storage_dir)
+      VALUES (?, 1, 'test', '2026-01-01T00:00:00.000Z', ?)
+    `).run(sessionId, '\u000b');
+    first.db.close();
+    const marker = path.join(cleanupUploads, 'must-remain.txt');
+    fs.writeFileSync(marker, 'kept');
+    const secondDb = new Database(cleanupPath);
+
+    try {
+      assert.throws(
+        () => createDocumentsApp({
+          db: secondDb, uploadsDir: cleanupUploads, enableNotificationScheduler: false,
+        }),
+        /managed upload cleanup failed: submission .* has no canonical storage directory/,
+      );
+      assert.equal(fs.readFileSync(marker, 'utf8'), 'kept');
+    } finally {
+      secondDb.close();
+      cleanup(cleanupPath);
+      fs.rmSync(cleanupUploads, { recursive: true, force: true });
+    }
+  });
+
+  it('fails before touching an uploads root that is a symbolic link', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fsk-upload-root-link-'));
+    const outside = path.join(root, 'outside');
+    const linkedUploads = path.join(root, 'uploads');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'must-remain.txt'), 'outside');
+    fs.symlinkSync(outside, linkedUploads, 'dir');
+    const linkedDb = new Database(':memory:');
+    try {
+      assert.throws(
+        () => createDocumentsApp({ db: linkedDb, uploadsDir: linkedUploads, enableNotificationScheduler: false }),
+        /managed upload cleanup failed: uploads directory path contains a symbolic link/,
+      );
+      assert.equal(fs.readFileSync(path.join(outside, 'must-remain.txt'), 'utf8'), 'outside');
+      assert.equal(fs.existsSync(path.join(outside, '_tmp')), false);
+    } finally {
+      linkedDb.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails before touching an uploads root beneath a symbolic-link ancestor', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fsk-upload-ancestor-link-'));
+    const realParent = path.join(root, 'real-parent');
+    const linkedParent = path.join(root, 'linked-parent');
+    const realUploads = path.join(realParent, 'uploads');
+    const linkedUploads = path.join(linkedParent, 'uploads');
+    const marker = path.join(realUploads, 'must-remain.txt');
+    fs.mkdirSync(realUploads, { recursive: true });
+    fs.writeFileSync(marker, 'outside');
+    fs.symlinkSync(realParent, linkedParent, 'dir');
+    const linkedDb = new Database(':memory:');
+    try {
+      assert.throws(
+        () => createDocumentsApp({ db: linkedDb, uploadsDir: linkedUploads, enableNotificationScheduler: false }),
+        /managed upload cleanup failed: uploads directory path contains a symbolic link/,
+      );
+      assert.equal(fs.readFileSync(marker, 'utf8'), 'outside');
+      assert.equal(fs.existsSync(path.join(realUploads, '_tmp')), false);
+    } finally {
+      linkedDb.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed on an intermediate symbolic link in a referenced upload path', () => {
+    const cleanupPath = tmpDbPath();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'fsk-upload-parent-link-'));
+    const cleanupUploads = path.join(root, 'uploads');
+    const outside = path.join(root, 'outside');
+    const first = createDocumentsApp({
+      dbPath: cleanupPath, uploadsDir: cleanupUploads, enableNotificationScheduler: false,
+    });
+    const sessionId = Number(first.db.prepare(`
+      INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year, created_at)
+      VALUES ('linked', '', '2020-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '', 1000, '', 'test', 2026, '2026-01-01T00:00:00.000Z')
+    `).run().lastInsertRowid);
+    const storageDir = `${sessionId}/team-1/1`;
+    const submissionId = Number(first.db.prepare(`
+      INSERT INTO submission (session_id, team_num, submitted_by, submitted_at, storage_dir)
+      VALUES (?, 1, 'test', '2026-01-01T00:00:00.000Z', ?)
+    `).run(sessionId, storageDir).lastInsertRowid);
+    first.db.prepare(`
+      INSERT INTO submission_file (submission_id, original_name, stored_name, size)
+      VALUES (?, 'kept.txt', 'kept.txt', 4)
+    `).run(submissionId);
+    first.db.close();
+
+    const outsideFile = path.join(outside, 'team-1', '1', 'kept.txt');
+    fs.mkdirSync(path.dirname(outsideFile), { recursive: true });
+    fs.writeFileSync(outsideFile, 'kept');
+    fs.symlinkSync(outside, path.join(cleanupUploads, String(sessionId)), 'dir');
+    const secondDb = new Database(cleanupPath);
+    try {
+      assert.throws(
+        () => createDocumentsApp({ db: secondDb, uploadsDir: cleanupUploads, enableNotificationScheduler: false }),
+        /referenced upload path contains a symbolic link/,
+      );
+      assert.equal(fs.readFileSync(outsideFile, 'utf8'), 'kept');
+      assert.equal(fs.lstatSync(path.join(cleanupUploads, String(sessionId))).isSymbolicLink(), true);
+    } finally {
+      secondDb.close();
+      cleanup(cleanupPath);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('recovers after a process exits between the final file move and metadata commit', () => {
+    const crashPath = tmpDbPath();
+    const crashUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const helper = path.resolve('tests/documents/fixtures/crash-after-upload-move.mjs');
+    const child = spawnSync(process.execPath, [helper, crashPath, crashUploads], {
+      cwd: path.resolve('.'),
+      encoding: 'utf8',
+      env: { ...process.env },
+    });
+    assert.equal(child.status, 77, `${child.stdout}\n${child.stderr}`);
+
+    const crashedDb = new Database(crashPath);
+    assert.equal(crashedDb.prepare('SELECT COUNT(*) AS count FROM submission').get().count, 0);
+    crashedDb.close();
+    assert.equal(
+      fs.existsSync(path.join(crashUploads, '1', 'team-1', '1')),
+      true,
+      'the crash fixture must leave the moved directory as an unreferenced orphan',
+    );
+
+    const restarted = createDocumentsApp({
+      dbPath: crashPath,
+      uploadsDir: crashUploads,
+      enableNotificationScheduler: false,
+      teamStore: {
+        moduleEntries: () => ({ 1: { id: 1, num: 1, univ: 'Crash U', team: 'Crash T', active: true } }),
+        getByNumber: () => ({ id: 1 }),
+      },
+    });
+    assert.equal(restarted.db.prepare('SELECT COUNT(*) AS count FROM submission').get().count, 0);
+    assert.equal(fs.existsSync(path.join(crashUploads, '1')), false);
+    restarted.db.close();
+    cleanup(crashPath);
+    fs.rmSync(crashUploads, { recursive: true, force: true });
+  });
+});
+
 before(async () => {
   const mockApp = createMockAuthServer();
   const mockStarted = await startServer(mockApp);
@@ -109,7 +391,16 @@ before(async () => {
 
   dbPath = tmpDbPath();
   uploadsDir = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
-  const result = createDocumentsApp({ dbPath, uploadsDir });
+  const result = createDocumentsApp({
+    dbPath,
+    uploadsDir,
+    teamStore,
+    removeDirectory: (dir) => {
+      if (dir === rejectedRemovalPath) throw new Error('injected retained-file removal failure');
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  });
+  documentsApp = result;
   db = result.db;
   if (result._schedulerInterval) clearInterval(result._schedulerInterval);
   if (result._renumberFileWorkInterval) clearInterval(result._renumberFileWorkInterval);
@@ -123,6 +414,7 @@ before(async () => {
 after(async () => {
   await stopServer(server);
   await stopServer(mockAuthServer);
+  await documentsApp.drainNotificationTasks();
   db.close();
   cleanup(dbPath);
   fs.rmSync(uploadsDir, { recursive: true, force: true });
@@ -252,6 +544,14 @@ describe('Student-team mapping (admin API)', () => {
   it('DELETE /api/admin/student-teams/:email/:year returns 404 for non-existent', async () => {
     const res = await client.delete('/api/admin/student-teams/nobody@test.com/2026', { cookie: chiefCookie });
     assert.equal(res.status, 404);
+    const warning = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'student_team.delete' AND level = 'warn' AND target = 'nobody@test.com'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.deepEqual(JSON.parse(warning.detail), {
+      error: 'mapping_not_found', reason: 'mapping_not_found', year: 2026,
+    });
   });
 
   it('DELETE /api/admin/student-teams/:email/:year deletes mapping', async () => {
@@ -499,6 +799,35 @@ describe('Session management (admin API)', () => {
     });
   });
 
+  it('audits update and delete attempts for a missing session', async () => {
+    const missingId = 99991;
+    const update = await client.put(`/api/admin/sessions/${missingId}`, {
+      body: {
+        name: 'Missing Session',
+        start_at: '2020-01-01T00:00',
+        end_at: '2030-12-31T23:59',
+        teams: [1],
+      },
+      cookie: chiefCookie,
+    });
+    const deletion = await client.delete(`/api/admin/sessions/${missingId}`, { cookie: chiefCookie });
+    assert.deepEqual([update.status, deletion.status], [404, 404]);
+    const warnings = db.prepare(`
+      SELECT action, detail FROM logs
+      WHERE level = 'warn' AND target = ? AND action IN ('session.update', 'session.delete')
+      ORDER BY id
+    `).all(`session:${missingId}`);
+    assert.deepEqual(warnings.map((row) => row.action), ['session.update', 'session.delete']);
+    for (const row of warnings) {
+      assert.deepEqual(JSON.parse(row.detail), {
+        error: 'session_not_found',
+        reason: 'session_not_found',
+        phase: 'session_preflight',
+        session_id: missingId,
+      });
+    }
+  });
+
   it('DELETE /api/admin/sessions/:id deletes session', async () => {
     // Create a disposable session
     const createRes = await client.post('/api/admin/sessions', {
@@ -517,8 +846,15 @@ describe('Session management (admin API)', () => {
     const beforeCount = db.prepare('SELECT count(*) as c FROM scheduled_notification WHERE session_id = ?').get(id).c;
     assert.ok(beforeCount > 0, 'scheduled notifications should exist before delete');
 
-    const res = await client.delete(`/api/admin/sessions/${id}`, { cookie: chiefCookie });
-    assert.equal(res.status, 200);
+    const cleanupPath = path.join(uploadsDir, String(id));
+    rejectedRemovalPath = cleanupPath;
+    let res;
+    try {
+      res = await client.delete(`/api/admin/sessions/${id}`, { cookie: chiefCookie });
+      assert.equal(res.status, 200);
+    } finally {
+      rejectedRemovalPath = null;
+    }
 
     // Verify it's gone
     const listRes = await client.get('/api/admin/sessions', { cookie: chiefCookie });
@@ -528,6 +864,22 @@ describe('Session management (admin API)', () => {
     // Verify scheduled notifications cascaded
     const afterCount = db.prepare('SELECT count(*) as c FROM scheduled_notification WHERE session_id = ?').get(id).c;
     assert.equal(afterCount, 0, 'scheduled notifications should cascade on session delete');
+    const info = db.prepare(`
+      SELECT detail FROM logs WHERE action = 'session.delete' AND level = 'info' AND target = 'Disposable Session'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.deepEqual(JSON.parse(info.detail).file_cleanup, [{
+      directory: cleanupPath,
+      removed: false,
+      error: 'injected retained-file removal failure',
+    }]);
+    const warning = db.prepare(`
+      SELECT detail FROM logs WHERE action = 'session.delete' AND level = 'warn' AND target = 'Disposable Session'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(JSON.parse(warning.detail).error, 'partial_file_cleanup');
+    assert.equal(JSON.parse(warning.detail).failed_cleanup[0].directory, cleanupPath);
+    fs.rmSync(cleanupPath, { recursive: true, force: true });
   });
 });
 
@@ -630,6 +982,25 @@ describe('Student API - session detail', () => {
 let submissionId, fileId;
 
 describe('File upload', () => {
+  it('audits submission to a missing session', async () => {
+    const missingId = 99992;
+    const res = await client.post(`/api/sessions/${missingId}/submit`, {
+      body: {}, cookie: studentCookie,
+    });
+    assert.equal(res.status, 404);
+    const warning = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'submission.create' AND level = 'warn' AND target = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(`session:${missingId}`);
+    assert.deepEqual(JSON.parse(warning.detail), {
+      error: 'session_not_found',
+      reason: 'session_not_found',
+      phase: 'submission_preflight',
+      session_id: missingId,
+    });
+  });
+
   it('POST /api/sessions/:id/submit rejects multipart without files without persisting', async () => {
     const before = db.prepare(
       'SELECT COUNT(*) AS count FROM submission WHERE session_id = ? AND team_num = 1',
@@ -645,6 +1016,80 @@ describe('File upload', () => {
     assert.equal(after, before, 'an empty multipart request must not create a submission');
   });
 
+  it('uses a stored stable team ID without an unnecessary canonical lookup', async () => {
+    const columns = db.prepare('PRAGMA table_info(student_team)').all();
+    if (!columns.some((column) => column.name === 'team_id')) {
+      db.exec('ALTER TABLE student_team ADD COLUMN team_id INTEGER');
+    }
+    db.prepare('UPDATE student_team SET team_id = 1 WHERE email = ? AND year = 2026')
+      .run('student1@test.com');
+    const originalLookup = teamStore.getByNumber;
+    teamStore.getByNumber = () => { throw new Error('canonical lookup must not run'); };
+    try {
+      const res = await uploadFile(sessionId, studentCookie, [
+        { name: 'stable-id.pdf', type: 'application/pdf', content: Buffer.from('stable') },
+      ]);
+      assert.equal(res.status, 200, await res.text());
+    } finally {
+      teamStore.getByNumber = originalLookup;
+    }
+  });
+
+  it('logs a controlled failure when the required canonical-team fallback throws', async () => {
+    db.prepare('UPDATE student_team SET team_id = NULL WHERE email = ? AND year = 2026')
+      .run('student1@test.com');
+    const originalLookup = teamStore.getByNumber;
+    teamStore.getByNumber = () => { throw new Error('injected canonical lookup failure'); };
+    try {
+      const res = await uploadFile(sessionId, studentCookie, [
+        { name: 'lookup.pdf', type: 'application/pdf', content: Buffer.from('lookup') },
+      ]);
+      assert.equal(res.status, 500);
+      assert.equal(await res.text(), '팀 기준 정보를 확인할 수 없습니다.');
+      const log = db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'submission.create' AND level = 'warn'
+          AND detail LIKE '%canonical_team_lookup%'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.ok(log);
+      assert.deepEqual(
+        JSON.parse(log.detail),
+        {
+          error: 'injected canonical lookup failure',
+          phase: 'canonical_team_lookup',
+          session_id: sessionId,
+          year: 2026,
+          team_num: 1,
+        },
+      );
+    } finally {
+      teamStore.getByNumber = originalLookup;
+      db.prepare('UPDATE student_team SET team_id = 1 WHERE email = ? AND year = 2026')
+        .run('student1@test.com');
+    }
+  });
+
+  it('rejects malformed multipart before creating a temporary directory and audits it', async () => {
+    const before = fs.readdirSync(path.join(uploadsDir, '_tmp')).sort();
+    const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Cookie': studentCookie },
+      body: '{}',
+    });
+    assert.equal(res.status, 400);
+    assert.equal(await res.text(), '올바른 multipart 업로드 요청이 아닙니다.');
+    assert.deepEqual(fs.readdirSync(path.join(uploadsDir, '_tmp')).sort(), before);
+    const log = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'submission.create' AND level = 'warn'
+        AND detail LIKE '%multipart_init%'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.ok(log);
+    assert.equal(JSON.parse(log.detail).phase, 'multipart_init');
+  });
+
   it('POST /api/sessions/:id/submit uploads file', async () => {
     const fileContent = Buffer.from('test file content for pdf');
     const res = await uploadFile(sessionId, studentCookie, [
@@ -655,6 +1100,9 @@ describe('File upload', () => {
     assert.ok(data.id);
     assert.ok(data.submitted_at);
     submissionId = data.id;
+    const stored = db.prepare("SELECT team_id, storage_dir FROM submission WHERE id = ?").get(submissionId);
+    assert.equal(stored.team_id, 1);
+    assert.match(stored.storage_dir, new RegExp(`^${sessionId}/team-${stored.team_id}/`));
   });
 
   it('POST /api/sessions/:id/submit rejects wrong extension', async () => {
@@ -665,7 +1113,7 @@ describe('File upload', () => {
     ]);
     assert.equal(res.status, 400);
 
-    // rejection must be logged (CLAUDE.md logging policy)
+    // rejection must be logged (CONTRIBUTING.md logging policy)
     const log = db.prepare(
       "SELECT * FROM logs WHERE action = 'submission.create' AND level = 'warn' AND detail LIKE '%invalid_extension%' ORDER BY id DESC LIMIT 1",
     ).get();
@@ -681,6 +1129,116 @@ describe('File upload', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     submissionId = data.id; // update to latest submission
+  });
+
+  it('preserves retained metadata and files when old-submission deletion fails', async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      body: {
+        name: 'Retention Delete Failure',
+        start_at: '2020-01-01T00:00', end_at: '2030-12-31T23:59', late_end_at: '',
+        max_file_size: 10485760, year: 2026, teams: [1], allowed_extensions: 'pdf',
+      },
+      cookie: chiefCookie,
+    });
+    assert.equal(sessionRes.status, 201);
+    const { id: retentionSessionId } = await sessionRes.json();
+    try {
+      for (const label of ['first', 'second']) {
+        const uploaded = await uploadFile(retentionSessionId, studentCookie, [
+          { name: `${label}.pdf`, type: 'application/pdf', content: Buffer.from(label) },
+        ]);
+        assert.equal(uploaded.status, 200);
+      }
+      const oldest = db.prepare(`
+        SELECT s.id, s.storage_dir, f.stored_name
+        FROM submission s JOIN submission_file f ON f.submission_id = s.id
+        WHERE s.session_id = ? ORDER BY s.id LIMIT 1
+      `).get(retentionSessionId);
+      const oldestFile = path.join(uploadsDir, oldest.storage_dir, oldest.stored_name);
+      assert.equal(fs.existsSync(oldestFile), true);
+      db.exec(`CREATE TRIGGER reject_retention_delete
+        BEFORE DELETE ON submission
+        WHEN OLD.id = ${Number(oldest.id)}
+        BEGIN SELECT RAISE(ABORT, 'injected retention delete failure'); END`);
+
+      const third = await uploadFile(retentionSessionId, studentCookie, [
+        { name: 'third.pdf', type: 'application/pdf', content: Buffer.from('third') },
+      ]);
+      assert.equal(third.status, 200, await third.text());
+      assert.ok(db.prepare('SELECT id FROM submission WHERE id = ?').get(oldest.id));
+      assert.equal(fs.existsSync(oldestFile), true);
+      const log = db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'submission.retention_cleanup' AND level = 'warn'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.ok(log);
+      assert.deepEqual(JSON.parse(log.detail), {
+        error: 'injected retention delete failure',
+        submission_id: oldest.id,
+        storage_dir: oldest.storage_dir,
+        file_preserved: true,
+      });
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS reject_retention_delete');
+      db.prepare('DELETE FROM session WHERE id = ?').run(retentionSessionId);
+      fs.rmSync(path.join(uploadsDir, String(retentionSessionId)), { recursive: true, force: true });
+    }
+  });
+
+  it('records retention file deletion as failed when the directory remains on disk', async () => {
+    const sessionRes = await client.post('/api/admin/sessions', {
+      body: {
+        name: 'Retention File Failure',
+        start_at: '2020-01-01T00:00', end_at: '2030-12-31T23:59', late_end_at: '',
+        max_file_size: 10485760, year: 2026, teams: [1], allowed_extensions: 'pdf',
+      },
+      cookie: chiefCookie,
+    });
+    assert.equal(sessionRes.status, 201);
+    const { id: retentionSessionId } = await sessionRes.json();
+    try {
+      for (const label of ['first', 'second']) {
+        const uploaded = await uploadFile(retentionSessionId, studentCookie, [
+          { name: `${label}.pdf`, type: 'application/pdf', content: Buffer.from(label) },
+        ]);
+        assert.equal(uploaded.status, 200);
+      }
+      const oldest = db.prepare(`
+        SELECT id, storage_dir FROM submission
+        WHERE session_id = ? ORDER BY id LIMIT 1
+      `).get(retentionSessionId);
+      rejectedRemovalPath = path.join(uploadsDir, oldest.storage_dir);
+
+      const third = await uploadFile(retentionSessionId, studentCookie, [
+        { name: 'third.pdf', type: 'application/pdf', content: Buffer.from('third') },
+      ]);
+      assert.equal(third.status, 200, await third.text());
+      assert.equal(db.prepare('SELECT id FROM submission WHERE id = ?').get(oldest.id), undefined);
+      assert.equal(fs.existsSync(rejectedRemovalPath), true);
+
+      const warning = db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'submission.retention_cleanup' AND level = 'warn'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.deepEqual(JSON.parse(warning.detail), {
+        submission_id: oldest.id,
+        storage_dir: oldest.storage_dir,
+        metadata_deleted: true,
+        file_removed: false,
+        error: 'injected retained-file removal failure',
+      });
+      assert.equal(db.prepare(`
+        SELECT COUNT(*) AS count FROM logs
+        WHERE action = 'submission.retention_cleanup' AND level = 'info'
+          AND detail LIKE ?
+      `).get(`%\"submission_id\":${oldest.id}%`).count, 0);
+    } finally {
+      rejectedRemovalPath = null;
+      db.prepare('DELETE FROM session WHERE id = ?').run(retentionSessionId);
+      fs.rmSync(path.join(uploadsDir, String(retentionSessionId)), { recursive: true, force: true });
+    }
   });
 
   it('POST /api/sessions/:id/submit applies the BOM, UTF-8-first, and CP949 fallback policy', async () => {
@@ -815,6 +1373,16 @@ describe('File upload', () => {
       { name: 'test.pdf', type: 'application/pdf', content: fileContent },
     ]);
     assert.equal(res.status, 400);
+    const warning = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'submission.create' AND level = 'warn' AND target = 'Future Session'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    const detail = JSON.parse(warning.detail);
+    assert.equal(detail.error, 'submission_not_open');
+    assert.equal(detail.phase, 'submission_window');
+    assert.equal(detail.session_id, futureId);
+    assert.equal(detail.team_num, 1);
 
     // Cleanup
     await client.delete(`/api/admin/sessions/${futureId}`, { cookie: chiefCookie });
@@ -840,6 +1408,16 @@ describe('File upload', () => {
       { name: 'test.pdf', type: 'application/pdf', content: fileContent },
     ]);
     assert.equal(res.status, 400);
+    const warning = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'submission.create' AND level = 'warn' AND target = 'Past Session'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    const detail = JSON.parse(warning.detail);
+    assert.equal(detail.error, 'submission_closed');
+    assert.equal(detail.phase, 'submission_window');
+    assert.equal(detail.session_id, pastId);
+    assert.equal(detail.team_num, 1);
 
     // Cleanup
     await client.delete(`/api/admin/sessions/${pastId}`, { cookie: chiefCookie });
@@ -918,6 +1496,57 @@ describe('Submission zip download (student)', () => {
   });
 });
 
+describe('Historical submission reads', () => {
+  it('lists and authorizes files and zip using the requested session year mapping', async () => {
+    db.prepare("INSERT INTO student_team (email, team_num, year) VALUES ('student1@test.com', 10, 2025)").run();
+    const historicalSessionId = Number(db.prepare(`
+      INSERT INTO session
+        (name, notice, start_at, end_at, late_end_at, max_file_size, allowed_extensions, created_by, year)
+      VALUES ('Historical', '', '2020-01-01', '2030-01-01', '', 1000, '', 'test', 2025)
+    `).run().lastInsertRowid);
+    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, 10)").run(historicalSessionId);
+    const historicalSubmissionId = Number(db.prepare(`
+      INSERT INTO submission
+        (session_id, team_num, submitted_by, submitted_at, storage_dir, attempt_no)
+      VALUES (?, 10, 'student1@test.com', '2025-01-01', ?, 1)
+    `).run(historicalSessionId, `${historicalSessionId}/team-10/historical`).lastInsertRowid);
+    const historicalFileId = Number(db.prepare(`
+      INSERT INTO submission_file
+        (submission_id, original_name, stored_name, size, mime_type)
+      VALUES (?, 'historical.pdf', 'historical.pdf', 10, 'application/pdf')
+    `).run(historicalSubmissionId).lastInsertRowid);
+    const historicalDir = path.join(uploadsDir, String(historicalSessionId), 'team-10', 'historical');
+    fs.mkdirSync(historicalDir, { recursive: true });
+    fs.writeFileSync(path.join(historicalDir, 'historical.pdf'), 'historical');
+
+    try {
+      const listResponse = await client.get('/api/sessions?year=2025', { cookie: studentCookie });
+      assert.equal(listResponse.status, 200);
+      const list = await listResponse.json();
+      assert.deepEqual(list.team, { team_num: 10, year: 2025 });
+      assert.ok(list.sessions.some((session) => session.id === historicalSessionId));
+
+      const fileResponse = await fetch(
+        `${baseUrl}/api/submissions/${historicalSubmissionId}/files/${historicalFileId}`,
+        { headers: { Cookie: studentCookie } },
+      );
+      assert.equal(fileResponse.status, 200);
+      assert.equal(await fileResponse.text(), 'historical');
+
+      const zipResponse = await fetch(`${baseUrl}/api/submissions/${historicalSubmissionId}/zip`, {
+        headers: { Cookie: studentCookie },
+      });
+      assert.equal(zipResponse.status, 200);
+      const zip = Buffer.from(await zipResponse.arrayBuffer());
+      assert.equal(zip.subarray(0, 2).toString('latin1'), 'PK');
+    } finally {
+      db.prepare("DELETE FROM session WHERE id = ?").run(historicalSessionId);
+      db.prepare("DELETE FROM student_team WHERE email = 'student1@test.com' AND year = 2025").run();
+      fs.rmSync(path.join(uploadsDir, String(historicalSessionId)), { recursive: true, force: true });
+    }
+  });
+});
+
 describe('Zip entry name sanitization (zip-slip)', () => {
   it('sanitizes path separators in original filenames inside the zip', async () => {
     // 격리된 세션에서 경로 순회 문자가 든 파일명을 업로드
@@ -979,11 +1608,11 @@ describe('File download (admin)', () => {
   });
 
   it('GET /api/admin/submissions/:subId/files/:fileId detects and persists CP949 Korean text', async () => {
-    const sub = db.prepare('SELECT session_id, team_num FROM submission WHERE id = ?').get(submissionId);
+    const sub = db.prepare('SELECT session_id, team_num, storage_dir FROM submission WHERE id = ?').get(submissionId);
     const storedName = `${crypto.randomUUID()}.txt`;
     const originalName = '한글-CP949.txt';
     const content = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]); // "한글" in CP949
-    const dir = path.join(uploadsDir, String(sub.session_id), String(sub.team_num), String(submissionId));
+    const dir = path.join(uploadsDir, sub.storage_dir);
     const filePath = path.join(dir, storedName);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(filePath, content);
@@ -1002,7 +1631,7 @@ describe('File download (admin)', () => {
       const body = Buffer.from(await res.arrayBuffer());
       assert.equal(new TextDecoder('euc-kr').decode(body), '한글');
       const stored = db.prepare('SELECT text_charset FROM submission_file WHERE id = ?').get(inserted.lastInsertRowid);
-      assert.equal(stored.text_charset, 'euc-kr', 'legacy file detection should be persisted');
+      assert.equal(stored.text_charset, 'euc-kr', 'detected charset should be persisted');
 
       const rangeRes = await fetch(`${baseUrl}/api/admin/submissions/${submissionId}/files/${inserted.lastInsertRowid}`, {
         headers: { 'Cookie': adminCookie, 'Range': 'bytes=0-0' },
@@ -1233,7 +1862,7 @@ describe('File size limit', () => {
     ]);
     assert.equal(res.status, 413);
 
-    // rejection must be logged (CLAUDE.md logging policy)
+    // rejection must be logged (CONTRIBUTING.md logging policy)
     const log = db.prepare(
       "SELECT * FROM logs WHERE action = 'submission.create' AND level = 'warn' AND detail LIKE '%file_size_exceeded%' ORDER BY id DESC LIMIT 1",
     ).get();
@@ -1302,6 +1931,58 @@ describe('Session update - team removal cleanup', () => {
     const afterData = await statusAfter.json();
     const team3After = afterData.status.find(s => s.team_num === 3);
     assert.equal(team3After, undefined, 'team 3 should not exist after removal');
+    const audit = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'session.update' AND level = 'info' AND target = 'Cleanup Test'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    const detail = JSON.parse(audit.detail);
+    assert.deepEqual(detail.before_teams, [1, 3]);
+    assert.deepEqual(detail.after_teams, [1]);
+    assert.equal(detail.deleted_submissions.length, 1);
+    assert.equal(detail.deleted_submissions[0].id, team3Before.submission.id);
+    assert.equal(detail.deleted_submissions[0].team_num, 3);
+    assert.equal(detail.file_cleanup.length, 1);
+    assert.equal(detail.file_cleanup[0].submission_id, team3Before.submission.id);
+    assert.equal(detail.file_cleanup[0].team_num, 3);
+    assert.equal(detail.file_cleanup[0].removed, true);
+    assert.equal(detail.file_cleanup[0].error, null);
+  });
+});
+
+describe('Account-assignment notification auditing', () => {
+  it('records missing INTERNAL_SECRET with recipient, year, and team context', async () => {
+    const email = 'notify-secret@test.invalid';
+    const teamNum = 10;
+    db.prepare('INSERT OR IGNORE INTO session_team (session_id, team_num) VALUES (?, ?)').run(sessionId, teamNum);
+    const previousSecret = process.env.INTERNAL_SECRET;
+    delete process.env.INTERNAL_SECRET;
+    try {
+      const response = await client.post('/api/admin/student-teams', {
+        body: { email, team_num: teamNum, year: 2026 },
+        cookie: chiefCookie,
+      });
+      assert.equal(response.status, 201, await response.text());
+      while (documentsApp.hasPendingNotificationTasks()) await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.env.INTERNAL_SECRET = previousSecret;
+    }
+    const warning = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'student_team.notify' AND level = 'warn' AND target = ?
+      ORDER BY id DESC LIMIT 1
+    `).get(email);
+    assert.deepEqual(JSON.parse(warning.detail), {
+      error: 'INTERNAL_SECRET not configured',
+      reason: 'INTERNAL_SECRET not configured',
+      phase: 'recipient_send',
+      recipient: email,
+      year: 2026,
+      team_num: teamNum,
+      session_count: 1,
+    });
+    db.prepare('DELETE FROM student_team WHERE email = ? AND year = ?').run(email, 2026);
+    db.prepare('DELETE FROM session_team WHERE session_id = ? AND team_num = ?').run(sessionId, teamNum);
   });
 });
 
@@ -1373,415 +2054,6 @@ describe('Multiple file upload', () => {
   });
 });
 
-// -- Internal API: PATCH /api/internal/team-num --
-describe('PATCH /api/internal/team-num', () => {
-  let internalSessionId;
-
-  before(() => {
-    // Create prerequisite data for internal API tests
-    // Student-team mapping for team_num=50, year=2025
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('internal-test@test.com', 50, 2025);
-
-    // Session for year 2025
-    const sessionResult = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2025-01-01 00:00', '2025-12-31 23:59', '', 52428800, 'admin@test.com', 2025)",
-    ).run('Internal Test Session');
-    internalSessionId = sessionResult.lastInsertRowid;
-
-    // session_team for team_num=50
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(internalSessionId, 50);
-
-    // submission for team_num=50
-    db.prepare(
-      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, 50, 'internal-test@test.com', '2025-06-01 11:59', '2025-06-01 12:00', 1024, 0)",
-    ).run(internalSessionId);
-  });
-
-  it('updates student_team, session_team, and submission team_num', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 50, newNum: 99, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-
-    // Verify student_team updated
-    const studentTeam = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
-    assert.equal(studentTeam.team_num, 99);
-
-    // Verify session_team updated
-    const sessionTeam = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? AND team_num = 99").get(internalSessionId);
-    assert.ok(sessionTeam, 'session_team should have team_num=99');
-
-    // Verify old team_num no longer exists in session_team
-    const oldSessionTeam = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? AND team_num = 50").get(internalSessionId);
-    assert.equal(oldSessionTeam, undefined, 'old team_num=50 should not exist in session_team');
-
-    // Verify submission updated
-    const submission = db.prepare("SELECT team_num FROM submission WHERE session_id = ?").get(internalSessionId);
-    assert.equal(submission.team_num, 99);
-  });
-
-  it('renames upload directory when it exists', async () => {
-    // Rename back from 99 to 50 first for a clean state
-    await client.patch('/api/internal/team-num', {
-      body: { prevNum: 99, newNum: 50, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-
-    // Create a fake upload dir for session/team
-    const oldDir = path.join(uploadsDir, String(internalSessionId), '50');
-    fs.mkdirSync(oldDir, { recursive: true });
-    fs.writeFileSync(path.join(oldDir, 'test.txt'), 'test');
-
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 50, newNum: 77, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-
-    const newDir = path.join(uploadsDir, String(internalSessionId), '77');
-    assert.ok(fs.existsSync(newDir), 'new upload dir should exist');
-    assert.ok(!fs.existsSync(oldDir), 'old upload dir should not exist');
-    assert.ok(fs.existsSync(path.join(newDir, 'test.txt')), 'files should be preserved');
-  });
-
-  it('returns 500 and rolls back DB when rename fails', async () => {
-    // Setup: ensure team_num=77 from previous test
-    const studentBefore = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
-    const currentNum = studentBefore.team_num;
-
-    // Create upload dir for the current team
-    const oldDir = path.join(uploadsDir, String(internalSessionId), String(currentNum));
-    fs.mkdirSync(oldDir, { recursive: true });
-    fs.writeFileSync(path.join(oldDir, 'keep.txt'), 'data');
-
-    // Create a non-empty directory at the target path to cause rename to fail
-    const targetNum = 88;
-    const blockingDir = path.join(uploadsDir, String(internalSessionId), String(targetNum));
-    fs.mkdirSync(blockingDir, { recursive: true });
-    fs.writeFileSync(path.join(blockingDir, 'blocker.txt'), 'block');
-
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: currentNum, newNum: targetNum, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 500, 'should return 500 when rename fails');
-
-    // Verify DB was rolled back
-    const studentAfter = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
-    assert.equal(studentAfter.team_num, currentNum, 'student_team should be rolled back');
-
-    const sessionTeam = db.prepare("SELECT team_num FROM session_team WHERE session_id = ? AND team_num = ?").get(internalSessionId, currentNum);
-    assert.ok(sessionTeam, 'session_team should be rolled back');
-
-    // Verify original upload dir still exists
-    assert.ok(fs.existsSync(oldDir), 'original upload dir should still exist');
-
-    // Cleanup blocking dir
-    fs.rmSync(blockingDir, { recursive: true, force: true });
-  });
-
-  it('returns 500 and rolls back successful renames across multiple sessions', async () => {
-    const studentBefore = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
-    const currentNum = studentBefore.team_num;
-    const targetNum = 95;
-
-    // Create a second session for the same year
-    const session2Result = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2025-01-01 00:00', '2025-12-31 23:59', '', 52428800, 'admin@test.com', 2025)",
-    ).run('Internal Test Session 2');
-    const session2Id = session2Result.lastInsertRowid;
-
-    // Session 1: upload dir exists, no blocker → rename will succeed
-    const s1OldDir = path.join(uploadsDir, String(internalSessionId), String(currentNum));
-    fs.mkdirSync(s1OldDir, { recursive: true });
-    fs.writeFileSync(path.join(s1OldDir, 'file1.txt'), 'data1');
-
-    // Session 2: upload dir exists, blocker at target → rename will fail
-    const s2OldDir = path.join(uploadsDir, String(session2Id), String(currentNum));
-    const s2BlockDir = path.join(uploadsDir, String(session2Id), String(targetNum));
-    fs.mkdirSync(s2OldDir, { recursive: true });
-    fs.writeFileSync(path.join(s2OldDir, 'file2.txt'), 'data2');
-    fs.mkdirSync(s2BlockDir, { recursive: true });
-    fs.writeFileSync(path.join(s2BlockDir, 'blocker.txt'), 'block');
-
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: currentNum, newNum: targetNum, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 500, 'should return 500 when any rename fails');
-
-    // Verify DB was rolled back
-    const studentAfter = db.prepare("SELECT team_num FROM student_team WHERE email = 'internal-test@test.com' AND year = 2025").get();
-    assert.equal(studentAfter.team_num, currentNum, 'student_team should be rolled back');
-
-    // Verify session 1 successful rename was reverted
-    assert.ok(fs.existsSync(s1OldDir), 'session 1 old dir should be restored');
-    assert.ok(!fs.existsSync(path.join(uploadsDir, String(internalSessionId), String(targetNum))), 'session 1 target dir should not exist');
-
-    // Verify session 2 old dir still exists
-    assert.ok(fs.existsSync(s2OldDir), 'session 2 old dir should still exist');
-
-    // Cleanup
-    fs.rmSync(s2BlockDir, { recursive: true, force: true });
-    fs.rmSync(s1OldDir, { recursive: true, force: true });
-    fs.rmSync(s2OldDir, { recursive: true, force: true });
-    db.prepare("DELETE FROM session WHERE id = ?").run(session2Id);
-  });
-
-  it('replaces stale target rows and upload directory on renumber collision', async () => {
-    const year = 2031;
-    const prevNum = 600;
-    const newNum = 601;
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-prev@test.com', prevNum, year);
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-target@test.com', newNum, year);
-    const sessionId = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2031-01-01 00:00', '2031-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
-    ).run('Renumber Collision Session', year).lastInsertRowid;
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, prevNum);
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
-    db.prepare(
-      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2031-06-01 11:59', '2031-06-01 12:00', 1024, 0)",
-    ).run(sessionId, prevNum, 'renumber-prev@test.com');
-    db.prepare(
-      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2031-06-01 11:59', '2031-06-01 12:00', 2048, 0)",
-    ).run(sessionId, newNum, 'renumber-target@test.com');
-
-    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
-    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
-    fs.mkdirSync(oldDir, { recursive: true });
-    fs.writeFileSync(path.join(oldDir, 'prev.txt'), 'prev');
-    fs.mkdirSync(newDir, { recursive: true });
-    fs.writeFileSync(path.join(newDir, 'stale.txt'), 'stale');
-
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum, newNum, year },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM student_team WHERE team_num = ? AND year = ?").get(newNum, year).c, 1);
-    assert.equal(db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get('renumber-prev@test.com', year).team_num, newNum);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM session_team WHERE session_id = ? AND team_num = ?").get(sessionId, newNum).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM submission WHERE session_id = ? AND team_num = ?").get(sessionId, newNum).c, 1);
-    assert.ok(!fs.existsSync(oldDir), 'old upload dir should be gone');
-    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'prev files should move to new dir');
-    assert.ok(!fs.existsSync(path.join(newDir, 'stale.txt')), 'stale target files should be removed');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
-  });
-
-  it('resumes pending upload directory work after the DB renumber has already committed', async () => {
-    const year = 2032;
-    const prevNum = 620;
-    const newNum = 621;
-    const sessionId = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2032-01-01 00:00', '2032-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
-    ).run('Renumber Retry Session', year).lastInsertRowid;
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-retry@test.com', newNum, year);
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
-    db.prepare(
-      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2032-06-01 11:59', '2032-06-01 12:00', 1024, 0)",
-    ).run(sessionId, newNum, 'renumber-retry@test.com');
-
-    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
-    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
-    fs.mkdirSync(oldDir, { recursive: true });
-    fs.writeFileSync(path.join(oldDir, 'prev.txt'), 'prev');
-    fs.mkdirSync(newDir, { recursive: true });
-    fs.writeFileSync(path.join(newDir, 'stale.txt'), 'stale');
-    db.prepare(`
-      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
-      VALUES (?, ?, ?, ?, 1, 1)
-    `).run(year, prevNum, newNum, sessionId);
-
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum, newNum, year },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    assert.ok(!fs.existsSync(oldDir), 'old upload dir should be consumed by retry');
-    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'retry should preserve prev files under new number');
-    assert.ok(!fs.existsSync(path.join(newDir, 'stale.txt')), 'retry should remove stale target files');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
-  });
-
-  it('returns 202 and keeps retryable file work when disk rename fails after DB commit', async () => {
-    const year = 2035;
-    const prevNum = 650;
-    const newNum = 651;
-    const sessionId = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2035-01-01 00:00', '2035-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
-    ).run('Renumber Post Commit Retry Session', year).lastInsertRowid;
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-post-commit@test.com', prevNum, year);
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, prevNum);
-    db.prepare(
-      "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late) VALUES (?, ?, ?, '2035-06-01 11:59', '2035-06-01 12:00', 1024, 0)",
-    ).run(sessionId, prevNum, 'renumber-post-commit@test.com');
-
-    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
-    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
-    fs.mkdirSync(oldDir, { recursive: true });
-    fs.writeFileSync(path.join(oldDir, 'prev.txt'), 'prev');
-
-    const originalRenameSync = fs.renameSync;
-    fs.renameSync = (from, to) => {
-      if (from === oldDir && to === newDir) throw new Error('simulated rename failure');
-      return originalRenameSync.call(fs, from, to);
-    };
-    try {
-      const res = await client.patch('/api/internal/team-num', {
-        body: { prevNum, newNum, year },
-        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      });
-      assert.equal(res.status, 202, 'post-commit file failure should be retryable, not reported as unchanged');
-    } finally {
-      fs.renameSync = originalRenameSync;
-    }
-
-    assert.equal(db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get('renumber-post-commit@test.com', year).team_num, newNum);
-    assert.ok(fs.existsSync(oldDir), 'old dir remains for retry');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 1);
-
-    const retry = await client.patch('/api/internal/team-num', {
-      body: { prevNum, newNum, year },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(retry.status, 200);
-    assert.ok(!fs.existsSync(oldDir), 'retry should consume old dir');
-    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'retry should move files');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
-  });
-
-  it('finishes pending upload work when a prior attempt already moved the directory with a marker', async () => {
-    const year = 2033;
-    const prevNum = 630;
-    const newNum = 631;
-    const sessionId = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2033-01-01 00:00', '2033-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
-    ).run('Renumber Marker Retry Session', year).lastInsertRowid;
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-marker@test.com', newNum, year);
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
-    db.prepare(`
-      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
-      VALUES (?, ?, ?, ?, 1, 1)
-    `).run(year, prevNum, newNum, sessionId);
-
-    const oldDir = path.join(uploadsDir, String(sessionId), String(prevNum));
-    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
-    const marker = path.join(newDir, `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`);
-    fs.mkdirSync(newDir, { recursive: true });
-    fs.writeFileSync(path.join(newDir, 'prev.txt'), 'prev');
-    fs.writeFileSync(marker, 'pending');
-
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum, newNum, year },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    assert.ok(!fs.existsSync(oldDir), 'old upload dir should remain absent');
-    assert.ok(fs.existsSync(path.join(newDir, 'prev.txt')), 'already moved files should remain');
-    assert.ok(!fs.existsSync(marker), 'completion marker should be removed');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
-  });
-
-  it('does not keep retrying completed upload work when marker cleanup fails', async () => {
-    const year = 2034;
-    const prevNum = 640;
-    const newNum = 641;
-    const sessionId = db.prepare(
-      "INSERT INTO session (name, notice, start_at, end_at, late_end_at, max_file_size, created_by, year) VALUES (?, '', '2034-01-01 00:00', '2034-12-31 23:59', '', 52428800, 'admin@test.com', ?)",
-    ).run('Renumber Marker Cleanup Session', year).lastInsertRowid;
-    db.prepare("INSERT OR IGNORE INTO student_team (email, team_num, year) VALUES (?, ?, ?)").run('renumber-marker-cleanup@test.com', newNum, year);
-    db.prepare("INSERT INTO session_team (session_id, team_num) VALUES (?, ?)").run(sessionId, newNum);
-    db.prepare(`
-      INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target)
-      VALUES (?, ?, ?, ?, 1, 1)
-    `).run(year, prevNum, newNum, sessionId);
-
-    const newDir = path.join(uploadsDir, String(sessionId), String(newNum));
-    const marker = path.join(newDir, `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`);
-    fs.mkdirSync(newDir, { recursive: true });
-    fs.writeFileSync(path.join(newDir, 'prev.txt'), 'prev');
-    fs.writeFileSync(marker, 'pending');
-
-    const originalRmSync = fs.rmSync;
-    fs.rmSync = (target, options) => {
-      if (target === marker) throw new Error('simulated marker cleanup failure');
-      return originalRmSync.call(fs, target, options);
-    };
-    try {
-      const res = await client.patch('/api/internal/team-num', {
-        body: { prevNum, newNum, year },
-        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      });
-      assert.equal(res.status, 200);
-    } finally {
-      fs.rmSync = originalRmSync;
-    }
-
-    assert.ok(fs.existsSync(marker), 'marker may remain when best-effort cleanup fails');
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM team_renumber_file_work WHERE year = ? AND prev_num = ? AND new_num = ?").get(year, prevNum, newNum).c, 0);
-    fs.rmSync(marker, { force: true });
-  });
-
-  it('returns 400 for non-integer prevNum', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 'abc', newNum: 2, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('returns 400 for non-integer newNum', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 1, newNum: 2.5, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('returns 400 for non-integer year', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 1, newNum: 2, year: 'abc' },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('returns 400 for missing params', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: {},
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('requires admin auth (student gets 403)', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 1, newNum: 2, year: 2025 },
-      cookie: studentCookie,
-    });
-    assert.equal(res.status, 403);
-  });
-
-  it('accessible via internal service header', async () => {
-    // No matching data, but should still return 200 (just no-op)
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 9999, newNum: 9998, year: 2025 },
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-  });
-
-  it('returns 401 without any auth', async () => {
-    const res = await client.patch('/api/internal/team-num', {
-      body: { prevNum: 1, newNum: 2, year: 2025 },
-    });
-    assert.equal(res.status, 401);
-  });
-});
-
-// -- 2-set retention --
 describe('2-set retention', () => {
   let retentionSessionId;
 
@@ -1834,10 +2106,10 @@ describe('2-set retention', () => {
     const deletedFiles = db.prepare('SELECT * FROM submission_file WHERE submission_id = ?').all(sub1Id);
     assert.equal(deletedFiles.length, 0, 'oldest submission files should be deleted');
 
-    const sub1Dir = path.join(uploadsDir, String(retentionSessionId), '1', String(sub1Id));
+    const sub1Dir = path.join(uploadsDir, String(retentionSessionId), 'team-1', String(sub1Id));
     assert.ok(!fs.existsSync(sub1Dir), 'oldest submission disk files should be deleted');
 
-    const sub2Dir = path.join(uploadsDir, String(retentionSessionId), '1', String(sub2Id));
+    const sub2Dir = path.join(uploadsDir, String(retentionSessionId), 'team-1', String(sub2Id));
     assert.ok(fs.existsSync(sub2Dir), 'previous submission disk files should exist');
 
     const adminStatus = await client.get(`/api/admin/sessions/${retentionSessionId}/status`, { cookie: chiefCookie });
@@ -1920,6 +2192,14 @@ describe('DELETE /api/admin/years/:year/files', () => {
   it('returns 404 for year with no sessions', async () => {
     const res = await client.delete('/api/admin/years/2001/files', { cookie: chiefCookie });
     assert.equal(res.status, 404);
+    const warning = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'year.purge_files' AND level = 'warn' AND target = '2001'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.deepEqual(JSON.parse(warning.detail), {
+      error: 'year_has_no_sessions', reason: 'year_has_no_sessions', year: 2001,
+    });
   });
 
   it('requires chief+ auth', async () => {
@@ -1956,10 +2236,31 @@ describe('DELETE /api/admin/years/:year/files', () => {
   });
 
   it('is idempotent (re-purge succeeds)', async () => {
-    const res = await client.delete('/api/admin/years/2025/files', { cookie: chiefCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.files, 0, 'no files to delete on re-purge');
+    const cleanupPath = path.join(uploadsDir, String(purgeSessionId));
+    rejectedRemovalPath = cleanupPath;
+    try {
+      const res = await client.delete('/api/admin/years/2025/files', { cookie: chiefCookie });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.files, 0, 'no files to delete on re-purge');
+    } finally {
+      rejectedRemovalPath = null;
+    }
+    const info = db.prepare(`
+      SELECT detail FROM logs WHERE action = 'year.purge_files' AND level = 'info'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    const infoDetail = JSON.parse(info.detail);
+    assert.ok(infoDetail.file_cleanup.some((item) =>
+      item.session_id === purgeSessionId
+      && item.directory === cleanupPath
+      && item.removed === false
+      && item.error === 'injected retained-file removal failure'));
+    const warning = db.prepare(`
+      SELECT detail FROM logs WHERE action = 'year.purge_files' AND level = 'warn' AND target = '2025'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(JSON.parse(warning.detail).error, 'partial_file_cleanup');
   });
 });
 
@@ -2010,160 +2311,160 @@ describe('GET /api/admin/years/:year/archive', () => {
   });
 });
 
-// ─── Internal API: team deletion ─────────────────────────────────────────
-describe('DELETE /api/internal/team/:num', () => {
-  let deleteTestSessionId;
-
-  before(async () => {
-    // Create student-team mapping for team 10
-    await client.post('/api/admin/student-teams', {
-      cookie: chiefCookie,
-      body: { email: 'student1@test.com', team_num: 10, year: 2025 },
+describe('TeamStore read failure auditing', () => {
+  it('logs a structured warning before propagating an admin entry-list failure', async () => {
+    const original = teamStore.moduleEntries;
+    teamStore.moduleEntries = () => { throw new Error('injected team-store read failure'); };
+    try {
+      const res = await client.get('/api/admin/entries?year=2026', { cookie: chiefCookie });
+      assert.equal(res.status, 500);
+    } finally {
+      teamStore.moduleEntries = original;
+    }
+    const log = db.prepare(`
+      SELECT level, detail FROM logs
+      WHERE module = 'documents' AND action = 'entry.admin_list'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(log.level, 'warn');
+    assert.deepEqual(JSON.parse(log.detail), {
+      error: 'injected team-store read failure',
+      year: 2026,
     });
-
-    // Create a session with team 10
-    const sessionRes = await client.post('/api/admin/sessions', {
-      cookie: chiefCookie,
-      body: {
-        name: 'Delete Test Session',
-        start_at: '2020-01-01T00:00',
-        end_at: '2030-12-31T23:59',
-        late_end_at: '',
-        max_file_size: 52428800,
-        year: 2025,
-        teams: [1, 10],
-        allowed_extensions: '',
-      },
-    });
-    const { id } = await sessionRes.json();
-    deleteTestSessionId = id;
-  });
-
-  it('requires admin auth (internal service header)', async () => {
-    const res = await client.delete('/api/internal/team/10?year=2025');
-    assert.equal(res.status, 401);
-  });
-
-  it('returns 400 for invalid team number', async () => {
-    const res = await client.delete('/api/internal/team/abc?year=2025', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('returns 400 for missing year', async () => {
-    const res = await client.delete('/api/internal/team/10', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('cleans up student-team mapping, session-team, and submissions', async () => {
-    const res = await client.delete('/api/internal/team/10?year=2025', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-
-    // Verify student-team mapping is removed
-    const teams = await client.get('/api/admin/student-teams?year=2025', { cookie: chiefCookie });
-    const teamsData = await teams.json();
-    assert.ok(!teamsData.some(t => t.team_num === 10), 'team 10 mapping should be removed');
-
-    // Verify team is removed from session
-    const status = await client.get(`/api/admin/sessions/${deleteTestSessionId}/status`, { cookie: chiefCookie });
-    const statusData = await status.json();
-    assert.ok(!statusData.status.some(s => s.team_num === 10), 'team 10 should be removed from session');
-    assert.ok(statusData.status.some(s => s.team_num === 1), 'team 1 should remain in session');
   });
 });
 
+describe('Documents mutation database preflight auditing', () => {
+  it('turns each throwing preflight into a persisted controlled failure', async () => {
+    const isolatedPath = tmpDbPath();
+    const isolatedUploads = path.join(os.tmpdir(), `fsk-test-uploads-${crypto.randomUUID()}`);
+    const rawDb = new Database(isolatedPath);
+    let failSql = null;
+    const proxyDb = new Proxy(rawDb, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return (sql) => {
+            if (failSql && sql.includes(failSql)) throw new Error(`injected documents ${failSql} failure`);
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const created = createDocumentsApp({
+      db: proxyDb,
+      uploadsDir: isolatedUploads,
+      enableNotificationScheduler: false,
+      validateUser: TRUST_JWT,
+      teamStore,
+    });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      failSql = 'SELECT * FROM session WHERE id = ?';
+      const submission = await isolated.post('/api/sessions/1/submit', { body: {}, cookie: studentCookie });
+      const update = await isolated.put('/api/admin/sessions/1', { body: {}, cookie: chiefCookie });
+      const deletion = await isolated.delete('/api/admin/sessions/1', { cookie: chiefCookie });
+      assert.deepEqual([submission.status, update.status, deletion.status], [500, 500, 500]);
+
+      failSql = 'SELECT team_num FROM student_team WHERE email = ? AND year = ?';
+      const mapping = await isolated.delete('/api/admin/student-teams/missing@test.invalid/2026', {
+        cookie: chiefCookie,
+      });
+      assert.equal(mapping.status, 500);
+
+      failSql = 'SELECT id FROM session WHERE year = ? ORDER BY id';
+      const purge = await isolated.delete('/api/admin/years/2026/files', { cookie: chiefCookie });
+      assert.equal(purge.status, 500);
+      failSql = null;
+
+      const warnings = rawDb.prepare(`
+        SELECT action, detail FROM logs
+        WHERE level = 'warn' AND action IN (
+          'submission.create', 'session.update', 'session.delete',
+          'student_team.delete', 'year.purge_files'
+        ) ORDER BY id
+      `).all();
+      assert.deepEqual(warnings.map((row) => row.action), [
+        'submission.create', 'session.update', 'session.delete',
+        'student_team.delete', 'year.purge_files',
+      ]);
+      const details = warnings.map((row) => JSON.parse(row.detail));
+      assert.deepEqual(details.map((detail) => detail.phase), [
+        'submission_preflight', 'session_preflight', 'session_preflight',
+        'mapping_preflight', 'year_purge_preflight',
+      ]);
+      assert.ok(details.every((detail) => detail.error.startsWith('injected documents ')));
+    } finally {
+      failSql = null;
+      await stopServer(started.server);
+      await created.drainNotificationTasks();
+      rawDb.close();
+      cleanup(isolatedPath);
+      fs.rmSync(isolatedUploads, { recursive: true, force: true });
+    }
+  });
+});
+
+// ─── Internal API: team deletion ─────────────────────────────────────────
 describe('Inactive entries remain fully available in Documents', () => {
   const year = 2090;
   const num = 991;
 
   it('lists, assigns, targets, and accepts submissions for an inactive entry', async () => {
-    const entryRequests = [];
-    const entryApp = express();
-    entryApp.get('/api/entries', (req, res) => {
-      entryRequests.push(req.query);
-      res.json({
-        [num]: { univ: 'Inactive Univ', team: 'Inactive Team', type: null, active: false },
-        [num + 1]: { univ: 'Other Inactive Univ', team: 'Other Inactive Team', type: null, active: false },
-      });
+    const unmappedEntriesRes = await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie });
+    assert.equal(unmappedEntriesRes.status, 200);
+    assert.deepEqual(await unmappedEntriesRes.json(), {}, 'an unmapped student cannot enumerate inactive entries');
+
+    assert.equal(
+      (await client.get(`/api/admin/entries?year=${year}`, { cookie: student2Cookie })).status,
+      403,
+      'the full inactive list requires chief access',
+    );
+
+    const adminEntries = await (await client.get(`/api/admin/entries?year=${year}`, { cookie: chiefCookie })).json();
+    assert.equal(adminEntries[num].active, false);
+    assert.equal(adminEntries[num + 1].active, false);
+
+    const mapping = await client.post('/api/admin/student-teams', {
+      body: { email: 'student2@test.com', team_num: num, year }, cookie: chiefCookie,
     });
-    const entryServer = await startServer(entryApp);
-    process.env.ENTRY_SERVER = entryServer.baseUrl;
+    assert.equal(mapping.status, 201, 'inactive entries can be assigned to student accounts');
 
-    try {
-      const legacyEvent = await client.patch('/api/internal/team-active', {
-        headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-        body: { num, year, active: false, revision: 1 },
-      });
-      assert.equal(legacyEvent.status, 200, 'legacy active-state events are accepted as no-ops');
+    const entries = await (await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie })).json();
+    assert.equal(entries[num].active, false);
+    assert.equal(entries[num + 1], undefined, 'a student sees only the mapped inactive entry');
 
-      const unmappedEntriesRes = await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie });
-      assert.equal(unmappedEntriesRes.status, 200);
-      assert.deepEqual(await unmappedEntriesRes.json(), {}, 'an unmapped student cannot enumerate inactive entries');
-      assert.equal(entryRequests.length, 0, 'an unmapped lookup does not need an internal Entry request');
+    const session = await client.post('/api/admin/sessions', {
+      cookie: chiefCookie,
+      body: {
+        name: 'Inactive Entry Submission',
+        notice: '',
+        start_at: '2020-01-01T00:00:00.000Z',
+        end_at: '2099-01-01T00:00:00.000Z',
+        late_end_at: '',
+        max_file_size: 1000,
+        allowed_extensions: '',
+        year,
+        teams: [num],
+      },
+    });
+    assert.equal(session.status, 201, 'inactive entries can be selected as session targets');
+    const sessionId = (await session.json()).id;
 
-      assert.equal(
-        (await client.get(`/api/admin/entries?year=${year}`, { cookie: student2Cookie })).status,
-        403,
-        'the full inactive list requires chief access',
-      );
+    const studentView = await (await client.get('/api/sessions', { cookie: student2Cookie })).json();
+    assert.equal(studentView.team.team_num, num);
+    assert.ok(studentView.sessions.some((item) => item.id === sessionId));
 
-      const adminEntriesRes = await client.get(`/api/admin/entries?year=${year}`, { cookie: chiefCookie });
-      assert.equal(adminEntriesRes.status, 200);
-      const adminEntries = await adminEntriesRes.json();
-      assert.equal(adminEntries[num].active, false);
-      assert.equal(adminEntries[num + 1].active, false);
-      assert.equal(entryRequests[0].includeInactive, 'true');
+    const upload = await uploadFile(sessionId, student2Cookie, [
+      { name: 'inactive.txt', type: 'text/plain', content: Buffer.from('allowed') },
+    ]);
+    assert.equal(upload.status, 200, 'inactive entries can submit documents');
 
-      const mapping = await client.post('/api/admin/student-teams', {
-        body: { email: 'student2@test.com', team_num: num, year }, cookie: chiefCookie,
-      });
-      assert.equal(mapping.status, 201, 'inactive entries can be assigned to student accounts');
-
-      const entriesRes = await client.get(`/api/entries?year=${year}`, { cookie: student2Cookie });
-      assert.equal(entriesRes.status, 200);
-      const entries = await entriesRes.json();
-      assert.equal(entries[num].active, false);
-      assert.equal(entries[num + 1], undefined, 'a student sees only the mapped inactive entry');
-      assert.equal(entryRequests[1].includeInactive, 'true');
-
-      const session = await client.post('/api/admin/sessions', {
-        cookie: chiefCookie,
-        body: {
-          name: 'Inactive Entry Submission',
-          notice: '',
-          start_at: '2020-01-01T00:00:00.000Z',
-          end_at: '2099-01-01T00:00:00.000Z',
-          late_end_at: '',
-          max_file_size: 1000,
-          allowed_extensions: '',
-          year,
-          teams: [num],
-        },
-      });
-      assert.equal(session.status, 201, 'inactive entries can be selected as session targets');
-      const sessionId = (await session.json()).id;
-
-      const studentView = await (await client.get('/api/sessions', { cookie: student2Cookie })).json();
-      assert.equal(studentView.team.team_num, num);
-      assert.ok(studentView.sessions.some((item) => item.id === sessionId));
-
-      const upload = await uploadFile(sessionId, student2Cookie, [
-        { name: 'inactive.txt', type: 'text/plain', content: Buffer.from('allowed') },
-      ]);
-      assert.equal(upload.status, 200, 'inactive entries can submit documents');
-
-      const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
-      assert.equal(status.status[0].team_num, num);
-      assert.ok(status.status[0].submission);
-      assert.equal(status.status[0].files[0].original_name, 'inactive.txt');
-    } finally {
-      delete process.env.ENTRY_SERVER;
-      await stopServer(entryServer.server);
-    }
+    const status = await (await client.get(`/api/admin/sessions/${sessionId}/status`, { cookie: chiefCookie })).json();
+    assert.equal(status.status[0].team_num, num);
+    assert.ok(status.status[0].submission);
+    assert.equal(status.status[0].files[0].original_name, 'inactive.txt');
   });
 });

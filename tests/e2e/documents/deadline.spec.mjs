@@ -1,13 +1,14 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 const fmt = (d) => d.toISOString().slice(0, 16).replace("T", " ");
 
 async function apiCreateSession(data) {
-  return fetch(`${BASE_URL}/documents/api/admin/sessions`, {
+  return fetch(`${BASE_URL}/competition/api/v1/documents/admin/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify(data),
@@ -15,14 +16,14 @@ async function apiCreateSession(data) {
 }
 
 async function apiDeleteSession(id) {
-  return fetch(`${BASE_URL}/documents/api/admin/sessions/${id}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/documents/admin/sessions/${id}`, {
     method: "DELETE",
     headers: { Cookie: getAuthCookie("chief") },
   });
 }
 
 async function apiGetSessions() {
-  const res = await fetch(`${BASE_URL}/documents/api/sessions`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions`, {
     headers: { Cookie: getAuthCookie("student") },
   });
   return res.json();
@@ -63,7 +64,7 @@ test.describe("Documents deadline enforcement", () => {
     const blob = new Blob(["%PDF-1.0 test content"], { type: "application/pdf" });
     formData.append("files", blob, "test.pdf");
 
-    const submitRes = await fetch(`${BASE_URL}/documents/api/sessions/${id}/submit`, {
+    const submitRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions/${id}/submit`, {
       method: "POST",
       headers: { Cookie: getAuthCookie("student") },
       body: formData,
@@ -100,7 +101,7 @@ test.describe("Documents deadline enforcement", () => {
     const blob = new Blob(["%PDF-1.0 test content"], { type: "application/pdf" });
     formData.append("files", blob, "test.pdf");
 
-    const submitRes = await fetch(`${BASE_URL}/documents/api/sessions/${id}/submit`, {
+    const submitRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions/${id}/submit`, {
       method: "POST",
       headers: { Cookie: getAuthCookie("student") },
       body: formData,
@@ -138,7 +139,7 @@ test.describe("Documents deadline enforcement", () => {
     const blob = new Blob(["%PDF-1.0 test content for late submission"], { type: "application/pdf" });
     formData.append("files", blob, "late-test.pdf");
 
-    const submitRes = await fetch(`${BASE_URL}/documents/api/sessions/${id}/submit`, {
+    const submitRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions/${id}/submit`, {
       method: "POST",
       headers: { Cookie: getAuthCookie("student") },
       body: formData,
@@ -147,7 +148,7 @@ test.describe("Documents deadline enforcement", () => {
     expect(submitRes.status).toBe(200);
 
     // Verify the submission is marked as late
-    const sessionRes = await fetch(`${BASE_URL}/documents/api/sessions/${id}`, {
+    const sessionRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions/${id}`, {
       headers: { Cookie: getAuthCookie("student") },
     });
     const sessionData = await sessionRes.json();
@@ -182,7 +183,7 @@ test.describe("Documents deadline enforcement", () => {
     const blob = new Blob(["%PDF-1.0 test"], { type: "application/pdf" });
     formData.append("files", blob, "test.pdf");
 
-    const submitRes = await fetch(`${BASE_URL}/documents/api/sessions/${id}/submit`, {
+    const submitRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions/${id}/submit`, {
       method: "POST",
       headers: { Cookie: getAuthCookie("student") },
       body: formData,
@@ -219,7 +220,7 @@ test.describe("Documents deadline enforcement", () => {
     const blob = new Blob([largeContent], { type: "application/pdf" });
     formData.append("files", blob, "large-file.pdf");
 
-    const submitRes = await fetch(`${BASE_URL}/documents/api/sessions/${id}/submit`, {
+    const submitRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions/${id}/submit`, {
       method: "POST",
       headers: { Cookie: getAuthCookie("student") },
       body: formData,

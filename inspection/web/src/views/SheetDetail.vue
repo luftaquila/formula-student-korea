@@ -15,13 +15,14 @@ import { useNotification } from "@shared/useNotification.js";
 import { user } from "@shared/officialsStore.js";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { useSSE } from "../composables/useSSE";
-import { createVersionedSaveQueue } from "../utils/versioned-save-queue";
+import { createSaveQueue, reconcileSaveQueuesAfterReconnect } from "../utils/save-queue";
 import { createCalculationEvaluator, formatCalculationValue } from "../../../lib/calculations.mjs";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
 const { error } = useNotification();
 const router = useRouter();
 const route = useRoute();
-const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate, lastTeamActiveUpdate, reconnected } = useSSE();
+const { lastUpdate, lastInspectorUpdate, lastAnswerUpdate, lastMemoUpdate, lastEntriesUpdate, reconnected } = useSSE();
 
 const year = Number(route.params.year);
 const num = Number(route.params.num);
@@ -34,42 +35,6 @@ const loading = ref(true);
 const storedTab = Number(sessionStorage.getItem("inspectionActiveTab")) || 0;
 const activeTab = ref(storedTab);
 const tabsRef = ref(null);
-const draftStorageKey = `inspection-sheet-drafts-${year}-${num}`;
-let localDrafts = { answers: {}, memos: {} };
-
-try {
-  const storedDrafts = JSON.parse(localStorage.getItem(draftStorageKey) || "null");
-  if (storedDrafts && typeof storedDrafts === "object") {
-    localDrafts = {
-      answers: storedDrafts.answers || {},
-      memos: storedDrafts.memos || {},
-    };
-  }
-} catch {
-  try { localStorage.removeItem(draftStorageKey); } catch {}
-}
-
-function persistDrafts() {
-  try {
-    if (!Object.keys(localDrafts.answers).length && !Object.keys(localDrafts.memos).length) {
-      localStorage.removeItem(draftStorageKey);
-      return;
-    }
-    localStorage.setItem(draftStorageKey, JSON.stringify(localDrafts));
-  } catch {
-    // 자동 저장 자체는 계속 동작한다. 저장소 용량/보안 설정으로 초안 보관만 실패할 수 있다.
-  }
-}
-
-function setDraft(kind, itemId, value, baseVersion) {
-  localDrafts[kind][itemId] = { value, baseVersion };
-  persistDrafts();
-}
-
-function clearDraft(kind, itemId) {
-  delete localDrafts[kind][itemId];
-  persistDrafts();
-}
 
 watch(activeTab, (val) => {
   sessionStorage.setItem("inspectionActiveTab", val);
@@ -83,7 +48,7 @@ function scrollActiveTabIntoView() {
   });
 }
 
-const isReadOnly = computed(() => year < new Date().getFullYear());
+const isReadOnly = computed(() => year !== currentCompetitionYear());
 
 // 이 팀의 차량 유형에 해당하는 카테고리만 남긴다. 유형이 없는 팀은 제외 대상이 없으므로 전체를 본다.
 const visibleCategories = computed(() => {
@@ -150,7 +115,6 @@ onMounted(async () => {
     template.value = tmpl;
     sheetData.value = data;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
-    restoreLocalDrafts();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
@@ -188,10 +152,8 @@ function ensureAnswerRecord(itemId) {
     sheetData.value.answers[itemId] = {
       value: "",
       memo: "",
-      answer_version: 0,
       answer_updated_at: null,
       answer_updated_by: "",
-      memo_version: 0,
       memo_updated_at: null,
       memo_updated_by: "",
     };
@@ -212,10 +174,6 @@ const { debounce, cancel: cancelDebounce, flush: flushDebounce } = createKeyedDe
 
 const answerSaveStates = ref({});
 const memoSaveStates = ref({});
-const answerConflicts = ref({});
-const memoConflicts = ref({});
-const deferredAnswerUpdates = new Map();
-const deferredMemoUpdates = new Map();
 const saveStateTimers = new Map();
 
 function setSaveState(target, itemId, state, detail) {
@@ -232,97 +190,85 @@ function setSaveState(target, itemId, state, detail) {
   }
 }
 
-function clearConflict(target, itemId) {
-  if (!target.value[itemId]) return;
-  const next = { ...target.value };
-  delete next[itemId];
-  target.value = next;
-}
-
 function updateAnswerMetadata(itemId, data) {
   const record = ensureAnswerRecord(itemId);
-  if (data.version !== undefined && data.version !== null) record.answer_version = Number(data.version) || 0;
   record.answer_updated_at = data.updated_at ?? null;
   record.answer_updated_by = data.updated_by ?? "";
 }
 
 function updateMemoMetadata(itemId, data) {
   const record = ensureAnswerRecord(itemId);
-  if (data.version !== undefined && data.version !== null) record.memo_version = Number(data.version) || 0;
   record.memo_updated_at = data.updated_at ?? null;
   record.memo_updated_by = data.updated_by ?? "";
 }
 
-const answerQueue = createVersionedSaveQueue({
-  getVersion: itemId => ensureAnswerRecord(itemId).answer_version,
+const answerQueue = createSaveQueue({
   save: (itemId, request) => updateSheetAnswer({
     year,
     team_num: num,
     item_id: itemId,
     value: request.value,
-    base_version: request.baseVersion,
+    expectedValue: request.expected,
     mutation_id: request.mutationId,
   }),
   onState: (itemId, state, detail) => setSaveState(answerSaveStates, itemId, state, detail),
   onSaved: (itemId, response) => {
     updateAnswerMetadata(itemId, response);
-    if (getAnswer(itemId) === response.value) clearDraft("answers", itemId);
-    clearConflict(answerConflicts, itemId);
-    queueMicrotask(() => applyDeferredAnswer(itemId));
   },
-  onConflict: (itemId, current, localValue) => {
-    answerConflicts.value = { ...answerConflicts.value, [itemId]: { current, localValue } };
+  responseValue: response => response.value,
+  currentValue: current => current.value,
+  onStale: (itemId, current) => {
+    const record = ensureAnswerRecord(itemId);
+    record.value = current.value;
+    updateAnswerMetadata(itemId, current);
+    error("다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 작성하세요.");
   },
   onError: () => error("응답 저장에 실패했습니다."),
 });
 
-const memoQueue = createVersionedSaveQueue({
-  getVersion: itemId => ensureAnswerRecord(itemId).memo_version,
+const memoQueue = createSaveQueue({
   save: (itemId, request) => updateSheetMemo({
     year,
     team_num: num,
     item_id: itemId,
     memo: request.value,
-    base_version: request.baseVersion,
+    expectedMemo: request.expected,
     mutation_id: request.mutationId,
   }),
   onState: (itemId, state, detail) => setSaveState(memoSaveStates, itemId, state, detail),
   onSaved: (itemId, response) => {
     updateMemoMetadata(itemId, response);
-    if (getMemo(itemId) === response.memo) clearDraft("memos", itemId);
-    clearConflict(memoConflicts, itemId);
-    queueMicrotask(() => applyDeferredMemo(itemId));
   },
-  onConflict: (itemId, current, localValue) => {
-    memoConflicts.value = { ...memoConflicts.value, [itemId]: { current, localValue } };
+  responseValue: response => response.memo,
+  currentValue: current => current.memo,
+  onStale: (itemId, current) => {
+    const record = ensureAnswerRecord(itemId);
+    record.memo = current.memo;
+    updateMemoMetadata(itemId, current);
+    error("다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 작성하세요.");
   },
   onError: () => error("메모 저장에 실패했습니다."),
 });
 
 function onAnswerChange(itemId, value) {
+  const expected = getAnswer(itemId);
   ensureAnswerRecord(itemId).value = value;
-  editedDuringFocus.add(itemId);
-  clearConflict(answerConflicts, itemId);
-  setDraft("answers", itemId, value, answerQueue.currentVersion(itemId));
-  answerQueue.enqueue(itemId, value);
+  answerQueue.enqueue(itemId, value, { expected });
 }
 
 function onPassFailToggle(itemId, val) {
   const current = getAnswer(itemId);
   const newVal = current === val ? "" : val;
   ensureAnswerRecord(itemId).value = newVal;
-  clearConflict(answerConflicts, itemId);
-  setDraft("answers", itemId, newVal, answerQueue.currentVersion(itemId));
-  answerQueue.enqueue(itemId, newVal, { immediate: true });
+  answerQueue.enqueue(itemId, newVal, { expected: current, immediate: true });
 }
 
 function onCounterChange(itemId, delta) {
   if (isReadOnly.value) return;
-  const newVal = nextCounterValue(getAnswer(itemId), delta);
+  const expected = getAnswer(itemId);
+  const newVal = nextCounterValue(expected, delta);
   ensureAnswerRecord(itemId).value = newVal;
-  clearConflict(answerConflicts, itemId);
-  setDraft("answers", itemId, newVal, answerQueue.currentVersion(itemId));
-  answerQueue.enqueue(itemId, newVal, { immediate: true });
+  answerQueue.enqueue(itemId, newVal, { expected, immediate: true });
 }
 
 function onCounterInput(itemId, event) {
@@ -336,58 +282,9 @@ function onCounterInput(itemId, event) {
 }
 
 function onMemoChange(itemId, memo) {
+  const expected = getMemo(itemId);
   ensureAnswerRecord(itemId).memo = memo;
-  editedMemos.add(itemId);
-  clearConflict(memoConflicts, itemId);
-  setDraft("memos", itemId, memo, memoQueue.currentVersion(itemId));
-  memoQueue.enqueue(itemId, memo);
-}
-
-function restoreLocalDrafts() {
-  if (isReadOnly.value) return;
-  for (const [rawItemId, draft] of Object.entries(localDrafts.answers)) {
-    const itemId = Number(rawItemId);
-    const draftValue = normalizeRestorableAnswerDraft(templateItemsById.value.get(itemId), draft.value);
-    if (draftValue === null) {
-      clearDraft("answers", itemId);
-      continue;
-    }
-    const record = ensureAnswerRecord(itemId);
-    const serverValue = record.value;
-    if (record.value === draftValue) {
-      clearDraft("answers", itemId);
-      continue;
-    }
-    record.value = draftValue;
-    answerQueue.enqueue(itemId, draftValue);
-    if ((draft.baseVersion ?? 0) !== (record.answer_version ?? 0)) {
-      answerQueue.markConflict(itemId, {
-        value: serverValue,
-        version: record.answer_version ?? 0,
-        updated_at: record.answer_updated_at,
-        updated_by: record.answer_updated_by,
-      });
-    }
-  }
-  for (const [rawItemId, draft] of Object.entries(localDrafts.memos)) {
-    const itemId = Number(rawItemId);
-    const record = ensureAnswerRecord(itemId);
-    const serverMemo = record.memo;
-    if (record.memo === draft.value) {
-      clearDraft("memos", itemId);
-      continue;
-    }
-    record.memo = draft.value;
-    memoQueue.enqueue(itemId, draft.value);
-    if ((draft.baseVersion ?? 0) !== (record.memo_version ?? 0)) {
-      memoQueue.markConflict(itemId, {
-        memo: serverMemo,
-        version: record.memo_version ?? 0,
-        updated_at: record.memo_updated_at,
-        updated_by: record.memo_updated_by,
-      });
-    }
-  }
+  memoQueue.enqueue(itemId, memo, { expected });
 }
 
 async function onCategoryResultToggle(catId, val) {
@@ -448,47 +345,24 @@ function fillMyName(catId) {
 const editingMemo = ref(null);
 const focusedItemId = ref(null);
 
-const editedDuringFocus = new Set();
-const editedMemos = new Set();
-
 function applyRemoteAnswer(update) {
   const record = ensureAnswerRecord(update.item_id);
   record.value = update.value;
   updateAnswerMetadata(update.item_id, update);
-  answerQueue.acceptVersion(update.item_id, update.version);
-}
-
-function applyDeferredAnswer(itemId) {
-  const deferred = deferredAnswerUpdates.get(itemId);
-  if (!deferred || focusedItemId.value === itemId || editedDuringFocus.has(itemId) || answerQueue.isDirty(itemId)) return;
-  deferredAnswerUpdates.delete(itemId);
-  if (Number(deferred.version) <= answerQueue.currentVersion(itemId)) return;
-  applyRemoteAnswer(deferred);
+  answerQueue.acceptRemote(update.item_id, update.value);
 }
 
 function applyRemoteMemo(update) {
   const record = ensureAnswerRecord(update.item_id);
   record.memo = update.memo;
   updateMemoMetadata(update.item_id, update);
-  memoQueue.acceptVersion(update.item_id, update.version);
-}
-
-function applyDeferredMemo(itemId) {
-  const deferred = deferredMemoUpdates.get(itemId);
-  if (!deferred || editingMemo.value === itemId || editedMemos.has(itemId) || memoQueue.isDirty(itemId)) return;
-  deferredMemoUpdates.delete(itemId);
-  if (Number(deferred.version) <= memoQueue.currentVersion(itemId)) return;
-  applyRemoteMemo(deferred);
+  memoQueue.acceptRemote(update.item_id, update.memo);
 }
 
 function handleAnswerBlur() {
   const prev = focusedItemId.value;
   focusedItemId.value = null;
-  if (prev !== null) {
-    editedDuringFocus.delete(prev);
-    answerQueue.flush(prev);
-    queueMicrotask(() => applyDeferredAnswer(prev));
-  }
+  if (prev !== null) answerQueue.flush(prev);
 }
 
 function startEditMemo(itemId) {
@@ -510,41 +384,15 @@ function finishEditMemo(itemId) {
   const normalizedMemo = normalizeMemo(memo);
   if (normalizedMemo !== memo) onMemoChange(itemId, normalizedMemo);
   editingMemo.value = null;
-  editedMemos.delete(itemId);
   memoQueue.flush(itemId);
-  queueMicrotask(() => applyDeferredMemo(itemId));
 }
 
 function retryAnswer(itemId) {
-  clearConflict(answerConflicts, itemId);
   answerQueue.retry(itemId);
 }
 
 function retryMemo(itemId) {
-  clearConflict(memoConflicts, itemId);
   memoQueue.retry(itemId);
-}
-
-function useServerAnswer(itemId) {
-  const current = answerConflicts.value[itemId]?.current;
-  if (!current) return;
-  ensureAnswerRecord(itemId).value = current.value;
-  updateAnswerMetadata(itemId, current);
-  answerQueue.resolveWithRemote(itemId, current.version);
-  clearDraft("answers", itemId);
-  deferredAnswerUpdates.delete(itemId);
-  clearConflict(answerConflicts, itemId);
-}
-
-function useServerMemo(itemId) {
-  const current = memoConflicts.value[itemId]?.current;
-  if (!current) return;
-  ensureAnswerRecord(itemId).memo = current.memo;
-  updateMemoMetadata(itemId, current);
-  memoQueue.resolveWithRemote(itemId, current.version);
-  clearDraft("memos", itemId);
-  deferredMemoUpdates.delete(itemId);
-  clearConflict(memoConflicts, itemId);
 }
 
 // ---- Numbering ----
@@ -560,7 +408,6 @@ import {
   normalizeMemo,
   formatStopwatchElapsed,
   isResponseItem,
-  normalizeRestorableAnswerDraft,
 } from "../utils/sheet-helpers";
 
 // 스톱워치는 검차 편의를 위한 로컬 도구이며 답변으로 저장하지 않는다.
@@ -794,6 +641,7 @@ function getChecktableValue(itemId) {
 }
 
 function onChecktableToggle(itemId, rowIdx, colIdx) {
+  const expected = getAnswer(itemId);
   const val = getChecktableValue(itemId);
   const key = `${rowIdx}_${colIdx}`;
   if (val[key]) {
@@ -803,9 +651,7 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
   }
   const jsonStr = JSON.stringify(val);
   ensureAnswerRecord(itemId).value = jsonStr;
-  clearConflict(answerConflicts, itemId);
-  setDraft("answers", itemId, jsonStr, answerQueue.currentVersion(itemId));
-  answerQueue.enqueue(itemId, jsonStr, { immediate: true });
+  answerQueue.enqueue(itemId, jsonStr, { expected, immediate: true });
 }
 
 // ---- Quick navigation ----
@@ -913,7 +759,8 @@ watch(lastInspectorUpdate, (update) => {
   sheetData.value.inspectors[update.category_id] = update.inspector;
 });
 
-// SSE로 개별 항목 답변 실시간 반영 (version + mutation id + 편집 가드)
+// 다른 브라우저의 변경은 로컬 저장 대기열보다 우선한다. 편집 중이면
+// 로컬 값을 버리고 새로고침 안내를 표시해 오래된 값이 저장되지 않게 한다.
 watch(lastAnswerUpdate, (update) => {
   if (!update || update.year !== year) return;
   if (update.renumbered && update.prevNum === num) {
@@ -925,118 +772,56 @@ watch(lastAnswerUpdate, (update) => {
     router.replace("/");
     return;
   }
-  if (Number(update.version) <= answerQueue.currentVersion(update.item_id)) return;
-  if (answerQueue.isOwnMutation(update.item_id, update.mutation_id)) {
-    answerQueue.acceptVersion(update.item_id, update.version);
-    updateAnswerMetadata(update.item_id, update);
-    return;
-  }
+  if (answerQueue.isOwnMutation(update.item_id, update.mutation_id)) return;
   if (focusedItemId.value === update.item_id || answerQueue.isDirty(update.item_id)) {
-    deferredAnswerUpdates.set(update.item_id, update);
-    if (answerQueue.isDirty(update.item_id)) {
-      answerQueue.markConflict(update.item_id, {
-        value: update.value,
-        version: update.version,
-        updated_at: update.updated_at,
-        updated_by: update.updated_by,
-      });
-    }
+    answerQueue.rejectForRemote(update.item_id, update);
     return;
   }
   applyRemoteAnswer(update);
 });
 
-// SSE로 메모 실시간 반영 (version + mutation id + 편집 가드)
+// 메모도 답변과 같은 값 비교 규칙을 사용한다.
 watch(lastMemoUpdate, (update) => {
   if (!update || update.year !== year || update.team_num !== num) return;
   if (update.deleted) {
     router.replace("/");
     return;
   }
-  if (Number(update.version) <= memoQueue.currentVersion(update.item_id)) return;
-  if (memoQueue.isOwnMutation(update.item_id, update.mutation_id)) {
-    memoQueue.acceptVersion(update.item_id, update.version);
-    updateMemoMetadata(update.item_id, update);
-    return;
-  }
+  if (memoQueue.isOwnMutation(update.item_id, update.mutation_id)) return;
   if (editingMemo.value === update.item_id || memoQueue.isDirty(update.item_id)) {
-    deferredMemoUpdates.set(update.item_id, update);
-    if (memoQueue.isDirty(update.item_id)) {
-      memoQueue.markConflict(update.item_id, {
-        memo: update.memo,
-        version: update.version,
-        updated_at: update.updated_at,
-        updated_by: update.updated_by,
-      });
-    }
+    memoQueue.rejectForRemote(update.item_id, update);
     return;
   }
   applyRemoteMemo(update);
 });
 
-watch(lastTeamActiveUpdate, (update) => {
-  if (update?.year === year && update.team_num === num && update.active === false) {
-    router.replace("/");
+watch(lastEntriesUpdate, async (update) => {
+  if (update?.year !== year) return;
+  try {
+    const [entries, vtList] = await Promise.all([
+      fetchEntries(year),
+      fetchVehicleTypes(year).catch(() => []),
+    ]);
+    if (!entries[num]) return router.replace("/");
+    entry.value = entries[num];
+    typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+  } catch (e) {
+    error("팀 정보를 새로고침할 수 없습니다.");
   }
 });
 
-// Safety net watchers for deferred recovery
-watch(focusedItemId, (newVal, oldVal) => {
-  if (newVal !== null || oldVal === null) return;
-  editedDuringFocus.delete(oldVal);
-  applyDeferredAnswer(oldVal);
-});
-
-watch(editingMemo, (newVal, oldVal) => {
-  if (newVal !== null || oldVal === null) return;
-  editedMemos.delete(oldVal);
-  applyDeferredMemo(oldVal);
-});
-
-// SSE 재연결 시 미저장 로컬 값을 보존하며 서버 데이터와 병합한다.
+// 재연결 시 서버 상태를 다시 읽는다. 저장 중이던 값은 CAS 기준을 잃었으므로
+// 보존하지 않고 사용자가 새로고침 후 다시 작성하도록 알린다.
 watch(reconnected, async () => {
   if (!reconnected.value) return;
   try {
     const data = await fetchSheetData(year, num);
-    const localAnswers = sheetData.value.answers;
-    for (const [rawItemId, serverRecord] of Object.entries(data.answers)) {
-      const itemId = Number(rawItemId);
-      const localRecord = localAnswers[itemId];
-      const serverAnswer = {
-        value: serverRecord.value,
-        version: serverRecord.answer_version,
-        updated_at: serverRecord.answer_updated_at,
-        updated_by: serverRecord.answer_updated_by,
-      };
-      const serverMemo = {
-        memo: serverRecord.memo,
-        version: serverRecord.memo_version,
-        updated_at: serverRecord.memo_updated_at,
-        updated_by: serverRecord.memo_updated_by,
-      };
-      if (answerQueue.isDirty(itemId) && localRecord) {
-        serverRecord.value = localRecord.value;
-        if ((serverRecord.answer_version ?? 0) > (localRecord.answer_version ?? 0)) {
-          answerQueue.markConflict(itemId, serverAnswer);
-        }
-      } else {
-        answerQueue.acceptVersion(itemId, serverRecord.answer_version);
-      }
-      if (memoQueue.isDirty(itemId) && localRecord) {
-        serverRecord.memo = localRecord.memo;
-        if ((serverRecord.memo_version ?? 0) > (localRecord.memo_version ?? 0)) {
-          memoQueue.markConflict(itemId, serverMemo);
-        }
-      } else {
-        memoQueue.acceptVersion(itemId, serverRecord.memo_version);
-      }
-    }
-    for (const [rawItemId, localRecord] of Object.entries(localAnswers)) {
-      const itemId = Number(rawItemId);
-      if (!data.answers[itemId] && (answerQueue.isDirty(itemId) || memoQueue.isDirty(itemId))) {
-        data.answers[itemId] = localRecord;
-      }
-    }
+    reconcileSaveQueuesAfterReconnect({
+      answers: data.answers,
+      itemIds: templateItemsById.value.keys(),
+      answerQueue,
+      memoQueue,
+    });
     sheetData.value = data;
   } catch {
     error("데이터 동기화에 실패했습니다.");
@@ -1379,15 +1164,8 @@ watch(reconnected, async () => {
                     >초기화</button>
                   </div>
                   <div class="item-status-slot" aria-live="polite">
-                    <div v-if="answerConflicts[item.id]" class="save-feedback save-conflict-inline">
-                      <span>응답 충돌</span>
-                      <div class="conflict-actions">
-                        <button type="button" title="서버 값 사용" @click="useServerAnswer(item.id)">서버</button>
-                        <button type="button" title="내 값 다시 저장" @click="retryAnswer(item.id)">내 값</button>
-                      </div>
-                    </div>
                     <div
-                      v-else-if="answerSaveStates[item.id]?.state && answerSaveStates[item.id].state !== 'idle'"
+                      v-if="answerSaveStates[item.id]?.state && answerSaveStates[item.id].state !== 'idle'"
                       class="save-feedback"
                       :class="`save-${answerSaveStates[item.id].state}`"
                     >
@@ -1399,15 +1177,8 @@ watch(reconnected, async () => {
                       </template>
                     </div>
 
-                    <div v-if="memoConflicts[item.id]" class="save-feedback save-conflict-inline">
-                      <span>메모 충돌</span>
-                      <div class="conflict-actions">
-                        <button type="button" title="서버 메모 사용" @click="useServerMemo(item.id)">서버</button>
-                        <button type="button" title="내 메모 다시 저장" @click="retryMemo(item.id)">내 메모</button>
-                      </div>
-                    </div>
                     <div
-                      v-else-if="memoSaveStates[item.id]?.state && memoSaveStates[item.id].state !== 'idle'"
+                      v-if="memoSaveStates[item.id]?.state && memoSaveStates[item.id].state !== 'idle'"
                       class="save-feedback"
                       :class="`save-${memoSaveStates[item.id].state}`"
                     >
@@ -2076,8 +1847,7 @@ watch(reconnected, async () => {
   overflow: visible;
 }
 
-.save-feedback button,
-.conflict-actions button {
+.save-feedback button {
   border: 0;
   padding: 0;
   background: transparent;
@@ -2094,17 +1864,6 @@ watch(reconnected, async () => {
 
 .save-saved {
   color: var(--accent-success);
-}
-
-.save-conflict-inline {
-  color: var(--accent-warning);
-}
-
-.conflict-actions {
-  display: flex;
-  align-items: center;
-  gap: 0.375rem;
-  margin: 0;
 }
 
 .inspection-progress {

@@ -31,6 +31,8 @@ concurrency:
 jobs:
   unit:
     runs-on: ubuntu-latest
+    env:
+      TZ: Asia/Seoul
 
     steps:
       - uses: actions/checkout@v6
@@ -41,19 +43,19 @@ jobs:
           cache: npm
           cache-dependency-path: |
             auth/package-lock.json
-            entry/package-lock.json
             queue/package-lock.json
             inspection/package-lock.json
             traffic/package-lock.json
             score/package-lock.json
             documents/package-lock.json
+            competition/package-lock.json
             course/package-lock.json
             calendar/package-lock.json
             email/package-lock.json
 
       - name: Install dependencies
         run: |
-          for dir in auth entry queue inspection traffic score documents course calendar email; do
+          for dir in auth queue inspection traffic score documents competition course calendar email; do
             cd $dir && npm ci && cd ..
           done
 
@@ -97,6 +99,8 @@ jobs:
             dockerfile-service:
               - 'Dockerfile.service'
               - 'entrypoint.sh'
+            docker-context:
+              - '.dockerignore'
             landing:
               - 'landing/**'
             auth:
@@ -113,6 +117,8 @@ jobs:
               - 'score/**'
             documents:
               - 'documents/**'
+            competition:
+              - 'competition/**'
             email:
               - 'email/**'
             course:
@@ -125,6 +131,7 @@ jobs:
         env:
           SHARED: ${{ steps.filter.outputs.shared }}
           DOCKERFILE_SVC: ${{ steps.filter.outputs.dockerfile-service }}
+          DOCKER_CONTEXT: ${{ steps.filter.outputs.docker-context }}
           LANDING: ${{ steps.filter.outputs.landing }}
           F_AUTH: ${{ steps.filter.outputs.auth }}
           F_ENTRY: ${{ steps.filter.outputs.entry }}
@@ -133,18 +140,22 @@ jobs:
           F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
           F_SCORE: ${{ steps.filter.outputs.score }}
           F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
+          F_COMPETITION: ${{ steps.filter.outputs.competition }}
           F_EMAIL: ${{ steps.filter.outputs.email }}
           F_COURSE: ${{ steps.filter.outputs.course }}
           F_CALENDAR: ${{ steps.filter.outputs.calendar }}
         run: |
+          competition_changed="$F_COMPETITION"
+          for value in "$F_ENTRY" "$F_QUEUE" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
+            if [ "$value" = "true" ]; then competition_changed=true; fi
+          done
           declare -A F=(
-            [auth]="$F_AUTH" [entry]="$F_ENTRY" [queue]="$F_QUEUE"
-            [inspection]="$F_INSPECTION" [traffic]="$F_TRAFFIC" [score]="$F_SCORE"
-            [documents]="$F_DOCUMENTS" [email]="$F_EMAIL" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
+            [auth]="$F_AUTH" [competition]="$competition_changed"
+            [email]="$F_EMAIL" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
           )
-          STD=(auth entry queue inspection traffic score documents email course calendar)
+          STD=(auth competition email course calendar)
           rebuild_all=false
-          if [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ]; then rebuild_all=true; fi
+          if [ "$SHARED" = "true" ] || [ "$DOCKERFILE_SVC" = "true" ] || [ "$DOCKER_CONTEXT" = "true" ]; then rebuild_all=true; fi
           build=(); pull=()
           for svc in "${STD[@]}"; do
             if [ "$rebuild_all" = "true" ] || [ "${F[$svc]}" = "true" ]; then
@@ -154,7 +165,7 @@ jobs:
             fi
           done
           targets=("${build[@]}")
-          if [ "$LANDING" = "true" ] || [ "$SHARED" = "true" ]; then
+          if [ "$LANDING" = "true" ] || [ "$SHARED" = "true" ] || [ "$DOCKER_CONTEXT" = "true" ]; then
             targets+=("caddy-local"); pull_caddy=false
           else
             pull_caddy=true
@@ -226,11 +237,9 @@ jobs:
         # upstream tests), so auth/entry aren't re-run per shard. The large auth,
         # queue, and score projects are split by file ownership as well: this both
         # balances the wall clock and prevents unrelated specs from sharing global
-        # users, queues, endurance rows, and penalty settings. Shards that mutate
-        # entries still run every lifecycle target
-        # (queue/documents/inspection/score/traffic): entry deliberately waits
-        # for that production fan-out, so omitting one changes successful writes
-        # into 202/pending responses. auth and cross-service run isolated:
+        # users, queues, endurance rows, and penalty settings. Operational shards
+        # seed every required team before operational tests begin. Teams remain
+        # directly editable throughout the run. auth and cross-service run isolated:
         # cross-service's multi-service load broke auth's log-aggregation page
         # when co-located.
         include:
@@ -247,7 +256,7 @@ jobs:
               tests/e2e/auth/session.spec.mjs
               tests/e2e/auth/user-management.spec.mjs
             workers: 2
-            services: auth entry queue inspection traffic score documents email
+            services: auth competition email
             seeds: users vehicle-types entries
           - shard: auth-logs
             projects: >-
@@ -259,13 +268,13 @@ jobs:
             # The aggregation endpoint always queries every configured service.
             # Starting all of them avoids a guaranteed 5s timeout on every logs
             # page load for otherwise-absent calendar and course containers.
-            services: auth entry queue inspection traffic score documents email course calendar
+            services: auth competition email course calendar
             seeds: users vehicle-types entries
           - shard: cross-service
             projects: --project=cross-service
             workers: 2
-            services: auth entry queue inspection traffic score documents
-            seeds: users vehicle-types entries inspection documents
+            services: auth competition
+            seeds: users vehicle-types entries cross-service-entries inspection documents
           - shard: queue-operations
             projects: >-
               --project=queue
@@ -277,8 +286,8 @@ jobs:
               tests/e2e/queue/queue-status-success.spec.mjs
               tests/e2e/queue/realtime-sync.spec.mjs
             workers: 2
-            services: auth entry queue inspection traffic score documents email
-            seeds: users vehicle-types entries
+            services: auth competition email
+            seeds: users vehicle-types entries queue-entries
           - shard: queue-public-settings
             projects: >-
               --project=queue
@@ -290,22 +299,25 @@ jobs:
               tests/e2e/queue/settings.spec.mjs
               tests/e2e/queue/stats.spec.mjs
             workers: 2
-            services: auth entry queue inspection traffic score documents email
+            services: auth competition email
             seeds: users vehicle-types entries
           - shard: traffic
             projects: --project=traffic
             workers: 3
-            services: auth entry queue inspection traffic score documents
+            services: auth competition
             seeds: users vehicle-types entries
           - shard: inspection
             projects: --project=inspection
             workers: 3
-            services: auth entry queue inspection traffic score documents
-            seeds: users vehicle-types entries inspection
+            services: auth competition
+            # Inspection reliability/RBAC specs own teams 7, 28, and 98. Seed
+            # them only in this isolated shard so canonical team validation is
+            # exercised without changing the eight-team baseline elsewhere.
+            seeds: users vehicle-types entries inspection-entries inspection
           - shard: documents
             projects: --project=documents
             workers: 3
-            services: auth entry queue inspection traffic score documents email
+            services: auth competition email
             seeds: users vehicle-types entries documents
           - shard: score-endurance
             projects: >-
@@ -314,7 +326,7 @@ jobs:
               tests/e2e/score/endurance-realtime.spec.mjs
               tests/e2e/score/endurance.spec.mjs
             workers: 3
-            services: auth entry queue inspection traffic score documents
+            services: auth competition
             seeds: users vehicle-types entries inspection
           - shard: score-settings
             projects: >-
@@ -327,7 +339,7 @@ jobs:
             # These files intentionally exercise the same global score, penalty
             # and publication settings; serial execution makes that ownership explicit.
             workers: 1
-            services: auth entry queue inspection traffic score documents
+            services: auth competition
             seeds: users vehicle-types entries inspection
           - shard: score-ui
             projects: >-
@@ -339,17 +351,17 @@ jobs:
               tests/e2e/score/rbac.spec.mjs
               tests/e2e/score/year-switch.spec.mjs
             workers: 3
-            services: auth entry queue inspection traffic score documents
+            services: auth competition
             seeds: users vehicle-types entries inspection
           - shard: entry-course
             projects: --project=entry --project=course
             workers: 2
-            services: auth entry queue inspection traffic score documents course
+            services: auth competition course
             seeds: users vehicle-types entries
           - shard: calendar-security
             projects: --project=calendar --project=security
             workers: 2
-            services: auth entry course calendar
+            services: auth competition course calendar
             seeds: users
 
     steps:
@@ -425,8 +437,8 @@ jobs:
             network=host
             image=moby/buildkit:buildx-stable-1
           # Route Docker Hub (docker.io) base-image pulls through Google's
-          # pull-through mirror. A shared/ change rebuilds all 10 images on every
-          # shard (~60 builds/run), and anonymous Docker Hub pulls rate-limit /
+          # pull-through mirror. A shared/ change rebuilds all runtime images on
+          # every shard, and anonymous Docker Hub pulls rate-limit /
           # 5xx (auth.docker.io 520, manifest 504) at that volume — there are no
           # Docker Hub creds in this repo. The mirror serves the same official
           # base images without the anonymous per-IP limit.

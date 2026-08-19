@@ -25,11 +25,11 @@ test.describe("Queue active penalties modal", () => {
       },
     ];
 
-    await page.route("**/queue/api/admin/penalties**", async (route) => {
+    await page.route("**/competition/api/v1/queue/admin/penalties**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
 
-      if (request.method() === "GET" && url.pathname.endsWith("/api/admin/penalties")) {
+      if (request.method() === "GET" && url.pathname.endsWith("/competition/api/v1/queue/admin/penalties")) {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -38,14 +38,14 @@ test.describe("Queue active penalties modal", () => {
         return;
       }
 
-      if (request.method() === "DELETE" && url.pathname.endsWith("/api/admin/penalties/battery/1")) {
+      if (request.method() === "DELETE" && url.pathname.endsWith("/competition/api/v1/queue/admin/penalties/battery/1")) {
         cleared = true;
         penalties = penalties.filter((penalty) => penalty.num !== 1 || penalty.inspection !== "battery");
         await route.fulfill({ status: 200, body: "" });
         return;
       }
 
-      if (request.method() === "POST" && url.pathname.endsWith("/api/admin/penalties/electric/2/restore")) {
+      if (request.method() === "POST" && url.pathname.endsWith("/competition/api/v1/queue/admin/penalties/electric/2/restore")) {
         restored = true;
         penalties = penalties.filter((penalty) => penalty.num !== 2 || penalty.inspection !== "electric");
         await route.fulfill({ status: 200, body: "" });
@@ -90,7 +90,7 @@ test.describe("Queue active penalties modal", () => {
   });
 
   test("disables queue restore when legacy penalty data is unavailable", async ({ page }) => {
-    await page.route("**/queue/api/admin/penalties", (route) => route.fulfill({
+    await page.route("**/competition/api/v1/queue/admin/penalties", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify([{
@@ -114,7 +114,7 @@ test.describe("Queue active penalties modal", () => {
 
   test("keeps clear and restore actions side by side on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.route("**/queue/api/admin/penalties", (route) => route.fulfill({
+    await page.route("**/competition/api/v1/queue/admin/penalties", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify([{
@@ -152,7 +152,7 @@ test.describe("Queue active penalties modal", () => {
   });
 
   test("shows an empty state and closes with Escape", async ({ page }) => {
-    await page.route("**/queue/api/admin/penalties", (route) => route.fulfill({
+    await page.route("**/competition/api/v1/queue/admin/penalties", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
       body: "[]",

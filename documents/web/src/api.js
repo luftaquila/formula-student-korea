@@ -1,6 +1,6 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const api = createApiClient("/documents");
+const api = createApiClient("/competition/api/v1/documents");
 
 export const { request, fetchEntryYears, fetchVehicleTypes } = api;
 

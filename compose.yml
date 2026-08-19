@@ -10,29 +10,28 @@ x-common-healthcheck: &common-healthcheck
   start_period: 5s
 
 services:
-  entry:
-    image: ghcr.io/luftaquila/formula-student-korea/entry:latest
+  competition:
+    image: ghcr.io/luftaquila/formula-student-korea/competition:latest
     build:
       context: .
-      dockerfile: Dockerfile.service
-      args:
-        SERVICE: entry
-        PORT: 9200
-    container_name: fsk-entry
+      dockerfile: competition/Dockerfile
+    container_name: fsk-competition
     security_opt:
       - label:disable
     environment:
       <<: *common-env
+      PUBLIC_URL: ${PUBLIC_URL}
     volumes:
-      - ./entry/data:/home/node/fsk-entry/data
+      - ./competition/data:/app/data
     restart: unless-stopped
+    stop_grace_period: 60s
     healthcheck:
       <<: *common-healthcheck
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9200/api/health"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9200/health/ready"]
     deploy:
       resources:
         limits:
-          memory: 512M
+          memory: 1536M
     networks:
       - fsk-network
 
@@ -70,32 +69,6 @@ services:
     networks:
       - fsk-network
 
-  traffic:
-    image: ghcr.io/luftaquila/formula-student-korea/traffic:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.service
-      args:
-        SERVICE: traffic
-        PORT: 9500
-    container_name: fsk-traffic
-    security_opt:
-      - label:disable
-    environment:
-      <<: *common-env
-    volumes:
-      - ./traffic/data:/home/node/fsk-traffic/data
-    restart: unless-stopped
-    healthcheck:
-      <<: *common-healthcheck
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9500/api/health"]
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    networks:
-      - fsk-network
-
   energymeter:
     image: ghcr.io/luftaquila/fsk-energymeter:latest
     container_name: fsk-energymeter
@@ -106,89 +79,6 @@ services:
       resources:
         limits:
           memory: 256M
-    networks:
-      - fsk-network
-
-  queue:
-    image: ghcr.io/luftaquila/formula-student-korea/queue:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.service
-      args:
-        SERVICE: queue
-        PORT: 9300
-    container_name: fsk-queue
-    security_opt:
-      - label:disable
-    environment:
-      <<: *common-env
-    volumes:
-      - ./queue/data:/home/node/fsk-queue/data
-    restart: unless-stopped
-    healthcheck:
-      <<: *common-healthcheck
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9300/api/health"]
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    networks:
-      - fsk-network
-
-  inspection:
-    image: ghcr.io/luftaquila/formula-student-korea/inspection:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.service
-      args:
-        SERVICE: inspection
-        PORT: 9400
-    container_name: fsk-inspection
-    security_opt:
-      - label:disable
-    environment:
-      <<: *common-env
-    volumes:
-      - ./inspection/data:/home/node/fsk-inspection/data
-    restart: unless-stopped
-    healthcheck:
-      <<: *common-healthcheck
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9400/api/health"]
-    deploy:
-      resources:
-        limits:
-          memory: 512M
-    networks:
-      - fsk-network
-
-  score:
-    image: ghcr.io/luftaquila/formula-student-korea/score:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.service
-      args:
-        SERVICE: score
-        PORT: 9600
-    container_name: fsk-score
-    security_opt:
-      - label:disable
-    environment:
-      <<: *common-env
-    volumes:
-      - ./score/data:/home/node/fsk-score/data
-    depends_on:
-      inspection:
-        condition: service_healthy
-      traffic:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      <<: *common-healthcheck
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9600/api/health"]
-    deploy:
-      resources:
-        limits:
-          memory: 512M
     networks:
       - fsk-network
 
@@ -215,33 +105,6 @@ services:
       resources:
         limits:
           memory: 256M
-    networks:
-      - fsk-network
-
-  documents:
-    image: ghcr.io/luftaquila/formula-student-korea/documents:latest
-    build:
-      context: .
-      dockerfile: Dockerfile.service
-      args:
-        SERVICE: documents
-        PORT: 9700
-    container_name: fsk-documents
-    security_opt:
-      - label:disable
-    environment:
-      <<: *common-env
-      PUBLIC_URL: ${PUBLIC_URL}
-    volumes:
-      - ./documents/data:/home/node/fsk-documents/data
-    restart: unless-stopped
-    healthcheck:
-      <<: *common-healthcheck
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:9700/api/health"]
-    deploy:
-      resources:
-        limits:
-          memory: 512M
     networks:
       - fsk-network
 
@@ -347,14 +210,9 @@ services:
       # 잠깐 노출되고 곧 회복한다(restart: unless-stopped + 헬스체크). energymeter·filebrowser는
       # 외부 이미지라 헬스체크 자체가 없어 원래도 service_started.
       auth: { condition: service_healthy }
-      entry: { condition: service_started }
+      competition: { condition: service_started }
       course: { condition: service_started }
-      traffic: { condition: service_started }
       energymeter: { condition: service_started }
-      queue: { condition: service_started }
-      inspection: { condition: service_started }
-      score: { condition: service_started }
-      documents: { condition: service_started }
       calendar: { condition: service_started }
       email: { condition: service_started }
       filebrowser: { condition: service_started }

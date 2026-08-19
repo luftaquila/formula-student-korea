@@ -3,31 +3,14 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const PHONE = "01055556666";
 const ENTRY_NUM = 95;
-const YEAR = new Date().getFullYear();
-// This file owns both the entry and inspection type.
+// This file owns the inspection type and uses its dedicated seeded entry.
 const TYPE = "tilting";
 
 test.describe("Queue public status query success flow", () => {
   test.use({ storageState: storageStatePath("chief") });
 
-  test.beforeAll(async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
-    const res = await ctx.request.post(`/entry/api/entries?year=${YEAR}`, {
-      data: { num: ENTRY_NUM, univ: "E2E Queue Status", team: "Queue Status", type: "EV" },
-    });
-    expect(res.status()).toBe(201);
-    await ctx.close();
-  });
-
-  test.afterAll(async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
-    const res = await ctx.request.delete(`/entry/api/entries/${ENTRY_NUM}?year=${YEAR}`);
-    expect([200, 404]).toContain(res.status());
-    await ctx.close();
-  });
-
   test("successful status query shows queue name and rank", async ({ page }) => {
-    const regRes = await page.request.post(`/queue/api/admin/register/${TYPE}`, {
+    const regRes = await page.request.post(`/competition/api/v1/queue/admin/register/${TYPE}`, {
       data: { num: ENTRY_NUM, phone: PHONE },
     });
     expect(regRes.status()).toBe(201);
@@ -51,15 +34,15 @@ test.describe("Queue public status query success flow", () => {
       await expect(resultRow.first()).toBeVisible({ timeout: 5000 });
       await expect(resultRow.first().locator(".result-rank")).toBeVisible();
     } finally {
-      await page.request.post(`/queue/api/admin/booths/${TYPE}/1/enter`, {
+      await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },
       });
-      await page.request.post(`/queue/api/admin/booths/${TYPE}/1/exit`);
+      await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/exit`);
     }
   });
 
   test("querying with wrong phone number shows error", async ({ page }) => {
-    const regRes = await page.request.post(`/queue/api/admin/register/${TYPE}`, {
+    const regRes = await page.request.post(`/competition/api/v1/queue/admin/register/${TYPE}`, {
       data: { num: ENTRY_NUM, phone: PHONE },
     });
     expect(regRes.status()).toBe(201);
@@ -78,10 +61,10 @@ test.describe("Queue public status query success flow", () => {
 
       await expect(page.locator("[data-sonner-toast][data-type='error']").first()).toBeVisible({ timeout: 5000 });
     } finally {
-      await page.request.post(`/queue/api/admin/booths/${TYPE}/1/enter`, {
+      await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },
       });
-      await page.request.post(`/queue/api/admin/booths/${TYPE}/1/exit`);
+      await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/exit`);
     }
   });
 });

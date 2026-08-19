@@ -2,7 +2,17 @@
 
 Formula Student Korea Service Hub
 
-Read [GUIDE.md](GUIDE.md) for usage guide.
+Read the [user guide](docs/user-guide.md) to operate the system.
+
+## Documentation
+
+- [Architecture](docs/architecture.md): runtime boundaries, ownership, and lifecycle invariants
+- [API reference](docs/api.md): current versioned and supporting-service HTTP contracts
+- [User guide](docs/user-guide.md): competition workflows and roles
+- [ADR 0001](docs/adr/0001-competition-modular-monolith.md): why the competition core is a modular monolith
+- [Competition cutover](docs/runbooks/competition-cutover.md): one-time migration and deployment gates
+- [Backup and restore](docs/runbooks/backup-restore.md): ongoing data-protection procedure
+- [Contributing](CONTRIBUTING.md): development, tests, and logging policy
 
 ## Services
 
@@ -10,12 +20,7 @@ Read [GUIDE.md](GUIDE.md) for usage guide.
 |---------|-------------|------|
 | landing | Landing page & Caddy reverse proxy | 9000 |
 | auth | Authentication & user management | 9100 |
-| entry | Vehicle entry registration | 9200 |
-| queue | Inspection queue management | 9300 |
-| inspection | Inspection sheet management | 9400 |
-| traffic | Traffic controller, telemetry & event mode management | 9500 |
-| score | Score aggregation, penalty/scoring config & management | 9600 |
-| documents | Document submission management | 9700 |
+| competition | Modular monolith: teams, queue, inspection, traffic, score, documents | 9200 |
 | energymeter | Energy meter data viewer | 9800 |
 | email | Email/SMS management & Brevo integration | 9900 |
 | course | Course cone management with RTK GPS rover + WebRTC camera / WebXR VR teleop | 10000 |
@@ -62,9 +67,9 @@ Set `DOMAIN_NAME` in `.env` file.
 
 ```bash
 make deploy              # Pull images + deploy
-make deploy SVC=traffic  # Pull specific service + deploy
+make deploy SVC=competition  # Pull Competition + deploy
 make build               # Build locally (dev)
-make build SVC=traffic   # Build specific service locally
+make build SVC=competition   # Build Competition locally
 make restart             # Restart only (no pull/build)
 ```
 
@@ -72,7 +77,7 @@ make restart             # Restart only (no pull/build)
 
 ```bash
 make deploy PROFILE=local              # Pull images + deploy
-make deploy PROFILE=local SVC=traffic  # Pull specific service + deploy
+make deploy PROFILE=local SVC=competition  # Pull Competition + deploy
 ```
 
 Available at `http://localhost:9000`.
@@ -88,4 +93,4 @@ npm run test:auth                 # Auth service only (etc.)
 
 ### E2E Tests (Playwright)
 
-E2E tests run only in CI on push to main.
+E2E tests run in CI for pushes and pull requests targeting `main`.

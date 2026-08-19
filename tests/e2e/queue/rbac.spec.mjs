@@ -12,24 +12,24 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // Chief-gated endpoints; official must be rejected (403).
 const chiefOnly = [
-  { method: "post", path: "/queue/api/admin/register/battery", body: { num: 1, phone: "01000000000" } },
-  { method: "get", path: "/queue/api/admin/priority/battery", body: undefined },
-  { method: "post", path: "/queue/api/admin/priority/battery", body: { num: 999999, priority: 0 } },
-  { method: "delete", path: "/queue/api/admin/priority/battery/all", body: {} },
-  { method: "get", path: "/queue/api/admin/history/status", body: undefined },
-  { method: "delete", path: "/queue/api/admin/history/battery", body: {} },
-  { method: "patch", path: "/queue/api/admin/settings/sms", body: { enabled: false } },
-  { method: "patch", path: "/queue/api/admin/inspection/battery/visibility", body: { hidden: false } },
-  { method: "put", path: "/queue/api/admin/inspection/battery/ignore", body: { ignore_priority: false } },
-  { method: "patch", path: "/queue/api/admin/inspection/battery", body: { active: true } },
-  { method: "patch", path: "/queue/api/admin/booths/battery/config", body: { count: 1 } },
+  { method: "post", path: "/competition/api/v1/queue/admin/register/battery", body: { num: 1, phone: "01000000000" } },
+  { method: "get", path: "/competition/api/v1/queue/admin/priority/battery", body: undefined },
+  { method: "post", path: "/competition/api/v1/queue/admin/priority/battery", body: { num: 999999, priority: 0 } },
+  { method: "delete", path: "/competition/api/v1/queue/admin/priority/battery/all", body: {} },
+  { method: "get", path: "/competition/api/v1/queue/admin/history/status", body: undefined },
+  { method: "delete", path: "/competition/api/v1/queue/admin/history/battery", body: {} },
+  { method: "patch", path: "/competition/api/v1/queue/admin/settings/sms", body: { enabled: false } },
+  { method: "patch", path: "/competition/api/v1/queue/admin/inspection/battery/visibility", body: { hidden: false } },
+  { method: "put", path: "/competition/api/v1/queue/admin/inspection/battery/ignore", body: { ignore_priority: false } },
+  { method: "patch", path: "/competition/api/v1/queue/admin/inspection/battery", body: { active: true } },
+  { method: "patch", path: "/competition/api/v1/queue/admin/booths/battery/config", body: { count: 1 } },
 ];
 
 // official-gated endpoint; proves the tier exists and that unauth is 401 there too.
 const officialOnly = [
-  { method: "get", path: "/queue/api/admin/all", body: undefined },
-  { method: "get", path: "/queue/api/admin/penalties", body: undefined },
-  { method: "post", path: "/queue/api/admin/penalties/battery/999999/restore", body: undefined },
+  { method: "get", path: "/competition/api/v1/queue/admin/all", body: undefined },
+  { method: "get", path: "/competition/api/v1/queue/admin/penalties", body: undefined },
+  { method: "post", path: "/competition/api/v1/queue/admin/penalties/battery/999999/restore", body: undefined },
 ];
 
 test.describe("queue RBAC", () => {
@@ -57,7 +57,7 @@ test.describe("queue RBAC", () => {
   });
 
   test("the active queue endpoint remains public", async ({ request }) => {
-    const res = await request.get("/queue/api/active");
+    const res = await request.get("/competition/api/v1/queue/active");
     expect(res.status()).toBe(200);
   });
 

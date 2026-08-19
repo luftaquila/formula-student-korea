@@ -1,13 +1,44 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 async function saveInspector(page, input, value) {
-  const p = page.waitForResponse((res) => res.url().includes("/api/sheet/inspector") && res.status() === 200);
+  const p = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/inspector") && res.status() === 200);
   await input.fill(value);
   await input.blur();
   await p;
+}
+
+async function replaceAnswer(page, itemId, value) {
+  const current = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
+  const data = await current.json();
+  const response = await page.request.put("/competition/api/v1/inspection/sheet/answer", {
+    data: {
+      year: YEAR,
+      team_num: 1,
+      item_id: itemId,
+      value,
+      expectedValue: data.answers[itemId]?.value || "",
+    },
+  });
+  expect(response.status()).toBe(200);
+}
+
+async function replaceMemo(page, itemId, memo) {
+  const current = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
+  const data = await current.json();
+  const response = await page.request.put("/competition/api/v1/inspection/sheet/memo", {
+    data: {
+      year: YEAR,
+      team_num: 1,
+      item_id: itemId,
+      memo,
+      expectedMemo: data.answers[itemId]?.memo || "",
+    },
+  });
+  expect(response.status()).toBe(200);
 }
 
 test.describe("Inspection sheet filling", () => {
@@ -183,19 +214,17 @@ test.describe("Inspection sheet filling", () => {
 
     // Verify persistence via API (poll instead of waitForResponse — avoids race conditions)
     await expect.poll(async () => {
-      const resp = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const resp = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       const data = await resp.json();
       return Object.values(data.answers).some((a) => a.value === newNum);
     }, { timeout: 20000 }).toBeTruthy();
 
     // Clean up: clear the value via API (bypass UI debounce)
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const cat = template.find((c) => c.name === "전기 검차");
     const item = cat.subcategories[0].groups[0].items.find((i) => i.name === "절연 저항 측정");
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: item.id, value: "" },
-    });
+    await replaceAnswer(page, item.id, "");
   });
 
   test("enters inspector name", async ({ page }) => {
@@ -215,18 +244,18 @@ test.describe("Inspection sheet filling", () => {
     await inspectorInput.blur();
 
     // Verify via API poll (avoids waitForResponse race)
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const chassisCatId = template.find((c) => c.name === "샤시 검차").id;
 
     await expect.poll(async () => {
-      const dataRes = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       const data = await dataRes.json();
       return data.inspectors[chassisCatId];
     }, { timeout: 10000 }).toBe(newInspector);
 
     // Clean up via API
-    await page.request.put("/inspection/api/sheet/inspector", {
+    await page.request.put("/competition/api/v1/inspection/sheet/inspector", {
       data: { year: YEAR, team_num: 1, category_id: chassisCatId, inspector: "" },
     });
 
@@ -343,31 +372,27 @@ test.describe("Inspection sheet filling", () => {
     await memoInput.blur();
 
     // Get template to find item ID for API verification
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const firstItemId = template[0].subcategories[0].groups[0].items[0].id;
 
     // Verify persistence via API poll (avoids waitForResponse race)
     await expect.poll(async () => {
-      const resp = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const resp = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       const data = await resp.json();
       return data.answers[firstItemId]?.memo === newMemo;
     }, { timeout: 10000 }).toBeTruthy();
 
     // Clean up via API
-    await page.request.put("/inspection/api/sheet/memo", {
-      data: { year: YEAR, team_num: 1, item_id: firstItemId, memo: "" },
-    });
+    await replaceMemo(page, firstItemId, "");
   });
 
   test("shows and saves whitespace-only memo as empty", async ({ page }) => {
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const firstItemId = template[0].subcategories[0].groups[0].items[0].id;
 
-    await page.request.put("/inspection/api/sheet/memo", {
-      data: { year: YEAR, team_num: 1, item_id: firstItemId, memo: " \n\t " },
-    });
+    await replaceMemo(page, firstItemId, " \n\t ");
     await page.reload();
     await waitForPageReady(page);
 
@@ -378,13 +403,13 @@ test.describe("Inspection sheet filling", () => {
 
     await memoText.click();
     const savePromise = page.waitForResponse(
-      (res) => res.url().includes("/api/sheet/memo") && res.status() === 200,
+      (res) => res.url().includes("/competition/api/v1/inspection/sheet/memo") && res.status() === 200,
     );
     await itemRow.locator(".memo-input").blur();
     await savePromise;
 
     await expect.poll(async () => {
-      const response = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const response = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       const data = await response.json();
       return data.answers[firstItemId]?.memo;
     }).toBe("");
@@ -417,27 +442,25 @@ test.describe("Inspection sheet filling", () => {
     const newText = currentText === "BAT-2025-001" ? "BAT-2025-002" : "BAT-2025-001";
 
     // Enter a text value and blur to trigger debounced save
-    const saveP = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
+    const saveP = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/answer") && res.status() === 200);
     await textInput.fill(newText);
     await textInput.blur();
     await saveP;
 
     // Get template to find item ID
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const textItem = template[0].subcategories[0].groups[0].items.find((i) => i.name === "시리얼 넘버");
 
     // Verify persistence via API poll
     await expect.poll(async () => {
-      const resp = await page.request.get(`/inspection/api/sheet/data/${YEAR}/1`);
+      const resp = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       const data = await resp.json();
       return data.answers[textItem.id]?.value;
     }, { timeout: 10000 }).toBe(newText);
 
     // Clean up via API
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: 1, item_id: textItem.id, value: "" },
-    });
+    await replaceAnswer(page, textItem.id, "");
   });
 
   test("toggles checktable cell checkbox", async ({ page }) => {
@@ -453,13 +476,13 @@ test.describe("Inspection sheet filling", () => {
     const checktable = itemRow.locator(".checktable");
     await expect(checktable).toBeVisible();
     const checkbox = checktable.locator("input[type='checkbox']").first();
-    const checkSavePromise = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
+    const checkSavePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/answer") && res.status() === 200);
     await checkbox.check();
     await checkSavePromise;
 
     // Verify the value persists by reloading
     const sheetDataPromise = page.waitForResponse(
-      (res) => res.url().includes("/api/sheet/data/") && res.status() === 200
+      (res) => res.url().includes("/competition/api/v1/inspection/sheet/data/") && res.status() === 200
     );
     await page.reload();
     await waitForPageReady(page);
@@ -473,7 +496,7 @@ test.describe("Inspection sheet filling", () => {
     await expect(reloadedCheckbox).toBeChecked();
 
     // Clean up: uncheck
-    const uncheckPromise = page.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
+    const uncheckPromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/answer") && res.status() === 200);
     await reloadedCheckbox.uncheck();
     await uncheckPromise;
   });

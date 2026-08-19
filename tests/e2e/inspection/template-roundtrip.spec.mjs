@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Template JSON import UI", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -14,7 +15,7 @@ test.describe("Template JSON import UI", () => {
       subcategories: [],
     }];
     let importRequest;
-    await page.route("**/inspection/api/sheet/template/import", async (route) => {
+    await page.route("**/competition/api/v1/inspection/sheet/template/import", async (route) => {
       importRequest = route.request();
       await route.fulfill({ status: 201, body: "" });
     });

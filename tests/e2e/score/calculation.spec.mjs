@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-Score-Calc`;
 
 test.describe("Score calculation accuracy", () => {
@@ -13,26 +15,26 @@ test.describe("Score calculation accuracy", () => {
     const page = await context.newPage();
 
     // Create traffic records for team 1 (two runs with different cone counts)
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Score-Calc",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 5000,
           detail: "run 1 - no cones",
         },
       },
     });
 
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Score-Calc",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 4000,
           detail: "run 2 - faster but has cones",
         },
@@ -40,23 +42,23 @@ test.describe("Score calculation accuracy", () => {
     });
 
     // Set cones on the second record (the faster one)
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     const run2 = records.find((r) => r.detail === "run 2 - faster but has cones");
     if (run2) {
-      await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${run2.rowid}`, {
+      await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${run2.rowid}`, {
         data: { field: "cones", value: 3 },
       });
     }
 
     // Create traffic record for team 2 (DNF result = -1)
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Score-Calc",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 2, univ: "한양대학교", team: "ACES" },
+          entry: await trafficEntry(2),
           result: -1,
           detail: "DNF run",
         },
@@ -64,13 +66,13 @@ test.describe("Score calculation accuracy", () => {
     });
 
     // Create traffic record for team 3 (normal run)
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Score-Calc",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 3, univ: "성균관대학교", team: "SKKU Racing" },
+          entry: await trafficEntry(3),
           result: 6000,
           detail: "normal run",
         },
@@ -85,10 +87,10 @@ test.describe("Score calculation accuracy", () => {
     const page = await context.newPage();
 
     // Clean up traffic records
-    await page.request.delete(`/traffic/api/records/${TABLE_NAME}`);
+    await page.request.delete(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
 
     // Clean up penalties
-    await page.request.put("/score/api/score/penalty", {
+    await page.request.put("/competition/api/v1/score/score/penalty", {
       data: { year: YEAR, event_type: "가속", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
     });
 
@@ -97,12 +99,12 @@ test.describe("Score calculation accuracy", () => {
 
   test("penalty-adjusted best record selection via API", async ({ page }) => {
     // Set cone penalty to 2 seconds for 가속
-    await page.request.put("/score/api/score/penalty", {
+    await page.request.put("/competition/api/v1/score/score/penalty", {
       data: { year: YEAR, event_type: "가속", cone_penalty: 2, oc_penalty: 0, start_delay: 0 },
     });
 
     // Fetch score data
-    const res = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const res = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await res.json();
 
     // Find the 가속 event
@@ -128,12 +130,12 @@ test.describe("Score calculation accuracy", () => {
 
   test("penalty change affects best record selection", async ({ page }) => {
     // Set cone penalty to 0 (no penalty)
-    await page.request.put("/score/api/score/penalty", {
+    await page.request.put("/competition/api/v1/score/score/penalty", {
       data: { year: YEAR, event_type: "가속", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
     });
 
     // Fetch score data
-    const res = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const res = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await res.json();
 
     const accelEvent = data.events.find((e) => e.type === "가속");
@@ -148,7 +150,7 @@ test.describe("Score calculation accuracy", () => {
 
   test("score dashboard reflects traffic records", async ({ page }) => {
     // Set penalty back to 0 for clean display
-    await page.request.put("/score/api/score/penalty", {
+    await page.request.put("/competition/api/v1/score/score/penalty", {
       data: { year: YEAR, event_type: "가속", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
     });
 
@@ -180,13 +182,13 @@ test.describe("Score calculation accuracy", () => {
     await expect(table).toBeVisible();
 
     // Add a new traffic record for team 10 (KAIST)
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Score-Calc",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 10, univ: "KAIST", team: "RUN" },
+          entry: await trafficEntry(10),
           result: 3500,
           detail: "SSE test record",
         },

@@ -3,14 +3,14 @@ import { storageStatePath, waitForPageReady, expectNotification } from "../helpe
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 async function apiGetCancelPenalty() {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
     headers: { Cookie: getAuthCookie("chief") },
   });
   return res.json();
 }
 
 async function apiSetCancelPenalty(value) {
-  await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+  await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ value }),
@@ -18,7 +18,7 @@ async function apiSetCancelPenalty(value) {
 }
 
 async function apiGetSmsRank() {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms-rank`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms-rank`, {
     headers: { Cookie: getAuthCookie("chief") },
   });
   if (!res.ok) throw new Error(`get SMS rank: ${res.status}`);
@@ -26,7 +26,7 @@ async function apiGetSmsRank() {
 }
 
 async function apiSetSmsRank(value) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms-rank`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms-rank`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ value }),
@@ -35,14 +35,14 @@ async function apiSetSmsRank(value) {
 }
 
 async function apiGetInspections() {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/all`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/all`, {
     headers: { Cookie: getAuthCookie("chief") },
   });
   return res.json();
 }
 
 async function apiSetInspectionActive(type, active) {
-  await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
+  await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ active }),
@@ -204,7 +204,7 @@ test.describe("Queue settings management", () => {
     await expectNotification(page, "success", "부스");
 
     // Reload and verify persistence — wait for settings API before asserting
-    const settingsLoaded = page.waitForResponse((res) => res.url().includes("/api/admin/all") && res.status() === 200);
+    const settingsLoaded = page.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/admin/all") && res.status() === 200);
     await page.reload();
     await settingsLoaded;
     await waitForPageReady(page);
@@ -214,7 +214,7 @@ test.describe("Queue settings management", () => {
     await expect(updatedInput).toHaveValue(newValue);
 
     // Restore original value
-    const restorePromise = page.waitForResponse((res) => res.url().includes("/api/admin/booths/") && res.status() === 200);
+    const restorePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/admin/booths/") && res.status() === 200);
     await updatedInput.fill(originalValue);
     await updatedInput.dispatchEvent("change");
     await restorePromise;
@@ -225,7 +225,7 @@ test.describe("Queue settings management", () => {
     await apiSetInspectionActive("noise", false);
 
     // Verify via public API that noise is not in active list
-    const res = await page.request.get("/queue/api/active");
+    const res = await page.request.get("/competition/api/v1/queue/active");
     const active = await res.json();
     const activeTypes = active.map((i) => i.type);
     expect(activeTypes).not.toContain("noise");
@@ -234,7 +234,7 @@ test.describe("Queue settings management", () => {
     await apiSetInspectionActive("noise", true);
 
     // Verify it's back in active list
-    const res2 = await page.request.get("/queue/api/active");
+    const res2 = await page.request.get("/competition/api/v1/queue/active");
     const active2 = await res2.json();
     const activeTypes2 = active2.map((i) => i.type);
     expect(activeTypes2).toContain("noise");
@@ -242,7 +242,7 @@ test.describe("Queue settings management", () => {
 
   test("SMS enable fails without config (API level)", async ({ page }) => {
     // SMS enable requires SMS config from email service (not configured in CI)
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/sms`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: true }),
@@ -252,7 +252,7 @@ test.describe("Queue settings management", () => {
     expect(text).toContain("SMS 설정");
 
     // Disabling should always work
-    const res2 = await fetch(`${BASE_URL}/queue/api/admin/settings/sms`, {
+    const res2 = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: false }),
@@ -277,7 +277,7 @@ test.describe("Queue settings management", () => {
     const newValue = originalValue === "5" ? "3" : "5";
     try {
       const updateResponse = page.waitForResponse(
-        (res) => res.url().includes("/api/admin/settings/sms-rank") &&
+        (res) => res.url().includes("/competition/api/v1/queue/admin/settings/sms-rank") &&
           res.request().method() === "PATCH" && res.status() === 200,
       );
       await rankInput.fill(newValue);

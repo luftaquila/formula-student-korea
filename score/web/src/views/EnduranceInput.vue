@@ -6,6 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useTableHeadBand } from "../composables/useTableHeadBand";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { useSSE } from "../composables/useSSE";
 
 const { error } = useNotification();
@@ -23,7 +24,7 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
 const headBandRef = ref(null);
 useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
-const selectedYear = ref(new Date().getFullYear());
+const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
@@ -41,7 +42,7 @@ let cellEdited = false;
 let scoreSnapshotSeq = 0;
 let enduranceFetchSeq = 0;
 
-const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
+const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
 
 const entryList = computed(() => {
   let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));

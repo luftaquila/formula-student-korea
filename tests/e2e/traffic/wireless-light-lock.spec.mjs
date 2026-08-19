@@ -8,7 +8,7 @@ test.describe("Wireless physical-event designation", () => {
   test.afterAll(async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const p = await ctx.newPage();
-    await p.request.put("/traffic/api/wireless/physical-event", { data: { event_type: null } }).catch(() => {});
+    await p.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } }).catch(() => {});
     await ctx.close();
   });
 
@@ -17,22 +17,22 @@ test.describe("Wireless physical-event designation", () => {
     await waitForPageReady(page);
 
     // 가속을 물리 신호등 경기로 지정
-    const a = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "가속" } });
+    const a = await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "가속" } });
     expect(a.ok()).toBeTruthy();
     expect((await a.json()).owner_event).toBe("가속");
 
     // 다른 경기로 변경
-    const b = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "스키드패드" } });
+    const b = await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "스키드패드" } });
     expect(b.ok()).toBeTruthy();
     expect((await b.json()).owner_event).toBe("스키드패드");
 
     // 없음(전부 가상)으로 해제
-    const c = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: null } });
+    const c = await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } });
     expect(c.ok()).toBeTruthy();
     expect((await c.json()).owner_event).toBeNull();
 
     // 잘못된 종목은 400
-    const d = await page.request.put("/traffic/api/wireless/physical-event", { data: { event_type: "없는종목" } });
+    const d = await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "없는종목" } });
     expect(d.status()).toBe(400);
   });
 });

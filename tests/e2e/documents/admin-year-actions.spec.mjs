@@ -1,3 +1,4 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import {
@@ -7,7 +8,7 @@ import {
   submitDocument,
 } from "../helpers/documents.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const SESSION_NAME = "E2E 연도별 다운로드 격리 세션";
 
 test.describe("Documents admin year-level actions", () => {

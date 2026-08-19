@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntries,
@@ -13,11 +13,13 @@ import {
   fetchReinspectionStatus,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useSSE } from "../composables/useSSE";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 
 const { success, error } = useNotification();
 const router = useRouter();
+const { lastEntriesUpdate } = useSSE();
 
 const tableRef = ref(null);
 const scrollerRef = ref(null);
@@ -83,6 +85,15 @@ onMounted(async () => {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
+});
+
+watch(lastEntriesUpdate, async () => {
+  try {
+    entries.value = await fetchEntries();
+    await Promise.all([refreshAllPriorities(), refreshReinspectionStatus()]);
+  } catch {
+    error("엔트리 정보를 새로고침할 수 없습니다.");
+  }
 });
 
 async function refreshAllPriorities() {

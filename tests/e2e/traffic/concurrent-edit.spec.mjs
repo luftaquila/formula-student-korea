@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `e2e-concurrent`;
 const FULL_TABLE_NAME = `FSK ${YEAR} ${TABLE_NAME}`;
 
@@ -14,13 +16,13 @@ test.describe("Traffic record concurrent edit guard", () => {
     const page = await context.newPage();
 
     // Create first record
-    const res1 = await page.request.post("/traffic/api/records", {
+    const res1 = await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: TABLE_NAME,
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 4000,
           detail: "concurrent test 1",
         },
@@ -29,13 +31,13 @@ test.describe("Traffic record concurrent edit guard", () => {
     expect(res1.status()).toBe(201);
 
     // Create second record
-    const res2 = await page.request.post("/traffic/api/records", {
+    const res2 = await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: TABLE_NAME,
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 2, univ: "한양대학교", team: "ACES" },
+          entry: await trafficEntry(2),
           result: 5000,
           detail: "concurrent test 2",
         },
@@ -51,7 +53,7 @@ test.describe("Traffic record concurrent edit guard", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     try {
-      await page.request.delete(`/traffic/api/records/${FULL_TABLE_NAME}`);
+      await page.request.delete(`/competition/api/v1/traffic/records/${FULL_TABLE_NAME}`);
     } catch { /* ignore */ }
     await context.close();
   });
@@ -89,13 +91,13 @@ test.describe("Traffic record concurrent edit guard", () => {
     await expect(conesInput).toBeVisible();
 
     // Get the rowid of the first record via API
-    const recordsRes = await page.request.get(`/traffic/api/records/${FULL_TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${FULL_TABLE_NAME}`);
     const records = await recordsRes.json();
     // Find record for team #1
     const record1 = records.find((r) => r.num === 1);
 
     // API: PATCH OC field on record 1 while cones input is focused
-    await page.request.patch(`/traffic/api/records/${FULL_TABLE_NAME}/${record1.rowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${FULL_TABLE_NAME}/${record1.rowid}`, {
       data: { field: "oc", value: "7" },
     });
 
@@ -139,12 +141,12 @@ test.describe("Traffic record concurrent edit guard", () => {
     await expect(conesInput).toBeVisible();
 
     // Get the rowid of the second record via API
-    const recordsRes = await page.request.get(`/traffic/api/records/${FULL_TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${FULL_TABLE_NAME}`);
     const records = await recordsRes.json();
     const record2 = records.find((r) => r.num === 2);
 
     // API: PATCH OC field on record 2 (different record)
-    await page.request.patch(`/traffic/api/records/${FULL_TABLE_NAME}/${record2.rowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${FULL_TABLE_NAME}/${record2.rowid}`, {
       data: { field: "oc", value: "4" },
     });
 

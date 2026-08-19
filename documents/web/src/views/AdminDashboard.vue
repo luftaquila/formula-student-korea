@@ -16,7 +16,7 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
   columnSelectors: [".col-num", ".col-team", ".col-type"],
 });
 
-const BASE_URL = import.meta.env.PROD ? "/documents" : "";
+const BASE_URL = "/competition/api/v1/documents";
 const loading = ref(true);
 const years = ref([]);
 const selectedYear = ref(null);
@@ -259,7 +259,7 @@ async function purgeYearFiles() {
 
 function downloadYearArchive() {
   if (!selectedYear.value) return;
-  window.open(`${BASE_URL}/api/admin/years/${selectedYear.value}/archive`, "_blank");
+  window.open(`${BASE_URL}/admin/years/${selectedYear.value}/archive`, "_blank");
 }
 
 onMounted(async () => {

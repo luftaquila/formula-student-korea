@@ -1,8 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const express = require('../../score/node_modules/express/index.js');
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -13,132 +11,73 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_SECRET,
-  TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
 import { createScoreApp } from '../../score/index.mjs';
+import { currentCompetitionYear } from '../../shared/competition-year.mjs';
 
-// ─── Mock Servers ───────────────────────────────────────────────────────
+const requireFromScore = createRequire(import.meta.resolve('../../score/index.mjs'));
+const Database = requireFromScore('better-sqlite3');
+const CURRENT_YEAR = currentCompetitionYear();
 
 let mockEntryRequestCount = 0;
-let mockEntryResponseDelayMs = 0;
 let mockEntryTeamName = '팀A';
 
-function createMockEntryServer() {
-  const app = express();
-  app.get('/api/entries', (req, res) => {
-    mockEntryRequestCount++;
-    const energyIntegration = [2087, 2088].includes(Number(req.query.year));
-    const payload = {
-      1: { univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV' },
-      2: { univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV' },
-    };
-    if (mockEntryResponseDelayMs > 0) setTimeout(() => res.json(payload), mockEntryResponseDelayMs);
-    else res.json(payload);
-  });
-  return app;
+const mainRecords = [
+  { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+  { rowid: 2, time: '2026-01-01T10:05:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 48000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
+  { rowid: 3, time: '2026-01-01T10:10:00', num: 2, univ: '카이스트', team: '팀B', type: '가속', result: 52000, cones: 0, oc: 1, invalidated: 0, scoreboard: 1 },
+];
+const richTemplate = [{
+  id: 100, year: 2026, level: 'category', name: '코너웨이트', sort_order: 0,
+  subcategories: [{
+    id: 101, year: 2026, level: 'subcategory', name: '측정', sort_order: 0, parent_id: 100,
+    groups: [{
+      id: 102, year: 2026, level: 'group', name: '값', sort_order: 0, parent_id: 101,
+      items: [
+        { id: 201, name: '공차중량', answer_type: 'number', year: 2026, level: 'item', sort_order: 0 },
+        { id: 202, name: 'FL', answer_type: 'number', year: 2026, level: 'item', sort_order: 1 },
+        { id: 203, name: 'FR', answer_type: 'number', year: 2026, level: 'item', sort_order: 2 },
+        { id: 204, name: 'RL', answer_type: 'number', year: 2026, level: 'item', sort_order: 3 },
+        { id: 205, name: 'RR', answer_type: 'number', year: 2026, level: 'item', sort_order: 4 },
+      ],
+    }],
+  }],
+}];
+
+function teamEntries(year, rich = false) {
+  mockEntryRequestCount++;
+  const energyIntegration = [2087, 2088].includes(Number(year));
+  const entries = {
+    1: { id: 1, num: 1, univ: '서울대', team: mockEntryTeamName, type: energyIntegration ? 'C-Formula' : 'EV', active: true },
+    2: { id: 2, num: 2, univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV', active: true },
+  };
+  if (rich) entries[3] = { id: 3, num: 3, univ: '연세대', team: '팀C', type: 'EV', active: true };
+  return entries;
 }
 
-function createMockInspectionServer() {
-  const app = express();
-  app.get('/api/sheet/summary', (req, res) => {
-    res.json({
-      categories: [{ id: 1, name: '코너웨이트' }],
-      teams: {}
-    });
-  });
-  app.get('/api/sheet/template', (req, res) => {
-    res.json([]);
-  });
-  app.get('/api/sheet/bulk-answers', (req, res) => {
-    res.json({});
-  });
-  return app;
-}
-
-function createMockTrafficServer() {
-  const app = express();
-  const records = [
-    { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-    { rowid: 2, time: '2026-01-01T10:05:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 48000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
-    { rowid: 3, time: '2026-01-01T10:10:00', num: 2, univ: '카이스트', team: '팀B', type: '가속', result: 52000, cones: 0, oc: 1, invalidated: 0, scoreboard: 1 },
-  ];
-  app.get('/api/records/year/:year', (req, res) => {
-    res.json([{ name: `FSK ${req.params.year} 가속 1차`, records }]);
-  });
-  app.get('/api/event-modes', (req, res) => {
-    res.json([
-      { event_type: '가속', enabled: 1 },
-      { event_type: '스키드패드', enabled: 1 },
-    ]);
-  });
-  return app;
-}
-
-function createRichMockInspectionServer() {
-  const app = express();
-  app.use(express.json());
-
-  app.get('/api/sheet/summary', (req, res) => {
-    res.json({ categories: [{ id: 100, name: '코너웨이트' }], teams: {} });
-  });
-
-  // Return a template tree with 코너웨이트 category containing all 5 required items
-  app.get('/api/sheet/template', (req, res) => {
-    res.json([{
-      id: 100, year: 2026, level: 'category', name: '코너웨이트', sort_order: 0,
-      subcategories: [{
-        id: 101, year: 2026, level: 'subcategory', name: '측정', sort_order: 0, parent_id: 100,
-        groups: [{
-          id: 102, year: 2026, level: 'group', name: '값', sort_order: 0, parent_id: 101,
-          items: [
-            { id: 201, name: '공차중량', answer_type: 'number', year: 2026, level: 'item', sort_order: 0 },
-            { id: 202, name: 'FL', answer_type: 'number', year: 2026, level: 'item', sort_order: 1 },
-            { id: 203, name: 'FR', answer_type: 'number', year: 2026, level: 'item', sort_order: 2 },
-            { id: 204, name: 'RL', answer_type: 'number', year: 2026, level: 'item', sort_order: 3 },
-            { id: 205, name: 'RR', answer_type: 'number', year: 2026, level: 'item', sort_order: 4 },
-          ],
-        }],
-      }],
-    }]);
-  });
-
-  // Return bulk answers for corner weight items
-  app.get('/api/sheet/bulk-answers', (req, res) => {
-    res.json({
-      1: { 201: '250', 202: '63', 203: '62', 204: '64', 205: '61' },
-    });
-  });
-
-  return app;
-}
-
-function createRichMockTrafficServer() {
-  const app = express();
-  const year = new Date().getFullYear();
-
-  // 실제 traffic의 /api/records/year/:year 형태(가시 테이블 + 기록 일괄)를 흉내낸다.
-  app.get('/api/records/year/:year', (req, res) => {
-    res.json([
+function createCompetitionQueries({ rich = false, records = null, modes = null } = {}) {
+  return {
+    teams: { moduleEntries: (year) => teamEntries(year, rich) },
+    inspection: {
+      summary: () => ({ categories: [{ id: rich ? 100 : 1, name: '코너웨이트' }], teams: {} }),
+      templateTree: () => rich ? richTemplate : [],
+      bulkAnswers: () => rich ? { 1: { 201: '250', 202: '63', 203: '62', 204: '64', 205: '61' } } : {},
+    },
+    traffic: {
+      yearRecordGroups: (year) => records ? records(year) : rich ? [
       {
-        // Two tables for same event type "가속" (multi-table merge test)
         name: `FSK ${year} 가속 1차`,
         records: [
-          // Team 1: valid run
           { rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
-          // Team 2: invalidated run
           { rowid: 2, time: 'T2', num: 2, univ: 'B', team: 'B', type: '가속', result: 48000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
-          // Team 3: DNF run (result < 0)
           { rowid: 3, time: 'T3', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
         ],
       },
       {
         name: `FSK ${year} 가속 2차`,
         records: [
-          // Team 1: another run (worse time) - tests multi-table merge + best run selection
           { rowid: 4, time: 'T4', num: 1, univ: 'A', team: 'A', type: '가속', result: 55000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-          // Team 2: another run (also invalidated) - all runs invalidated → result: null
           { rowid: 5, time: 'T5', num: 2, univ: 'B', team: 'B', type: '가속', result: 49000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
-          // Team 3: another DNF run - all valid but all DNF → result: -1
           { rowid: 6, time: 'T6', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
         ],
       },
@@ -148,50 +87,37 @@ function createRichMockTrafficServer() {
           { rowid: 7, time: 'T7', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 30000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
         ],
       },
-    ]);
-  });
-
-  app.get('/api/event-modes', (req, res) => {
-    res.json([
-      { event_type: '가속', enabled: 1 },
-      { event_type: '스키드패드', enabled: 0 }, // DISABLED - should be excluded
-      { event_type: '오토크로스', enabled: 1 },  // enabled but no records
-    ]);
-  });
-
-  return app;
+    ] : [{ name: `FSK ${year} 가속 1차`, records: mainRecords }],
+      eventModes: () => modes ?? (rich ? [
+        { event_type: '가속', enabled: 1 },
+        { event_type: '스키드패드', enabled: 0 },
+        { event_type: '오토크로스', enabled: 1 },
+      ] : [
+        { event_type: '가속', enabled: 1 },
+        { event_type: '스키드패드', enabled: 1 },
+      ]),
+    },
+  };
 }
+
+const mainCompetitionQueries = createCompetitionQueries();
 
 // ─── Setup ──────────────────────────────────────────────────────────────
 
 setupTestEnv();
 
 let server, baseUrl, client, db, dbPath;
-let mockEntryServer, mockInspServer, mockTrafficServer;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
 before(async () => {
-  // Start mock servers
-  const entryApp = createMockEntryServer();
-  const inspApp = createMockInspectionServer();
-  const trafficApp = createMockTrafficServer();
-
-  const [e, i, t] = await Promise.all([
-    startServer(entryApp),
-    startServer(inspApp),
-    startServer(trafficApp),
-  ]);
-  mockEntryServer = e.server;
-  mockInspServer = i.server;
-  mockTrafficServer = t.server;
-
-  process.env.ENTRY_SERVER = e.baseUrl;
-  process.env.INSPECTION_SERVER = i.baseUrl;
-  process.env.TRAFFIC_SERVER = t.baseUrl;
-
   dbPath = tmpDbPath();
-  const result = createScoreApp({ dbPath, skipSSESubscriptions: true, validateUser: TRUST_JWT });
+  const result = createScoreApp({
+    dbPath,
+    skipSSESubscriptions: true,
+    validateUser: TRUST_JWT,
+    competitionQueries: mainCompetitionQueries,
+  });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -201,13 +127,103 @@ before(async () => {
 
 after(async () => {
   await stopServer(server);
-  await Promise.all([
-    stopServer(mockEntryServer),
-    stopServer(mockInspServer),
-    stopServer(mockTrafficServer),
-  ]);
   db.close();
   cleanup(dbPath);
+});
+
+describe('Score mutation preflight auditing', () => {
+  it('audits inactive teams and canonical/report-limit lookup failures', async () => {
+    const isolatedPath = tmpDbPath();
+    const rawDb = new Database(isolatedPath);
+    rawDb.exec(`
+      CREATE TABLE competition_team (
+        id INTEGER PRIMARY KEY,
+        year INTEGER NOT NULL,
+        num INTEGER NOT NULL,
+        active INTEGER NOT NULL
+      );
+      INSERT INTO competition_team (id, year, num, active) VALUES
+        (991, ${CURRENT_YEAR}, 991, 0),
+        (992, ${CURRENT_YEAR}, 992, 1);
+    `);
+    let failCanonicalLookup = false;
+    let failReportLimitLookup = false;
+    const proxyDb = new Proxy(rawDb, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return (sql) => {
+            if (failCanonicalLookup && sql.includes('sqlite_master') && sql.includes('competition_team')) {
+              throw new Error('injected score team lookup failure');
+            }
+            if (failReportLimitLookup && sql.includes('score_setting') && sql.includes("event_type = '보고서'")) {
+              throw new Error('injected report limit lookup failure');
+            }
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const created = createScoreApp({
+      db: proxyDb,
+      validateUser: TRUST_JWT,
+      skipSSESubscriptions: true,
+      competitionQueries: mainCompetitionQueries,
+    });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      const inactiveManual = await isolated.put('/api/score/manual', {
+        body: { year: CURRENT_YEAR, team_num: 991, score_type: 'bonus', value: 3 },
+        cookie: adminCookie,
+      });
+      const inactiveEndurance = await isolated.put('/api/score/endurance', {
+        body: { year: CURRENT_YEAR, team_num: 991, field: 'driver1_time', value: 1000 },
+        cookie: adminCookie,
+      });
+      assert.deepEqual([inactiveManual.status, inactiveEndurance.status], [409, 409]);
+
+      failCanonicalLookup = true;
+      const failedTeamLookup = await isolated.put('/api/score/manual', {
+        body: { year: CURRENT_YEAR, team_num: 992, score_type: 'bonus', value: 4 },
+        cookie: adminCookie,
+      });
+      assert.equal(failedTeamLookup.status, 500);
+      assert.equal(await failedTeamLookup.text(), '팀 활성 상태를 확인할 수 없습니다.');
+      failCanonicalLookup = false;
+
+      failReportLimitLookup = true;
+      const failedReportLimit = await isolated.put('/api/score/manual', {
+        body: { year: CURRENT_YEAR, team_num: 992, score_type: 'report', value: 5 },
+        cookie: adminCookie,
+      });
+      assert.equal(failedReportLimit.status, 500);
+      assert.equal(await failedReportLimit.text(), '보고서 점수 제한을 확인할 수 없습니다.');
+      failReportLimitLookup = false;
+
+      const logs = rawDb.prepare(`
+        SELECT action, detail FROM logs
+        WHERE level = 'warn' AND action IN ('manual_score.update', 'endurance.update')
+        ORDER BY id
+      `).all();
+      assert.deepEqual(logs.map((row) => row.action), [
+        'manual_score.update', 'endurance.update', 'manual_score.update', 'manual_score.update',
+      ]);
+      const details = logs.map((row) => JSON.parse(row.detail));
+      assert.equal(details[0].error, 'inactive_or_missing_team');
+      assert.equal(details[1].error, 'inactive_or_missing_team');
+      assert.equal(details[2].error, 'injected score team lookup failure');
+      assert.equal(details[2].phase, 'canonical_team_lookup');
+      assert.equal(details[3].error, 'injected report limit lookup failure');
+      assert.equal(details[3].phase, 'report_limit_lookup');
+    } finally {
+      await stopServer(started.server);
+      created.closeSse?.();
+      rawDb.close();
+      cleanup(isolatedPath);
+    }
+  });
 });
 
 // ─── Health ─────────────────────────────────────────────────────────────
@@ -573,7 +589,7 @@ describe('GET /api/score', () => {
   });
 
   it('penalty calculation: best run selected with penalty-adjusted time', async () => {
-    const year = new Date().getFullYear();
+    const year = currentCompetitionYear();
     // First set penalty config for current year
     await client.put('/api/score/penalty', {
       body: { year, event_type: '가속', cone_penalty: 2, oc_penalty: 10, start_delay: 0 },
@@ -949,78 +965,6 @@ describe('Public score publication', () => {
     controller.abort();
   });
 
-  it('does not restore a stale snapshot when invalidated during aggregation', async () => {
-    const initialUpdate = await client.put('/api/score/penalty', {
-      cookie: adminCookie,
-      body: { year: 2026, event_type: '가속', cone_penalty: 4, oc_penalty: 10, start_delay: 0 },
-    });
-    assert.equal(initialUpdate.status, 200);
-
-    const requestCountBefore = mockEntryRequestCount;
-    mockEntryTeamName = '기존 팀';
-    mockEntryResponseDelayMs = 100;
-    const requestBeforeInvalidation = client.get('/api/score/public/2026');
-    while (mockEntryRequestCount === requestCountBefore) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-
-    mockEntryTeamName = '최신 팀';
-    const invalidatingUpdate = await client.put('/api/score/penalty', {
-      cookie: adminCookie,
-      body: { year: 2026, event_type: '가속', cone_penalty: 5, oc_penalty: 10, start_delay: 0 },
-    });
-    assert.equal(invalidatingUpdate.status, 200);
-    const requestAfterInvalidation = client.get('/api/score/public/2026');
-
-    try {
-      const [beforeResponse, afterResponse] = await Promise.all([
-        requestBeforeInvalidation,
-        requestAfterInvalidation,
-      ]);
-      assert.equal(beforeResponse.status, 200);
-      assert.equal(afterResponse.status, 200);
-      assert.equal((await beforeResponse.json()).entries['1'].team, '최신 팀');
-      assert.equal((await afterResponse.json()).entries['1'].team, '최신 팀');
-      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
-    } finally {
-      mockEntryResponseDelayMs = 0;
-      mockEntryTeamName = '팀A';
-    }
-  });
-
-  it('does not reuse an invalidated in-flight aggregate for authenticated requests', async () => {
-    const requestCountBefore = mockEntryRequestCount;
-    mockEntryTeamName = '변경 전 팀';
-    mockEntryResponseDelayMs = 100;
-    const requestBeforeInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
-    while (mockEntryRequestCount === requestCountBefore) {
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
-
-    mockEntryTeamName = '변경 후 팀';
-    const invalidatingUpdate = await client.put('/api/score/penalty', {
-      cookie: adminCookie,
-      body: { year: 2026, event_type: '가속', cone_penalty: 6, oc_penalty: 10, start_delay: 0 },
-    });
-    assert.equal(invalidatingUpdate.status, 200);
-    const requestAfterInvalidation = client.get('/api/score?year=2026', { cookie: adminCookie });
-
-    try {
-      const [beforeResponse, afterResponse] = await Promise.all([
-        requestBeforeInvalidation,
-        requestAfterInvalidation,
-      ]);
-      assert.equal(beforeResponse.status, 200);
-      assert.equal(afterResponse.status, 200);
-      assert.equal((await beforeResponse.json()).entries['1'].team, '변경 전 팀');
-      assert.equal((await afterResponse.json()).entries['1'].team, '변경 후 팀');
-      assert.equal(mockEntryRequestCount, requestCountBefore + 2);
-    } finally {
-      mockEntryResponseDelayMs = 0;
-      mockEntryTeamName = '팀A';
-    }
-  });
-
   it('blocks public data again immediately after publication is disabled', async () => {
     const disabled = await client.put('/api/score/publication', {
       cookie: adminCookie,
@@ -1039,36 +983,17 @@ describe('Public score publication', () => {
 
 describe('Score aggregation business logic', () => {
   let srv, url, cli, database, dp;
-  let mEntry, mInsp, mTraffic;
   const cookie = adminCookie;
-  const YEAR = new Date().getFullYear();
+  const YEAR = currentCompetitionYear();
 
   before(async () => {
-    // Rich entry mock with 3 teams
-    const richEntryApp = express();
-    richEntryApp.get('/api/entries', (req, res) => {
-      res.json({
-        1: { univ: '서울대', team: '팀A', type: 'EV' },
-        2: { univ: '카이스트', team: '팀B', type: 'EV' },
-        3: { univ: '연세대', team: '팀C', type: 'EV' },
-      });
-    });
-
-    const [e, i, t] = await Promise.all([
-      startServer(richEntryApp),
-      startServer(createRichMockInspectionServer()),
-      startServer(createRichMockTrafficServer()),
-    ]);
-    mEntry = e.server;
-    mInsp = i.server;
-    mTraffic = t.server;
-
-    process.env.ENTRY_SERVER = e.baseUrl;
-    process.env.INSPECTION_SERVER = i.baseUrl;
-    process.env.TRAFFIC_SERVER = t.baseUrl;
-
     dp = tmpDbPath();
-    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true, validateUser: TRUST_JWT });
+    const result = createScoreApp({
+      dbPath: dp,
+      skipSSESubscriptions: true,
+      validateUser: TRUST_JWT,
+      competitionQueries: createCompetitionQueries({ rich: true }),
+    });
     database = result.db;
     const started = await startServer(result.app);
     srv = started.server;
@@ -1078,11 +1003,6 @@ describe('Score aggregation business logic', () => {
 
   after(async () => {
     await stopServer(srv);
-    await Promise.all([
-      stopServer(mEntry),
-      stopServer(mInsp),
-      stopServer(mTraffic),
-    ]);
     database.close();
     cleanup(dp);
   });
@@ -1170,46 +1090,24 @@ describe('Score aggregation business logic', () => {
 // pass-through 집계하는지만 확인한다 — mock은 필터된 결과(가속 1차만)를 반환한다.
 describe('Score aggregation over the pre-filtered traffic year response', () => {
   let srv, url, cli, database, dp;
-  let mEntry, mInsp, mTraffic;
   const cookie = adminCookie;
-  const YEAR = new Date().getFullYear();
+  const YEAR = currentCompetitionYear();
 
   before(async () => {
-    const entryApp = express();
-    entryApp.get('/api/entries', (req, res) => {
-      res.json({ 1: { univ: 'A대', team: '팀A', type: 'EV' } });
-    });
-
-    const inspApp = createMockInspectionServer();
-
-    const trafficApp = express();
-    // traffic year 엔드포인트가 이미 visibility 필터를 적용한 뒤의 응답을 흉내낸다
-    // (가속 1차만 노출; 숨긴 테이블은 애초에 응답에 없음).
-    trafficApp.get('/api/records/year/:year', (req, res) => {
-      res.json([
-        {
-          name: `FSK ${YEAR} 가속 1차`,
-          records: [{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }],
-        },
-      ]);
-    });
-    trafficApp.get('/api/event-modes', (req, res) => {
-      res.json([{ event_type: '가속', enabled: 1 }]);
-    });
-
-    const [e, i, t] = await Promise.all([
-      startServer(entryApp),
-      startServer(inspApp),
-      startServer(trafficApp),
-    ]);
-    mEntry = e.server; mInsp = i.server; mTraffic = t.server;
-
-    process.env.ENTRY_SERVER = e.baseUrl;
-    process.env.INSPECTION_SERVER = i.baseUrl;
-    process.env.TRAFFIC_SERVER = t.baseUrl;
-
     dp = tmpDbPath();
-    const result = createScoreApp({ dbPath: dp, skipSSESubscriptions: true, validateUser: TRUST_JWT });
+    const competitionQueries = createCompetitionQueries({
+      records: (year) => [{
+        name: `FSK ${year} 가속 1차`,
+        records: [{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }],
+      }],
+      modes: [{ event_type: '가속', enabled: 1 }],
+    });
+    const result = createScoreApp({
+      dbPath: dp,
+      skipSSESubscriptions: true,
+      validateUser: TRUST_JWT,
+      competitionQueries,
+    });
     database = result.db;
     const started = await startServer(result.app);
     srv = started.server; url = started.baseUrl;
@@ -1218,7 +1116,6 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
 
   after(async () => {
     await stopServer(srv);
-    await Promise.all([stopServer(mEntry), stopServer(mInsp), stopServer(mTraffic)]);
     database.close();
     cleanup(dp);
   });
@@ -1238,85 +1135,3 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
 });
 
 // ─── Internal API: entry lifecycle ──────────────────────────────────────
-describe('Score internal entry lifecycle sync', () => {
-  it('renumbers and deletes manual/endurance rows', async () => {
-    const year = 2026;
-    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
-      .run(year, 901, 'report', 12.5);
-    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
-      .run(year, 901, 'DNF', 12345);
-
-    const patchRes = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year, prevNum: 901, newNum: 902 },
-    });
-    assert.equal(patchRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 1);
-
-    const deleteRes = await client.delete(`/api/internal/team/902?year=${year}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(deleteRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 902).c, 0);
-  });
-
-  it('treats prevNum === newNum as a no-op and preserves score rows', async () => {
-    const year = 2026;
-    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, ?, ?)")
-      .run(year, 905, 'report', 33.3);
-    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time) VALUES (?, ?, ?, ?)")
-      .run(year, 905, 'FINISH', 54321);
-
-    const res = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year, prevNum: 905, newNum: 905 },
-    });
-    assert.equal(res.status, 200);
-
-    // self-renumber는 목적지(=자기 번호) 행을 먼저 삭제하므로, 가드가 없으면 점수가 사라진다.
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_manual WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM score_endurance WHERE year = ? AND team_num = ?").get(year, 905).c, 1);
-  });
-});
-
-describe('Entry active-state synchronization', () => {
-  it('preserves score rows, blocks writes, and restores them after reactivation', async () => {
-    const year = new Date().getFullYear();
-    const num = 1;
-    db.prepare("INSERT OR REPLACE INTO score_manual (year, team_num, score_type, value) VALUES (?, ?, 'inactive-test', 7.5)")
-      .run(year, num);
-    db.prepare("INSERT OR REPLACE INTO score_endurance (year, team_num, status, driver1_time, driver2_time) VALUES (?, ?, NULL, 1000, 2000)")
-      .run(year, num);
-
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: false, revision: 40 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.equal(db.prepare("SELECT value FROM score_manual WHERE year = ? AND team_num = ? AND score_type = 'inactive-test'").get(year, num).value, 7.5);
-    const endurance = await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(endurance[num], undefined);
-    assert.equal((await client.put('/api/score/manual', {
-      body: { year, team_num: num, score_type: 'inactive-test', value: 8 }, cookie: adminCookie,
-    })).status, 409);
-    const hiddenAggregate = await (await client.get(`/api/score?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(hiddenAggregate.entries[num], undefined);
-    assert.equal(hiddenAggregate.manualScores[num], undefined);
-
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 39 },
-    });
-    assert.equal((await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json())[num], undefined);
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: true, revision: 41 },
-    });
-    const restored = await (await client.get(`/api/score/endurance?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(restored[num].driver1_time, 1000);
-    const restoredAggregate = await (await client.get(`/api/score?year=${year}`, { cookie: adminCookie })).json();
-    assert.equal(restoredAggregate.manualScores[num]['inactive-test'], 7.5);
-  });
-});

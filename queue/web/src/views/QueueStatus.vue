@@ -8,7 +8,7 @@ import { formatPhone } from "@shared/format-phone.js";
 
 const { error } = useNotification();
 
-const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate } = useSSE();
+const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastEntriesUpdate } = useSSE();
 
 const visibleInspections = computed(() =>
   activeInspections.value.filter((i) => !i.hidden_from_register),
@@ -51,6 +51,15 @@ const queueEntries = computed(() => {
 watch(lastQueueUpdate, async () => {
   if (sessionStorage.getItem("queue_entry")) {
     await query();
+  }
+});
+
+watch(lastEntriesUpdate, async () => {
+  try {
+    entries.value = await fetchEntries();
+    updateTeamName();
+  } catch {
+    error("엔트리 정보를 새로고침할 수 없습니다.");
   }
 });
 

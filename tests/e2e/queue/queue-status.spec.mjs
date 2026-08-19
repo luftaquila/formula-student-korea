@@ -46,7 +46,7 @@ test.describe("Queue public status page", () => {
 
     const stateResponse = page.waitForResponse(
       (response) =>
-        response.url().includes(`/queue/api/state/${NO_QUEUE_ENTRY}`) &&
+        response.url().includes(`/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`) &&
         response.request().method() === "POST",
     );
     await page.getByRole("button", { name: "조회" }).click();

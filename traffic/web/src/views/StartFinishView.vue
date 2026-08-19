@@ -6,6 +6,7 @@ import { ref, computed, watch, onMounted, onActivated, onDeactivated, onUnmounte
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { addRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
 import EventNameField from "../components/EventNameField.vue";
@@ -54,7 +55,7 @@ async function onSensor({ sensor, tick }) {
     const recordData = {
       time: new Date(),
       type: props.config.type,
-      entry: { num: entry.num, univ: entry.univ, team: entry.team },
+      entry: { id: entry.id, num: entry.num, univ: entry.univ, team: entry.team },
       result,
     };
     const runToken = getRunToken();
@@ -80,7 +81,7 @@ onActivated(() => {
   serial.setMode(props.config.mode, onSensor);
 });
 
-const currentYear = computed(() => new Date().getFullYear());
+const currentYear = computed(() => currentCompetitionYear());
 const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || props.config.defaultTitle}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
 const isLocked = computed(() => serial.green.active);
@@ -176,7 +177,7 @@ async function handleDNF() {
   const recordData = {
     time: new Date(),
     type: props.config.type,
-    entry: { num: entry.num, univ: entry.univ, team: entry.team },
+    entry: { id: entry.id, num: entry.num, univ: entry.univ, team: entry.team },
     result: -1,
   };
 

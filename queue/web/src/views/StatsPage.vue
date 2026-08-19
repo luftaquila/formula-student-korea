@@ -1,13 +1,20 @@
 <script setup>
-import { ref, onMounted, computed } from "vue";
+import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchAllInspections, getStatsTimerange, getStats, getTeamStats } from "../api";
 import { useNotification } from "@shared/useNotification.js";
+import { useSSE } from "../composables/useSSE";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import {
+  competitionDateStart,
+  currentCompetitionYear,
+  formatCompetitionDate,
+} from "@shared/competition-year.mjs";
 
 const { error } = useNotification();
 const router = useRouter();
+const { lastEntriesUpdate } = useSSE();
 
 const tableRef = ref(null);
 const { stickyCols, lineX, startDrag } = useStickyColumns({
@@ -23,7 +30,7 @@ const loading = ref(true);
 const fetching = ref(false);
 
 // Year
-const selectedYear = ref(new Date().getFullYear());
+const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 
 // Filters
@@ -70,19 +77,11 @@ function sortIndicator(key) {
 }
 
 function toLocalDate(ts) {
-  if (!ts) return "";
-  const d = new Date(ts);
-  const Y = d.getFullYear();
-  const M = String(d.getMonth() + 1).padStart(2, "0");
-  const D = String(d.getDate()).padStart(2, "0");
-  return `${Y}-${M}-${D}`;
+  return ts == null ? "" : formatCompetitionDate(ts);
 }
 
 function parseLocalDate(str) {
-  if (!str) return null;
-  const [y, m, d] = str.split("-").map(Number);
-  if (!y || !m || !d) return null;
-  return new Date(y, m - 1, d).getTime();
+  return competitionDateStart(str);
 }
 
 async function applyYearRange(year) {
@@ -154,6 +153,12 @@ onMounted(async () => {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
+});
+
+watch(lastEntriesUpdate, async (update) => {
+  if (update?.year !== selectedYear.value) return;
+  try { entries.value = await fetchEntries(selectedYear.value); }
+  catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
 });
 
 async function fetchStats() {

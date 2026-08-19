@@ -16,6 +16,7 @@ const props = defineProps({
     type: Set,
     default: () => new Set(),
   },
+  readonly: { type: Boolean, default: false },
 });
 
 const tableRef = ref(null);
@@ -25,7 +26,7 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
   columnSelectors: [".col-num", ".col-univ", ".col-team", ".col-type"],
 });
 
-const emit = defineEmits(["update", "active", "delete"]);
+const emit = defineEmits(["update", "active"]);
 
 const sortKey = ref(null);
 const sortOrder = ref("asc");
@@ -75,6 +76,7 @@ function getSortIcon(key) {
 }
 
 function startEdit(num, field) {
+  if (props.readonly) return;
   editingCell.value = { num, field };
 }
 
@@ -93,6 +95,7 @@ function saveCell(entry, field, value) {
       univ: entry.univ,
       team: entry.team,
       type: entry.type || null,
+      id: entry.id,
       prev: entry.num,
     });
   } else {
@@ -103,6 +106,7 @@ function saveCell(entry, field, value) {
       univ: field === "univ" ? value : entry.univ,
       team: field === "team" ? value : entry.team,
       type: field === "type" ? (value || null) : (entry.type || null),
+      id: entry.id,
       prev: entry.num,
     });
   }
@@ -112,14 +116,8 @@ function isEditing(num, field) {
   return editingCell.value?.num === num && editingCell.value?.field === field;
 }
 
-function handleDelete(num) {
-  if (confirm(`${num}번 엔트리를 삭제하시겠습니까?`)) {
-    emit("delete", num);
-  }
-}
-
 function toggleActive(entry) {
-  if (props.activeUpdating.has(entry.num)) return;
+  if (props.readonly || props.activeUpdating.has(entry.num)) return;
   emit("active", { ...entry, active: entry.active === false });
 }
 </script>
@@ -127,7 +125,7 @@ function toggleActive(entry) {
 <template>
   <div class="sticky-host">
     <div class="table-wrapper">
-    <table ref="tableRef" class="entry-table" :data-sticky-cols="stickyCols">
+    <table ref="tableRef" class="entry-table" :class="{ readonly }" :data-sticky-cols="stickyCols">
       <thead>
         <tr>
           <th class="col-num sortable" @click="handleSort('num')">
@@ -143,12 +141,11 @@ function toggleActive(entry) {
             유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
           </th>
           <th class="col-active">상태</th>
-          <th class="col-actions">삭제</th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="sortedEntries.length === 0">
-          <td colspan="6" class="empty-state">
+          <td colspan="5" class="empty-state">
             <div class="empty-content">
               <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
                 <path
@@ -159,7 +156,7 @@ function toggleActive(entry) {
             </div>
           </td>
         </tr>
-        <tr v-for="entry in sortedEntries" :key="entry.num" :class="{ 'entry-inactive': entry.active === false }">
+        <tr v-for="entry in sortedEntries" :key="entry.id" :class="{ 'entry-inactive': entry.active === false }">
           <!-- 번호 -->
           <td class="col-num" @click="startEdit(entry.num, 'num')">
             <input
@@ -229,19 +226,10 @@ function toggleActive(entry) {
               :aria-label="`${entry.num}번 엔트리 ${entry.active !== false ? '비활성화' : '활성화'}`"
               :aria-busy="activeUpdating.has(entry.num)"
               :title="entry.active !== false ? '비활성화' : '활성화'"
-              :disabled="activeUpdating.has(entry.num)"
+              :disabled="readonly || activeUpdating.has(entry.num)"
               @click="toggleActive(entry)"
             >
               <span class="status-toggle-track"><span class="status-toggle-thumb"></span></span>
-            </button>
-          </td>
-          <!-- 삭제 -->
-          <td class="col-actions">
-            <button class="btn btn-danger btn-icon" @click="handleDelete(entry.num)" title="삭제">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6" />
-                <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
-              </svg>
             </button>
           </td>
         </tr>

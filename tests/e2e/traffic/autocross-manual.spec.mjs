@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications, setCustomEventName } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 // 오토크로스는 가속과 동일한 출발 센서(1) → 도착 센서(2) 측정 방식(StartFinishView 공용).
 test.describe("Autocross manual mode measurement", () => {
@@ -11,7 +12,7 @@ test.describe("Autocross manual mode measurement", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     for (const name of ["E2E-Autocross", "E2E-Autocross-DNF", "E2E-Autocross-Reset"]) {
-      await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${name}`);
+      await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${name}`);
     }
     await context.close();
   });

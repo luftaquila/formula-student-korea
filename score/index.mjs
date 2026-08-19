@@ -1,13 +1,9 @@
-import http from "http";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn } from "../shared/db-setup.mjs";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
-import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
+import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
-import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
-import { serviceUrl } from "../shared/services.mjs";
+import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
 import { calculateEnergyScores } from "./lib/energy-score.mjs";
 
 export function createScoreApp(options = {}) {
@@ -23,6 +19,36 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     return "admin";
   },
 });
+ensureInactiveTeamView(db);
+
+function scoreTeamPreflight(req, res, { action, year, teamNum, context = {} }) {
+  const result = dbRun(() => isTeamActive(db, year, teamNum));
+  if (!result.success) {
+    logger.warn(req, action, {
+      error: result.internalError || result.error,
+      reason: result.internalError || result.error,
+      phase: "canonical_team_lookup",
+      year,
+      team_num: teamNum,
+      ...context,
+    }, `#${teamNum}`);
+    res.status(500).send("팀 활성 상태를 확인할 수 없습니다.");
+    return false;
+  }
+  if (!result.result) {
+    logger.warn(req, action, {
+      error: "inactive_or_missing_team",
+      reason: "inactive_or_missing_team",
+      phase: "canonical_team_lookup",
+      year,
+      team_num: teamNum,
+      ...context,
+    }, `#${teamNum}`);
+    res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+    return false;
+  }
+  return true;
+}
 
 db.transaction(() => {
   // 레거시 테이블 정리
@@ -97,7 +123,6 @@ db.transaction(() => {
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
 })();
-ensureTeamStatusTable(db);
 
 const ENDURANCE_SQL = {
   status: "UPDATE score_endurance SET status = ? WHERE year = ? AND team_num = ?",
@@ -175,18 +200,7 @@ function invalidatePublicScoreCache(year = null) {
 /* ============================================
    설정
    ============================================ */
-const ENTRY_SERVER = serviceUrl("entry");
-const INSPECTION_SERVER = serviceUrl("inspection");
-const TRAFFIC_SERVER = serviceUrl("traffic");
-
-// 내부 서비스 호출 타임아웃 — 집계 시 기록 테이블이 커서 5초보다 여유 있게 둔다
-const INTERNAL_FETCH_TIMEOUT_MS = 10000;
-
-function internalHeaders() {
-  const h = {};
-  if (process.env.INTERNAL_SECRET) h["X-Internal-Service"] = process.env.INTERNAL_SECRET;
-  return h;
-}
+const competitionQueries = options.competitionQueries || null;
 
 /* ============================================
    헬퍼
@@ -198,32 +212,22 @@ function validateKey(key, label) {
 }
 
 async function fetchYearRecords(year) {
-  // traffic의 연도별 엔드포인트는 기록이 없는 연도도 200/[]로 응답하므로,
-  // 과거에 있던 전체 목록(/api/records + /visibility) 폴백 경로는 정상 운영에서
-  // 도달 불가능한 죽은 코드였다. 실패는 로깅 후 그대로 던진다.
-  let yearRes;
-  try {
-    yearRes = await fetch(`${TRAFFIC_SERVER}/api/records/year/${year}`, {
-      headers: internalHeaders(),
-      signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-    });
-  } catch (e) {
-    logger.warn(null, "score.fetch_records", { error: e.message, year, endpoint: "year" });
-    throw new Error("경기 목록을 가져올 수 없습니다.");
+  if (!competitionQueries?.traffic?.yearRecordGroups) {
+    throw new Error("Competition Traffic query port is required");
   }
-  if (!yearRes.ok) {
-    warnThrottled("score.fetch_records", { status: yearRes.status, year });
-    throw new Error("경기 목록을 가져올 수 없습니다.");
-  }
-  const rows = await yearRes.json();
-  return rows.map((row) => ({ tableName: row.name, records: row.records || [] }));
+  return competitionQueries.traffic.yearRecordGroups(year)
+    .map((row) => ({ tableName: row.name, records: row.records || [] }));
 }
 
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastAdminEvent, handler: sseHandler } = createSSEManager();
-const { broadcast: broadcastPublicEvent, handler: publicSseHandler } = createSSEManager(500);
+const {
+  broadcast: broadcastAdminEvent, handler: sseHandler, close: closeAdminSse,
+} = createSSEManager();
+const {
+  broadcast: broadcastPublicEvent, handler: publicSseHandler, close: closePublicSse,
+} = createSSEManager(500);
 
 // 관리자에게는 원본 이벤트를, 공개 페이지에는 데이터가 없는 refresh 신호만 보낸다.
 // 공개 클라이언트가 관리자용 SSE 페이로드를 통해 숨긴 열의 값을 받지 않도록 스트림을 분리한다.
@@ -260,115 +264,15 @@ app.get("/api/score/public/:year/events", (req, res) => {
   handlePublicSSE(req, res);
 });
 
-// SSE 메시지 파싱용 정규식 (모듈 스코프에 캐싱)
-const EVENT_RE = /^event:\s*(.+)$/m;
-const DATA_RE = /^data:\s*(.*)$/gm;
+const SOURCE_EVENT_ALLOWLIST = {
+  entry: new Set(["entries"]),
+  inspection: new Set(["category-result", "answer"]),
+  traffic: new Set(["records", "record-visibility", "event-mode"]),
+};
 
-// SSE 구독 팩토리 (중복 연결 방지 + exponential backoff)
-// allowedEvents: 재전파할 이벤트 이름 화이트리스트(Set). null=전부. score 프론트가 실제로
-// 구독하는 이벤트만 재전파해 traffic의 wireless 텔레메트리/이벤트 firehose(초당 다수)가
-// 핸들러도 없는 모든 score 클라로 흘러가 대역폭·CPU를 낭비하는 것을 막는다.
-function createSSESubscriber(name, serverUrl, eventPath, prefix, allowedEvents = null) {
-  let reconnecting = false;
-  let connected = false;
-  let backoff = 3000;
-  const MAX_BACKOFF = 30000;
-
-  function subscribe() {
-    if (reconnecting) return;
-
-    const url = new URL(`${serverUrl}${eventPath}`);
-    const options = { headers: internalHeaders() };
-    const req = http.get(url, options, (res) => {
-      if (res.statusCode !== 200) {
-        // 비200 응답(403 시크릿 불일치, 503 maxClients 등)은 연결 성공이 아니다.
-        // backoff를 리셋하지 않아야 영구 실패가 3초 간격 무한 재시도로 상대 서비스를
-        // 두드리지 않고, 로깅해야 설정 오류가 조용히 묻히지 않는다.
-        warnThrottled("score.sse_subscribe_failed", { source: name, status: res.statusCode });
-        res.resume();
-        res.on("end", () => scheduleReconnect());
-        return;
-      }
-
-      connected = true;
-      const wasReconnect = backoff > 3000;
-      backoff = 3000; // 연결 성공 시 backoff 리셋
-      if (wasReconnect) {
-        broadcastEvent("refresh", { source: name });
-      }
-      let buffer = "";
-
-      res.on("data", (chunk) => {
-        buffer += chunk.toString();
-        if (buffer.length > 1024 * 1024) {
-          logger.warn(null, "score.sse_overflow", { source: name });
-          buffer = "";
-          return;
-        }
-        const messages = buffer.split("\n\n");
-        buffer = messages.pop();
-
-        for (const msg of messages) {
-          try {
-            const eventMatch = msg.match(EVENT_RE);
-            if (!eventMatch) continue;
-            const evName = eventMatch[1].trim();
-            // 화이트리스트 밖 이벤트는 파싱·재전파하지 않는다(firehose 차단).
-            if (allowedEvents && !allowedEvents.has(evName)) continue;
-            const dataLines = msg.match(DATA_RE);
-            if (!dataLines) continue;
-            const jsonStr = dataLines.map(l => l.replace(/^data:\s*/, "")).join("\n");
-            broadcastEvent(`${prefix}:${evName}`, JSON.parse(jsonStr));
-          } catch (e) {
-            logger.warn(null, "score.sse_parse_error", { source: name, error: e.message });
-          }
-        }
-      });
-
-      res.on("end", () => {
-        scheduleReconnect();
-      });
-    });
-
-    req.setTimeout(60000, () => {
-      // 유휴 타임아웃(keepalive 두절/half-open 소켓)에서 인자 없는 destroy()는 'error'를
-      // emit하지 않고, 스트리밍 중이던 res도 'end' 대신 'aborted'/'close'로 끝나므로 여기서
-      // 재연결을 직접 예약해야 한다. scheduleReconnect의 reconnecting 가드가 중복을 막는다.
-      req.destroy();
-      scheduleReconnect();
-    });
-    req.on("error", () => {
-      scheduleReconnect();
-    });
-  }
-
-  function scheduleReconnect() {
-    if (connected) {
-      logger.warn(null, "score.sse_disconnect", { source: name });
-      connected = false;
-    }
-    if (reconnecting) return;
-    reconnecting = true;
-    setTimeout(() => {
-      reconnecting = false;
-      backoff = Math.min(backoff * 2, MAX_BACKOFF);
-      subscribe();
-    }, backoff);
-  }
-
-  return subscribe;
-}
-
-if (!options.skipSSESubscriptions) {
-  // score 프론트(useSSE.js)가 실제 구독하는 이벤트만 재전파.
-  const subscribeEntrySSE = createSSESubscriber("Entry", ENTRY_SERVER, "/api/events", "entry", new Set(["entries"]));
-  const subscribeInspectionSSE = createSSESubscriber("Inspection", INSPECTION_SERVER, "/api/sheet/events", "inspection", new Set(["category-result", "answer"]));
-  // event-mode: 활성 종목이 바뀌면 computeScore의 집계 대상이 달라지므로 재전파해야 프론트가
-  // 스코어를 다시 계산한다(재전파 누락 시 새로고침 전까지 stale).
-  const subscribeTrafficSSE = createSSESubscriber("Traffic", TRAFFIC_SERVER, "/api/events", "traffic", new Set(["records", "record-visibility", "event-mode"]));
-  subscribeEntrySSE();
-  subscribeInspectionSSE();
-  subscribeTrafficSSE();
+function sourceEvent(source, event, data) {
+  if (!SOURCE_EVENT_ALLOWLIST[source]?.has(event)) return;
+  broadcastEvent(`${source}:${event}`, data);
 }
 
 /* ============================================
@@ -546,43 +450,26 @@ app.get("/api/score", async (req, res) => {
 
 // 연도별 성적 집계(엔트리·검차·경기기록·수동점수·설정). 실패 시 throw(라우트가 500 처리).
 async function computeScore(year) {
-    // 1. Entry 서비스에서 엔트리 목록 fetch
-    const entryRes = await fetch(`${ENTRY_SERVER}/api/entries?year=${year}`, {
-      headers: internalHeaders(),
-      signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-    });
-    if (!entryRes.ok) {
-      warnThrottled("score.fetch_entries", { status: entryRes.status, year });
-      throw new Error("엔트리 정보를 가져올 수 없습니다.");
+    if (!competitionQueries?.teams?.moduleEntries
+      || !competitionQueries?.inspection?.summary
+      || !competitionQueries?.inspection?.templateTree
+      || !competitionQueries?.inspection?.bulkAnswers
+      || !competitionQueries?.traffic?.eventModes
+      || !competitionQueries?.traffic?.yearRecordGroups) {
+      throw new Error("Competition in-process query ports are required");
     }
-    const entries = await entryRes.json();
-    // The local lifecycle snapshot is an additional fail-closed guard for a rolling deploy or
-    // an upstream cache that briefly still contains a just-deactivated entry.
+    const entries = competitionQueries.teams.moduleEntries(year);
     for (const num of Object.keys(entries)) {
       if (!isTeamActive(db, year, Number(num))) delete entries[num];
     }
 
-    // 2. Inspection 서비스에서 카테고리별 PASS/FAIL 요약 fetch
-    const [inspectionRes, templateRes] = await Promise.all([
-      fetch(`${INSPECTION_SERVER}/api/sheet/summary?year=${year}`, {
-        headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-      }),
-      fetch(`${INSPECTION_SERVER}/api/sheet/template?year=${year}`, {
-        headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-      }),
-    ]);
-    if (!inspectionRes.ok) {
-      warnThrottled("score.fetch_inspection", { status: inspectionRes.status, year });
-      throw new Error("검차 정보를 가져올 수 없습니다.");
-    }
-    const inspection = await inspectionRes.json();
+    const inspection = competitionQueries.inspection.summary(year);
+    const tree = competitionQueries.inspection.templateTree(year);
 
     // 2b. 템플릿 트리에서 코너웨이트 item ID 탐색
     let cornerWeight = null;
 
-    if (templateRes.ok) {
-      const tree = await templateRes.json();
-
+    if (tree) {
       const cwItems = findItemsInCategory(tree, "코너웨이트", ["공차중량", "FL", "FR", "RL", "RR"]);
 
       // 코너웨이트: 5개 항목 모두 존재해야 유효
@@ -600,11 +487,8 @@ async function computeScore(year) {
 
       if (allItemIds.length > 0) {
         try {
-          const bulkRes = await fetch(`${INSPECTION_SERVER}/api/sheet/bulk-answers?year=${year}&item_ids=${allItemIds.join(",")}`, {
-            headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-          });
-          if (bulkRes.ok) {
-            const bulkData = await bulkRes.json(); // { [team_num]: { [item_id]: value } }
+          const bulkData = competitionQueries.inspection.bulkAnswers(year, allItemIds);
+          if (bulkData) {
             for (const [num, items] of Object.entries(bulkData)) {
               if (cornerWeight) {
                 const cw = {};
@@ -616,15 +500,11 @@ async function computeScore(year) {
                 if (Object.keys(cw).length > 0) cornerWeight.teams[num] = cw;
               }
             }
-          } else {
-            warnThrottled("score.fetch_bulk_answers", { status: bulkRes.status, year });
           }
         } catch (e) {
           logger.warn(null, "score.fetch_bulk_answers", { error: e.message, year });
         }
       }
-    } else {
-      warnThrottled("score.fetch_template", { status: templateRes.status, year });
     }
 
     inspection.cornerWeight = cornerWeight;
@@ -632,15 +512,8 @@ async function computeScore(year) {
     // 3. Traffic 서비스에서 활성화된 경기 모드 및 해당 연도의 모든 경기 기록 fetch
     let enabledModes = null;
     try {
-      const modesRes = await fetch(`${TRAFFIC_SERVER}/api/event-modes`, {
-        headers: internalHeaders(), signal: AbortSignal.timeout(INTERNAL_FETCH_TIMEOUT_MS),
-      });
-      if (modesRes.ok) {
-        const modes = await modesRes.json();
-        enabledModes = new Set(modes.filter((m) => m.enabled).map((m) => m.event_type));
-      } else {
-        warnThrottled("score.fetch_event_modes", { status: modesRes.status, year });
-      }
+      const modes = competitionQueries.traffic.eventModes();
+      enabledModes = new Set(modes.filter((mode) => mode.enabled).map((mode) => mode.event_type));
     } catch (e) {
       logger.warn(null, "score.fetch_event_modes", { error: e.message });
     }
@@ -716,8 +589,8 @@ async function computeScore(year) {
     const enduranceRows = db.prepare(`
       SELECT e.* FROM score_endurance e
       WHERE e.year = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = e.year AND s.team_num = e.team_num AND s.active = 0
+        SELECT 1 FROM competition_inactive_team s
+        WHERE s.year = e.year AND s.team_num = e.team_num
       )
     `).all(year).filter((row) => entries[row.team_num]);
     const endurancePen = penalties["내구"] || { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
@@ -744,8 +617,8 @@ async function computeScore(year) {
     const manualRows = db.prepare(`
       SELECT m.team_num, m.score_type, m.value FROM score_manual m
       WHERE m.year = ? AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = m.year AND s.team_num = m.team_num AND s.active = 0
+        SELECT 1 FROM competition_inactive_team s
+        WHERE s.year = m.year AND s.team_num = m.team_num
       )
     `).all(year).filter((row) => entries[row.team_num]);
     const manualScores = {};
@@ -784,18 +657,41 @@ app.put("/api/score/manual", (req, res) => {
   const numTeamNum = Number(team_num);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, numYear, numTeamNum)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
-
   const keyErr = validateKey(score_type, "score_type");
   if (keyErr) return res.status(400).send(keyErr);
   if (score_type === "energy") return res.status(400).send("에너지 점수는 내구 계측값으로 자동 계산됩니다.");
 
   const numValue = value === null || value === "" ? null : Number(value);
   if (numValue !== null && !Number.isFinite(numValue)) return res.status(400).send("유효하지 않은 값입니다.");
+  if (!scoreTeamPreflight(req, res, {
+    action: "manual_score.update", year: numYear, teamNum: numTeamNum, context: { score_type },
+  })) return;
   if (score_type === "report" && numValue !== null) {
     if (numValue < 0) return res.status(400).send("보고서 점수는 음수일 수 없습니다.");
-    const reportTotal = db.prepare("SELECT value FROM score_setting WHERE year = ? AND event_type = '보고서' AND setting_key = 'total'").get(numYear)?.value;
+    const reportLimit = dbRun(() => db.prepare("SELECT value FROM score_setting WHERE year = ? AND event_type = '보고서' AND setting_key = 'total'").get(numYear)?.value);
+    if (!reportLimit.success) {
+      logger.warn(req, "manual_score.update", {
+        error: reportLimit.internalError || reportLimit.error,
+        reason: reportLimit.internalError || reportLimit.error,
+        phase: "report_limit_lookup",
+        year: numYear,
+        team_num: numTeamNum,
+        score_type,
+        requested_value: numValue,
+      }, `#${numTeamNum}`);
+      return res.status(500).send("보고서 점수 제한을 확인할 수 없습니다.");
+    }
+    const reportTotal = reportLimit.result;
     if (Number.isFinite(reportTotal) && numValue > reportTotal) {
+      logger.warn(req, "manual_score.update", {
+        error: "report_total_exceeded",
+        reason: "report_total_exceeded",
+        year: numYear,
+        team_num: numTeamNum,
+        score_type,
+        requested_value: numValue,
+        report_total: reportTotal,
+      }, `#${numTeamNum}`);
       return res.status(400).send(`보고서 점수는 총점 ${reportTotal}점을 초과할 수 없습니다.`);
     }
   }
@@ -812,7 +708,7 @@ app.put("/api/score/manual", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "manual_score.update", { error: result.error, year: numYear, score_type }, `#${numTeamNum}`);
+    logger.warn(req, "manual_score.update", { error: result.internalError || result.error, year: numYear, score_type }, `#${numTeamNum}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -910,8 +806,8 @@ app.get("/api/score/endurance", (req, res) => {
   const rows = db.prepare(`
     SELECT e.* FROM score_endurance e
     WHERE e.year = ? AND NOT EXISTS (
-      SELECT 1 FROM team_status s
-      WHERE s.year = e.year AND s.team_num = e.team_num AND s.active = 0
+      SELECT 1 FROM competition_inactive_team s
+      WHERE s.year = e.year AND s.team_num = e.team_num
     )
   `).all(year);
   const result = {};
@@ -938,8 +834,6 @@ app.put("/api/score/endurance", (req, res) => {
   const numTeamNum = Number(team_num);
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, numYear, numTeamNum)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
-
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
     "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
@@ -963,6 +857,9 @@ app.put("/api/score/endurance", (req, res) => {
   if (!textFields.has(field) && field !== "electric_net_energy" && dbValue !== null && dbValue < 0) {
     return res.status(400).send("값은 음수일 수 없습니다.");
   }
+  if (!scoreTeamPreflight(req, res, {
+    action: "endurance.update", year: numYear, teamNum: numTeamNum, context: { field },
+  })) return;
 
   const result = dbRun(() => {
     db.transaction(() => {
@@ -972,7 +869,7 @@ app.put("/api/score/endurance", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "endurance.update", { error: result.error, year: numYear, field }, `#${numTeamNum}`);
+    logger.warn(req, "endurance.update", { error: result.internalError || result.error, year: numYear, field }, `#${numTeamNum}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -983,25 +880,6 @@ app.put("/api/score/endurance", (req, res) => {
 });
 
 /* ============================================
-   Internal API: 엔트리 라이프사이클 연동
-   ============================================ */
-
-registerTeamStatusRoute(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  onApplied: ({ year }) => {
-    invalidatePublicScoreCache(year);
-    invalidateInflightScore(year);
-  },
-});
-
-registerTeamLifecycleRoutes(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  tables: ["score_manual", "score_endurance"],
-  channels: ["manual-score", "endurance"],
-  statusTable: "team_status",
-});
-
-/* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
 app.get("/public/:year", (req, res) => {
@@ -1009,12 +887,18 @@ app.get("/public/:year", (req, res) => {
   if (year == null || !isScorePublished(year)) {
     return res.status(404).send("공개 중인 성적표가 아닙니다.");
   }
-  res.sendFile("index.html", { root: "./web/dist" });
+  res.sendFile("index.html", { root: app.locals.staticRoot });
 });
 
-addSpaFallback(app);
+if (!options.skipSpaFallback) addSpaFallback(app);
 
-return { app, db };
+return {
+  app,
+  db,
+  sourceEvent,
+  closeSse: () => {
+    closeAdminSse();
+    closePublicSse();
+  },
+};
 }
-
-runIfDirect(import.meta, "score", createScoreApp);

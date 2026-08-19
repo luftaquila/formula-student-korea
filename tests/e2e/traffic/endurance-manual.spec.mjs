@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, setCustomEventName } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const EVENT = "E2E-Endurance-Quick-Edit";
 
 test.describe("Endurance manual mode post-processing", () => {
@@ -10,7 +11,7 @@ test.describe("Endurance manual mode post-processing", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${EVENT}`).catch(() => {});
+    await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${EVENT}`).catch(() => {});
     await context.close();
   });
 

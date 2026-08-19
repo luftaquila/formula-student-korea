@@ -6,13 +6,14 @@ import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { createKeyedDebouncer } from "@shared/debounce.js";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
 const { error, success } = useNotification();
 const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate, lastPublicationUpdate, reconnected } = useSSE();
 
-const selectedYear = ref(new Date().getFullYear());
+const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const publicationLoading = ref(false);
@@ -74,7 +75,7 @@ watch(vehicleTypes, (types) => {
 
 const editingSettingCell = ref(null); // "penalty:cone_penalty:가속" or "setting:total:내구"
 
-const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
+const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
 const publicPageUrl = computed(() => `${import.meta.env.BASE_URL}public/${selectedYear.value}`);
 
 const entryList = computed(() => {

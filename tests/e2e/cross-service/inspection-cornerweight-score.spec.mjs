@@ -1,3 +1,4 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
@@ -7,9 +8,8 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 // items are 공차중량/FL/FR/RL/RR, bulk-fetches their answers, and exposes them as
 // inspection.cornerWeight.teams[num]. The score frontend renders the 공차중량 value
 // in the corner-weight column and, crucially, updates it live from the
-// `inspection:answer` SSE event that score RE-BROADCASTS off the inspection
-// service's `answer` event (score/index.mjs createSSESubscriber, allow-list
-// {category-result, answer}; ScoreBoard.vue lastAnswerUpdate watcher).
+// `inspection:answer` SSE event that Score re-broadcasts from the in-process
+// Inspection event bridge (ScoreBoard.vue lastAnswerUpdate watcher).
 //
 // The seeded template (seed.mjs) has NO 코너웨이트 category, so we ADD one for the
 // current year, scoped to an isolated team. To avoid disturbing other specs that
@@ -19,11 +19,9 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 // items + answers). cross-service runs after the inspection project completes, so
 // the temporary category cannot race those already-finished specs.
 
-const YEAR = new Date().getFullYear();
-const STAMP = Date.now();
-const NUM = (STAMP % 100000) + 800; // isolated, outside seeded 1..32
-const UNIV = `코너웨이트대-${STAMP}`;
-const TEAM = `CornerWeight ${STAMP}`;
+const YEAR = currentCompetitionYear();
+const NUM = 800; // dedicated cross-service fixture outside the shared 1..32 range
+const UNIV = "코너웨이트대학교";
 const SEED_CURB = 210; // initial 공차중량 (kg)
 const NEW_CURB = 222; // updated 공차중량 (kg)
 
@@ -38,7 +36,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
   const itemIds = {}; // { 공차중량, FL, FR, RL, RR }
 
   async function createNode(body) {
-    const res = await fetch(`${BASE_URL}/inspection/api/sheet/template`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template`, {
       method: "POST",
       headers: chiefHeaders, // template writes require chief+
       body: JSON.stringify({ year: YEAR, ...body }),
@@ -47,23 +45,21 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     return (await res.json()).id;
   }
 
-  async function putAnswer(itemId, value) {
-    return fetch(`${BASE_URL}/inspection/api/sheet/answer`, {
+  async function putAnswer(itemId, value, expectedValue = "") {
+    return fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/answer`, {
       method: "PUT",
       headers: adminHeaders,
-      body: JSON.stringify({ year: YEAR, team_num: NUM, item_id: itemId, value: String(value) }),
+      body: JSON.stringify({
+        year: YEAR,
+        team_num: NUM,
+        item_id: itemId,
+        value: String(value),
+        expectedValue: String(expectedValue),
+      }),
     });
   }
 
   test.beforeAll(async () => {
-    // Isolated entry so the team renders as a row on the score dashboard.
-    const entryRes = await fetch(`${BASE_URL}/entry/api/entries?year=${YEAR}`, {
-      method: "POST",
-      headers: adminHeaders,
-      body: JSON.stringify({ num: NUM, univ: UNIV, team: TEAM }),
-    });
-    expect(entryRes.status).toBe(201);
-
     // Build the 4-level hierarchy: 코너웨이트 category → subcategory → group → 5 items.
     // High sort_order keeps the category last so it never displaces 전기/샤시 검차.
     categoryId = await createNode({ level: "category", name: "코너웨이트", sort_order: 9999 });
@@ -95,25 +91,19 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     // CASCADE: deleting the category removes its subcats/groups/items and their answers.
     if (categoryId) {
       try {
-        await fetch(`${BASE_URL}/inspection/api/sheet/template/${categoryId}`, {
+        await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template/${categoryId}`, {
           method: "DELETE",
           headers: chiefHeaders,
         });
       } catch { /* ignore */ }
     }
-    try {
-      await fetch(`${BASE_URL}/entry/api/entries/${NUM}?year=${YEAR}`, {
-        method: "DELETE",
-        headers: adminHeaders,
-      });
-    } catch { /* ignore */ }
   });
 
   test("score corner-weight cell reflects an inspection:answer change via SSE", async ({ page }) => {
     // Confirm score's aggregation actually exposes our seeded corner-weight first
     // (this is the inspection → score bulk-answers join that the dashboard renders).
     await expect.poll(async () => {
-      const res = await fetch(`${BASE_URL}/score/api/score?year=${YEAR}`, { headers: adminHeaders });
+      const res = await fetch(`${BASE_URL}/competition/api/v1/score/score?year=${YEAR}`, { headers: adminHeaders });
       if (res.status !== 200) return null;
       const data = await res.json();
       const cw = data.inspection?.cornerWeight;
@@ -147,7 +137,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     // Change 공차중량 via the inspection API. inspection broadcasts `answer`, score
     // re-broadcasts `inspection:answer`, and the dashboard's lastAnswerUpdate watcher
     // mutates cornerWeight.teams[NUM].curb — no full refetch needed.
-    const updRes = await putAnswer(itemIds["공차중량"], NEW_CURB);
+    const updRes = await putAnswer(itemIds["공차중량"], NEW_CURB, SEED_CURB);
     expect(updRes.status).toBe(200);
 
     // The cell updates live from the re-broadcast SSE event (client-only mutation →

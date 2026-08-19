@@ -1188,7 +1188,7 @@ app.get("/api/admin/logs", async (req, res) => {
       for (const [k, v] of Object.entries(filters)) {
         if (v) qs.set(k, v);
       }
-      const fetchRes = await fetch(`${url}/api/logs?${qs}`, {
+      const fetchRes = await fetch(`${url}?${qs}`, {
         headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
         signal: AbortSignal.timeout(5000),
       });

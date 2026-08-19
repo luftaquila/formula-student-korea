@@ -5,9 +5,10 @@ import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useEntryStore } from "./stores/entry";
 import { useSSE } from "./composables/useSSE";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
 const entryStore = useEntryStore();
-const { lastTeamActiveUpdate } = useSSE();
+const { lastEntriesUpdate } = useSSE();
 const isScoreboardFullscreen = ref(false);
 
 function handleFullscreenChange() {
@@ -16,8 +17,8 @@ function handleFullscreenChange() {
 
 let observer = null;
 
-watch(lastTeamActiveUpdate, (update) => {
-  if (update?.year === new Date().getFullYear()) entryStore.loadEntries();
+watch(lastEntriesUpdate, (update) => {
+  if (update?.year === currentCompetitionYear()) entryStore.loadEntries();
 });
 
 onMounted(() => {

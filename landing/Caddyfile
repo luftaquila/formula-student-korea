@@ -52,36 +52,44 @@
 		}
 	}
 
-	# Entry service
+	# Competition modular monolith. UI prefixes stay stable while all API/SSE
+	# traffic uses the explicit versioned namespace.
+	handle /competition/* {
+		request_header -X-Internal-Service
+		request_header -Authuser
+		reverse_proxy competition:9200
+	}
+
+	# Entry UI
 	redir /entry /entry/
-	handle_path /entry/* {
+	handle /entry/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		reverse_proxy entry:9200
+		reverse_proxy competition:9200
 	}
 
-	# Queue service
+	# Queue UI
 	redir /queue /queue/
-	handle_path /queue/* {
+	handle /queue/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		reverse_proxy queue:9300
+		reverse_proxy competition:9200
 	}
 
-	# Inspection service
+	# Inspection UI
 	redir /inspection /inspection/
-	handle_path /inspection/* {
+	handle /inspection/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		reverse_proxy inspection:9400
+		reverse_proxy competition:9200
 	}
 
-	# Traffic service
+	# Traffic UI
 	redir /traffic /traffic/
-	handle_path /traffic/* {
+	handle /traffic/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		reverse_proxy traffic:9500
+		reverse_proxy competition:9200
 	}
 
 	# Course service (map tiles require relaxed CSP)
@@ -157,20 +165,20 @@
 		}
 	}
 
-	# Score service
+	# Score UI
 	redir /score /score/
-	handle_path /score/* {
+	handle /score/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		reverse_proxy score:9600
+		reverse_proxy competition:9200
 	}
 
-	# Documents service
+	# Documents UI
 	redir /documents /documents/
-	handle_path /documents/* {
+	handle /documents/* {
 		request_header -X-Internal-Service
 		request_header -Authuser
-		reverse_proxy documents:9700
+		reverse_proxy competition:9200
 	}
 
 	# Calendar service

@@ -9,17 +9,17 @@ import { internalHeaders } from "../helpers/auth.mjs";
 test.describe("Caddy security header stripping", () => {
   test("forged X-Internal-Service does not grant admin (stripped at the edge)", async ({ request }) => {
     // Even the REAL secret value, sent by an external client, must be stripped.
-    const res = await request.post("/entry/api/entries", {
+    const res = await request.post("/competition/api/v1/teams", {
       headers: internalHeaders(),
-      data: { num: 99001, univ: "sec-test", team: "sec-test", type: "EV" },
+      data: { number: 99001, university: "sec-test", name: "sec-test" },
     });
     expect(res.status()).toBe(401);
   });
 
   test("forged Authuser header cannot impersonate a user", async ({ request }) => {
-    const res = await request.post("/entry/api/entries", {
+    const res = await request.post("/competition/api/v1/teams", {
       headers: { Authuser: "e2e-admin@test.com" },
-      data: { num: 99002, univ: "sec-test", team: "sec-test", type: "EV" },
+      data: { number: 99002, university: "sec-test", name: "sec-test" },
     });
     expect(res.status()).toBe(401);
   });

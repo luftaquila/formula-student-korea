@@ -7,7 +7,7 @@ import { useTableHeadBand } from "../composables/useTableHeadBand";
 
 const route = useRoute();
 const year = Number(route.params.year);
-const base = import.meta.env.PROD ? "/score" : "";
+const base = "/competition/api/v1/score";
 
 const loading = ref(true);
 const unavailable = ref(false);
@@ -23,7 +23,7 @@ const headScrollerRef = ref(null);
 const headBandRef = ref(null);
 useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
-const { on, useSSE, reconnect } = createSSEConnection(`${base}/api/score/public/${year}/events`);
+const { on, useSSE, reconnect } = createSSEConnection(`${base}/score/public/${year}/events`);
 
 let requestSeq = 0;
 let refreshTimer = null;

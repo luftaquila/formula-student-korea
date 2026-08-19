@@ -88,8 +88,10 @@ export function createSSEConnection(endpointUrl) {
 // init 기반 connected 확정과 재연결 감지(reconnected)까지 한 곳에서 제공해 앱별
 // composable의 드리프트(env 플래그 반전, 재연결 감지 누락)를 막는다.
 export function createServiceSSE(basePath, eventPath = "/api/events") {
-  const base = import.meta.env.PROD ? basePath : "";
-  const conn = createSSEConnection(`${base}${eventPath}`);
+  const competitionApi = basePath.startsWith("/competition/api/v1");
+  const base = import.meta.env.PROD || competitionApi ? basePath : "";
+  const path = competitionApi ? eventPath.replace(/^\/api(?=\/|$)/, "") : eventPath;
+  const conn = createSSEConnection(`${base}${path}`);
   const reconnected = ref(null);
   let initCount = 0;
   conn.on("init", () => {

@@ -1,5 +1,9 @@
 import { defineConfig } from "@playwright/test";
 
+// E2E fixtures that construct calendar dates use the same competition timezone
+// as the server, independent of the CI runner's host timezone.
+process.env.TZ = "Asia/Seoul";
+
 export default defineConfig({
   testDir: "./tests/e2e",
   globalSetup: "./tests/e2e/global-setup.mjs",

@@ -1,33 +1,38 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, scoreTable, enduranceTable } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const PREV_YEAR = YEAR - 1;
+
+async function exposePreviousYear(page) {
+  await page.route("**/competition/api/v1/meta", async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...meta, years: [...new Set([...meta.years, PREV_YEAR])].sort((a, b) => b - a) },
+    });
+  });
+}
 
 test.describe("Score year switch and read-only mode", () => {
   test.use({ storageState: storageStatePath("admin") });
 
-  // Seed vehicle types and entry for previous year
-  test.beforeAll(async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("admin") });
-    const page = await context.newPage();
+  test("keeps historical reads available and rejects historical mutations", async ({ page }) => {
+    const teams = await page.request.get(`/competition/api/v1/teams?year=${PREV_YEAR}`);
+    expect(teams.status()).toBe(200);
+    expect(Array.isArray(await teams.json())).toBe(true);
 
-    await page.request.post(`/entry/api/vehicle-types?year=${PREV_YEAR}`, { data: { name: "EV" } });
-    await page.request.post(`/entry/api/entries?year=${PREV_YEAR}`, {
-      data: { num: 81, univ: "과거성적대학교", team: "Old Score Team", type: "EV" },
+    const scoreWrite = await page.request.put("/competition/api/v1/score/manual", {
+      data: { year: PREV_YEAR, team_num: 1, score_type: "report", value: 1 },
     });
-
-    await context.close();
+    expect(scoreWrite.status()).toBe(409);
+    expect((await scoreWrite.json()).code).toBe("YEAR_READ_ONLY");
   });
 
-  test.afterAll(async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("admin") });
-    const page = await context.newPage();
-    await page.request.delete(`/entry/api/entries?year=${PREV_YEAR}`);
-    await context.close();
-  });
-
-  test("dashboard: year switch shows read-only banner and disables inputs", async ({ page }) => {
+  test("dashboard: year switch shows read-only mode", async ({ page }) => {
+    await exposePreviousYear(page);
     await page.goto("/score");
     await waitForPageReady(page);
 
@@ -46,14 +51,9 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).toBeVisible();
     await expect(page.locator(".readonly-banner")).toContainText("읽기 전용");
 
-    // Should show the 1 entry for previous year
-    const table = scoreTable(page);
-    await expect(table.locator("tbody")).toContainText("과거성적대학교");
-
-    // Manual score input fields should be disabled
-    const manualInputs = table.locator("input.manual-input");
+    // Every rendered manual input must be disabled. Historical years can be empty.
+    const manualInputs = page.locator("input.manual-input");
     const inputCount = await manualInputs.count();
-    expect(inputCount).toBeGreaterThanOrEqual(1);
     for (let i = 0; i < inputCount; i++) {
       await expect(manualInputs.nth(i)).toBeDisabled();
     }
@@ -66,7 +66,8 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).not.toBeVisible();
   });
 
-  test("endurance: year switch shows read-only banner and disables inputs", async ({ page }) => {
+  test("endurance: year switch shows read-only mode", async ({ page }) => {
+    await exposePreviousYear(page);
     await page.goto("/score/endurance");
     await waitForPageReady(page);
 
@@ -82,30 +83,21 @@ test.describe("Score year switch and read-only mode", () => {
     await expect(page.locator(".readonly-banner")).toBeVisible();
     await expect(page.locator(".readonly-banner")).toContainText("읽기 전용");
 
-    // Should show previous year's entry
-    const table = enduranceTable(page);
-    await expect(table.locator("tbody")).toContainText("과거성적대학교");
-
-    // Time inputs should be disabled
-    const timeInputs = table.locator("input.time-input");
+    // Every rendered control must be disabled. Historical years can be empty.
+    const timeInputs = page.locator("input.time-input");
     const timeCount = await timeInputs.count();
-    expect(timeCount).toBeGreaterThanOrEqual(1);
     for (let i = 0; i < timeCount; i++) {
       await expect(timeInputs.nth(i)).toBeDisabled();
     }
 
-    // Number inputs should be disabled
-    const numInputs = table.locator("input.num-input");
+    const numInputs = page.locator("input.num-input");
     const numCount = await numInputs.count();
-    expect(numCount).toBeGreaterThanOrEqual(1);
     for (let i = 0; i < numCount; i++) {
       await expect(numInputs.nth(i)).toBeDisabled();
     }
 
-    // Status buttons (DNS/DNF/DSQ) should be disabled
-    const statusBtns = table.locator(".status-btn");
+    const statusBtns = page.locator(".status-btn");
     const btnCount = await statusBtns.count();
-    expect(btnCount).toBeGreaterThanOrEqual(1);
     for (let i = 0; i < btnCount; i++) {
       await expect(statusBtns.nth(i)).toBeDisabled();
     }

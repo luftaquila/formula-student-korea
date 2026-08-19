@@ -1,3 +1,4 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, SCORE_TABLE, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
@@ -8,15 +9,15 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 // per type; the team sheet drops the tab entirely for a team of an excluded type; the team
 // list and the score dashboard keep the shared column but leave that team's cell blank.
 //
-// Vehicle types live in the entry service (vehicle_types_<year>, referenced by NAME from
-// entry.type) while the exclusions live in inspection, so this spans services.
+// Vehicle types live in the canonical yearly roster while exclusions live in
+// Inspection, so this spans two Competition modules without copying the roster.
 //
 // The seeded inspection template has exactly 2 categories and inspection specs assert that
 // count (sheet-fill expects 2 tabs, template-roundtrip expects 2 exported), so the
 // temporary category is created HERE — cross-service runs after the inspection project
 // finishes — with a high sort_order, and is deleted in afterAll (CASCADE).
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const STAMP = Date.now();
 const CAT_NAME = `유형필터-${STAMP}`;
 
@@ -33,13 +34,13 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
   let categoryId;
 
   async function fetchCategory() {
-    const res = await fetch(`${BASE_URL}/inspection/api/sheet/template?year=${YEAR}`, { headers: officialHeaders });
+    const res = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template?year=${YEAR}`, { headers: officialHeaders });
     expect(res.status).toBe(200);
     return (await res.json()).find(c => c.id === categoryId);
   }
 
   async function putExcludedTypes(types) {
-    const res = await fetch(`${BASE_URL}/inspection/api/sheet/template/${categoryId}`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template/${categoryId}`, {
       method: "PUT",
       headers: chiefHeaders, // template writes require chief+
       body: JSON.stringify({ excluded_types: types }),
@@ -59,7 +60,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
     await page.locator(".tabs .tab").filter({ hasText: CAT_NAME }).click();
   }
 
-  // Columns come and go while parallel cross-service specs mutate entries and templates, so
+  // Columns come and go while parallel cross-service specs mutate templates, so
   // the header index, the header/body alignment, and the cell text are read in ONE poll
   // attempt rather than captured across separate awaits.
   function readCategoryCell(page, tableSelector, rowSelector, univ) {
@@ -76,7 +77,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
   }
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/inspection/api/sheet/template`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template`, {
       method: "POST",
       headers: chiefHeaders,
       body: JSON.stringify({
@@ -94,7 +95,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
   test.afterAll(async () => {
     if (!categoryId) return;
     try {
-      await fetch(`${BASE_URL}/inspection/api/sheet/template/${categoryId}`, {
+      await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template/${categoryId}`, {
         method: "DELETE",
         headers: chiefHeaders,
       });
@@ -112,7 +113,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
     // Checking clears the exclusion. The PUT fires immediately (no debounce), so arm the
     // wait before the click.
     let saved = page.waitForResponse(res =>
-      res.url().includes(`/inspection/api/sheet/template/${categoryId}`) &&
+      res.url().includes(`/competition/api/v1/inspection/sheet/template/${categoryId}`) &&
       res.request().method() === "PUT" && res.status() === 200);
     await typeToggle(page, "CV").check();
     await saved;
@@ -120,7 +121,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
 
     // Unchecking stores it again — this also restores the precondition for the tests below.
     saved = page.waitForResponse(res =>
-      res.url().includes(`/inspection/api/sheet/template/${categoryId}`) &&
+      res.url().includes(`/competition/api/v1/inspection/sheet/template/${categoryId}`) &&
       res.request().method() === "PUT" && res.status() === 200);
     await typeToggle(page, "CV").uncheck();
     await saved;

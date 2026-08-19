@@ -1,8 +1,10 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-Invalidation-Score`;
 
 test.describe("Traffic record invalidation -> Score recalculation", () => {
@@ -16,13 +18,13 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
     const page = await context.newPage();
 
     // Create fast record (4000ms) for team 31
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Invalidation-Score",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 31, univ: "연세대학교", team: "Yonsei Racing" },
+          entry: await trafficEntry(31),
           result: 4000,
           detail: "fast run",
         },
@@ -30,13 +32,13 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
     });
 
     // Create slow record (7000ms) for team 31
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Invalidation-Score",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 31, univ: "연세대학교", team: "Yonsei Racing" },
+          entry: await trafficEntry(31),
           result: 7000,
           detail: "slow run",
         },
@@ -44,7 +46,7 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
     });
 
     // Get rowids
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     const fastRecord = records.find((r) => r.result === 4000);
     const slowRecord = records.find((r) => r.result === 7000);
@@ -57,7 +59,7 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/${TABLE_NAME}`);
+    await page.request.delete(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     await context.close();
   });
 
@@ -79,7 +81,7 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
     }).toPass({ timeout: 10000 });
 
     // Invalidate the fast record
-    await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${fastRowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${fastRowid}`, {
       data: { field: "invalidated" },
     });
 
@@ -90,7 +92,7 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
     }).toPass({ timeout: 10000 });
 
     // Un-invalidate the fast record
-    await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${fastRowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${fastRowid}`, {
       data: { field: "invalidated" },
     });
 

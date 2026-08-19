@@ -126,7 +126,7 @@ describe('createLogger', () => {
   it('queryHandler exposes nextCursor/hasMore and a before-cursor returns strictly older rows', () => {
     const curDb = new Database(':memory:');
     const curLogger = createLogger(curDb, 'cursor-test');
-    const insert = curDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)");
+    const insert = curDb.prepare("INSERT INTO logs (timestamp, module, level, action) VALUES (?, 'cursor-test', 'info', ?)");
     // 동일 timestamp 3행(id로 갈라야 함) + 더 오래된 1행
     insert.run('2026-03-01T00:00:01.000Z', 'same_a');
     insert.run('2026-03-01T00:00:01.000Z', 'same_b');
@@ -153,7 +153,7 @@ describe('createLogger', () => {
   it('queryHandler combines before-cursor with filters', () => {
     const curDb = new Database(':memory:');
     const curLogger = createLogger(curDb, 'cursor-filter-test');
-    const insert = curDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, ?, ?)");
+    const insert = curDb.prepare("INSERT INTO logs (timestamp, module, level, action) VALUES (?, 'cursor-filter-test', ?, ?)");
     insert.run('2026-03-01T00:00:03.000Z', 'warn', 'w1');
     insert.run('2026-03-01T00:00:02.000Z', 'info', 'i1');
     insert.run('2026-03-01T00:00:01.000Z', 'warn', 'w2');
@@ -181,7 +181,7 @@ describe('createLogger', () => {
   it('queryHandler reports hasMore=false when the result set is exactly limit rows', () => {
     const exactDb = new Database(':memory:');
     const exactLogger = createLogger(exactDb, 'exact-test');
-    const insert = exactDb.prepare("INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)");
+    const insert = exactDb.prepare("INSERT INTO logs (timestamp, module, level, action) VALUES (?, 'exact-test', 'info', ?)");
     insert.run('2026-03-01T00:00:01.000Z', 'row_a');
     insert.run('2026-03-01T00:00:02.000Z', 'row_b');
 
@@ -231,6 +231,32 @@ describe('createLogger', () => {
     const count = preDb.prepare('SELECT COUNT(*) as cnt FROM logs').get().cnt;
     assert.equal(count, 5);
     preDb.close();
+  });
+
+  it('applies the row cap independently to each module in a shared database', () => {
+    const sharedDb = new Database(':memory:');
+    const entryLogger = createLogger(sharedDb, 'entry', 2);
+    const trafficLogger = createLogger(sharedDb, 'traffic', 2);
+
+    for (let i = 0; i < 3; i++) {
+      entryLogger.log(null, `entry_${i}`, null);
+      trafficLogger.log(null, `traffic_${i}`, null);
+    }
+
+    assert.deepEqual(sharedDb.prepare(`
+      SELECT module, COUNT(*) AS count FROM logs GROUP BY module ORDER BY module
+    `).all(), [
+      { module: 'entry', count: 2 },
+      { module: 'traffic', count: 2 },
+    ]);
+    assert.deepEqual(sharedDb.prepare(
+      "SELECT action FROM logs WHERE module = 'entry' ORDER BY id",
+    ).all().map((row) => row.action), ['entry_1', 'entry_2']);
+    assert.deepEqual(sharedDb.prepare(
+      "SELECT action FROM logs WHERE module = 'traffic' ORDER BY id",
+    ).all().map((row) => row.action), ['traffic_1', 'traffic_2']);
+
+    sharedDb.close();
   });
 });
 

@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-SB-Live`;
 
 test.describe("Traffic scoreboard live updates", () => {
@@ -12,13 +14,13 @@ test.describe("Traffic scoreboard live updates", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
 
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-SB-Live",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 5000,
           detail: "scoreboard live test 1",
         },
@@ -31,7 +33,7 @@ test.describe("Traffic scoreboard live updates", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/${TABLE_NAME}`);
+    await page.request.delete(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     await context.close();
   });
 
@@ -49,13 +51,13 @@ test.describe("Traffic scoreboard live updates", () => {
     await expect(scoreboard).toContainText("서울대학교");
 
     // Add a new record via API (SSE should push the update)
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-SB-Live",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 2, univ: "한양대학교", team: "ACES" },
+          entry: await trafficEntry(2),
           result: 4000,
           detail: "scoreboard live test 2",
         },
@@ -82,13 +84,13 @@ test.describe("Traffic scoreboard live updates", () => {
     await expect(scoreboard).toContainText("한양대학교");
 
     // Get records to find the entry 2 record's rowid
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     const entry2Record = records.find((r) => r.num === 2);
     expect(entry2Record).toBeTruthy();
 
     // Toggle scoreboard off for entry 2's record
-    await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${entry2Record.rowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${entry2Record.rowid}`, {
       data: { field: "scoreboard", value: 0 },
     });
 
@@ -99,7 +101,7 @@ test.describe("Traffic scoreboard live updates", () => {
     }).toPass({ timeout: 10000 });
 
     // Restore: toggle scoreboard back on
-    await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${entry2Record.rowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${entry2Record.rowid}`, {
       data: { field: "scoreboard", value: 1 },
     });
 
@@ -119,12 +121,12 @@ test.describe("Traffic scoreboard live updates", () => {
     await expect(scoreboard).toContainText("한양대학교");
 
     // Get entry 2's record rowid
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     const entry2Record = records.find((r) => r.num === 2);
 
     // Invalidate entry 2's record (this should auto-set scoreboard=0)
-    await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${entry2Record.rowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${entry2Record.rowid}`, {
       data: { field: "invalidated" },
     });
 
@@ -135,7 +137,7 @@ test.describe("Traffic scoreboard live updates", () => {
     }).toPass({ timeout: 10000 });
 
     // Restore: un-invalidate (toggles back)
-    await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${entry2Record.rowid}`, {
+    await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${entry2Record.rowid}`, {
       data: { field: "invalidated" },
     });
 

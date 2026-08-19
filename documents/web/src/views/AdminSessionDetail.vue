@@ -18,7 +18,7 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
   columnSelectors: [".col-num", ".col-team", ".col-type"],
 });
 
-const BASE_URL = import.meta.env.PROD ? "/documents" : "";
+const BASE_URL = "/competition/api/v1/documents";
 
 const loading = ref(true);
 const session = ref(null);
@@ -134,15 +134,15 @@ function formatExts(exts) {
 }
 
 function downloadFile(subId, fileId) {
-  window.open(`${BASE_URL}/api/admin/submissions/${subId}/files/${fileId}`, "_blank");
+  window.open(`${BASE_URL}/admin/submissions/${subId}/files/${fileId}`, "_blank");
 }
 
 function downloadZip(subId) {
-  window.open(`${BASE_URL}/api/admin/submissions/${subId}/zip`, "_blank");
+  window.open(`${BASE_URL}/admin/submissions/${subId}/zip`, "_blank");
 }
 
 function downloadSessionArchive() {
-  window.open(`${BASE_URL}/api/admin/sessions/${route.params.id}/archive`, "_blank");
+  window.open(`${BASE_URL}/admin/sessions/${route.params.id}/archive`, "_blank");
 }
 
 function toggleExpand(teamNum) {

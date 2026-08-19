@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Traffic record export", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -11,26 +13,26 @@ test.describe("Traffic record export", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
 
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Export",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 6789,
           detail: "export test",
         },
       },
     });
 
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Export",
         data: {
           time: new Date().toISOString(),
           type: "스키드패드",
-          entry: { num: 2, univ: "한양대학교", team: "ACES" },
+          entry: await trafficEntry(2),
           result: 15432,
           detail: "export test skidpad",
         },
@@ -86,7 +88,7 @@ test.describe("Traffic record export", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/FSK ${YEAR} E2E-Export`);
+    await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} E2E-Export`);
     await context.close();
   });
 });

@@ -1,8 +1,10 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Cross-service SSE propagation", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -28,7 +30,7 @@ test.describe("Cross-service SSE propagation", () => {
       Cookie: getAuthCookie("admin"),
     };
 
-    const recordResponse = await fetch(`${BASE_URL}/traffic/api/records`, {
+    const recordResponse = await fetch(`${BASE_URL}/competition/api/v1/traffic/records`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -36,7 +38,7 @@ test.describe("Cross-service SSE propagation", () => {
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 10, univ: "KAIST", team: "RUN" },
+          entry: await trafficEntry(10),
           result: 5432, // 5.432 seconds in milliseconds
         },
       }),
@@ -60,7 +62,7 @@ test.describe("Cross-service SSE propagation", () => {
     };
 
     const templateRes = await fetch(
-      `${BASE_URL}/inspection/api/sheet/template?year=${YEAR}`,
+      `${BASE_URL}/competition/api/v1/inspection/sheet/template?year=${YEAR}`,
       { headers },
     );
     expect(templateRes.status).toBe(200);
@@ -96,7 +98,7 @@ test.describe("Cross-service SSE propagation", () => {
 
     // Set the category result via API
     const setResultRes = await fetch(
-      `${BASE_URL}/inspection/api/sheet/category-result`,
+      `${BASE_URL}/competition/api/v1/inspection/sheet/category-result`,
       {
         method: "PUT",
         headers,
@@ -116,7 +118,7 @@ test.describe("Cross-service SSE propagation", () => {
 
     // Now change it to FAIL and verify SSE propagation
     const setFailRes = await fetch(
-      `${BASE_URL}/inspection/api/sheet/category-result`,
+      `${BASE_URL}/competition/api/v1/inspection/sheet/category-result`,
       {
         method: "PUT",
         headers,
@@ -134,7 +136,7 @@ test.describe("Cross-service SSE propagation", () => {
     await expect(teamRow.locator(".badge-danger")).toContainText("FAIL", { timeout: 10000 });
 
     // Clean up: clear the category result
-    await fetch(`${BASE_URL}/inspection/api/sheet/category-result`, {
+    await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",
       headers,
       body: JSON.stringify({
@@ -160,7 +162,7 @@ test.describe("Cross-service SSE propagation", () => {
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Add a traffic record for a different team (team 2)
-    const response = await fetch(`${BASE_URL}/traffic/api/records`, {
+    const response = await fetch(`${BASE_URL}/competition/api/v1/traffic/records`, {
       method: "POST",
       headers,
       body: JSON.stringify({
@@ -168,7 +170,7 @@ test.describe("Cross-service SSE propagation", () => {
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 2, univ: "한양대학교", team: "ACES" },
+          entry: await trafficEntry(2),
           result: 6789, // 6.789 seconds
         },
       }),
@@ -184,7 +186,7 @@ test.describe("Cross-service SSE propagation", () => {
 
     // Clean up: delete the test record table
     await fetch(
-      `${BASE_URL}/traffic/api/records/${encodeURIComponent(`FSK ${YEAR} E2E SSE Test`)}`,
+      `${BASE_URL}/competition/api/v1/traffic/records/${encodeURIComponent(`FSK ${YEAR} E2E SSE Test`)}`,
       { method: "DELETE", headers },
     );
   });

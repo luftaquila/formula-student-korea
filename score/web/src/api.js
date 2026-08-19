@@ -1,6 +1,6 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } = createApiClient("/score");
+const { request, fetchEntryYears, fetchEntries, fetchVehicleTypes } = createApiClient("/competition/api/v1/score");
 
 export { fetchEntryYears, fetchEntries, fetchVehicleTypes };
 
@@ -26,8 +26,7 @@ export async function updateScorePublication(year, enabled) {
 }
 
 export async function fetchPublicScore(year) {
-  const base = import.meta.env.PROD ? "/score" : "";
-  const res = await fetch(`${base}/api/score/public/${year}`);
+  const res = await fetch(`/competition/api/v1/score/score/public/${year}`);
   if (!res.ok) {
     const requestError = new Error(await res.text() || `요청 실패 (${res.status})`);
     requestError.status = res.status;

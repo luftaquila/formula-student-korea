@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable, enduranceTable } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -10,7 +11,7 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     // Clear DSQ for team 20
-    await page.request.put("/score/api/score/endurance", {
+    await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 20, field: "status", value: null },
     });
     await context.close();
@@ -18,7 +19,7 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
 
   test("DSQ on endurance page disables inputs", async ({ page }) => {
     // Ensure DSQ is cleared first via API
-    await page.request.put("/score/api/score/endurance", {
+    await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 20, field: "status", value: null },
     });
 
@@ -54,7 +55,7 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
 
   test("DSQ team shows DNF on score dashboard", async ({ page }) => {
     // Ensure DSQ is set via API (in case previous test ordering)
-    await page.request.put("/score/api/score/endurance", {
+    await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 20, field: "status", value: "DSQ" },
     });
 
@@ -83,7 +84,7 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
 
   test("clearing DSQ removes DNF from score dashboard", async ({ page }) => {
     // Clear DSQ
-    await page.request.put("/score/api/score/endurance", {
+    await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 20, field: "status", value: null },
     });
 

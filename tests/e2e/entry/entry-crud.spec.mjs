@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 
-test.describe("Entry CRUD operations", () => {
+test.describe("Entry team management", () => {
   test.use({ storageState: storageStatePath("admin") });
 
   test.beforeEach(async ({ page }) => {
@@ -13,9 +13,10 @@ test.describe("Entry CRUD operations", () => {
     const table = page.locator(".entry-table");
     await expect(table).toBeVisible();
 
-    // Verify all 8 seeded entries are present
+    // All seeded entries remain present. Other tests may leave deactivated
+    // audit rows because teams are intentionally never deleted.
     const rows = table.locator("tbody tr");
-    await expect(rows).toHaveCount(8);
+    expect(await rows.count()).toBeGreaterThanOrEqual(8);
 
     // Verify specific seeded entries by their number column
     await expect(table.locator("tbody")).toContainText("서울대학교");
@@ -25,14 +26,17 @@ test.describe("Entry CRUD operations", () => {
     await expect(table.locator("tbody")).toContainText("고려대학교");
 
     // Verify entry count badge
-    await expect(page.locator(".entry-count")).toHaveText("8대");
+    await expect(page.locator(".entry-count")).toHaveText(/\d+대/);
   });
 
   test("adds a new entry", async ({ page }) => {
+    const number = 90000 + (Date.now() % 9999);
+    const university = `테스트대학교-${number}`;
+
     // Fill the entry form
     const sidebar = page.locator(".sidebar");
-    await sidebar.locator('input[type="number"]').fill("99");
-    await sidebar.locator('input[type="text"]').first().fill("테스트대학교");
+    await sidebar.locator('input[type="number"]').fill(String(number));
+    await sidebar.locator('input[type="text"]').first().fill(university);
     await sidebar.locator('input[type="text"]').nth(1).fill("테스트팀");
     await sidebar.locator("select.form-input").selectOption("EV");
 
@@ -40,40 +44,20 @@ test.describe("Entry CRUD operations", () => {
     await sidebar.locator('.submit-btn').click();
 
     // Verify success notification
-    await expectNotification(page, "success", "99번 엔트리를 추가했습니다.");
+    await expectNotification(page, "success", `${number}번 엔트리를 추가했습니다.`);
 
     // Wait for table to update and verify the new entry
     await waitForPageReady(page);
     const table = page.locator(".entry-table");
-    await expect(table.locator("tbody")).toContainText("테스트대학교");
+    await expect(table.locator("tbody")).toContainText(university);
     await expect(table.locator("tbody")).toContainText("테스트팀");
-    await expect(page.locator(".entry-count")).toHaveText("9대");
 
-    // Clean up: delete the entry we just added
-    const row = table.locator("tbody tr").filter({ hasText: "테스트대학교" });
+    // Teams are retained for audit. Deactivate the temporary team so it cannot
+    // affect operational modules or later active-team assertions.
+    const row = table.locator("tbody tr").filter({ hasText: university });
     page.on("dialog", (dialog) => dialog.accept());
-    await row.locator(".btn-danger").click();
-    await waitForPageReady(page);
-  });
-
-  test("surfaces pending lifecycle synchronization when adding an entry", async ({ page }) => {
-    await page.route("**/entry/api/entries?year=*", async (route) => {
-      if (route.request().method() !== "POST") return route.continue();
-      await route.fulfill({
-        status: 202,
-        contentType: "application/json",
-        body: JSON.stringify({ status: "pending_lifecycle", pending: 1 }),
-      });
-    });
-
-    const sidebar = page.locator(".sidebar");
-    await sidebar.locator('input[type="number"]').fill("998");
-    await sidebar.locator('input[type="text"]').first().fill("동기화대학교");
-    await sidebar.locator('input[type="text"]').nth(1).fill("동기화팀");
-    await sidebar.locator("select.form-input").selectOption("EV");
-    await sidebar.locator(".submit-btn").click();
-
-    await expectNotification(page, "success", "998번 엔트리를 추가했습니다. (서비스 동기화 진행 중)");
+    await row.locator(".status-toggle").click();
+    await expect(row).toHaveClass(/entry-inactive/);
   });
 
   test("inline edits an entry university name", async ({ page }) => {
@@ -92,12 +76,6 @@ test.describe("Entry CRUD operations", () => {
     await editInput.fill("카이스트");
     await editInput.press("Enter");
 
-    // 같은 번호에서 학교명이 바뀌면 명칭 정정(데이터 유지)인지 팀 교체(데이터 삭제)인지
-    // 묻는 모달이 뜬다. 단순 명칭 정정이므로 "명칭 정정"을 선택한다.
-    const modal = page.locator(".ambiguity-modal");
-    await expect(modal).toBeVisible();
-    await modal.locator(".ambiguity-btn.retain").click();
-
     // Verify success notification
     await expectNotification(page, "success", "10번 엔트리를 수정했습니다.");
 
@@ -105,43 +83,33 @@ test.describe("Entry CRUD operations", () => {
     await waitForPageReady(page);
     await expect(table.locator("tbody")).toContainText("카이스트");
 
-    // Revert: edit back to original (학교명이 다시 바뀌므로 동일한 모달이 뜬다)
+    // Revert: edit back to original.
     const updatedRow = table.locator("tbody tr").filter({ hasText: "카이스트" });
     await updatedRow.locator("td.col-univ .cell-text").click();
     const revertInput = table.locator("input.edit-input");
     await expect(revertInput).toBeVisible();
     await revertInput.fill("KAIST");
     await revertInput.press("Enter");
-    await expect(modal).toBeVisible();
-    await modal.locator(".ambiguity-btn.retain").click();
     await waitForPageReady(page);
   });
 
-  test("deletes an entry", async ({ page }) => {
-    // First, add a temporary entry to delete
-    const sidebar = page.locator(".sidebar");
-    await sidebar.locator('input[type="number"]').fill("88");
-    await sidebar.locator('input[type="text"]').first().fill("삭제대학교");
-    await sidebar.locator('input[type="text"]').nth(1).fill("삭제팀");
-    await sidebar.locator('.submit-btn').click();
-    await waitForPageReady(page);
-    await expect(page.locator(".entry-count")).toHaveText("9대");
-
-    // Accept the confirmation dialog
+  test("deactivates an entry without deleting its stable row", async ({ page }) => {
     page.on("dialog", (dialog) => dialog.accept());
 
-    // Find and delete the entry
     const table = page.locator(".entry-table");
-    const row = table.locator("tbody tr").filter({ hasText: "삭제대학교" });
-    await row.locator(".btn-danger").click();
+    const row = table.locator("tbody tr").filter({ hasText: "고려대학교" });
+    const toggle = row.locator(".status-toggle");
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    await toggle.click();
 
-    // Verify success notification
-    await expectNotification(page, "success", "88번 엔트리를 삭제했습니다.");
+    await expectNotification(page, "success", "20번 엔트리를 비활성화했습니다.");
+    await expect(row).toHaveClass(/entry-inactive/);
+    await expect(row).toContainText("고려대학교");
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
 
-    // Wait for table to update and verify deletion
-    await waitForPageReady(page);
-    await expect(table.locator("tbody")).not.toContainText("삭제대학교");
-    await expect(page.locator(".entry-count")).toHaveText("8대");
+    // Restore the seeded team's active state for downstream suites.
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
   });
 
   test("filters entries with search", async ({ page }) => {
@@ -174,7 +142,7 @@ test.describe("Entry CRUD operations", () => {
 
     // Clear search to restore all entries
     await searchInput.fill("");
-    await expect(table.locator("tbody tr")).toHaveCount(8);
+    await expect(table.locator("tbody")).toContainText("서울대학교");
   });
 
   test("sorts entries by column headers", async ({ page }) => {
@@ -202,7 +170,8 @@ test.describe("Entry CRUD operations", () => {
 
     // Click again to sort by num descending
     await table.locator("th.col-num").click();
-    const firstRowAfterNumDescSort = table.locator("tbody tr").first().locator(".entry-number");
-    await expect(firstRowAfterNumDescSort).toHaveText("32");
+    const numbers = await table.locator("tbody tr .entry-number").allTextContents();
+    const numeric = numbers.map(Number);
+    expect(numeric).toEqual([...numeric].sort((a, b) => b - a));
   });
 });

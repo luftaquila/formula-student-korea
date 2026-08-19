@@ -6,6 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { isChief } from "@shared/officialsStore.js";
 
 const tableRef = ref(null);
@@ -17,11 +18,11 @@ const { stickyCols, lineX, startDrag } = useStickyColumns({
 
 const { error } = useNotification();
 const router = useRouter();
-const { lastUpdate, lastInspectorUpdate, lastTeamActiveUpdate } = useSSE();
+const { lastUpdate, lastInspectorUpdate, lastEntriesUpdate } = useSSE();
 
 const entries = ref({});
 const summary = ref({ categories: [], teams: {} });
-const selectedYear = ref(new Date().getFullYear());
+const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const typeColorMap = ref({});
 const loading = ref(true);
@@ -29,7 +30,7 @@ const searchQuery = ref("");
 let lifecycleRefreshTimer = null;
 let dataLoadSeq = 0;
 
-const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
+const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
 
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
@@ -158,7 +159,7 @@ watch(lastInspectorUpdate, (update) => {
   summary.value.teams[team_num].inspectors[category_id] = inspector;
 });
 
-watch(lastTeamActiveUpdate, (update) => {
+watch(lastEntriesUpdate, (update) => {
   if (update?.year === selectedYear.value) scheduleLifecycleRefresh();
 });
 </script>

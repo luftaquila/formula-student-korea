@@ -17,7 +17,6 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 // entries below. Setup failures are therefore real failures rather than reasons
 // to skip the assertion under test.
 const TYPE = "tilting";
-const YEAR = new Date().getFullYear();
 const STATE_NUM = 96;
 const BOOTH_NUM = 97;
 const MY_NUMS = [STATE_NUM, BOOTH_NUM];
@@ -33,14 +32,14 @@ function officialHeaders() {
 }
 
 async function getQueue(type = TYPE) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   return res.ok ? res.json() : [];
 }
 
 async function getBooths(type = TYPE) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/booths/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   return res.ok ? res.json() : [];
@@ -52,7 +51,7 @@ async function getBoothCount(type = TYPE) {
 }
 
 async function enterBooth(type, boothNum, num) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/enter`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/enter`, {
     method: "POST",
     headers: officialHeaders(),
     body: JSON.stringify({ num }),
@@ -60,14 +59,14 @@ async function enterBooth(type, boothNum, num) {
 }
 
 async function exitBooth(type, boothNum) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/exit`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/exit`, {
     method: "POST",
     headers: officialHeaders(),
   });
 }
 
 async function setBoothCount(type, count) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/config`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/config`, {
     method: "PATCH",
     headers: adminHeaders(),
     body: JSON.stringify({ count }),
@@ -75,28 +74,11 @@ async function setBoothCount(type, count) {
 }
 
 async function register(num, type = TYPE) {
-  return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${type}`, {
     method: "POST",
     headers: adminHeaders(),
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
-}
-
-async function createEntry(num) {
-  const res = await fetch(`${BASE_URL}/entry/api/entries?year=${YEAR}`, {
-    method: "POST",
-    headers: adminHeaders(),
-    body: JSON.stringify({ num, univ: `E2E Queue ${num}`, team: `Queue ${num}`, type: "EV" }),
-  });
-  if (res.status !== 201) throw new Error(`create entry ${num}: ${res.status} ${await res.text()}`);
-}
-
-async function deleteEntry(num) {
-  const res = await fetch(`${BASE_URL}/entry/api/entries/${num}?year=${YEAR}`, {
-    method: "DELETE",
-    headers: adminHeaders(),
-  });
-  if (![200, 404].includes(res.status)) throw new Error(`delete entry ${num}: ${res.status} ${await res.text()}`);
 }
 
 // Remove only the entry nums this file owns: free any booth they occupy, then
@@ -124,15 +106,13 @@ test.describe("Queue booth occupancy + public scoping", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    for (const num of MY_NUMS) await createEntry(num);
-
     // Drop cancel penalty to 0 so register/enter churn never trips a penalty.
     // (Several queue specs do the same; they all converge on 0 during the run.)
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: chiefHeaders(),
       body: JSON.stringify({ value: 0 }),
@@ -142,13 +122,12 @@ test.describe("Queue booth occupancy + public scoping", () => {
   test.afterAll(async () => {
     await releaseMyNums();
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: chiefHeaders(),
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
-    for (const num of MY_NUMS) await deleteEntry(num);
   });
 
   test.beforeEach(async () => {
@@ -207,18 +186,18 @@ test.describe("Queue booth occupancy + public scoping", () => {
   });
 
   test("public booth read endpoints return 200 unauthenticated", async ({ request }) => {
-    const all = await request.get("/queue/api/booths/all");
+    const all = await request.get("/competition/api/v1/queue/booths/all");
     expect(all.status()).toBe(200);
     const allBody = await all.json();
     expect(allBody[TYPE]).toBeDefined();
     expect(Array.isArray(allBody[TYPE])).toBe(true);
 
-    const byType = await request.get(`/queue/api/booths/${TYPE}`);
+    const byType = await request.get(`/competition/api/v1/queue/booths/${TYPE}`);
     expect(byType.status()).toBe(200);
     expect(Array.isArray(await byType.json())).toBe(true);
 
     // Invalid type is a 400 even on the public endpoint.
-    const bad = await request.get("/queue/api/booths/not-a-type");
+    const bad = await request.get("/competition/api/v1/queue/booths/not-a-type");
     expect(bad.status()).toBe(400);
   });
 
@@ -229,7 +208,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
 
     // This spec stays well below the 30/minute limiter and owns the queued entry,
     // so the validation contract must be observed exactly.
-    const res = await request.post(`/queue/api/state/${STATE_NUM}`, {
+    const res = await request.post(`/competition/api/v1/queue/state/${STATE_NUM}`, {
       data: { phone: 1234567890 },
     });
     expect(res.status()).toBe(400);
@@ -247,15 +226,15 @@ test.describe("Queue booth occupancy + public scoping", () => {
     try {
       const request = ctx.request;
 
-      const sms = await request.get("/queue/api/admin/settings/sms");
+      const sms = await request.get("/competition/api/v1/queue/admin/settings/sms");
       expect(sms.status()).toBe(200);
       expect(typeof (await sms.json()).value).toBe("boolean");
 
-      const smsRank = await request.get("/queue/api/admin/settings/sms-rank");
+      const smsRank = await request.get("/competition/api/v1/queue/admin/settings/sms-rank");
       expect(smsRank.status()).toBe(200);
       expect(typeof (await smsRank.json()).value).toBe("number");
 
-      const penalty = await request.get("/queue/api/admin/settings/cancel-penalty");
+      const penalty = await request.get("/competition/api/v1/queue/admin/settings/cancel-penalty");
       expect(penalty.status()).toBe(200);
       expect(typeof (await penalty.json()).value).toBe("number");
     } finally {

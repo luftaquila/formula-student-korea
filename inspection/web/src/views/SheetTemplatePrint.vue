@@ -2,9 +2,10 @@
 import { ref, onMounted, onBeforeUnmount, computed } from "vue";
 import { useRoute } from "vue-router";
 import { fetchSheetTemplate } from "../api";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
 const route = useRoute();
-const year = computed(() => Number(route.query.year) || new Date().getFullYear());
+const year = computed(() => Number(route.query.year) || currentCompetitionYear());
 const template = ref([]);
 const loading = ref(true);
 const error = ref(false);

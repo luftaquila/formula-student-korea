@@ -8,12 +8,12 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // Unauthenticated -> 401.
 
 const adminGated = [
-  { method: "get", path: "/score/api/score", body: undefined },
-  { method: "put", path: "/score/api/score/manual", body: { num: 999999, event: "rbac", value: 0 } },
-  { method: "put", path: "/score/api/score/penalty", body: { num: 999999, event: "rbac", value: 0 } },
-  { method: "put", path: "/score/api/score/setting", body: { key: "rbac", value: 0 } },
-  { method: "get", path: "/score/api/score/endurance", body: undefined },
-  { method: "put", path: "/score/api/score/endurance", body: { num: 999999 } },
+  { method: "get", path: "/competition/api/v1/score/score", body: undefined },
+  { method: "put", path: "/competition/api/v1/score/score/manual", body: { num: 999999, event: "rbac", value: 0 } },
+  { method: "put", path: "/competition/api/v1/score/score/penalty", body: { num: 999999, event: "rbac", value: 0 } },
+  { method: "put", path: "/competition/api/v1/score/score/setting", body: { key: "rbac", value: 0 } },
+  { method: "get", path: "/competition/api/v1/score/score/endurance", body: undefined },
+  { method: "put", path: "/competition/api/v1/score/score/endurance", body: { num: 999999 } },
 ];
 
 test.describe("score RBAC", () => {

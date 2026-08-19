@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications, setCustomEventName } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Acceleration manual mode measurement", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -10,7 +11,7 @@ test.describe("Acceleration manual mode measurement", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     for (const name of ["E2E-Test", "E2E-DNF", "E2E-Reset"]) {
-      await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${name}`);
+      await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${name}`);
     }
     await context.close();
   });
@@ -80,7 +81,7 @@ test.describe("Acceleration manual mode measurement", () => {
       }
       await route.continue();
     };
-    await page.route("**/traffic/api/records/**", failDelayedCones);
+    await page.route("**/competition/api/v1/traffic/records/**", failDelayedCones);
     await page.getByTestId("quick-cones-plus").click();
     await page.getByTestId("quick-oc").fill("2");
     const ocSaved = page.waitForResponse((response) => {
@@ -95,7 +96,7 @@ test.describe("Acceleration manual mode measurement", () => {
     releaseCones();
     await expect(page.getByTestId("quick-cones")).toHaveValue("0");
     await expect(page.getByTestId("quick-save-status")).not.toBeVisible();
-    await page.unroute("**/traffic/api/records/**", failDelayedCones);
+    await page.unroute("**/competition/api/v1/traffic/records/**", failDelayedCones);
 
     await page.getByTestId("quick-cones-plus").click();
     await expect(page.getByTestId("quick-cones")).toHaveValue("1");
@@ -118,13 +119,13 @@ test.describe("Acceleration manual mode measurement", () => {
       await route.continue();
       if (data?.field === "invalidated") confirmInvalidationContinued();
     };
-    await page.route("**/traffic/api/records/**", holdInvalidation);
+    await page.route("**/competition/api/v1/traffic/records/**", holdInvalidation);
     await invalidated.click();
     await expect(invalidated).toBeDisabled();
     await expect(scoreboard).toBeDisabled();
     releaseInvalidation();
     await invalidationContinued;
-    await page.unroute("**/traffic/api/records/**", holdInvalidation);
+    await page.unroute("**/competition/api/v1/traffic/records/**", holdInvalidation);
     await expect(invalidated).toContainText("무효");
     await expect(scoreboard).toBeDisabled();
 

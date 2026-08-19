@@ -15,7 +15,7 @@ test.describe("Wireless bridge status", () => {
     // 핵심(heartbeat ingest → wireless:bridge online SSE 반영)만 검증한다.
 
     // 서버로 heartbeat ingest → wireless:bridge online 브로드캐스트
-    const res = await page.request.post("/traffic/api/wireless/ingest", { data: { events: [], telemetry: [] } });
+    const res = await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [], telemetry: [] } });
     expect(res.ok()).toBeTruthy();
 
     // 클라이언트가 SSE로 온라인 반영(자동 재시도 단언)

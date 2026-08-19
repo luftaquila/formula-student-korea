@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-RapidFire`;
 
 test.describe("Rapid successive record creation", () => {
@@ -12,16 +14,10 @@ test.describe("Rapid successive record creation", () => {
     const page = await context.newPage();
 
     // Create 5 records in quick succession (no delays)
-    const teams = [
-      { num: 1, univ: "서울대학교", team: "SNU Racing" },
-      { num: 2, univ: "한양대학교", team: "ACES" },
-      { num: 3, univ: "성균관대학교", team: "SKKU Racing" },
-      { num: 10, univ: "KAIST", team: "RUN" },
-      { num: 20, univ: "고려대학교", team: "KURF" },
-    ];
+    const teams = await Promise.all([1, 2, 3, 10, 20].map((number) => trafficEntry(number)));
 
     const promises = teams.map((entry, i) =>
-      page.request.post("/traffic/api/records", {
+      page.request.post("/competition/api/v1/traffic/records", {
         data: {
           name: "E2E-RapidFire",
           data: {
@@ -46,7 +42,7 @@ test.describe("Rapid successive record creation", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/${TABLE_NAME}`);
+    await page.request.delete(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     await context.close();
   });
 
@@ -75,7 +71,7 @@ test.describe("Rapid successive record creation", () => {
   });
 
   test("all 5 records have correct data via API", async ({ page }) => {
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     expect(records.length).toBe(5);
 

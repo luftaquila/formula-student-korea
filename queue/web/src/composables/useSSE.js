@@ -1,7 +1,7 @@
 import { ref } from "vue";
 import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 
-const { on, useSSE: useConnection, reconnected } = createServiceSSE("/queue");
+const { on, useSSE: useConnection, reconnected } = createServiceSSE("/competition/api/v1/queue");
 
 // Shared state across all components
 const activeInspections = ref([]);
@@ -9,6 +9,7 @@ const lastQueueUpdate = ref(null);
 const allBooths = ref({});
 const lastBoothUpdate = ref(null);
 const lastPenaltyUpdate = ref(null);
+const lastEntriesUpdate = ref(null);
 
 on("init", (e) => {
   const data = parseSSEData(e);
@@ -45,6 +46,12 @@ on("penalties", (e) => {
   lastPenaltyUpdate.value = { timestamp: Date.now() };
 });
 
+on("entries", (e) => {
+  const data = parseSSEData(e);
+  if (!data) return;
+  lastEntriesUpdate.value = { ...data, timestamp: Date.now() };
+});
+
 export function useSSE() {
   useConnection();
 
@@ -54,6 +61,7 @@ export function useSSE() {
     allBooths,
     lastBoothUpdate,
     lastPenaltyUpdate,
+    lastEntriesUpdate,
     reconnected,
   };
 }

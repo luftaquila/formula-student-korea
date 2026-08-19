@@ -4,10 +4,15 @@ import { createSecretChecker } from "./express-setup.mjs";
 // logs 테이블 필터 쿼리 파라미터(level/action/actor/from/to/search)를 WHERE 절과
 // 바인딩 파라미터로 변환한다. queryHandler와 auth의 로그 집계 로컬 쿼리가 공유한다.
 // 쿼리 파라미터가 중복 지정되어 배열로 오는 경우(?level=a&level=b)도 안전하게 처리.
-export function buildLogFilter(query) {
+export function buildLogFilter(query, { module = null } = {}) {
   const str = (v) => (Array.isArray(v) ? v.join(",") : v == null ? "" : String(v));
   const conditions = [];
   const params = [];
+
+  if (module) {
+    conditions.push("module = ?");
+    params.push(module);
+  }
 
   const level = str(query.level);
   if (level) {
@@ -70,8 +75,17 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     detail TEXT,
     ip TEXT
   )`);
+  const logColumns = db.prepare("PRAGMA table_info(logs)").all();
+  if (!logColumns.some((column) => column.name === "module")) {
+    db.exec("ALTER TABLE logs ADD COLUMN module TEXT");
+  }
+  // Databases created before the shared module column contain logs from the
+  // factory that opened them, so backfill that known module deterministically.
+  db.prepare("UPDATE logs SET module = ? WHERE module IS NULL OR module = ''").run(serviceName);
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_action ON logs(action)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_logs_module_timestamp ON logs(module, timestamp)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_logs_module_id ON logs(module, id)");
 
   runMigrationOnce(db, "shared.logs_timestamp_utc_normalization.v1", () => {
     const rows = db.prepare("SELECT id, timestamp FROM logs WHERE timestamp IS NOT NULL AND timestamp != ''").all();
@@ -92,18 +106,17 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     const detailStr = detail != null ? (typeof detail === "string" ? detail : JSON.stringify(detail)) : null;
     try {
       db.prepare(
-        "INSERT INTO logs (level, action, actor_email, actor_name, actor_role, target, detail, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(level, action, actor.email || null, actor.name || null, actor.role || null, target || null, detailStr, req ? getIP(req) : null);
+        "INSERT INTO logs (module, level, action, actor_email, actor_name, actor_role, target, detail, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(serviceName, level, action, actor.email || null, actor.name || null, actor.role || null, target || null, detailStr, req ? getIP(req) : null);
     } catch (e) {
       console.error(`[logger] write error: ${e.message}`);
     }
   }
 
   // 보존은 다른 row-cap 테이블(queue_log, booth_log 등)과 같은 AFTER INSERT 트리거로
-  // 통일한다. 시간별 COUNT+DELETE sweep은 스윕 사이 무제한 초과를 허용했고, 리포에
-  // 보존 메커니즘이 두 벌 존재하게 만들었다. 트리거의 삽입당 비용은 PK MAX 조회 +
-  // 대부분 no-op인 범위 DELETE라 이 시스템의 로그 쓰기 빈도에서 무시 가능하다.
-  setupRowCapRetention(db, "logs", maxRows);
+  // 통일한다. 시간별 COUNT+DELETE sweep은 스윕 사이 무제한 초과를 허용했다. 통합 DB는
+  // module별 한도를 독립 적용하고 (module, id) 인덱스로 각 파티션의 오래된 꼬리만 찾는다.
+  setupRowCapRetention(db, "logs", maxRows, { partitionColumn: "module" });
 
   const isInternalSecret = createSecretChecker(process.env.INTERNAL_SECRET);
 
@@ -118,7 +131,7 @@ export function createLogger(db, serviceName, maxRows = 50000) {
     const limit = Math.max(1, Math.min(Number(req.query.limit) || 100, 500));
     const cursor = parseLogCursor(req.query.before);
 
-    const { where, params } = buildLogFilter(req.query);
+    const { where, params } = buildLogFilter(req.query, { module: serviceName });
 
     // 정렬 키는 (timestamp DESC, id DESC)로 통일한다 — auth 집계의 병합 정렬 키와 같아야
     // keyset 커서가 페이지 경계에서 행을 빠뜨리거나 중복시키지 않는다. id는 rowid alias라

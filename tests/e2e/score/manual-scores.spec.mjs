@@ -1,10 +1,11 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 async function fillAndSave(page, input, value) {
-  const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/manual") && res.status() === 200);
+  const savePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/manual") && res.status() === 200);
   // 사용자가 실제로 하는 동작 그대로 둔다. 리렌더링이 타이핑 중인 값을 덮어쓰면 저장이
   // 나가지 않고 여기서 타임아웃 나야 한다 — 그게 이 테스트가 잡아야 하는 회귀다.
   await input.click();

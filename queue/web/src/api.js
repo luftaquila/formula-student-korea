@@ -1,6 +1,6 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntries, fetchEntryYears } = createApiClient("/queue");
+const { request, fetchEntries, fetchEntryYears } = createApiClient("/competition/api/v1/queue");
 
 export { fetchEntries, fetchEntryYears };
 
