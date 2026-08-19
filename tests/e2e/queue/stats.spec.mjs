@@ -6,12 +6,12 @@ const ENTRY_NUM = 20;
 const PHONE = "01020202020";
 
 async function clearOwnedRegistration(request) {
-  const cancelled = await request.post(`/queue/api/admin/cancel/${TYPE}`, {
+  const cancelled = await request.post(`/competition/api/v1/queue/admin/cancel/${TYPE}`, {
     data: { num: ENTRY_NUM },
   });
   expect([200, 400]).toContain(cancelled.status());
 
-  const penalty = await request.delete(`/queue/api/admin/penalties/${TYPE}/${ENTRY_NUM}`);
+  const penalty = await request.delete(`/competition/api/v1/queue/admin/penalties/${TYPE}/${ENTRY_NUM}`);
   expect([200, 404]).toContain(penalty.status());
 }
 
@@ -21,7 +21,7 @@ test.describe("Queue statistics page", () => {
   test.beforeAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("chief") });
     await clearOwnedRegistration(context.request);
-    const registered = await context.request.post(`/queue/api/admin/register/${TYPE}`, {
+    const registered = await context.request.post(`/competition/api/v1/queue/admin/register/${TYPE}`, {
       data: { num: ENTRY_NUM, phone: PHONE },
     });
     expect(registered.status()).toBe(201);
@@ -83,7 +83,7 @@ test.describe("Queue statistics page", () => {
 
     const inspectionSelect = page.locator(".filter-group", { hasText: "검차 종류" }).locator("select");
     const filtered = page.waitForResponse(
-      (response) => response.url().includes("/queue/api/admin/stats") && response.status() === 200,
+      (response) => response.url().includes("/competition/api/v1/queue/admin/stats") && response.status() === 200,
     );
     await inspectionSelect.selectOption(TYPE);
     await filtered;

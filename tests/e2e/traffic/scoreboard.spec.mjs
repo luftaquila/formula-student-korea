@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Traffic scoreboard", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -11,13 +13,13 @@ test.describe("Traffic scoreboard", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
 
-    await page.request.post("/traffic/api/records", {
+    await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Scoreboard",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 4567,
           detail: "scoreboard test",
         },
@@ -128,7 +130,7 @@ test.describe("Traffic scoreboard", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/FSK ${YEAR} E2E-Scoreboard`);
+    await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} E2E-Scoreboard`);
     await context.close();
   });
 });

@@ -3,12 +3,7 @@ import { seedSelected } from "./helpers/seed.mjs";
 
 const ALL_SERVICES = [
   "auth",
-  "entry",
-  "queue",
-  "inspection",
-  "traffic",
-  "score",
-  "documents",
+  "competition",
   "email",
   "course",
   "calendar",
@@ -21,7 +16,11 @@ function selectedNames(envName, defaults) {
 }
 
 async function waitForServices(maxRetries = 30, intervalMs = 2000) {
-  const services = selectedNames("E2E_SERVICES", ALL_SERVICES).map((service) => `/${service}/api/health`);
+  const services = selectedNames("E2E_SERVICES", ALL_SERVICES).map((service) => (
+    service === "competition"
+      ? "/competition/api/v1/queue/health"
+      : `/${service}/api/health`
+  ));
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {

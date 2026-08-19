@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Score dashboard real-time sync via SSE", () => {
   // Multi-context tests need extra time for SSE setup in CI
@@ -13,15 +14,15 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const page = await context.newPage();
     try {
       // Reset manual score for team #30 (부산대학교)
-      await page.request.put(`/score/api/score/manual`, {
+      await page.request.put(`/competition/api/v1/score/score/manual`, {
         data: { year: YEAR, team_num: 30, score_type: "report", value: null },
       });
       // Reset the dedicated skidpad penalty used by the SSE test.
-      await page.request.put(`/score/api/score/penalty`, {
+      await page.request.put(`/competition/api/v1/score/score/penalty`, {
         data: { year: YEAR, event_type: "스키드패드", cone_penalty: 0, oc_penalty: 0, start_delay: 0 },
       });
       // Reset the dedicated energy setting used by the SSE test.
-      await page.request.put(`/score/api/score/setting`, {
+      await page.request.put(`/competition/api/v1/score/score/setting`, {
         data: { year: YEAR, event_type: "에너지", setting_key: "total", value: null },
       });
     } catch { /* ignore */ }
@@ -36,8 +37,8 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const page2 = await context2.newPage();
 
     // Set up SSE listeners before navigation
-    const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
-    const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
+    const sse1 = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
+    const sse2 = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
 
     await page1.goto("/score");
     await page2.goto("/score");
@@ -57,7 +58,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const currentVal = await reportInput1.inputValue();
     const newValue = Number(currentVal) === 75 ? "80" : "75";
 
-    const savePromise = page1.waitForResponse((res) => res.url().includes("/api/score/manual") && res.status() === 200);
+    const savePromise = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/manual") && res.status() === 200);
     await reportInput1.click();
     await reportInput1.fill(newValue);
     await reportInput1.blur();
@@ -70,7 +71,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await expect(reportInput2).toHaveValue(newValue, { timeout: 10000 });
 
     // Cleanup: reset to empty
-    const cleanupPromise = page1.waitForResponse((res) => res.url().includes("/api/score/manual") && res.status() === 200);
+    const cleanupPromise = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/manual") && res.status() === 200);
     await reportInput1.fill("");
     await reportInput1.blur();
     await cleanupPromise;
@@ -87,8 +88,8 @@ test.describe("Score dashboard real-time sync via SSE", () => {
       const page1 = await context1.newPage();
       const page2 = await context2.newPage();
 
-      const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
-      const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
+      const sse1 = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
+      const sse2 = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
 
       await page1.goto("/score");
       await page2.goto("/score");
@@ -120,7 +121,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
       const input1 = skidpadConeCell1.locator("input.setting-input");
       await expect(input1).toBeVisible({ timeout: 3000 });
 
-      const penaltySavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+      const penaltySavePromise = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
       await input1.fill(String(newValue));
       await input1.blur();
       await penaltySavePromise;
@@ -136,7 +137,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
       try {
         // Cleanup is not part of the UI behavior under test. Restore through
         // the authenticated API so an SSE re-render cannot suppress the save.
-        const reset = await context1.request.put("/score/api/score/penalty", {
+        const reset = await context1.request.put("/competition/api/v1/score/score/penalty", {
           data: {
             year: YEAR,
             event_type: "스키드패드",
@@ -159,8 +160,8 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
 
-    const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
-    const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
+    const sse1 = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
+    const sse2 = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
 
     await page1.goto("/score");
     await page2.goto("/score");
@@ -192,7 +193,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     const input1 = energyTotalCell1.locator("input.setting-input");
     await expect(input1).toBeVisible({ timeout: 3000 });
 
-    const settingSavePromise = page1.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const settingSavePromise = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await input1.fill(String(newValue));
     await input1.blur();
     await settingSavePromise;
@@ -209,7 +210,7 @@ test.describe("Score dashboard real-time sync via SSE", () => {
     await energyTotalCell1.click();
     const resetInput = energyTotalCell1.locator("input.setting-input");
     await expect(resetInput).toBeVisible({ timeout: 3000 });
-    const cleanupSetting = page1.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const cleanupSetting = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await resetInput.fill("");
     await resetInput.blur();
     await cleanupSetting;

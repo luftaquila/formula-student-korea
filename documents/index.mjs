@@ -6,13 +6,17 @@ import Database from "better-sqlite3";
 import { addColumn, runMigrationOnce, normalizeTimestampColumn, parseLegacyTimestamp } from "../shared/db-setup.mjs";
 import Busboy from "busboy";
 import archiver from "archiver";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
-import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
+import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { validateYear } from "../shared/validation.mjs";
 import { parseDbTimestamp } from "../shared/parse-timestamp.js";
 import { serviceUrl } from "../shared/services.mjs";
+import { currentCompetitionYear } from "../shared/competition-year.mjs";
 
 export function createDocumentsApp(options = {}) {
+
+const enableNotificationScheduler = options.enableNotificationScheduler !== false;
+const notificationTasks = new Set();
+const removeDirectory = options.removeDirectory || ((dir) => fs.rmSync(dir, { recursive: true, force: true }));
 
 const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "documents", express, Database, options,
@@ -50,12 +54,13 @@ db.exec(`CREATE TABLE IF NOT EXISTS student_team (
         PRIMARY KEY (email, year),
         UNIQUE(team_num, year)
       )`);
-      db.exec("INSERT OR IGNORE INTO student_team_new SELECT email, team_num, year FROM student_team");
+      db.exec("INSERT OR IGNORE INTO student_team_new (email, team_num, year) SELECT email, team_num, year FROM student_team");
       db.exec("DROP TABLE student_team");
       db.exec("ALTER TABLE student_team_new RENAME TO student_team");
     })();
   }
 }
+addColumn(db, "student_team", "team_id INTEGER");
 
 db.exec(`CREATE TABLE IF NOT EXISTS session (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -77,6 +82,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS session_team (
   PRIMARY KEY (session_id, team_num),
   FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
 )`);
+addColumn(db, "session_team", "team_id INTEGER");
 
 db.exec(`CREATE TABLE IF NOT EXISTS submission (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,9 +120,13 @@ addColumn(db, "session", "allowed_extensions TEXT DEFAULT ''");
 
 // 마이그레이션: started_at 컬럼 추가 (업로드 시작 시간)
 addColumn(db, "submission", "started_at TEXT DEFAULT ''");
+// Competition stores a stable, team-ID-based relative directory here. The
+// one-shot migrator populates this for imported rows before runtime starts.
+addColumn(db, "submission", "storage_dir TEXT");
 
 // 마이그레이션: attempt_no 컬럼 추가 (제출 시도 누적 번호 — retention과 무관하게 유지)
 addColumn(db, "submission", "attempt_no INTEGER NOT NULL DEFAULT 0");
+addColumn(db, "submission", "team_id INTEGER");
 {
   const pending = db.prepare("SELECT 1 FROM submission WHERE attempt_no = 0 LIMIT 1").get();
   if (pending) {
@@ -173,45 +183,19 @@ addColumn(db, "scheduled_notification", "sent_recipients TEXT DEFAULT '[]'");
 // sent=1로 종료해 매 tick 무한 재시도 + partial_send warn firehose를 막는다.
 addColumn(db, "scheduled_notification", "attempts INTEGER NOT NULL DEFAULT 0");
 
-db.exec(`CREATE TABLE IF NOT EXISTS team_renumber_file_work (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  year INTEGER NOT NULL,
-  prev_num INTEGER NOT NULL,
-  new_num INTEGER NOT NULL,
-  session_id INTEGER NOT NULL,
-  move_old INTEGER NOT NULL DEFAULT 0,
-  delete_target INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT DEFAULT '',
-  created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-  updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000),
-  UNIQUE(year, prev_num, new_num, session_id),
-  FOREIGN KEY (session_id) REFERENCES session(id) ON DELETE CASCADE
-)`);
-// UNIQUE(year, prev_num, new_num, session_id)가 자동 생성하는 인덱스의 prefix이므로 idx_trfw_key는 불필요.
-db.exec("DROP INDEX IF EXISTS idx_trfw_key");
-
 // 업로드 디렉토리 생성
-const UPLOADS_DIR = options.uploadsDir || path.resolve("./data/uploads");
-const TMP_DIR = path.join(UPLOADS_DIR, "_tmp");
-fs.mkdirSync(TMP_DIR, { recursive: true });
+const UPLOADS_DIR = path.resolve(options.uploadsDir || "./data/uploads");
+let UPLOADS_REAL_DIR = null;
+let TMP_DIR = null;
 
-// 서버 시작 시 _tmp 잔여 파일 정리 (크래시/재시작 후 남은 고아 파일)
-{
-  const entries = fs.readdirSync(TMP_DIR);
-  for (const entry of entries) {
-    rmDir(path.join(TMP_DIR, entry));
-  }
-  if (entries.length > 0) {
-    console.log(`[documents] Cleaned up ${entries.length} leftover temp upload(s)`);
-  }
-}
+cleanupManagedUploads();
 
 // Documents에서는 엔트리 활성 상태와 무관하게 계정 할당과 제출을 허용한다.
 // 학생에게는 자신의 매핑 팀만, chief에게는 관리에 필요한 전체 목록만 반환한다.
 // 두 경로 모두 브라우저가 Entry의 관리자 전용 includeInactive API를 직접 호출하지
 // 않도록 Documents가 내부 서비스 자격으로 조회한다.
 app.get("/api/entries", async (req, res) => {
-  const yearCheck = validateYear(req.query.year || new Date().getFullYear());
+  const yearCheck = validateYear(req.query.year || currentCompetitionYear());
   if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
   const mapping = db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?")
     .get(req.user.email, yearCheck.value);
@@ -223,7 +207,7 @@ app.get("/api/entries", async (req, res) => {
 });
 
 app.get("/api/admin/entries", async (req, res) => {
-  const yearCheck = validateYear(req.query.year || new Date().getFullYear());
+  const yearCheck = validateYear(req.query.year || currentCompetitionYear());
   if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
   res.json(await fetchEntries(yearCheck.value, req, "entry.admin_list"));
 });
@@ -279,115 +263,164 @@ function sanitize(s) {
   return s.replace(/[/\\:*?"<>|]/g, "_");
 }
 
-function rmDir(dir) {
+function rmDir(dir, { logFailure = true } = {}) {
   try {
-    fs.rmSync(dir, { recursive: true, force: true });
+    removeDirectory(dir);
+    return { removed: true, error: null };
   } catch (err) {
-    logger.warn(null, "file.cleanup", { error: err.message, dir });
+    if (logFailure) logger.warn(null, "file.cleanup", { error: err.message, dir });
+    return { removed: false, error: err.message || String(err) };
   }
+}
+
+function auditedLookup(req, res, { action, target, phase, lookup, message }) {
+  const result = dbRun(lookup);
+  if (!result.success) {
+    const error = result.internalError || result.error;
+    logger.warn(req, action, { error, reason: error, phase }, target);
+    res.status(500).send(message);
+    return { ok: false, value: null };
+  }
+  return { ok: true, value: result.result };
+}
+
+function logCleanupFailures(req, action, target, context, cleanup) {
+  const failed = cleanup.filter((item) => !item.removed);
+  if (failed.length === 0) return;
+  logger.warn(req, action, {
+    error: "partial_file_cleanup",
+    reason: "partial_file_cleanup",
+    ...context,
+    failed_cleanup: failed,
+  }, target);
 }
 
 function teamUploadDir(sessionId, teamNum) {
   return path.join(UPLOADS_DIR, String(sessionId), String(teamNum));
 }
 
-function pendingRenumberFileWorkCount(prevNum, newNum, year) {
-  return db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM team_renumber_file_work
-    WHERE year = ? AND prev_num = ? AND new_num = ?
-  `).get(year, prevNum, newNum).count;
+function submissionRelativeDir(submission) {
+  const storageDir = submission?.storage_dir;
+  if (typeof storageDir !== "string" || !storageDir.trim()) {
+    throw new Error(`submission ${submission?.id ?? "?"} has no canonical storage directory`);
+  }
+  if (path.isAbsolute(storageDir)) {
+    throw new Error(`submission ${submission?.id ?? "?"} has an absolute storage directory`);
+  }
+  return storageDir;
 }
 
-function renumberMarkerName(prevNum, newNum, year) {
-  return `.fsk-renumber-${year}-${prevNum}-to-${newNum}.pending`;
+function submissionUploadDir(submission) {
+  const root = UPLOADS_REAL_DIR;
+  if (!root) throw new Error("managed uploads directory is not initialized");
+  const target = path.resolve(root, submissionRelativeDir(submission));
+  if (target === root || !target.startsWith(`${root}${path.sep}`)) {
+    throw new Error("submission storage path escapes the uploads directory");
+  }
+  return target;
 }
 
-function processRenumberFileWork(req, prevNum, newNum, year) {
-  const rows = db.prepare(`
-    SELECT *
-    FROM team_renumber_file_work
-    WHERE year = ? AND prev_num = ? AND new_num = ?
-    ORDER BY id
-  `).all(year, prevNum, newNum);
-  const failures = [];
-  let moved = 0;
-  let replaced = 0;
+function submissionFilePath(submission, storedName) {
+  if (typeof storedName !== "string" || !storedName || path.basename(storedName) !== storedName) {
+    throw new Error(`submission_file has an invalid stored name: ${String(storedName)}`);
+  }
+  const directory = submissionUploadDir(submission);
+  const target = path.resolve(directory, storedName);
+  if (!target.startsWith(`${directory}${path.sep}`)) {
+    throw new Error("submission file path escapes its storage directory");
+  }
+  return target;
+}
 
-  for (const row of rows) {
-    const oldDir = teamUploadDir(row.session_id, prevNum);
-    const newDir = teamUploadDir(row.session_id, newNum);
-    const markerName = renumberMarkerName(prevNum, newNum, year);
-    const oldMarker = path.join(oldDir, markerName);
-    const newMarker = path.join(newDir, markerName);
-    let cleanupMarker = null;
+function assertExistingPathComponentsAreNotSymlinks(target) {
+  const parsed = path.parse(target);
+  let cursor = parsed.root;
+  const components = path.relative(parsed.root, target).split(path.sep).filter(Boolean);
+  for (const component of components) {
+    cursor = path.join(cursor, component);
+    let stat;
     try {
-      if (row.move_old) {
-        if (fs.existsSync(oldDir)) {
-          fs.writeFileSync(oldMarker, JSON.stringify({ year, prevNum, newNum, sessionId: row.session_id }));
-          if (fs.existsSync(newDir)) {
-            if (!row.delete_target) throw new Error("target upload directory already exists");
-            fs.rmSync(newDir, { recursive: true, force: true });
-            replaced += 1;
-          }
-          fs.mkdirSync(path.dirname(newDir), { recursive: true });
-          fs.renameSync(oldDir, newDir);
-          cleanupMarker = newMarker;
-          moved += 1;
-        } else if (fs.existsSync(newMarker)) {
-          cleanupMarker = newMarker;
-        } else if (!fs.existsSync(newDir)) {
-          throw new Error("source upload directory missing");
-        } else {
-          throw new Error("source upload directory missing and completion marker absent");
-        }
-      } else if (row.delete_target && fs.existsSync(newDir)) {
-        fs.rmSync(newDir, { recursive: true, force: true });
-        replaced += 1;
-      }
-      db.prepare("DELETE FROM team_renumber_file_work WHERE id = ?").run(row.id);
-      if (cleanupMarker) {
-        try {
-          if (fs.existsSync(cleanupMarker)) fs.rmSync(cleanupMarker, { force: true });
-        } catch (e) {
-          logger.warn(req, "team_num.marker_cleanup", { error: e.message || String(e), year, prevNum, newNum, sessionId: row.session_id });
-        }
-      }
-    } catch (e) {
-      db.prepare(`
-        UPDATE team_renumber_file_work
-        SET last_error = ?, updated_at = ?
-        WHERE id = ?
-      `).run(e.message || String(e), Date.now(), row.id);
-      failures.push({ sessionId: row.session_id, error: e.message || String(e) });
-      logger.warn(req, "team_num.file_work", { error: e.message || String(e), year, prevNum, newNum, sessionId: row.session_id });
+      stat = fs.lstatSync(cursor);
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+    if (stat.isSymbolicLink()) {
+      throw new Error(`uploads directory path contains a symbolic link: ${cursor}`);
     }
   }
-
-  return { success: failures.length === 0, failures, moved, replaced, total: rows.length };
 }
 
-function processPendingRenumberFileWork(limit = 25) {
-  const groups = db.prepare(`
-    SELECT year, prev_num, new_num, MIN(id) AS first_id, COUNT(*) AS count
-    FROM team_renumber_file_work
-    GROUP BY year, prev_num, new_num
-    ORDER BY first_id
-    LIMIT ?
-  `).all(limit);
-  let processed = 0;
-  let failed = 0;
-  for (const group of groups) {
-    const result = processRenumberFileWork(null, group.prev_num, group.new_num, group.year);
-    processed += result.total;
-    if (!result.success) failed += result.failures.length;
+function cleanupManagedUploads() {
+  const configuredRoot = path.resolve(UPLOADS_DIR);
+  let root = configuredRoot;
+  const referencedRows = db.prepare(`
+    SELECT s.id, s.session_id, s.team_num, s.storage_dir, f.stored_name
+    FROM submission_file f JOIN submission s ON s.id = f.submission_id
+  `).all();
+  const submissions = db.prepare("SELECT id, storage_dir FROM submission").all();
+  const referenced = new Set();
+  const deleted = [];
+  try {
+    assertExistingPathComponentsAreNotSymlinks(configuredRoot);
+    if (!fs.existsSync(configuredRoot)) fs.mkdirSync(configuredRoot, { recursive: true });
+    assertExistingPathComponentsAreNotSymlinks(configuredRoot);
+    const configuredStat = fs.lstatSync(configuredRoot);
+    if (configuredStat.isSymbolicLink() || !configuredStat.isDirectory()) {
+      throw new Error("uploads directory must be a real directory, not a symbolic link");
+    }
+    root = fs.realpathSync.native(configuredRoot);
+    if (root === path.parse(root).root) throw new Error("filesystem root cannot be used as the uploads directory");
+    UPLOADS_REAL_DIR = root;
+    for (const submission of submissions) submissionUploadDir(submission);
+    TMP_DIR = path.join(root, "_tmp");
+    fs.mkdirSync(TMP_DIR, { recursive: true });
+    for (const file of referencedRows) {
+      const target = submissionFilePath(file, file.stored_name);
+      const relative = path.relative(root, target);
+      let cursor = root;
+      let stat;
+      for (const component of relative.split(path.sep)) {
+        cursor = path.join(cursor, component);
+        stat = fs.lstatSync(cursor);
+        if (stat.isSymbolicLink()) {
+          throw new Error(`referenced upload path contains a symbolic link: ${relative}`);
+        }
+      }
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        throw new Error(`referenced upload is not a regular file: ${relative}`);
+      }
+      referenced.add(target);
+    }
+    const walk = (directory) => {
+      for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        const target = path.join(directory, entry.name);
+        if (target === TMP_DIR) {
+          for (const temp of fs.readdirSync(target)) deleted.push(path.relative(root, path.join(target, temp)));
+          fs.rmSync(target, { recursive: true, force: true });
+          fs.mkdirSync(target, { recursive: true });
+        } else if (entry.isDirectory()) {
+          walk(target);
+          if (fs.readdirSync(target).length === 0) fs.rmdirSync(target);
+        } else if (!entry.isFile() || !referenced.has(path.resolve(target))) {
+          fs.rmSync(target, { recursive: true, force: true });
+          deleted.push(path.relative(root, target));
+        }
+      }
+    };
+    walk(root);
+    logger.log(null, "file.startup_cleanup", {
+      uploadRoot: root,
+      referencedFiles: referenced.size,
+      deletedCount: deleted.length,
+      deleted,
+    });
+  } catch (error) {
+    logger.warn(null, "file.startup_cleanup", {
+      error: error.message || String(error), uploadRoot: root, deletedCount: deleted.length, deleted,
+    });
+    throw new Error(`managed upload cleanup failed: ${error.message || error}`);
   }
-  if (processed > 0) {
-    // 실패가 남았으면 warn으로 올려 레벨 필터로 장애를 찾을 수 있게 한다.
-    const log = failed > 0 ? logger.warn : logger.log;
-    log(null, "team_num.file_work_retry", { groups: groups.length, processed, failed });
-  }
-  return { groups: groups.length, processed, failed };
 }
 
 // 브라우저에서 안전하게 인라인으로 표시 가능한 MIME/확장자 화이트리스트.
@@ -543,8 +576,16 @@ function isInitialDownload(req) {
 
 // GET /api/sessions - 내 팀에 열린 세션 목록
 app.get("/api/sessions", (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1")
-    .get(req.user.email);
+  let team;
+  if (req.query.year !== undefined) {
+    const yearCheck = validateYear(req.query.year);
+    if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
+    team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?")
+      .get(req.user.email, yearCheck.value);
+  } else {
+    team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1")
+      .get(req.user.email);
+  }
   if (!team) return res.json({ team: null, sessions: [] });
 
   const rows = db.prepare(`
@@ -576,7 +617,7 @@ app.get("/api/sessions/:id", (req, res) => {
 
   // cross-year IDOR 방지: 세션 연도의 팀 매핑으로 해석한다(팀 번호는 연도별 재할당되므로
   // 같은 번호를 쓰는 타 연도=다른 대학 팀의 세션을 순회 접근할 수 없다).
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
+  const team = db.prepare("SELECT * FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
   if (!team) { logger.warn(req, "session.view", { error: "no_team_for_year", session_id: session.id, year: session.year }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
   const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) { logger.warn(req, "session.view", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
@@ -598,21 +639,115 @@ app.get("/api/sessions/:id", (req, res) => {
 
 // POST /api/sessions/:id/submit - 파일 업로드
 app.post("/api/sessions/:id/submit", (req, res) => {
-  const session = db.prepare("SELECT * FROM session WHERE id = ?").get(Number(req.params.id));
-  if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
+  const sessionId = Number(req.params.id);
+  const preflight = auditedLookup(req, res, {
+    action: "submission.create",
+    target: `session:${sessionId}`,
+    phase: "submission_preflight",
+    message: "제출 대상을 확인할 수 없습니다.",
+    lookup: () => {
+      const session = db.prepare("SELECT * FROM session WHERE id = ?").get(sessionId);
+      if (!session) return { session: null, team: null, isTarget: false };
+      const team = db.prepare("SELECT * FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
+      const isTarget = team
+        ? !!db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num)
+        : false;
+      return { session, team, isTarget };
+    },
+  });
+  if (!preflight.ok) return;
+  const { session, team, isTarget } = preflight.value;
+  if (!session) {
+    logger.warn(req, "submission.create", {
+      error: "session_not_found", reason: "session_not_found", phase: "submission_preflight", session_id: sessionId,
+    }, `session:${sessionId}`);
+    return res.status(404).send("세션을 찾을 수 없습니다.");
+  }
 
   // cross-year IDOR 방지: 팀 번호는 연도별로 재할당되므로 세션 연도의 팀 매핑으로 해석한다.
   // 세션 연도에 매핑이 없으면(다른 연도 매핑만 있어도) 이 세션 대상이 아니다 — 이렇게 하면
   // 학생이 최신 연도 매핑을 가져도 과거 세션에 정상 제출할 수 있고, 타 연도 팀의 세션 접근은 막힌다.
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?").get(req.user.email, session.year);
   if (!team) { logger.warn(req, "submission.create", { error: "no_team_for_year", session_id: session.id, year: session.year }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
-  const isTarget = db.prepare("SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?").get(session.id, team.team_num);
   if (!isTarget) { logger.warn(req, "submission.create", { error: "not_target", session_id: session.id }, session.name); return res.status(403).send("대상 팀이 아닙니다."); }
+  let canonicalTeam;
+  try {
+    const storedTeamId = Number(team.team_id);
+    canonicalTeam = Number.isInteger(storedTeamId) && storedTeamId > 0
+      ? options.teamStore?.getById?.(storedTeamId)
+      : null;
+    canonicalTeam ||= options.teamStore?.getByNumber?.(
+      session.year,
+      team.team_num,
+      { includeInactive: true },
+    );
+  } catch (error) {
+    logger.warn(req, "submission.create", {
+      error: error?.message || String(error),
+      phase: "canonical_team_lookup",
+      session_id: session.id,
+      year: session.year,
+      team_num: team.team_num,
+    }, session.name);
+    return res.status(500).send("팀 기준 정보를 확인할 수 없습니다.");
+  }
+  const canonicalTeamId = Number(canonicalTeam?.id);
+  const canonicalTeamYear = Number(canonicalTeam?.year ?? session.year);
+  const canonicalTeamNum = Number(canonicalTeam?.number ?? canonicalTeam?.num ?? team.team_num);
+  const canonicalTeamActive = canonicalTeam?.active == null ? null : !!canonicalTeam.active;
+  if (!Number.isInteger(canonicalTeamId) || canonicalTeamId < 1
+      || canonicalTeamYear !== session.year || canonicalTeamNum !== team.team_num) {
+    logger.warn(req, "submission.create", {
+      error: "missing_canonical_team_id", session_id: session.id, year: session.year, team_num: team.team_num,
+    }, session.name);
+    return res.status(409).send("팀 기준 정보를 찾을 수 없습니다.");
+  }
 
   const startTime = now();
   const effectiveLateEnd = session.late_end_at || session.end_at;
-  if (startTime < session.start_at) return res.status(400).send("제출 기간이 아닙니다.");
-  if (startTime > effectiveLateEnd) return res.status(400).send("제출 기간이 종료되었습니다.");
+  if (startTime < session.start_at) {
+    logger.warn(req, "submission.create", {
+      error: "submission_not_open",
+      reason: "submission_not_open",
+      phase: "submission_window",
+      session_id: session.id,
+      year: session.year,
+      team_num: team.team_num,
+      started_at: startTime,
+      opens_at: session.start_at,
+    }, session.name);
+    return res.status(400).send("제출 기간이 아닙니다.");
+  }
+  if (startTime > effectiveLateEnd) {
+    logger.warn(req, "submission.create", {
+      error: "submission_closed",
+      reason: "submission_closed",
+      phase: "submission_window",
+      session_id: session.id,
+      year: session.year,
+      team_num: team.team_num,
+      started_at: startTime,
+      closes_at: effectiveLateEnd,
+    }, session.name);
+    return res.status(400).send("제출 기간이 종료되었습니다.");
+  }
+
+  let busboy;
+  try {
+    busboy = Busboy({
+      headers: req.headers,
+      defParamCharset: "utf8",
+      limits: { files: 100, fileSize: session.max_file_size },
+    });
+  } catch (error) {
+    logger.warn(req, "submission.create", {
+      error: error?.message || String(error),
+      phase: "multipart_init",
+      session_id: session.id,
+      year: session.year,
+      team_num: team.team_num,
+    }, session.name);
+    return res.status(400).send("올바른 multipart 업로드 요청이 아닙니다.");
+  }
 
   const uploadId = crypto.randomUUID();
   const tmpDir = path.join(TMP_DIR, uploadId);
@@ -622,12 +757,6 @@ app.post("/api/sessions/:id/submit", (req, res) => {
   const filePromises = [];
   let totalSize = 0;
   let aborted = false;
-
-  const busboy = Busboy({
-    headers: req.headers,
-    defParamCharset: "utf8",
-    limits: { files: 100, fileSize: session.max_file_size },
-  });
 
   // 허용 확장자 파싱 (DB에 "pdf,docx" 형태로 저장, 비교 시 ".pdf" 형태로)
   const allowedExts = session.allowed_extensions
@@ -767,8 +896,154 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     }
     const isLate = session.late_end_at && submittedTime > session.end_at ? 1 : 0;
 
+    let movedFinalDir = null;
+    let fileMoveError = null;
+    try {
+      options.beforeSubmissionMetadataCommit?.({
+        sessionId: session.id,
+        teamId: canonicalTeamId,
+        teamNum: team.team_num,
+      });
+    } catch (error) {
+      rmDir(tmpDir);
+      logger.warn(req, "submission.create", {
+        error: error?.message || String(error),
+        phase: "metadata_revalidation_hook",
+        session_id: session.id,
+        year: session.year,
+        team_id: canonicalTeamId,
+        team_num: team.team_num,
+      }, session.name);
+      return res.status(500).send("제출 정보를 확인하는 도중 오류가 발생했습니다.");
+    }
     const txResult = dbRun(() => {
       const tx = db.transaction(() => {
+        // Multipart streaming can take long enough for an administrator to
+        // change the session or team assignment. Revalidate every authority
+        // input in the same transaction that persists metadata.
+        const currentSession = db.prepare("SELECT * FROM session WHERE id = ?").get(session.id);
+        const currentMapping = currentSession
+          ? db.prepare("SELECT * FROM student_team WHERE email = ? AND year = ?")
+            .get(req.user.email, currentSession.year)
+          : null;
+        let currentCanonical = null;
+        let currentMappingTeamId = Number(currentMapping?.team_id);
+        if (currentSession && currentMapping) {
+          currentCanonical = options.teamStore?.getById?.(canonicalTeamId) || null;
+          if (!Number.isInteger(currentMappingTeamId) || currentMappingTeamId < 1) {
+            const mappedCanonical = options.teamStore?.getByNumber?.(
+              currentSession.year,
+              currentMapping.team_num,
+              { includeInactive: true },
+            );
+            currentMappingTeamId = Number(mappedCanonical?.id);
+            currentCanonical ||= mappedCanonical;
+          }
+        }
+        const currentCanonicalSnapshot = currentCanonical ? {
+          id: Number(currentCanonical.id),
+          year: Number(currentCanonical.year ?? currentSession?.year),
+          team_num: Number(currentCanonical.number ?? currentCanonical.num ?? currentMapping?.team_num),
+          active: currentCanonical.active == null ? null : !!currentCanonical.active,
+        } : null;
+        const currentTarget = currentSession ? db.prepare(`
+          SELECT team_num, team_id FROM session_team
+          WHERE session_id = ?
+            AND (team_id = ? OR (team_id IS NULL AND team_num = ?))
+          LIMIT 1
+        `).get(session.id, canonicalTeamId, team.team_num) : null;
+        let currentTargetTeamId = Number(currentTarget?.team_id);
+        if (currentSession && currentTarget
+            && (!Number.isInteger(currentTargetTeamId) || currentTargetTeamId < 1)) {
+          if (currentCanonicalSnapshot?.year === currentSession.year
+              && currentCanonicalSnapshot.team_num === currentTarget.team_num) {
+            currentTargetTeamId = currentCanonicalSnapshot.id;
+          } else {
+            const targetCanonical = options.teamStore?.getByNumber?.(
+              currentSession.year,
+              currentTarget.team_num,
+              { includeInactive: true },
+            );
+            currentTargetTeamId = Number(targetCanonical?.id);
+          }
+        }
+        const currentEffectiveLateEnd = currentSession
+          ? (currentSession.late_end_at || currentSession.end_at)
+          : null;
+        const expected = {
+          session: {
+            id: session.id,
+            year: session.year,
+            start_at: session.start_at,
+            end_at: session.end_at,
+            late_end_at: session.late_end_at,
+          },
+          mapping: { team_id: canonicalTeamId, team_num: team.team_num },
+          canonical_team: {
+            id: canonicalTeamId,
+            year: canonicalTeamYear,
+            team_num: canonicalTeamNum,
+            active: canonicalTeamActive,
+          },
+          target: { team_id: canonicalTeamId, team_num: team.team_num },
+        };
+        const current = {
+          session: currentSession ? {
+            id: currentSession.id,
+            year: currentSession.year,
+            start_at: currentSession.start_at,
+            end_at: currentSession.end_at,
+            late_end_at: currentSession.late_end_at,
+          } : null,
+          mapping: currentMapping ? {
+            team_id: Number.isInteger(currentMappingTeamId) ? currentMappingTeamId : null,
+            team_num: currentMapping.team_num,
+          } : null,
+          canonical_team: currentCanonicalSnapshot,
+          target: currentTarget ? {
+            team_id: Number.isInteger(currentTargetTeamId) ? currentTargetTeamId : null,
+            team_num: currentTarget.team_num,
+          } : null,
+        };
+        const stale = !currentSession
+          || currentSession.year !== session.year
+          || currentSession.start_at !== session.start_at
+          || currentSession.end_at !== session.end_at
+          || currentSession.late_end_at !== session.late_end_at
+          || !currentMapping
+          || currentMapping.team_num !== team.team_num
+          || currentMappingTeamId !== canonicalTeamId
+          || !currentCanonicalSnapshot
+          || currentCanonicalSnapshot.id !== canonicalTeamId
+          || currentCanonicalSnapshot.year !== canonicalTeamYear
+          || currentCanonicalSnapshot.team_num !== canonicalTeamNum
+          || currentCanonicalSnapshot.active !== canonicalTeamActive
+          || !currentTarget
+          || currentTarget.team_num !== team.team_num
+          || currentTargetTeamId !== canonicalTeamId
+          || submittedTime < currentSession?.start_at
+          || submittedTime > currentEffectiveLateEnd;
+        if (stale) {
+          return {
+            rejected: true,
+            status: 409,
+            message: "제출 대상 또는 기간이 변경되었습니다. 다시 시도하세요.",
+            audit: {
+              error: "stale_submission_preflight",
+              reason: "stale_submission_preflight",
+              phase: "metadata_revalidation",
+              session_id: session.id,
+              year: session.year,
+              team_id: canonicalTeamId,
+              team_num: team.team_num,
+              started_at: startTime,
+              submitted_at: submittedTime,
+              expected,
+              current,
+            },
+          };
+        }
+
         // attempt_no는 같은 (session, team)의 누적 최대치 + 1. retention으로 삭제되어도 최신 row가 살아남으므로 단조 증가.
         const prevAttempt = db.prepare(
           "SELECT MAX(attempt_no) AS m FROM submission WHERE session_id = ? AND team_num = ?",
@@ -777,9 +1052,11 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
         // 새 제출 INSERT
         const subResult = db.prepare(
-          "INSERT INTO submission (session_id, team_num, submitted_by, started_at, submitted_at, total_size, is_late, attempt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        ).run(session.id, team.team_num, req.user.email, startTime, submittedTime, totalSize, isLate, attemptNo);
+          "INSERT INTO submission (session_id, team_num, team_id, submitted_by, started_at, submitted_at, total_size, is_late, attempt_no) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ).run(session.id, team.team_num, canonicalTeamId, req.user.email, startTime, submittedTime, totalSize, isLate, attemptNo);
         const newSubId = subResult.lastInsertRowid;
+        const storageDir = path.join(String(session.id), `team-${canonicalTeamId}`, String(newSubId));
+        db.prepare("UPDATE submission SET storage_dir = ? WHERE id = ?").run(storageDir, newSubId);
 
         // 파일 메타데이터 INSERT
         const fileStmt = db.prepare("INSERT INTO submission_file (submission_id, original_name, stored_name, size, mime_type, text_charset) VALUES (?, ?, ?, ?, ?, ?)");
@@ -787,51 +1064,93 @@ app.post("/api/sessions/:id/submit", (req, res) => {
           fileStmt.run(newSubId, f.original_name, f.stored_name, f.size, f.mime_type, f.text_charset);
         }
 
+        // Establish the bytes at their final path before the metadata commit.
+        // A crash after this rename rolls the SQLite transaction back and leaves
+        // only an orphan directory, which startup cleanup removes. The inverse
+        // state (committed references to bytes still under _tmp) is impossible.
+        const finalDir = submissionUploadDir({
+          id: newSubId,
+          session_id: session.id,
+          team_num: team.team_num,
+          storage_dir: storageDir,
+        });
+        try {
+          fs.mkdirSync(path.dirname(finalDir), { recursive: true });
+          fs.renameSync(tmpDir, finalDir);
+          movedFinalDir = finalDir;
+          options.afterSubmissionFilesMoved?.({
+            submissionId: Number(newSubId),
+            finalDir,
+            storageDir,
+          });
+        } catch (error) {
+          fileMoveError = error;
+          throw error;
+        }
+
         // 최신 2개를 제외한 오래된 제출 조회
         const allSubs = db.prepare(
-          "SELECT id FROM submission WHERE session_id = ? AND team_num = ? ORDER BY id DESC",
+          "SELECT id, session_id, team_num, storage_dir FROM submission WHERE session_id = ? AND team_num = ? ORDER BY id DESC",
         ).all(session.id, team.team_num);
-        const toDelete = allSubs.slice(2).map(s => s.id);
+        const toDelete = allSubs.slice(2);
 
-        return { id: newSubId, submitted_at: submittedTime, is_late: isLate, total_size: totalSize, toDelete };
+        return { id: newSubId, submitted_at: submittedTime, is_late: isLate, total_size: totalSize, storage_dir: storageDir, toDelete };
       });
       return tx();
     });
 
     if (!txResult.success) {
-      logger.warn(req, "submission.create", { error: txResult.error, session_id: session.id }, session.name);
+      logger.warn(req, "submission.create", {
+        error: fileMoveError?.message || txResult.internalError || txResult.error,
+        phase: fileMoveError ? "file_move" : "metadata_commit",
+        session_id: session.id,
+        year: session.year,
+        team_num: team.team_num,
+      }, session.name);
+      if (movedFinalDir) rmDir(movedFinalDir);
+      else rmDir(tmpDir);
+      return res.status(txResult.status).send(
+        fileMoveError ? "파일 저장에 실패했습니다." : txResult.error,
+      );
+    }
+    if (txResult.result.rejected) {
       rmDir(tmpDir);
-      return res.status(txResult.status).send(txResult.error);
+      logger.warn(req, "submission.create", txResult.result.audit, session.name);
+      return res.status(txResult.result.status).send(txResult.result.message);
     }
 
-    // 파일시스템 조작은 트랜잭션 성공 후 수행
-    const finalDir = path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(txResult.result.id));
-    try {
-      fs.mkdirSync(path.dirname(finalDir), { recursive: true });
-      fs.renameSync(tmpDir, finalDir);
-    } catch (fsErr) {
-      logger.warn(req, "submission.create", { error: fsErr.message, phase: "file_move" }, session.name);
+    for (const oldSubmission of txResult.result.toDelete) {
+      let metadataDeleted = false;
       try {
-        db.prepare("DELETE FROM submission WHERE id = ?").run(txResult.result.id);
-      } catch (rollbackErr) {
-        logger.warn(req, "submission.create", { error: rollbackErr.message, phase: "rollback", submission_id: txResult.result.id }, session.name);
-      }
-      rmDir(tmpDir);
-      if (!res.headersSent) return res.status(500).send("파일 저장에 실패했습니다.");
-      return;
-    }
-
-    for (const oldId of txResult.result.toDelete) {
-      try {
-        db.prepare("DELETE FROM submission WHERE id = ?").run(oldId);
+        const deleted = db.prepare("DELETE FROM submission WHERE id = ?").run(oldSubmission.id);
+        if (deleted.changes !== 1) {
+          throw new Error(`expected one deleted submission row, got ${deleted.changes}`);
+        }
+        metadataDeleted = true;
       } catch (e) {
-        logger.warn(req, "submission.create", { error: e.message, phase: "prev_cleanup", prev_id: oldId }, session.name);
+        logger.warn(req, "submission.retention_cleanup", {
+          error: e.message,
+          submission_id: oldSubmission.id,
+          storage_dir: oldSubmission.storage_dir,
+          file_preserved: true,
+        }, session.name);
       }
-      rmDir(path.join(UPLOADS_DIR, String(session.id), String(team.team_num), String(oldId)));
+      if (metadataDeleted) {
+        const fileCleanup = rmDir(submissionUploadDir(oldSubmission), { logFailure: false });
+        const detail = {
+          submission_id: oldSubmission.id,
+          storage_dir: oldSubmission.storage_dir,
+          metadata_deleted: true,
+          file_removed: fileCleanup.removed,
+          ...(fileCleanup.error ? { error: fileCleanup.error } : {}),
+        };
+        if (fileCleanup.removed) logger.log(req, "submission.retention_cleanup", detail, session.name);
+        else logger.warn(req, "submission.retention_cleanup", detail, session.name);
+      }
     }
 
-    const { toDelete, ...result } = txResult.result;
-    logger.log(req, "submission.create", { session_id: session.id, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate, started_at: startTime, submitted_at: submittedTime }, session.name);
+    const { toDelete, storage_dir, ...result } = txResult.result;
+    logger.log(req, "submission.create", { session_id: session.id, team_id: canonicalTeamId, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate, started_at: startTime, submitted_at: submittedTime }, session.name);
     res.json(result);
   });
 
@@ -853,11 +1172,15 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
 // GET /api/submissions/:subId/files/:fileId - 파일 다운로드
 app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) { logger.warn(req, "file.download", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
-
-  const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
+  const sub = db.prepare(`
+    SELECT sub.*, s.year AS session_year
+    FROM submission sub JOIN session s ON s.id = sub.session_id
+    WHERE sub.id = ?
+  `).get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?")
+    .get(req.user.email, sub.session_year);
+  if (!team) { logger.warn(req, "file.download", { error: "no_team_for_year", sub_id: sub.id, year: sub.session_year }); return res.status(403).send("팀이 등록되지 않았습니다."); }
   if (sub.team_num !== team.team_num) { logger.warn(req, "file.download", { error: "wrong_team", sub_team: sub.team_num, my_team: team.team_num }, `#${sub.team_num}`); return res.status(403).send("권한이 없습니다."); }
 
   // 해당 submission의 세션이 학생 팀에 할당된 세션인지 검증
@@ -867,8 +1190,7 @@ app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
   const file = db.prepare("SELECT * FROM submission_file WHERE id = ? AND submission_id = ?").get(Number(req.params.fileId), sub.id);
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
 
-  const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), file.stored_name);
-  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR) + path.sep)) return res.status(400).send("잘못된 파일 경로입니다.");
+  const filePath = submissionFilePath(sub, file.stored_name);
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   const session = db.prepare("SELECT name FROM session WHERE id = ?").get(sub.session_id);
@@ -879,11 +1201,15 @@ app.get("/api/submissions/:subId/files/:fileId", async (req, res) => {
 
 // GET /api/submissions/:subId/zip - 본인 제출 파일 전체 압축 다운로드
 app.get("/api/submissions/:subId/zip", async (req, res) => {
-  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? ORDER BY year DESC LIMIT 1").get(req.user.email);
-  if (!team) { logger.warn(req, "file.zip", { error: "no_team", sub_id: Number(req.params.subId) }); return res.status(403).send("팀이 등록되지 않았습니다."); }
-
-  const sub = db.prepare("SELECT * FROM submission WHERE id = ?").get(Number(req.params.subId));
+  const sub = db.prepare(`
+    SELECT sub.*, s.year AS session_year
+    FROM submission sub JOIN session s ON s.id = sub.session_id
+    WHERE sub.id = ?
+  `).get(Number(req.params.subId));
   if (!sub) return res.status(404).send("제출을 찾을 수 없습니다.");
+  const team = db.prepare("SELECT team_num, year FROM student_team WHERE email = ? AND year = ?")
+    .get(req.user.email, sub.session_year);
+  if (!team) { logger.warn(req, "file.zip", { error: "no_team_for_year", sub_id: sub.id, year: sub.session_year }); return res.status(403).send("팀이 등록되지 않았습니다."); }
   if (sub.team_num !== team.team_num) { logger.warn(req, "file.zip", { error: "wrong_team", sub_team: sub.team_num, my_team: team.team_num }, `#${sub.team_num}`); return res.status(403).send("권한이 없습니다."); }
 
   // 해당 submission의 세션이 학생 팀에 할당된 세션인지 검증
@@ -907,7 +1233,7 @@ app.get("/api/submissions/:subId/zip", async (req, res) => {
   archive.pipe(res);
 
   for (const f of files) {
-    const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), f.stored_name);
+    const filePath = submissionFilePath(sub, f.stored_name);
     if (fs.existsSync(filePath)) {
       // zip-slip 방지: 업로드 당시 원본 파일명이 경로 구분자를 포함할 수 있다
       archive.file(filePath, { name: sanitize(f.original_name) });
@@ -987,8 +1313,27 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   const { name, notice, start_at, end_at, max_file_size, allowed_extensions, teams } = req.body;
   const rawLateEnd = req.body.late_end_at || "";
 
-  const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
-  if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
+  const preflight = auditedLookup(req, res, {
+    action: "session.update",
+    target: `session:${id}`,
+    phase: "session_preflight",
+    message: "세션을 확인할 수 없습니다.",
+    lookup: () => {
+      const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
+      const oldTeams = session
+        ? db.prepare("SELECT team_num FROM session_team WHERE session_id = ? ORDER BY team_num").all(id).map((row) => row.team_num)
+        : [];
+      return { session, oldTeams };
+    },
+  });
+  if (!preflight.ok) return;
+  const { session, oldTeams } = preflight.value;
+  if (!session) {
+    logger.warn(req, "session.update", {
+      error: "session_not_found", reason: "session_not_found", phase: "session_preflight", session_id: id,
+    }, `session:${id}`);
+    return res.status(404).send("세션을 찾을 수 없습니다.");
+  }
 
   if (!name?.trim()) return res.status(400).send("세션 이름을 입력하세요.");
   if (!start_at || !end_at) return res.status(400).send("시간을 모두 입력하세요.");
@@ -1005,12 +1350,11 @@ app.put("/api/admin/sessions/:id", (req, res) => {
   if (!Number.isFinite(maxSize) || maxSize <= 0 || maxSize > 524288000) return res.status(400).send("올바르지 않은 파일 크기 제한입니다 (최대 500MB).");
   const exts = allowed_extensions || "";
 
-  const oldTeams = db.prepare("SELECT team_num FROM session_team WHERE session_id = ?").all(id).map(r => r.team_num);
   for (const t of teams) {
     if (!Number.isInteger(t) || t < 1) return res.status(400).send("올바르지 않은 팀 번호가 포함되어 있습니다.");
   }
 
-  const removedTeamNums = [];
+  const removedSubmissions = [];
   const txResult = dbRun(() => {
     const tx = db.transaction(() => {
       db.prepare(
@@ -1022,11 +1366,11 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       // 제거되는 팀의 제출물 정리
       for (const oldTeam of oldTeams) {
         if (!newTeamsSet.has(oldTeam)) {
-          const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
+          const subs = db.prepare("SELECT id, session_id, team_num, storage_dir FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
           if (subs.length) {
             db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam);
           }
-          if (subs.length) removedTeamNums.push({ team: oldTeam, subIds: subs.map(s => s.id) });
+          if (subs.length) removedSubmissions.push(...subs);
         }
       }
 
@@ -1037,15 +1381,35 @@ app.put("/api/admin/sessions/:id", (req, res) => {
     return tx();
   });
 
-  if (!txResult.success) { logger.warn(req, "session.update", { error: txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
+  if (!txResult.success) { logger.warn(req, "session.update", { error: txResult.internalError || txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
 
   // 트랜잭션 성공 후 디스크 파일 정리
-  for (const { team, subIds } of removedTeamNums) {
-    for (const subId of subIds) {
-      rmDir(path.join(UPLOADS_DIR, String(id), String(team), String(subId)));
-    }
-  }
-  logger.log(req, "session.update", { year: session.year, teams: teams.length }, name.trim());
+  const cleanup = removedSubmissions.map((submission) => {
+    const directory = submissionUploadDir(submission);
+    return {
+      submission_id: submission.id,
+      team_num: submission.team_num,
+      storage_dir: submission.storage_dir,
+      directory,
+      ...rmDir(directory, { logFailure: false }),
+    };
+  });
+  const auditDetail = {
+    session_id: id,
+    year: session.year,
+    before_teams: oldTeams,
+    after_teams: [...teams].sort((a, b) => a - b),
+    deleted_submissions: removedSubmissions.map((submission) => ({
+      id: submission.id,
+      team_num: submission.team_num,
+      storage_dir: submission.storage_dir,
+    })),
+    file_cleanup: cleanup,
+  };
+  logger.log(req, "session.update", auditDetail, name.trim());
+  logCleanupFailures(req, "session.update", name.trim(), {
+    session_id: id, year: session.year, before_teams: oldTeams, after_teams: auditDetail.after_teams,
+  }, cleanup);
   res.status(200).send();
 
   // 예약 알림 재등록 (날짜 변경 반영)
@@ -1056,19 +1420,48 @@ app.put("/api/admin/sessions/:id", (req, res) => {
 // DELETE /api/admin/sessions/:id - 세션 삭제
 app.delete("/api/admin/sessions/:id", (req, res) => {
   const id = Number(req.params.id);
-  const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
-  if (!session) return res.status(404).send("세션을 찾을 수 없습니다.");
+  const preflight = auditedLookup(req, res, {
+    action: "session.delete",
+    target: `session:${id}`,
+    phase: "session_preflight",
+    message: "세션을 확인할 수 없습니다.",
+    lookup: () => {
+      const session = db.prepare("SELECT * FROM session WHERE id = ?").get(id);
+      const submissions = session
+        ? db.prepare("SELECT id, session_id, team_num, storage_dir FROM submission WHERE session_id = ? ORDER BY id").all(id)
+        : [];
+      return { session, submissions };
+    },
+  });
+  if (!preflight.ok) return;
+  const { session, submissions } = preflight.value;
+  if (!session) {
+    logger.warn(req, "session.delete", {
+      error: "session_not_found", reason: "session_not_found", phase: "session_preflight", session_id: id,
+    }, `session:${id}`);
+    return res.status(404).send("세션을 찾을 수 없습니다.");
+  }
 
   const txResult = dbRun(() => {
     db.prepare("DELETE FROM session WHERE id = ?").run(id);
   });
 
-  if (!txResult.success) { logger.warn(req, "session.delete", { error: txResult.error }, session.name); return res.status(txResult.status).send(txResult.error); }
+  if (!txResult.success) { logger.warn(req, "session.delete", { error: txResult.internalError || txResult.error }, session.name); return res.status(txResult.status).send(txResult.error); }
 
-  logger.log(req, "session.delete", { id, year: session.year }, session.name);
-
-  // 파일 비동기 삭제
-  rmDir(path.join(UPLOADS_DIR, String(id)));
+  const directory = path.join(UPLOADS_DIR, String(id));
+  const cleanup = [{ directory, ...rmDir(directory, { logFailure: false }) }];
+  const auditDetail = {
+    id,
+    year: session.year,
+    deleted_submissions: submissions.map((submission) => ({
+      id: submission.id,
+      team_num: submission.team_num,
+      storage_dir: submission.storage_dir,
+    })),
+    file_cleanup: cleanup,
+  };
+  logger.log(req, "session.delete", auditDetail, session.name);
+  logCleanupFailures(req, "session.delete", session.name, { session_id: id, year: session.year }, cleanup);
 
   res.status(200).send();
 });
@@ -1144,7 +1537,7 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
   const entries = await fetchEntries(session.year, req, "session.archive");
 
   const subs = db.prepare(`
-    SELECT sub.id, sub.team_num FROM submission sub
+    SELECT sub.id, sub.session_id, sub.team_num, sub.storage_dir FROM submission sub
     INNER JOIN (
       SELECT session_id, team_num, MAX(id) AS max_id
       FROM submission
@@ -1164,7 +1557,7 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
   for (const f of files) {
     const sub = subById.get(f.submission_id);
     if (!sub) continue;
-    const diskPath = path.join(UPLOADS_DIR, String(id), String(sub.team_num), String(sub.id), f.stored_name);
+    const diskPath = submissionFilePath(sub, f.stored_name);
     if (fs.existsSync(diskPath)) {
       const entry = entries[sub.team_num];
       const teamFolder = entry
@@ -1205,8 +1598,7 @@ app.get("/api/admin/submissions/:subId/files/:fileId", async (req, res) => {
   const file = db.prepare("SELECT * FROM submission_file WHERE id = ? AND submission_id = ?").get(Number(req.params.fileId), sub.id);
   if (!file) return res.status(404).send("파일을 찾을 수 없습니다.");
 
-  const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), file.stored_name);
-  if (!path.resolve(filePath).startsWith(path.resolve(UPLOADS_DIR) + path.sep)) return res.status(400).send("잘못된 파일 경로입니다.");
+  const filePath = submissionFilePath(sub, file.stored_name);
   if (!fs.existsSync(filePath)) return res.status(404).send("파일이 존재하지 않습니다.");
 
   if (isInitialDownload(req)) logger.log(req, "file.admin_download", { session_name: session?.name, team_num: sub.team_num, file: file.original_name }, `#${sub.team_num}`);
@@ -1248,7 +1640,7 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
   archive.pipe(res);
 
   for (const f of files) {
-    const filePath = path.join(UPLOADS_DIR, String(sub.session_id), String(sub.team_num), String(sub.id), f.stored_name);
+    const filePath = submissionFilePath(sub, f.stored_name);
     if (fs.existsSync(filePath)) {
       // zip-slip 방지: 업로드 당시 원본 파일명이 경로 구분자를 포함할 수 있다
       archive.file(filePath, { name: sanitize(f.original_name) });
@@ -1311,7 +1703,7 @@ app.post("/api/admin/student-teams", (req, res) => {
   logger.log(req, "student_team.create", { team_num: Number(team_num), year: Number(year) }, email.trim().toLowerCase());
   res.status(201).json({ email: email.trim().toLowerCase(), team_num: Number(team_num), year: Number(year) });
 
-  notifyOpenSessions(req, email.trim().toLowerCase(), numTeam, numYear);
+  launchOpenSessionNotification(req, email.trim().toLowerCase(), numTeam, numYear);
 });
 
 // DELETE /api/admin/student-teams/:email/:year - 학생-팀 매핑 삭제
@@ -1319,14 +1711,28 @@ app.delete("/api/admin/student-teams/:email/:year", (req, res) => {
   const year = Number(req.params.year);
   if (!Number.isInteger(year)) return res.status(400).send("올바르지 않은 연도입니다.");
   const email = decodeURIComponent(req.params.email);
-  const mapping = db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get(email, year);
-  const result = dbRun(() =>
-    db.prepare("DELETE FROM student_team WHERE email = ? AND year = ?")
-      .run(email, year)
-  );
-  if (!result.success) { logger.warn(req, "student_team.delete", { error: result.error }, email); return res.status(result.status).send(result.error); }
-  if (result.result.changes === 0) return res.status(404).send("매핑을 찾을 수 없습니다.");
-  logger.log(req, "student_team.delete", { year, team_num: mapping?.team_num }, email);
+  const result = dbRun(() => db.transaction(() => {
+    const mapping = db.prepare("SELECT team_num FROM student_team WHERE email = ? AND year = ?").get(email, year);
+    if (!mapping) return { mapping: null, changes: 0 };
+    const deleted = db.prepare("DELETE FROM student_team WHERE email = ? AND year = ?").run(email, year);
+    return { mapping, changes: deleted.changes };
+  })());
+  if (!result.success) {
+    logger.warn(req, "student_team.delete", {
+      error: result.internalError || result.error,
+      reason: result.internalError || result.error,
+      phase: "mapping_preflight",
+      year,
+    }, email);
+    return res.status(result.status).send(result.error);
+  }
+  if (result.result.changes === 0) {
+    logger.warn(req, "student_team.delete", {
+      error: "mapping_not_found", reason: "mapping_not_found", year,
+    }, email);
+    return res.status(404).send("매핑을 찾을 수 없습니다.");
+  }
+  logger.log(req, "student_team.delete", { year, team_num: result.result.mapping.team_num }, email);
   res.status(200).send();
 });
 
@@ -1340,33 +1746,47 @@ app.delete("/api/admin/years/:year/files", (req, res) => {
   if (!yearCheck.valid) return res.status(400).send(yearCheck.error);
   const year = yearCheck.value;
 
-  const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
-  if (sessions.length === 0) return res.status(404).send("해당 연도의 세션이 없습니다.");
-
-  let fileCount = 0;
   const txResult = dbRun(() => {
-    db.transaction(() => {
+    return db.transaction(() => {
+      const sessions = db.prepare("SELECT id FROM session WHERE year = ? ORDER BY id").all(year);
+      if (sessions.length === 0) return { sessions, fileCount: 0 };
       const sessionIds = sessions.map((s) => s.id);
       const placeholders = sessionIds.map(() => "?").join(",");
       const subIds = db.prepare(`SELECT id FROM submission WHERE session_id IN (${placeholders})`).all(...sessionIds).map((s) => s.id);
+      let fileCount = 0;
       if (subIds.length) {
         const subPlaceholders = subIds.map(() => "?").join(",");
         fileCount = db.prepare(`DELETE FROM submission_file WHERE submission_id IN (${subPlaceholders})`).run(...subIds).changes;
       }
+      return { sessions, fileCount };
     })();
   });
 
   if (!txResult.success) {
-    logger.warn(req, "year.purge_files", { error: txResult.error, year });
+    logger.warn(req, "year.purge_files", {
+      error: txResult.internalError || txResult.error,
+      reason: txResult.internalError || txResult.error,
+      phase: "year_purge_preflight",
+      year,
+    });
     return res.status(txResult.status).send(txResult.error);
+  }
+  const { sessions, fileCount } = txResult.result;
+  if (sessions.length === 0) {
+    logger.warn(req, "year.purge_files", {
+      error: "year_has_no_sessions", reason: "year_has_no_sessions", year,
+    }, String(year));
+    return res.status(404).send("해당 연도의 세션이 없습니다.");
   }
 
   // 트랜잭션 성공 후 디스크 파일 삭제
-  for (const s of sessions) {
-    rmDir(path.join(UPLOADS_DIR, String(s.id)));
-  }
+  const cleanup = sessions.map((session) => {
+    const directory = path.join(UPLOADS_DIR, String(session.id));
+    return { session_id: session.id, directory, ...rmDir(directory, { logFailure: false }) };
+  });
 
-  logger.log(req, "year.purge_files", { year, sessions: sessions.length, files: fileCount });
+  logger.log(req, "year.purge_files", { year, sessions: sessions.length, files: fileCount, file_cleanup: cleanup });
+  logCleanupFailures(req, "year.purge_files", String(year), { year, sessions: sessions.length, files: fileCount }, cleanup);
   res.json({ sessions: sessions.length, files: fileCount });
 });
 
@@ -1387,9 +1807,9 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
   const sessionById = new Map(sessions.map((s) => [s.id, s]));
   const files = db.prepare(`
     WITH latest AS (
-      SELECT id, session_id, team_num
+      SELECT id, session_id, team_num, storage_dir
       FROM (
-        SELECT sub.id, sub.session_id, sub.team_num,
+        SELECT sub.id, sub.session_id, sub.team_num, sub.storage_dir,
                ROW_NUMBER() OVER (PARTITION BY sub.session_id, sub.team_num ORDER BY sub.id DESC) AS rn
         FROM submission sub
         JOIN session s ON s.id = sub.session_id
@@ -1397,7 +1817,7 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
       )
       WHERE rn = 1
     )
-    SELECT latest.id AS submission_id, latest.session_id, latest.team_num, f.original_name, f.stored_name
+    SELECT latest.id AS submission_id, latest.session_id, latest.team_num, latest.storage_dir, f.original_name, f.stored_name
     FROM latest
     JOIN submission_file f ON f.submission_id = latest.id
     ORDER BY latest.session_id, latest.team_num, f.id
@@ -1406,7 +1826,12 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
   for (const f of files) {
     const s = sessionById.get(f.session_id);
     if (!s) continue;
-    const diskPath = path.join(UPLOADS_DIR, String(s.id), String(f.team_num), String(f.submission_id), f.stored_name);
+    const diskPath = submissionFilePath({
+      id: f.submission_id,
+      session_id: f.session_id,
+      team_num: f.team_num,
+      storage_dir: f.storage_dir,
+    }, f.stored_name);
     if (fs.existsSync(diskPath)) {
       const entry = entries[f.team_num];
       const sessionName = sanitize(s.name);
@@ -1436,179 +1861,6 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
 
   await archive.finalize();
   logger.log(req, "year.archive", { year, sessions: sessions.length, files: archiveFiles.length });
-});
-
-/* ============================================
-   Internal API (서비스 간 통신)
-   ============================================ */
-
-// 이전 배포에서 이미 생성된 team.active outbox 이벤트를 안전하게 소진한다.
-// Documents는 활성 상태를 저장하거나 제출 기능에 반영하지 않는다.
-app.patch("/api/internal/team-active", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-  res.status(200).send();
-});
-
-// PATCH /api/internal/team-num - 엔트리 번호 변경 시 team_num 일괄 갱신
-app.patch("/api/internal/team-num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const prevNum = Number(req.body.prevNum);
-  const newNum = Number(req.body.newNum);
-  const year = Number(req.body.year);
-  if (!Number.isInteger(prevNum) || !Number.isInteger(newNum) || !Number.isInteger(year)) {
-    logger.warn(req, "team_num.update", { error: "invalid request", prevNum: req.body.prevNum, newNum: req.body.newNum, year: req.body.year });
-    return res.status(400).send("올바르지 않은 요청입니다.");
-  }
-  // self-renumber는 동일 업로드 디렉토리를 이동/삭제 대상으로 잡으므로 데이터 손실 위험. 조기 반환.
-  if (prevNum === newNum) return res.status(200).send();
-
-  const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
-  const prevExists = db.prepare(`
-    SELECT 1
-    WHERE EXISTS (SELECT 1 FROM student_team WHERE team_num = ? AND year = ?)
-       OR EXISTS (
-         SELECT 1 FROM session_team
-         WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
-       )
-       OR EXISTS (
-         SELECT 1 FROM submission
-         WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)
-       )
-  `).get(prevNum, year, prevNum, year, prevNum, year);
-
-  const pendingFileWork = pendingRenumberFileWorkCount(prevNum, newNum, year);
-  if (!prevExists && pendingFileWork === 0) {
-    logger.log(req, "team_num.update", { year, prevNum, newNum, noop: true });
-    return res.status(200).send();
-  }
-
-  const filePlans = [];
-  if (prevExists) {
-    for (const s of sessions) {
-      const oldDir = teamUploadDir(s.id, prevNum);
-      const newDir = teamUploadDir(s.id, newNum);
-      const oldExists = fs.existsSync(oldDir);
-      const newExists = fs.existsSync(newDir);
-      const staleTarget = db.prepare(`
-        SELECT 1
-        WHERE EXISTS (SELECT 1 FROM session_team WHERE session_id = ? AND team_num = ?)
-           OR EXISTS (SELECT 1 FROM submission WHERE session_id = ? AND team_num = ?)
-      `).get(s.id, newNum, s.id, newNum);
-      if (!staleTarget && oldExists && newExists) {
-        logger.warn(req, "team_num.rename_fail", {
-          year, prevNum, newNum, failedRenames: [{ sessionId: s.id, error: "target upload directory already exists" }], stage: "pre_db",
-        });
-        return res.status(500).send("업로드 디렉토리 이름 변경에 실패하여 변경하지 않았습니다.");
-      }
-      if (oldExists || (staleTarget && newExists)) {
-        filePlans.push({
-          sessionId: s.id,
-          moveOld: oldExists ? 1 : 0,
-          deleteTarget: staleTarget && newExists ? 1 : 0,
-        });
-      }
-    }
-  }
-
-  const txResult = dbRun(() => {
-    db.transaction(() => {
-      if (prevExists) {
-        const insertFileWork = db.prepare(`
-          INSERT INTO team_renumber_file_work (year, prev_num, new_num, session_id, move_old, delete_target, last_error, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, '', ?)
-          ON CONFLICT(year, prev_num, new_num, session_id) DO UPDATE SET
-            move_old = CASE WHEN team_renumber_file_work.move_old OR excluded.move_old THEN 1 ELSE 0 END,
-            delete_target = CASE WHEN team_renumber_file_work.delete_target OR excluded.delete_target THEN 1 ELSE 0 END,
-            last_error = '',
-            updated_at = excluded.updated_at
-        `);
-        const now = Date.now();
-        for (const plan of filePlans) {
-          insertFileWork.run(year, prevNum, newNum, plan.sessionId, plan.moveOld, plan.deleteTarget, now);
-        }
-
-        db.prepare("DELETE FROM submission WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(newNum, year);
-        db.prepare("DELETE FROM session_team WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(newNum, year);
-        db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?")
-          .run(newNum, year);
-        db.prepare("UPDATE student_team SET team_num = ? WHERE team_num = ? AND year = ?")
-          .run(newNum, prevNum, year);
-        db.prepare("UPDATE session_team SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(newNum, prevNum, year);
-        db.prepare("UPDATE submission SET team_num = ? WHERE team_num = ? AND session_id IN (SELECT id FROM session WHERE year = ?)")
-          .run(newNum, prevNum, year);
-      }
-    })();
-  });
-
-  if (!txResult.success) {
-    logger.warn(req, "team_num.update", { error: txResult.error, year, prevNum, newNum });
-    return res.status(txResult.status).send(txResult.error);
-  }
-
-  const fileResult = processRenumberFileWork(req, prevNum, newNum, year);
-  if (!fileResult.success) {
-    logger.warn(req, "team_num.file_work_failed", { year, prevNum, newNum, failures: fileResult.failures });
-    return res.status(202).json({
-      status: "pending_file_work",
-      message: "팀 번호 변경은 반영되었고 업로드 디렉토리 작업은 재시도 대기 중입니다.",
-      failures: fileResult.failures,
-    });
-  }
-
-  logger.log(req, "team_num.update", { year, prevNum, newNum, renamedDirs: fileResult.moved, replacedTargets: fileResult.replaced, fileWork: fileResult.total });
-  res.status(200).send();
-});
-
-/* ============================================
-   Internal API: 엔트리 삭제 연동
-   ============================================ */
-
-// DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
-app.delete("/api/internal/team/:num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const num = Number(req.params.num);
-  const year = Number(req.query.year);
-  if (!Number.isInteger(num) || num < 1) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid team num", num: req.params.num });
-    return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  }
-  if (!Number.isInteger(year)) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-
-  const removedFiles = [];
-  const txResult = dbRun(() => {
-    db.transaction(() => {
-      db.prepare("DELETE FROM student_team WHERE team_num = ? AND year = ?").run(num, year);
-
-      const sessions = db.prepare("SELECT id FROM session WHERE year = ?").all(year);
-      for (const s of sessions) {
-        db.prepare("DELETE FROM session_team WHERE session_id = ? AND team_num = ?").run(s.id, num);
-        const subs = db.prepare("SELECT id FROM submission WHERE session_id = ? AND team_num = ?").all(s.id, num);
-        for (const sub of subs) {
-          removedFiles.push({ sessionId: s.id, subId: sub.id });
-        }
-        if (subs.length) {
-          db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(s.id, num);
-        }
-      }
-    })();
-  });
-
-  if (!txResult.success) { logger.warn(req, "team.cascade_delete", { error: txResult.error, year }, "#" + num); return res.status(txResult.status).send(txResult.error); }
-
-  for (const { sessionId, subId } of removedFiles) {
-    rmDir(path.join(UPLOADS_DIR, String(sessionId), String(num), String(subId)));
-  }
-
-  logger.log(req, "team.cascade_delete", { year, removed: removedFiles.length }, "#" + num);
-  res.status(200).send();
 });
 
 /* ============================================
@@ -1650,6 +1902,9 @@ function scheduleSessionNotifications(sessionId, start_at, end_at) {
 
 /** 이메일 전송 공통 */
 async function sendNotificationEmail(subject, htmlContent, recipient) {
+  if (options.sendNotificationEmail) {
+    return options.sendNotificationEmail(subject, htmlContent, recipient);
+  }
   const emailServer = serviceUrl("email");
   if (!process.env.INTERNAL_SECRET) return { ok: false, error: "INTERNAL_SECRET not configured" };
 
@@ -1670,20 +1925,18 @@ function escapeHtml(str) {
   return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-/** 엔트리 정보 조회 (실패 시 빈 객체 — graceful degradation) */
+/** 엔트리 정보 조회. 공유 DB 읽기 실패는 감사한 뒤 호출자에게 전파한다. */
 async function fetchEntries(year, req = null, action = "entry.fetch") {
-  const entryServer = serviceUrl("entry");
-  try {
-    const res = await fetch(`${entryServer}/api/entries?year=${year}&includeInactive=true`, {
-      headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) return await res.json();
-    logger.warn(req, action, { warning: "entry_fetch_non_ok", status: res.status, year });
-  } catch (e) {
-    logger.warn(req, action, { warning: "entry_fetch_failed", error: e.message, year });
+  if (!options.teamStore) {
+    logger.warn(req, action, { error: "Competition team store is required", year });
+    throw new Error("Competition team store is required");
   }
-  return {};
+  try {
+    return options.teamStore.moduleEntries(year, { includeInactive: true });
+  } catch (error) {
+    logger.warn(req, action, { error: error.message || String(error), year });
+    throw error;
+  }
 }
 
 /** 팀 정보 헤더 HTML */
@@ -1694,17 +1947,28 @@ function teamHeaderHtml(teamNum, entries) {
 }
 
 /** 예약 알림 처리 — 1분마다 실행 */
-let _schedulerRunning = false;
-async function processScheduledNotifications() {
+let schedulerTask = null;
+let notificationDraining = false;
+
+function processScheduledNotifications() {
   // 재진입 가드: 발송(수신자별 순차 await, 건당 최대 15초)이 60초 인터벌을 넘기면 다음
   // tick이 겹쳐 실행돼 같은 sent=0 행을 다시 읽고 중복 발송한다. 한 번에 하나만 돈다.
-  if (_schedulerRunning) return;
-  _schedulerRunning = true;
+  if (notificationDraining) return Promise.resolve();
+  if (schedulerTask) return schedulerTask;
+  schedulerTask = runScheduledNotifications();
+  schedulerTask.then(
+    () => { schedulerTask = null; },
+    () => { schedulerTask = null; },
+  );
+  return schedulerTask;
+}
+
+async function runScheduledNotifications() {
   try {
   const currentTime = now();
   const pending = db.prepare(
-    "SELECT sn.*, s.name, s.notice, s.start_at, s.end_at, s.late_end_at, s.year FROM scheduled_notification sn JOIN session s ON sn.session_id = s.id WHERE sn.sent = 0 AND sn.scheduled_at <= ?",
-  ).all(currentTime);
+    "SELECT sn.*, s.name, s.notice, s.start_at, s.end_at, s.late_end_at, s.year FROM scheduled_notification sn JOIN session s ON sn.session_id = s.id WHERE sn.sent = 0 AND sn.scheduled_at <= ? AND s.year = ?",
+  ).all(currentTime, currentCompetitionYear());
 
   for (const n of pending) {
     try {
@@ -1733,7 +1997,20 @@ async function processScheduledNotifications() {
       }
 
       if (recipientRows.length === 0) {
-        db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ?").run(n.id);
+        const completion = db.prepare("UPDATE scheduled_notification SET sent = 1 WHERE id = ? AND sent = 0").run(n.id);
+        if (completion.changes !== 1) {
+          throw new Error(`no-recipient completion updated ${completion.changes} scheduled notifications`);
+        }
+        logger.log(null, `schedule.${n.type}`, {
+          notificationId: n.id,
+          sessionId: n.session_id,
+          year: n.year,
+          type: n.type,
+          recipientCount: 0,
+          completionReason: "no_recipients",
+          before: { sent: Number(n.sent) },
+          after: { sent: 1 },
+        }, n.name);
         continue;
       }
 
@@ -1780,8 +2057,32 @@ async function processScheduledNotifications() {
             `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
         }
 
-        const result = await sendNotificationEmail(subject, htmlContent, email);
-        if (result.ok) alreadySent.add(email);
+        try {
+          const result = await sendNotificationEmail(subject, htmlContent, email);
+          if (result.ok) {
+            alreadySent.add(email);
+            // Persist each success immediately. A later recipient throwing or
+            // the process stopping must not make an already-delivered address
+            // eligible for the next scheduler retry.
+            db.prepare("UPDATE scheduled_notification SET sent_recipients = ? WHERE id = ?")
+              .run(JSON.stringify([...alreadySent]), n.id);
+          } else {
+            logger.warn(null, `schedule.${n.type}`, {
+              error: result.error || "email_send_rejected",
+              reason: result.error || "email_send_rejected",
+              recipient: email,
+              phase: "recipient_send",
+              sent: alreadySent.size,
+            }, n.name);
+          }
+        } catch (error) {
+          logger.warn(null, `schedule.${n.type}`, {
+            error: error?.message || String(error),
+            recipient: email,
+            phase: "recipient_send",
+            sent: alreadySent.size,
+          }, n.name);
+        }
       }
 
       // 현재 대상 중 아직 못 보낸 수신자가 남으면 sent=0을 유지해 다음 tick이 실패분만
@@ -1805,38 +2106,59 @@ async function processScheduledNotifications() {
         }
       }
     } catch (e) {
-      logger.warn(null, `schedule.${n.type}`, { error: e.message }, n.name);
+      logger.warn(null, `schedule.${n.type}`, {
+        error: e.message || String(e),
+        notificationId: n.id,
+        sessionId: n.session_id,
+        year: n.year,
+        type: n.type,
+        phase: "notification_processing",
+      }, n.name);
     }
   }
   } catch (e) {
     // pending 쿼리 등 루프 밖에서 throw하면 setInterval 콜백의 미처리 프라미스 거부가 된다.
-    // 구조화 로그로 남기고 스케줄러는 다음 tick에 계속 돈다(가드는 finally에서 해제).
+    // 구조화 로그로 남기고 스케줄러는 다음 tick에 계속 돈다.
     logger.warn(null, "schedule.run", { error: e.message || String(e) });
-  } finally {
-    _schedulerRunning = false;
   }
 }
 
 // 1분마다 예약 알림 처리
-const _schedulerInterval = setInterval(processScheduledNotifications, 60_000);
+const _schedulerInterval = enableNotificationScheduler
+  ? setInterval(processScheduledNotifications, 60_000)
+  : null;
+_schedulerInterval?.unref?.();
 // 서버 시작 후 5초 뒤 첫 실행 (밀린 알림 즉시 처리)
-setTimeout(processScheduledNotifications, 5000);
-
-const _renumberFileWorkInterval = setInterval(() => {
-  try { processPendingRenumberFileWork(); }
-  catch (e) { logger.warn(null, "team_num.file_work_retry", { error: e.message || String(e) }); }
-}, 30_000);
-_renumberFileWorkInterval.unref?.();
-const _renumberFileWorkStartupTimer = setTimeout(() => {
-  try { processPendingRenumberFileWork(); }
-  catch (e) { logger.warn(null, "team_num.file_work_retry", { error: e.message || String(e) }); }
-}, 1000).unref?.();
+const _schedulerStartupTimer = enableNotificationScheduler
+  ? setTimeout(processScheduledNotifications, 5000)
+  : null;
+_schedulerStartupTimer?.unref?.();
 
 /** 계정 할당 시 현재 열린 세션 알림 */
-async function notifyOpenSessions(req, email, teamNum, year) {
-  const emailServer = serviceUrl("email");
-  if (!process.env.INTERNAL_SECRET) return;
+function launchOpenSessionNotification(req, email, teamNum, year) {
+  const task = notifyOpenSessions(req, email, teamNum, year);
+  notificationTasks.add(task);
+  void task.finally(() => notificationTasks.delete(task));
+  return task;
+}
 
+async function drainNotificationTasks() {
+  notificationDraining = true;
+  if (_schedulerInterval) clearInterval(_schedulerInterval);
+  if (_schedulerStartupTimer) clearTimeout(_schedulerStartupTimer);
+  while (notificationTasks.size > 0 || schedulerTask) {
+    await Promise.all([
+      ...notificationTasks,
+      ...(schedulerTask ? [schedulerTask] : []),
+    ]);
+  }
+}
+
+function hasPendingNotificationTasks() {
+  return notificationTasks.size > 0 || schedulerTask != null;
+}
+
+async function notifyOpenSessions(req, email, teamNum, year) {
   try {
     const currentTime = now();
     const openSessions = db.prepare(
@@ -1871,16 +2193,49 @@ async function notifyOpenSessions(req, email, teamNum, year) {
       email,
     );
 
-    if (!result.ok) logger.warn(req, "student_team.notify", { error: result.error }, email);
-    else logger.log(req, "student_team.notify", { sessionCount: openSessions.length }, email);
+    if (!result.ok) {
+      logger.warn(req, "student_team.notify", {
+        error: result.error || "email_send_rejected",
+        reason: result.error || "email_send_rejected",
+        phase: "recipient_send",
+        recipient: email,
+        year,
+        team_num: teamNum,
+        session_count: openSessions.length,
+      }, email);
+    } else {
+      logger.log(req, "student_team.notify", {
+        recipient: email,
+        year,
+        team_num: teamNum,
+        session_count: openSessions.length,
+      }, email);
+    }
   } catch (e) {
-    logger.warn(req, "student_team.notify", { error: e.message }, email);
+    logger.warn(req, "student_team.notify", {
+      error: e.message,
+      reason: e.message,
+      recipient: email,
+      year,
+      team_num: teamNum,
+    }, email);
   }
 }
 
-addSpaFallback(app);
+if (!options.skipSpaFallback) addSpaFallback(app);
 
-return { app, db, _schedulerInterval, _renumberFileWorkInterval, _renumberFileWorkStartupTimer };
+return {
+  app,
+  db,
+  processScheduledNotifications,
+  drainNotificationTasks,
+  drain: drainNotificationTasks,
+  hasPendingNotificationTasks,
+  _schedulerInterval,
+  _schedulerStartupTimer,
+  timers: [
+    _schedulerInterval,
+    _schedulerStartupTimer,
+  ].filter(Boolean),
+};
 }
-
-runIfDirect(import.meta, "documents", createDocumentsApp);

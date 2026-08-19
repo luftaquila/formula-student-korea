@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification, setCustomEventName } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Simultaneous event measurement", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -10,7 +11,7 @@ test.describe("Simultaneous event measurement", () => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     for (const name of ["E2E-MultiAccel", "E2E-MultiAutocross"]) {
-      await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${name}`);
+      await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${name}`);
     }
     await context.close();
   });
@@ -70,13 +71,13 @@ test.describe("Simultaneous event measurement", () => {
     await expectNotification(page2, "success", "기록 저장");
 
     // Verify records exist via API
-    const accelRecords = await page1.request.get(`/traffic/api/records/FSK ${YEAR} E2E-MultiAccel`);
+    const accelRecords = await page1.request.get(`/competition/api/v1/traffic/records/FSK ${YEAR} E2E-MultiAccel`);
     expect(accelRecords.status()).toBe(200);
     const accelData = await accelRecords.json();
     expect(accelData.length).toBeGreaterThanOrEqual(1);
     expect(accelData[0].num).toBe(1);
 
-    const autocrossRecords = await page2.request.get(`/traffic/api/records/FSK ${YEAR} E2E-MultiAutocross`);
+    const autocrossRecords = await page2.request.get(`/competition/api/v1/traffic/records/FSK ${YEAR} E2E-MultiAutocross`);
     expect(autocrossRecords.status()).toBe(200);
     const autocrossData = await autocrossRecords.json();
     expect(autocrossData.length).toBeGreaterThanOrEqual(1);

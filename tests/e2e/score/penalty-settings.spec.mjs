@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Score penalty and score settings", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -57,7 +58,7 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    const savePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
     await input.fill(String(newValue));
     await input.blur();
     await savePromise;
@@ -66,7 +67,7 @@ test.describe("Score penalty and score settings", () => {
     await expect(lastConeCell.locator(".setting-text")).toHaveText(String(newValue));
 
     // Verify via API that the penalty was saved
-    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await response.json();
     expect(data.penalties["내구"]?.cone_penalty).toBe(newValue);
 
@@ -74,7 +75,7 @@ test.describe("Score penalty and score settings", () => {
     await lastConeCell.click();
     const resetInput = lastConeCell.locator("input.setting-input");
     await expect(resetInput).toBeVisible({ timeout: 3000 });
-    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
     await cleanupPromise;
@@ -105,7 +106,7 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    const savePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
     await input.fill(String(newOcValue));
     await input.blur();
     await savePromise;
@@ -114,7 +115,7 @@ test.describe("Score penalty and score settings", () => {
     await expect(lastOcCell.locator(".setting-text")).toHaveText(String(newOcValue));
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await response.json();
     expect(data.penalties["내구"]?.oc_penalty).toBe(newOcValue);
 
@@ -122,7 +123,7 @@ test.describe("Score penalty and score settings", () => {
     await lastOcCell.click();
     const resetInput = lastOcCell.locator("input.setting-input");
     await expect(resetInput).toBeVisible({ timeout: 3000 });
-    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
     await cleanupPromise;
@@ -165,7 +166,7 @@ test.describe("Score penalty and score settings", () => {
 
     // Keep the DOM update and blur in one browser task so an SSE refresh cannot
     // replace the input between the two operations.
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const savePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await input.fill(String(newValue));
     await input.blur();
     await savePromise;
@@ -174,14 +175,14 @@ test.describe("Score penalty and score settings", () => {
     await expect(enduranceTotalCell.locator(".setting-text")).toHaveText(String(newValue));
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await response.json();
     expect(data.settings["내구"]?.total).toBe(newValue);
 
     // Clean up
     await enduranceTotalCell.click();
     const resetInput = enduranceTotalCell.locator("input.setting-input");
-    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await resetInput.fill("");
     await resetInput.blur();
     await cleanupPromise;
@@ -203,7 +204,7 @@ test.describe("Score penalty and score settings", () => {
 
     await lastFinishCell.click();
     const finishInput = lastFinishCell.locator("input.setting-input");
-    const finishSave = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const finishSave = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await finishInput.fill(String(newFinish));
     await finishInput.blur();
     await finishSave;
@@ -219,27 +220,27 @@ test.describe("Score penalty and score settings", () => {
 
     await lastCutoffCell.click();
     const cutoffInput = lastCutoffCell.locator("input.setting-input");
-    const cutoffSave = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const cutoffSave = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await cutoffInput.fill(String(newCutoff));
     await cutoffInput.blur();
     await cutoffSave;
     await expect(lastCutoffCell.locator(".setting-text")).toHaveText(String(newCutoff));
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await response.json();
     expect(data.settings["내구"]?.finish).toBe(newFinish);
     expect(data.settings["내구"]?.cutoff).toBe(newCutoff);
 
     // Clean up
     await lastFinishCell.click();
-    const cleanupFinish = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const cleanupFinish = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await lastFinishCell.locator("input.setting-input").fill("");
     await lastFinishCell.locator("input.setting-input").blur();
     await cleanupFinish;
 
     await lastCutoffCell.click();
-    const cleanupCutoff = page.waitForResponse((res) => res.url().includes("/api/score/setting") && res.status() === 200);
+    const cleanupCutoff = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/setting") && res.status() === 200);
     await lastCutoffCell.locator("input.setting-input").fill("");
     await lastCutoffCell.locator("input.setting-input").blur();
     await cleanupCutoff;
@@ -269,7 +270,7 @@ test.describe("Score penalty and score settings", () => {
     await expect(input).toBeVisible({ timeout: 3000 });
     await expect(input).toBeFocused();
 
-    const savePromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    const savePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
     await input.fill(String(newDelay));
     await input.blur();
     await savePromise;
@@ -278,14 +279,14 @@ test.describe("Score penalty and score settings", () => {
     await expect(lastDelayCell.locator(".setting-text")).toHaveText(String(newDelay));
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const data = await response.json();
     expect(data.penalties["내구"]?.start_delay).toBe(newDelay);
 
     // Clean up: reset to 0
     await lastDelayCell.click();
     const resetInput = lastDelayCell.locator("input.setting-input");
-    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/api/score/penalty") && res.status() === 200);
+    const cleanupPromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/penalty") && res.status() === 200);
     await resetInput.fill("0");
     await resetInput.blur();
     await cleanupPromise;

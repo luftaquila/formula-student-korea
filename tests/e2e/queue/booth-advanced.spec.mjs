@@ -6,7 +6,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 const INSPECTION_TYPE = "braking";
 
 async function apiRegister(num, type = INSPECTION_TYPE) {
-  return fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
@@ -14,7 +14,7 @@ async function apiRegister(num, type = INSPECTION_TYPE) {
 }
 
 async function apiCancel(num, type = INSPECTION_TYPE) {
-  return fetch(`${BASE_URL}/queue/api/admin/cancel/${type}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/cancel/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -22,7 +22,7 @@ async function apiCancel(num, type = INSPECTION_TYPE) {
 }
 
 async function apiEnterBooth(num, boothNum = 1, type = INSPECTION_TYPE) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/enter`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/enter`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -30,21 +30,21 @@ async function apiEnterBooth(num, boothNum = 1, type = INSPECTION_TYPE) {
 }
 
 async function apiExitBooth(boothNum = 1, type = INSPECTION_TYPE) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/exit`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/exit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
   });
 }
 
 async function apiGetQueue(type = INSPECTION_TYPE) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   return res.json();
 }
 
 async function apiSetBoothActive(type, boothNum, active) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ active }),
@@ -52,7 +52,7 @@ async function apiSetBoothActive(type, boothNum, active) {
 }
 
 async function apiSetBoothCount(type, count) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/config`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/config`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ count }),
@@ -60,7 +60,7 @@ async function apiSetBoothCount(type, count) {
 }
 
 async function apiSetVisibility(type, hidden) {
-  return fetch(`${BASE_URL}/queue/api/admin/inspection/${type}/visibility`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}/visibility`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ hidden }),
@@ -68,7 +68,7 @@ async function apiSetVisibility(type, hidden) {
 }
 
 async function apiSetIgnore(type, field, value) {
-  return fetch(`${BASE_URL}/queue/api/admin/inspection/${type}/ignore`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}/ignore`, {
     method: "PUT",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ field, value }),
@@ -76,7 +76,7 @@ async function apiSetIgnore(type, field, value) {
 }
 
 async function apiClearHistory(type = INSPECTION_TYPE) {
-  return fetch(`${BASE_URL}/queue/api/admin/history/${type}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/history/${type}`, {
     method: "DELETE",
     headers: { Cookie: getAuthCookie("chief") },
   });
@@ -103,18 +103,18 @@ test.describe("Queue booth advanced features", () => {
 
   test.beforeAll(async () => {
     // Set cancel penalty to 0 for easier testing
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
     });
 
     // Get original booth count
-    const boothsRes = await fetch(`${BASE_URL}/queue/api/booths/all`, {
+    const boothsRes = await fetch(`${BASE_URL}/competition/api/v1/queue/booths/all`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     const booths = await boothsRes.json();
@@ -125,7 +125,7 @@ test.describe("Queue booth advanced features", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
         body: JSON.stringify({ value: originalPenalty }),

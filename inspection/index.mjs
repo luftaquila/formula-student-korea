@@ -1,11 +1,10 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
-import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
+import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { registerTeamLifecycleRoutes } from "../shared/team-lifecycle.mjs";
-import { ensureTeamStatusTable, isTeamActive, registerTeamStatusRoute } from "../shared/team-status.mjs";
+import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
+import { currentCompetitionYear } from "../shared/competition-year.mjs";
 import {
   parseCalculationConfig,
   serializeCalculationConfig,
@@ -25,6 +24,96 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     return "official"; // SPA
   },
 });
+ensureInactiveTeamView(db);
+
+function auditRejection(req, action, detail, target) {
+  logger.warn(req, action, {
+    error: detail.error,
+    reason: detail.reason || detail.error,
+    ...detail,
+  }, target);
+}
+
+function teamPreflight(req, res, { action, year, teamNum, missingStatus = 409 }) {
+  const result = dbRun(() => isTeamActive(db, year, teamNum));
+  if (!result.success) {
+    auditRejection(req, action, {
+      error: result.internalError || result.error,
+      phase: "canonical_team_lookup",
+      year,
+      team_num: teamNum,
+    }, `#${teamNum}`);
+    res.status(500).send("팀 활성 상태를 확인할 수 없습니다.");
+    return false;
+  }
+  if (!result.result) {
+    auditRejection(req, action, {
+      error: "inactive_or_missing_team",
+      phase: "canonical_team_lookup",
+      year,
+      team_num: teamNum,
+    }, `#${teamNum}`);
+    res.status(missingStatus).send(missingStatus === 404
+      ? "엔트리를 찾을 수 없습니다."
+      : "비활성화된 엔트리는 수정할 수 없습니다.");
+    return false;
+  }
+  return true;
+}
+
+function templateNodePreflight(req, res, { action, id, columns }) {
+  const result = dbRun(() => db.prepare(`SELECT ${columns} FROM sheet_template WHERE id = ?`).get(id));
+  if (!result.success) {
+    auditRejection(req, action, {
+      error: result.internalError || result.error,
+      phase: "template_lookup",
+      template_id: id,
+    }, `template:${id}`);
+    res.status(500).send("템플릿을 확인할 수 없습니다.");
+    return null;
+  }
+  if (!result.result) {
+    auditRejection(req, action, {
+      error: "template_not_found",
+      phase: "template_lookup",
+      template_id: id,
+    }, `template:${id}`);
+    res.status(404).send(action === "template.delete" ? "노드를 찾을 수 없습니다." : "항목을 찾을 수 없습니다.");
+    return null;
+  }
+  return result.result;
+}
+
+function mutationTemplatePreflight(req, res, { action, id, year, level }) {
+  const levelClause = level ? " AND level = ?" : "";
+  const result = dbRun(() => db.prepare(
+    `SELECT id, name, answer_type, calculation FROM sheet_template WHERE id = ? AND year = ?${levelClause}`,
+  ).get(...(level ? [id, year, level] : [id, year])));
+  if (!result.success) {
+    auditRejection(req, action, {
+      error: result.internalError || result.error,
+      phase: "template_lookup",
+      year,
+      template_id: id,
+    }, `template:${id}`);
+    res.status(500).send("템플릿을 확인할 수 없습니다.");
+    return null;
+  }
+  if (!result.result) {
+    auditRejection(req, action, {
+      error: "template_not_found",
+      phase: "template_lookup",
+      year,
+      template_id: id,
+      ...(level ? { expected_level: level } : {}),
+    }, `template:${id}`);
+    res.status(400).send(level === "category"
+      ? "해당 연도에 존재하지 않는 카테고리입니다."
+      : "해당 연도에 존재하지 않는 항목입니다.");
+    return null;
+  }
+  return result.result;
+}
 
 // answer_type CHECK 제약조건에 새 입력 유형을 추가하는 마이그레이션
 // FK CASCADE 문제를 피하기 위해 트랜잭션 밖에서 foreign_keys OFF 상태로 실행
@@ -129,10 +218,8 @@ db.transaction(() => {
     item_id INTEGER NOT NULL,
     value TEXT DEFAULT '',
     memo TEXT DEFAULT '',
-    answer_version INTEGER NOT NULL DEFAULT 0,
     answer_updated_at TEXT,
     answer_updated_by TEXT,
-    memo_version INTEGER NOT NULL DEFAULT 0,
     memo_updated_at TEXT,
     memo_updated_by TEXT,
     PRIMARY KEY (year, team_num, item_id),
@@ -140,10 +227,8 @@ db.transaction(() => {
   );`);
   const answerCols = db.prepare("PRAGMA table_info(sheet_answer)").all();
   const answerMigrations = [
-    ["answer_version", "INTEGER NOT NULL DEFAULT 0"],
     ["answer_updated_at", "TEXT"],
     ["answer_updated_by", "TEXT"],
-    ["memo_version", "INTEGER NOT NULL DEFAULT 0"],
     ["memo_updated_at", "TEXT"],
     ["memo_updated_by", "TEXT"],
   ];
@@ -178,7 +263,6 @@ db.transaction(() => {
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
 })();
-ensureTeamStatusTable(db);
 
 function templateItemsForYear(year) {
   return db.prepare(`
@@ -201,7 +285,12 @@ function validateStoredCalculationGraph(year) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
+const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager();
+
+function broadcastEvent(event, data) {
+  broadcastSSEEvent(event, data);
+  options.onEvent?.(event, data);
+}
 
 // SSE 엔드포인트
 app.get("/api/sheet/events", sseHandler());
@@ -231,50 +320,52 @@ function normalizeExcludedTypes(value) {
   return JSON.stringify(names);
 }
 
+function getTemplateTree(year) {
+  const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY sort_order").all(year);
+  // 저장 형식(JSON 문자열)이 응답에 새지 않도록 모든 레벨에서 배열로 정규화한다.
+  // 카테고리 외의 레벨은 항상 빈 배열이다.
+  for (const r of rows) {
+    r.excluded_types = parseExcludedTypes(r.excluded_types);
+    r.calculation = parseCalculationConfig(r.calculation);
+  }
+  const nodeMap = {};
+  const tree = [];
+
+  // Pass 1: create all nodes
+  for (const r of rows) {
+    if (r.level === "category") {
+      nodeMap[r.id] = { ...r, subcategories: [] };
+    } else if (r.level === "subcategory") {
+      nodeMap[r.id] = { ...r, groups: [] };
+    } else if (r.level === "group") {
+      nodeMap[r.id] = { ...r, items: [] };
+    }
+  }
+
+  // Pass 2: link to parents (order-independent)
+  for (const r of rows) {
+    if (r.level === "category") {
+      tree.push(nodeMap[r.id]);
+    } else if (r.level === "subcategory") {
+      const parent = nodeMap[r.parent_id];
+      if (parent) parent.subcategories.push(nodeMap[r.id]);
+    } else if (r.level === "group") {
+      const parent = nodeMap[r.parent_id];
+      if (parent) parent.groups.push(nodeMap[r.id]);
+    } else if (r.level === "item") {
+      const parent = nodeMap[r.parent_id];
+      if (parent) parent.items.push(r);
+    }
+  }
+  return tree;
+}
+
 // GET /api/sheet/template - 연도별 템플릿 트리 반환
 app.get("/api/sheet/template", (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
 
-  const result = dbRun(() => {
-    const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY sort_order").all(year);
-    // 저장 형식(JSON 문자열)이 응답에 새지 않도록 모든 레벨에서 배열로 정규화한다.
-    // 카테고리 외의 레벨은 항상 빈 배열이다.
-    for (const r of rows) {
-      r.excluded_types = parseExcludedTypes(r.excluded_types);
-      r.calculation = parseCalculationConfig(r.calculation);
-    }
-    const nodeMap = {};
-    const tree = [];
-
-    // Pass 1: create all nodes
-    for (const r of rows) {
-      if (r.level === "category") {
-        nodeMap[r.id] = { ...r, subcategories: [] };
-      } else if (r.level === "subcategory") {
-        nodeMap[r.id] = { ...r, groups: [] };
-      } else if (r.level === "group") {
-        nodeMap[r.id] = { ...r, items: [] };
-      }
-    }
-
-    // Pass 2: link to parents (order-independent)
-    for (const r of rows) {
-      if (r.level === "category") {
-        tree.push(nodeMap[r.id]);
-      } else if (r.level === "subcategory") {
-        const parent = nodeMap[r.parent_id];
-        if (parent) parent.subcategories.push(nodeMap[r.id]);
-      } else if (r.level === "group") {
-        const parent = nodeMap[r.parent_id];
-        if (parent) parent.groups.push(nodeMap[r.id]);
-      } else if (r.level === "item") {
-        const parent = nodeMap[r.parent_id];
-        if (parent) parent.items.push(r);
-      }
-    }
-    return tree;
-  });
+  const result = dbRun(() => getTemplateTree(year));
 
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
@@ -360,8 +451,10 @@ app.put("/api/sheet/template/:id", (req, res) => {
 
   if (!fields.length) return res.status(400).send("수정할 필드가 없습니다.");
 
-  const node = db.prepare("SELECT name, level, year, answer_type, calculation FROM sheet_template WHERE id = ?").get(id);
-  if (!node) return res.status(404).send("항목을 찾을 수 없습니다.");
+  const node = templateNodePreflight(req, res, {
+    action: "template.update", id, columns: "name, level, year, answer_type, calculation",
+  });
+  if (!node) return;
   const resultingAnswerType = answer_type === undefined ? node.answer_type : (answer_type || null);
   if (calculation && (node.level !== "item" || resultingAnswerType !== "number")) {
     return res.status(400).send("숫자 문항에만 계산을 설정할 수 있습니다.");
@@ -385,7 +478,6 @@ app.put("/api/sheet/template/:id", (req, res) => {
       const normalizeAnswer = db.prepare(`
         UPDATE sheet_answer
         SET value = ?,
-            answer_version = answer_version + 1,
             answer_updated_at = ?,
             answer_updated_by = ?
         WHERE year = ? AND team_num = ? AND item_id = ?
@@ -411,7 +503,7 @@ app.put("/api/sheet/template/:id", (req, res) => {
   })());
 
   if (!result.success) {
-    logger.warn(req, "template.update", { error: result.error }, node.name);
+    logger.warn(req, "template.update", { error: result.internalError || result.error }, node.name);
     return res.status(result.status).send(result.error);
   }
   if (!result.result.changes) {
@@ -428,11 +520,13 @@ app.put("/api/sheet/template/:id", (req, res) => {
 // DELETE /api/sheet/template/:id - 노드 삭제 (CASCADE)
 app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
-  const node = db.prepare("SELECT year, name FROM sheet_template WHERE id = ?").get(id);
-  if (!node) return res.status(404).send("노드를 찾을 수 없습니다.");
-  if (node.year < new Date().getFullYear()) {
+  const node = templateNodePreflight(req, res, {
+    action: "template.delete", id, columns: "year, name",
+  });
+  if (!node) return;
+  if (node.year !== currentCompetitionYear()) {
     logger.warn(req, "template.delete", { error: "이전 연도 템플릿 삭제 거부", year: node.year }, node.name);
-    return res.status(400).send("이전 연도 템플릿은 수정할 수 없습니다.");
+    return res.status(409).send("현재 연도 템플릿만 수정할 수 있습니다.");
   }
 
   const result = dbRun(() => db.transaction(() => {
@@ -442,7 +536,7 @@ app.delete("/api/sheet/template/:id", (req, res) => {
   })());
 
   if (!result.success) {
-    logger.warn(req, "template.delete", { error: result.error }, node.name);
+    logger.warn(req, "template.delete", { error: result.internalError || result.error }, node.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.delete", { year: node.year }, node.name);
@@ -452,28 +546,83 @@ app.delete("/api/sheet/template/:id", (req, res) => {
 // POST /api/sheet/template/reorder - 형제 노드 순서 변경
 app.post("/api/sheet/template/reorder", (req, res) => {
   const { items } = req.body;
-  if (!Array.isArray(items)) return res.status(400).send("items 배열이 필요합니다.");
-  if (items.length > 1000) return res.status(400).send("항목이 너무 많습니다.");
+  const rejectReorder = (status, message, context = {}) => {
+    logger.warn(req, "template.reorder", {
+      error: message,
+      phase: "batch_preflight",
+      ...context,
+    }, "batch");
+    return res.status(status).send(message);
+  };
+  if (!Array.isArray(items)) return rejectReorder(400, "items 배열이 필요합니다.");
+  if (items.length === 0) return rejectReorder(400, "하나 이상의 항목이 필요합니다.", { count: 0 });
+  if (items.length > 1000) return rejectReorder(400, "항목이 너무 많습니다.", { count: items.length });
   for (const item of items) {
-    if (!Number.isInteger(item.id) || !Number.isInteger(item.sort_order)) {
-      return res.status(400).send("각 항목에 유효한 id와 sort_order가 필요합니다.");
+    if (!Number.isInteger(item.id) || item.id < 1 || !Number.isInteger(item.sort_order)) {
+      return rejectReorder(400, "각 항목에 유효한 id와 sort_order가 필요합니다.", {
+        count: items.length,
+        invalid_item: item,
+      });
     }
   }
+  const ids = items.map((item) => item.id);
+  if (new Set(ids).size !== ids.length) {
+    return rejectReorder(400, "중복된 항목 id가 있습니다.", { count: items.length, requested_ids: ids });
+  }
+
+  let failureContext = {};
   const result = dbRun(() => {
     const stmt = db.prepare("UPDATE sheet_template SET sort_order = ? WHERE id = ?");
-    db.transaction(() => {
-      for (const item of items) {
-        stmt.run(item.sort_order, item.id);
+    return db.transaction(() => {
+      const rows = db.prepare(`
+        SELECT id, year, level, parent_id
+        FROM sheet_template
+        WHERE id IN (${ids.map(() => "?").join(",")})
+      `).all(...ids);
+      if (rows.length !== ids.length) {
+        const found = new Set(rows.map((row) => row.id));
+        failureContext = { reason_code: "missing_ids", missing_ids: ids.filter((id) => !found.has(id)) };
+        throw { status: 404, message: "항목을 찾을 수 없습니다." };
       }
+      const [first] = rows;
+      const sameSiblings = rows.every((row) => row.year === first.year
+        && row.level === first.level
+        && row.parent_id === first.parent_id);
+      if (!sameSiblings) {
+        failureContext = {
+          reason_code: "mixed_siblings",
+          nodes: rows.map(({ id, year, level, parent_id }) => ({ id, year, level, parent_id })),
+        };
+        throw { status: 400, message: "같은 연도와 부모의 형제 항목만 함께 정렬할 수 있습니다." };
+      }
+      if (first.year !== currentCompetitionYear()) {
+        failureContext = { reason_code: "historical_year", year: first.year };
+        throw { status: 409, message: "현재 연도 템플릿만 수정할 수 있습니다." };
+      }
+      let count = 0;
+      for (const item of items) {
+        const update = stmt.run(item.sort_order, item.id);
+        if (update.changes !== 1) {
+          failureContext = { reason_code: "update_count_mismatch", id: item.id, changes: update.changes };
+          throw { status: 409, message: "템플릿 순서가 동시에 변경되었습니다. 다시 시도하세요." };
+        }
+        count += update.changes;
+      }
+      return { count, year: first.year, level: first.level, parentId: first.parent_id };
     })();
   });
 
   if (!result.success) {
-    logger.warn(req, "template.reorder", { error: result.error, count: items.length });
+    logger.warn(req, "template.reorder", {
+      error: result.internalError || result.error,
+      phase: "batch_preflight",
+      requested_count: items.length,
+      requested_ids: ids,
+      ...failureContext,
+    }, "batch");
     return res.status(result.status).send(result.error);
   }
-  const firstItem = db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(items[0].id);
-  logger.log(req, "template.reorder", { count: items.length, year: firstItem?.year });
+  logger.log(req, "template.reorder", result.result, String(result.result.year));
   res.status(200).send();
 });
 
@@ -574,49 +723,70 @@ app.post("/api/sheet/template/import", (req, res) => {
   res.status(201).send();
 });
 
+function getInspectionSummary(year) {
+  // excluded_types를 함께 내려 목록·성적표가 팀 유형에 해당하지 않는 칸을 비울 수 있게 한다.
+  const categories = db.prepare(
+    "SELECT id, name, excluded_types FROM sheet_template WHERE year = ? AND level = 'category' ORDER BY sort_order"
+  ).all(year).map(c => ({ ...c, excluded_types: parseExcludedTypes(c.excluded_types) }));
+
+  const inspectors = db.prepare(
+    `SELECT i.team_num, i.category_id, i.inspector FROM sheet_inspector i
+     WHERE i.year = ? AND NOT EXISTS (
+       SELECT 1 FROM competition_inactive_team s
+       WHERE s.year = i.year AND s.team_num = i.team_num
+     )`
+  ).all(year);
+
+  const results = db.prepare(
+    `SELECT r.team_num, r.category_id, r.result FROM sheet_category_result r
+     WHERE r.year = ? AND NOT EXISTS (
+       SELECT 1 FROM competition_inactive_team s
+       WHERE s.year = r.year AND s.team_num = r.team_num
+     )`
+  ).all(year);
+
+  const teams = {};
+  for (const row of inspectors) {
+    if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
+    teams[row.team_num].inspectors[row.category_id] = row.inspector;
+  }
+  for (const row of results) {
+    if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
+    teams[row.team_num].results[row.category_id] = row.result;
+  }
+
+  return { categories, teams };
+}
+
 // GET /api/sheet/summary - 모든 팀의 카테고리별 요약
 app.get("/api/sheet/summary", (req, res) => {
   const year = Number(req.query.year);
   if (!year) return res.status(400).send("연도를 지정해야 합니다.");
 
-  const result = dbRun(() => {
-    // excluded_types를 함께 내려 목록·성적표가 팀 유형에 해당하지 않는 칸을 비울 수 있게 한다.
-    const categories = db.prepare(
-      "SELECT id, name, excluded_types FROM sheet_template WHERE year = ? AND level = 'category' ORDER BY sort_order"
-    ).all(year).map(c => ({ ...c, excluded_types: parseExcludedTypes(c.excluded_types) }));
-
-    const inspectors = db.prepare(
-      `SELECT i.team_num, i.category_id, i.inspector FROM sheet_inspector i
-       WHERE i.year = ? AND NOT EXISTS (
-         SELECT 1 FROM team_status s
-         WHERE s.year = i.year AND s.team_num = i.team_num AND s.active = 0
-       )`
-    ).all(year);
-
-    const results = db.prepare(
-      `SELECT r.team_num, r.category_id, r.result FROM sheet_category_result r
-       WHERE r.year = ? AND NOT EXISTS (
-         SELECT 1 FROM team_status s
-         WHERE s.year = r.year AND s.team_num = r.team_num AND s.active = 0
-       )`
-    ).all(year);
-
-    const teams = {};
-    for (const row of inspectors) {
-      if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
-      teams[row.team_num].inspectors[row.category_id] = row.inspector;
-    }
-    for (const row of results) {
-      if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
-      teams[row.team_num].results[row.category_id] = row.result;
-    }
-
-    return { categories, teams };
-  });
+  const result = dbRun(() => getInspectionSummary(year));
 
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
 });
+
+function getBulkAnswers(year, itemIds) {
+  const placeholders = itemIds.map(() => "?").join(",");
+  const rows = db.prepare(
+    `SELECT a.team_num, a.item_id, a.value FROM sheet_answer a
+     WHERE a.year = ? AND a.item_id IN (${placeholders}) AND a.value != ''
+       AND NOT EXISTS (
+         SELECT 1 FROM competition_inactive_team s
+         WHERE s.year = a.year AND s.team_num = a.team_num
+       )`
+  ).all(year, ...itemIds);
+
+  const teams = {};
+  for (const row of rows) {
+    if (!teams[row.team_num]) teams[row.team_num] = {};
+    teams[row.team_num][row.item_id] = row.value;
+  }
+  return teams;
+}
 
 // GET /api/sheet/bulk-answers - 벌크 답변 조회 (특정 item_id들의 팀별 값)
 app.get("/api/sheet/bulk-answers", (req, res) => {
@@ -628,24 +798,7 @@ app.get("/api/sheet/bulk-answers", (req, res) => {
   if (!itemIds.length) return res.status(400).send("유효한 item_ids가 없습니다.");
   if (itemIds.length > 1000) return res.status(400).send("item_ids는 1000개를 초과할 수 없습니다.");
 
-  const result = dbRun(() => {
-    const placeholders = itemIds.map(() => "?").join(",");
-    const rows = db.prepare(
-      `SELECT a.team_num, a.item_id, a.value FROM sheet_answer a
-       WHERE a.year = ? AND a.item_id IN (${placeholders}) AND a.value != ''
-         AND NOT EXISTS (
-           SELECT 1 FROM team_status s
-           WHERE s.year = a.year AND s.team_num = a.team_num AND s.active = 0
-         )`
-    ).all(year, ...itemIds);
-
-    const teams = {};
-    for (const row of rows) {
-      if (!teams[row.team_num]) teams[row.team_num] = {};
-      teams[row.team_num][row.item_id] = row.value;
-    }
-    return teams;
-  });
+  const result = dbRun(() => getBulkAnswers(year, itemIds));
 
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);
@@ -658,13 +811,13 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
   if (!Number.isInteger(year) || !Number.isInteger(num) || num < 1) {
     return res.status(400).send("올바르지 않은 연도 또는 팀 번호입니다.");
   }
-  if (!isTeamActive(db, year, num)) return res.status(404).send("엔트리를 찾을 수 없습니다.");
+  if (!teamPreflight(req, res, { action: "sheet.data", year, teamNum: num, missingStatus: 404 })) return;
 
   const result = dbRun(() => {
     const answers = db.prepare(`
       SELECT item_id, value, memo,
-             answer_version, answer_updated_at, answer_updated_by,
-             memo_version, memo_updated_at, memo_updated_by
+             answer_updated_at, answer_updated_by,
+             memo_updated_at, memo_updated_by
       FROM sheet_answer
       WHERE year = ? AND team_num = ?
     `).all(year, num);
@@ -682,10 +835,8 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
       answersMap[a.item_id] = {
         value: a.value,
         memo: a.memo,
-        answer_version: a.answer_version,
         answer_updated_at: a.answer_updated_at,
         answer_updated_by: a.answer_updated_by,
-        memo_version: a.memo_version,
         memo_updated_at: a.memo_updated_at,
         memo_updated_by: a.memo_updated_by,
       };
@@ -706,16 +857,18 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
 
 // PUT /api/sheet/answer - 답변 upsert
 app.put("/api/sheet/answer", (req, res) => {
-  const { year, team_num, item_id, value, base_version, mutation_id } = req.body;
+  const { year, team_num, item_id, value, expectedValue, mutation_id } = req.body;
   if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
-  if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateItem = db.prepare("SELECT id, name, answer_type, calculation FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
-  if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
+  if (!teamPreflight(req, res, { action: "answer.update", year, teamNum: team_num })) return;
+  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  const templateItem = mutationTemplatePreflight(req, res, {
+    action: "answer.update", id: item_id, year,
+  });
+  if (!templateItem) return;
   const newValue = value ?? "";
   if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
     return res.status(400).send("PASS 또는 FAIL만 입력할 수 있습니다.");
@@ -729,60 +882,58 @@ app.put("/api/sheet/answer", (req, res) => {
   if (parseCalculationConfig(templateItem.calculation)?.mode === "computed") {
     return res.status(400).send("자동 계산 문항에는 값을 직접 저장할 수 없습니다.");
   }
-  if (base_version !== undefined && (!Number.isInteger(base_version) || base_version < 0)) {
-    return res.status(400).send("올바르지 않은 답변 버전입니다.");
-  }
+  const expectedValueProvided = Object.hasOwn(req.body, "expectedValue") && typeof expectedValue === "string";
 
   const updatedAt = new Date().toISOString();
   const updatedBy = req.user?.name || req.user?.email || "";
 
-  const result = dbRun(() => {
+  const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
-      `SELECT value, answer_version, answer_updated_at, answer_updated_by
+      `SELECT value, answer_updated_at, answer_updated_by
        FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?`
     ).get(year, team_num, item_id);
     const current = {
       value: prev?.value ?? "",
-      version: prev?.answer_version ?? 0,
       updated_at: prev?.answer_updated_at ?? null,
       updated_by: prev?.answer_updated_by ?? "",
     };
 
-    if (base_version !== undefined && base_version !== current.version) {
-      return { conflict: true, current };
-    }
+    if ((!expectedValueProvided && current.value !== "")
+      || (expectedValueProvided && current.value !== expectedValue)) return { conflict: true, current };
 
     if (current.value === newValue) {
       return { changed: false, current };
     }
 
-    const nextVersion = current.version + 1;
-
     db.prepare(
       `INSERT INTO sheet_answer
-         (year, team_num, item_id, value, answer_version, answer_updated_at, answer_updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (year, team_num, item_id, value, answer_updated_at, answer_updated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(year, team_num, item_id) DO UPDATE SET
          value = excluded.value,
-         answer_version = excluded.answer_version,
          answer_updated_at = excluded.answer_updated_at,
          answer_updated_by = excluded.answer_updated_by`
-    ).run(year, team_num, item_id, newValue, nextVersion, updatedAt, updatedBy);
+    ).run(year, team_num, item_id, newValue, updatedAt, updatedBy);
 
     return {
       changed: true,
-      current: { value: newValue, version: nextVersion, updated_at: updatedAt, updated_by: updatedBy },
+      current: { value: newValue, updated_at: updatedAt, updated_by: updatedBy },
     };
-  });
+  })());
 
   if (!result.success) {
-    logger.warn(req, "answer.update", { error: result.error, year, item_id }, `#${team_num}`);
+    logger.warn(req, "answer.update", { error: result.internalError || result.error, year, item_id }, `#${team_num}`);
     return res.status(result.status).send(result.error);
   }
 
   if (result.result.conflict) {
+    logger.warn(req, "answer.stale_write", {
+      code: "INSPECTION_STALE_WRITE", year, item_id, expectedValue, requested: newValue,
+      current: result.result.current,
+    }, `#${team_num}`);
     return res.status(409).json({
-      error: "다른 사용자가 이 답변을 먼저 수정했습니다.",
+      code: "INSPECTION_STALE_WRITE",
+      message: "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 작성하세요.",
       current: result.result.current,
     });
   }
@@ -794,7 +945,6 @@ app.put("/api/sheet/answer", (req, res) => {
       team_num,
       item_id,
       value: newValue,
-      version: result.result.current.version,
       updated_at: result.result.current.updated_at,
       updated_by: result.result.current.updated_by,
       mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
@@ -809,69 +959,70 @@ app.put("/api/sheet/answer", (req, res) => {
 
 // PUT /api/sheet/memo - 메모 upsert
 app.put("/api/sheet/memo", (req, res) => {
-  const { year, team_num, item_id, memo, base_version, mutation_id } = req.body;
+  const { year, team_num, item_id, memo, expectedMemo, mutation_id } = req.body;
   if (!year || team_num == null || !item_id) return res.status(400).send("필수 필드가 누락되었습니다.");
   if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(item_id)) {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
-  if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateItem = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ?").get(item_id, year);
-  if (!templateItem) return res.status(400).send("해당 연도에 존재하지 않는 항목입니다.");
-  if (base_version !== undefined && (!Number.isInteger(base_version) || base_version < 0)) {
-    return res.status(400).send("올바르지 않은 메모 버전입니다.");
-  }
+  if (!teamPreflight(req, res, { action: "memo.update", year, teamNum: team_num })) return;
+  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  const templateItem = mutationTemplatePreflight(req, res, {
+    action: "memo.update", id: item_id, year,
+  });
+  if (!templateItem) return;
+  const expectedMemoProvided = Object.hasOwn(req.body, "expectedMemo") && typeof expectedMemo === "string";
 
   const newMemo = memo ?? "";
   const updatedAt = new Date().toISOString();
   const updatedBy = req.user?.name || req.user?.email || "";
-  const result = dbRun(() => {
+  const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
-      `SELECT memo, memo_version, memo_updated_at, memo_updated_by
+      `SELECT memo, memo_updated_at, memo_updated_by
        FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?`
     ).get(year, team_num, item_id);
     const current = {
       memo: prev?.memo ?? "",
-      version: prev?.memo_version ?? 0,
       updated_at: prev?.memo_updated_at ?? null,
       updated_by: prev?.memo_updated_by ?? "",
     };
 
-    if (base_version !== undefined && base_version !== current.version) {
-      return { conflict: true, current };
-    }
+    if ((!expectedMemoProvided && current.memo !== "")
+      || (expectedMemoProvided && current.memo !== expectedMemo)) return { conflict: true, current };
 
     if (current.memo === newMemo) {
       return { changed: false, current };
     }
 
-    const nextVersion = current.version + 1;
     db.prepare(
       `INSERT INTO sheet_answer
-         (year, team_num, item_id, memo, memo_version, memo_updated_at, memo_updated_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+         (year, team_num, item_id, memo, memo_updated_at, memo_updated_by)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(year, team_num, item_id) DO UPDATE SET
          memo = excluded.memo,
-         memo_version = excluded.memo_version,
          memo_updated_at = excluded.memo_updated_at,
          memo_updated_by = excluded.memo_updated_by`
-    ).run(year, team_num, item_id, newMemo, nextVersion, updatedAt, updatedBy);
+    ).run(year, team_num, item_id, newMemo, updatedAt, updatedBy);
 
     return {
       changed: true,
-      current: { memo: newMemo, version: nextVersion, updated_at: updatedAt, updated_by: updatedBy },
+      current: { memo: newMemo, updated_at: updatedAt, updated_by: updatedBy },
     };
-  });
+  })());
 
   if (!result.success) {
-    logger.warn(req, "memo.update", { error: result.error, year, item_id }, `#${team_num}`);
+    logger.warn(req, "memo.update", { error: result.internalError || result.error, year, item_id }, `#${team_num}`);
     return res.status(result.status).send(result.error);
   }
 
   if (result.result.conflict) {
+    logger.warn(req, "memo.stale_write", {
+      code: "INSPECTION_STALE_WRITE", year, item_id, expectedMemo, requested: newMemo,
+      current: result.result.current,
+    }, `#${team_num}`);
     return res.status(409).json({
-      error: "다른 사용자가 이 메모를 먼저 수정했습니다.",
+      code: "INSPECTION_STALE_WRITE",
+      message: "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 작성하세요.",
       current: result.result.current,
     });
   }
@@ -883,7 +1034,6 @@ app.put("/api/sheet/memo", (req, res) => {
       team_num,
       item_id,
       memo: newMemo,
-      version: result.result.current.version,
       updated_at: result.result.current.updated_at,
       updated_by: result.result.current.updated_by,
       mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
@@ -904,13 +1054,15 @@ app.put("/api/sheet/category-result", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
+  if (!teamPreflight(req, res, { action: "category_result.update", year, teamNum: team_num })) return;
   if (catResult !== undefined && catResult !== null && catResult !== "" && !["PASS", "FAIL"].includes(catResult)) {
     return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
   }
-  if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
-  if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
+  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  const templateCat = mutationTemplatePreflight(req, res, {
+    action: "category_result.update", id: category_id, year, level: "category",
+  });
+  if (!templateCat) return;
 
   const r = dbRun(() =>
     db.prepare(
@@ -919,7 +1071,7 @@ app.put("/api/sheet/category-result", (req, res) => {
   );
 
   if (!r.success) {
-    logger.warn(req, "category_result.update", { error: r.error, year, category_id }, `#${team_num}`);
+    logger.warn(req, "category_result.update", { error: r.internalError || r.error, year, category_id }, `#${team_num}`);
     return res.status(r.status).send(r.error);
   }
 
@@ -937,10 +1089,12 @@ app.put("/api/sheet/inspector", (req, res) => {
     return res.status(400).send("필수 필드가 올바르지 않습니다.");
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!isTeamActive(db, year, team_num)) return res.status(409).send("비활성화된 엔트리는 수정할 수 없습니다.");
-  if (year < new Date().getFullYear()) return res.status(400).send("이전 연도 데이터는 수정할 수 없습니다.");
-  const templateCat = db.prepare("SELECT id, name FROM sheet_template WHERE id = ? AND year = ? AND level = 'category'").get(category_id, year);
-  if (!templateCat) return res.status(400).send("해당 연도에 존재하지 않는 카테고리입니다.");
+  if (!teamPreflight(req, res, { action: "inspector.update", year, teamNum: team_num })) return;
+  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  const templateCat = mutationTemplatePreflight(req, res, {
+    action: "inspector.update", id: category_id, year, level: "category",
+  });
+  if (!templateCat) return;
 
   const result = dbRun(() =>
     db.prepare(
@@ -949,7 +1103,7 @@ app.put("/api/sheet/inspector", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "inspector.update", { error: result.error, year, category_id }, `#${team_num}`);
+    logger.warn(req, "inspector.update", { error: result.internalError || result.error, year, category_id }, `#${team_num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -959,24 +1113,13 @@ app.put("/api/sheet/inspector", (req, res) => {
   res.status(200).send();
 });
 
-/* ============================================
-   Internal API: 엔트리 라이프사이클 연동
-   ============================================ */
+if (!options.skipSpaFallback) addSpaFallback(app);
 
-registerTeamStatusRoute(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-});
-
-registerTeamLifecycleRoutes(app, {
-  db, dbRun, logger, requireInternalRequest, broadcastEvent,
-  tables: ["sheet_answer", "sheet_category_result", "sheet_inspector"],
-  channels: ["answer", "category-result", "inspector"],
-  statusTable: "team_status",
-});
-
-addSpaFallback(app);
-
-return { app, db };
+return {
+  app,
+  db,
+  closeSse,
+  sourceEvent: broadcastSSEEvent,
+  queries: { templateTree: getTemplateTree, summary: getInspectionSummary, bulkAnswers: getBulkAnswers },
+};
 }
-
-runIfDirect(import.meta, "inspection", createInspectionApp);

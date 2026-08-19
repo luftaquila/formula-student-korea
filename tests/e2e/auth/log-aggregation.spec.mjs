@@ -1,3 +1,4 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
@@ -25,17 +26,17 @@ test.describe("Multi-service log aggregation", () => {
 
   test("filtering logs reaches a downstream service and returns only its records", async ({ page }) => {
     // Generate a deterministic downstream log without changing state. The
-    // duplicate insert is rejected, but entry records the attempted action
+    // duplicate insert is rejected, but Competition records the attempted action
     // before returning its documented duplicate-key response.
-    const year = new Date().getFullYear();
-    const duplicate = await page.request.post(`/entry/api/entries?year=${year}`, {
-      data: { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
+    const year = currentCompetitionYear();
+    const duplicate = await page.request.post(`/competition/api/v1/teams?year=${year}`, {
+      data: { number: 1, university: "서울대학교", name: "SNU Racing" },
     });
-    expect(duplicate.status()).toBe(400);
+    expect(duplicate.status()).toBe(409);
 
     const query = new URLSearchParams({
       service: "entry",
-      action: "entry.create",
+      action: "team.create",
     });
     const res = await page.request.get(`/auth/api/admin/logs?${query}`);
     expect(res.status()).toBe(200);
@@ -45,7 +46,7 @@ test.describe("Multi-service log aggregation", () => {
     expect(aggregated.logs.length).toBeGreaterThan(0);
     expect(aggregated.logs.every(
       (log) => log._service === "entry"
-        && log.action === "entry.create",
+        && log.action === "team.create",
     )).toBe(true);
     expect(aggregated.logs.some(
       (log) => log.target === "#1" && log.level === "warn",

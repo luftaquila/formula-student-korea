@@ -53,17 +53,17 @@ test.describe("Documents student flow", () => {
     await expect(page.locator(".file-item .file-name")).toContainText("e2e-test-document.pdf");
     await expect(page.locator(".sub-info .info-label").filter({ hasText: "제출일" })).toBeVisible();
 
-    const sessionsRes = await page.request.get("/documents/api/sessions");
+    const sessionsRes = await page.request.get("/competition/api/v1/documents/sessions");
     expect(sessionsRes.status()).toBe(200);
     const session = (await sessionsRes.json()).sessions.find((item) => item.name === SESSION_NAME);
     expect(session?.id).toBeTruthy();
-    const detailRes = await page.request.get(`/documents/api/sessions/${session.id}`);
+    const detailRes = await page.request.get(`/competition/api/v1/documents/sessions/${session.id}`);
     expect(detailRes.status()).toBe(200);
     const detail = await detailRes.json();
     expect(detail.submission?.id).toBeTruthy();
     expect(detail.files).toHaveLength(1);
     const downloadRes = await page.request.get(
-      `/documents/api/submissions/${detail.submission.id}/files/${detail.files[0].id}`,
+      `/competition/api/v1/documents/submissions/${detail.submission.id}/files/${detail.files[0].id}`,
     );
     expect(downloadRes.status()).toBe(200);
     expect((await downloadRes.body()).length).toBeGreaterThan(0);

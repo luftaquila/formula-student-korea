@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from "vue";
 import { createKeyedDebouncer } from "@shared/debounce.js";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { useRouter } from "vue-router";
 import {
   fetchEntryYears,
@@ -18,7 +19,7 @@ import { useNotification } from "@shared/useNotification.js";
 const { success, error } = useNotification();
 const router = useRouter();
 
-const selectedYear = ref(new Date().getFullYear());
+const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const template = ref([]);
 const vehicleTypes = ref([]);
@@ -55,7 +56,7 @@ watch(activeTab, async (val) => {
   requestAnimationFrame(resizeAllTextareas);
 });
 
-const isReadOnly = computed(() => selectedYear.value < new Date().getFullYear());
+const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
 
 onMounted(async () => {
   try {

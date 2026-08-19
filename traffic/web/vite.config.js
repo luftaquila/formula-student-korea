@@ -9,7 +9,6 @@ export default (env) => ({
   plugins: [vue()],
   // @lib -> traffic/lib (traffic-local module; not cross-service shared)
   ...createViteConfig("traffic", 9500, {
-    entryProxy: true,
     server: { port: 5173 },
     aliases: { "@lib": resolve(here, "../lib") },
   })(env),

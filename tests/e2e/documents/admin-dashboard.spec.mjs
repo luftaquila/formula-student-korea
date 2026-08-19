@@ -1,12 +1,13 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const DROPDOWN_EMAIL = "e2e-student2@test.com";
 
 async function removeDropdownMapping(request) {
   const response = await request.delete(
-    `/documents/api/admin/student-teams/${encodeURIComponent(DROPDOWN_EMAIL)}/${YEAR}`,
+    `/competition/api/v1/documents/admin/student-teams/${encodeURIComponent(DROPDOWN_EMAIL)}/${YEAR}`,
   );
   expect([200, 404]).toContain(response.status());
 }
@@ -111,7 +112,7 @@ test.describe("Documents admin dashboard", () => {
     // constraint. Remove any leftover up front, and again in `finally` so a
     // mid-test failure can't poison a retry. DELETE is keyed by email+year.
     const removeMapping = () =>
-      page.request.delete(`/documents/api/admin/student-teams/${encodeURIComponent(EMAIL)}/${YEAR}`);
+      page.request.delete(`/competition/api/v1/documents/admin/student-teams/${encodeURIComponent(EMAIL)}/${YEAR}`);
     await removeMapping();
 
     try {
@@ -119,7 +120,7 @@ test.describe("Documents admin dashboard", () => {
       await expect(row).toBeVisible();
 
       // Create a mapping via API first
-      const res = await page.request.post("/documents/api/admin/student-teams", {
+      const res = await page.request.post("/competition/api/v1/documents/admin/student-teams", {
         data: { email: EMAIL, team_num: 3, year: YEAR },
       });
       expect(res.ok()).toBeTruthy();
@@ -130,7 +131,7 @@ test.describe("Documents admin dashboard", () => {
       // CI load — that race was the flake. (waitForResponse set up before the
       // navigation that triggers it, per the deterministic-wait policy.)
       const mappingsLoaded = page.waitForResponse(
-        (r) => r.url().includes("/api/admin/student-teams") && r.request().method() === "GET" && r.ok(),
+        (r) => r.url().includes("/competition/api/v1/documents/admin/student-teams") && r.request().method() === "GET" && r.ok(),
       );
       await page.reload();
       await mappingsLoaded;
@@ -142,7 +143,7 @@ test.describe("Documents admin dashboard", () => {
       // Click the clear button; clearStudent() DELETEs then re-fetches the
       // mappings, so wait on that GET for a deterministic cleared state.
       const mappingsReloaded = page.waitForResponse(
-        (r) => r.url().includes("/api/admin/student-teams") && r.request().method() === "GET" && r.ok(),
+        (r) => r.url().includes("/competition/api/v1/documents/admin/student-teams") && r.request().method() === "GET" && r.ok(),
       );
       await mappedRow.locator(".clear-btn").click();
       await mappingsReloaded;

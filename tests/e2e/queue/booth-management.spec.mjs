@@ -5,7 +5,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 const INSPECTION_TYPE = "battery";
 
 async function apiRegister(num, type = INSPECTION_TYPE) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/register/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
@@ -14,7 +14,7 @@ async function apiRegister(num, type = INSPECTION_TYPE) {
 }
 
 async function apiCancel(num, type = INSPECTION_TYPE) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/cancel/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/cancel/${type}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -23,21 +23,21 @@ async function apiCancel(num, type = INSPECTION_TYPE) {
 }
 
 async function apiGetQueue(type = INSPECTION_TYPE) {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${type}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   return res.json();
 }
 
 async function apiExitBooth(type, boothNum) {
-  await fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/exit`, {
+  await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/exit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
   });
 }
 
 async function apiEnterBooth(type, boothNum, num) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${type}/${boothNum}/enter`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/enter`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -61,11 +61,11 @@ test.describe("Queue booth management", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
@@ -74,7 +74,7 @@ test.describe("Queue booth management", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
         body: JSON.stringify({ value: originalPenalty }),
@@ -174,7 +174,7 @@ test.describe("Queue booth management", () => {
   test("exit team from booth via admin UI", async ({ page }) => {
     // Register and enter entry 3 via API
     await apiRegister(3);
-    await fetch(`${BASE_URL}/queue/api/admin/booths/${INSPECTION_TYPE}/1/enter`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/1/enter`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
       body: JSON.stringify({ num: 3 }),

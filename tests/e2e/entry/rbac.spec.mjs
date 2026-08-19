@@ -1,29 +1,29 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Entry gate (entry/index.mjs authRoleFn): GET /api/entries, /api/years,
+// Competition Teams gate: public active-team reads, admin mutations.
 // GET /api/vehicle-types and /api/health are public; every other route is "admin".
-// NOTE: auth/rbac.spec.mjs already covers student->POST /entry/api/entries 403 and
+// NOTE: auth/rbac.spec.mjs already covers student->POST /competition/api/v1/teams 403 and
 // unauth->POST 401. Here we cover official + chief (still below admin), the PATCH/DELETE
 // write surface, vehicle-types writes, and the genuinely public reads.
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 // One representative endpoint per HTTP method that the admin gate protects.
 const protectedWrites = [
-  { method: "post", path: `/entry/api/entries?year=${YEAR}`, body: { num: Date.now() % 100000, univ: "rbac-univ", team: "rbac-team", type: null } },
-  { method: "patch", path: `/entry/api/entries/999999?year=${YEAR}`, body: { univ: "rbac-univ" } },
-  { method: "delete", path: `/entry/api/entries/999999?year=${YEAR}`, body: {} },
-  { method: "post", path: `/entry/api/vehicle-types?year=${YEAR}`, body: { name: `rbac-${Date.now()}` } },
-  { method: "patch", path: `/entry/api/vehicle-types/999999?year=${YEAR}`, body: { name: `rbac-${Date.now()}` } },
-  { method: "delete", path: `/entry/api/vehicle-types/999999?year=${YEAR}`, body: {} },
+  { method: "post", path: `/competition/api/v1/teams?year=${YEAR}`, body: { number: Date.now() % 100000, university: "rbac-univ", name: "rbac-team" } },
+  { method: "patch", path: `/competition/api/v1/teams/999999`, body: { university: "rbac-univ" } },
+  { method: "post", path: `/competition/api/v1/vehicle-types?year=${YEAR}`, body: { name: `rbac-${Date.now()}` } },
+  { method: "patch", path: `/competition/api/v1/vehicle-types/999999`, body: { name: `rbac-${Date.now()}` } },
+  { method: "delete", path: `/competition/api/v1/vehicle-types/999999`, body: {} },
 ];
 
 // Public reads — unauthenticated must succeed.
 const publicReads = [
-  `/entry/api/entries?year=${YEAR}`,
-  "/entry/api/years",
-  `/entry/api/vehicle-types?year=${YEAR}`,
+  `/competition/api/v1/teams?year=${YEAR}`,
+  "/competition/api/v1/meta",
+  `/competition/api/v1/vehicle-types?year=${YEAR}`,
 ];
 
 test.describe("entry RBAC", () => {

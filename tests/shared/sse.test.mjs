@@ -39,19 +39,19 @@ describe('SSE Manager', () => {
 
   after(async () => {
     for (const s of servers) {
-      await new Promise((resolve) => s.close(resolve));
+      if (s.listening) await new Promise((resolve) => s.close(resolve));
     }
   });
 
   function createSSEApp(maxClients = 10) {
     const app = express();
-    const { broadcast, handler } = createSSEManager(maxClients);
+    const { broadcast, handler, close } = createSSEManager(maxClients);
     app.get('/events', handler(() => ({ test: true })));
     return new Promise((resolve) => {
       const server = app.listen(0, () => {
         servers.push(server);
         const port = server.address().port;
-        resolve({ server, port, broadcast, handler, baseUrl: `http://localhost:${port}` });
+        resolve({ server, port, broadcast, handler, close, baseUrl: `http://localhost:${port}` });
       });
     });
   }
@@ -156,5 +156,28 @@ describe('SSE Manager', () => {
     assert.ok(data.includes('"n":3'));
 
     res.destroy();
+  });
+
+  it('close drains active streams so the HTTP server can stop promptly', async () => {
+    const { server, baseUrl, close } = await createSSEApp();
+    const res = await getSSE(`${baseUrl}/events`);
+    assert.equal(res.statusCode, 200);
+    res.resume();
+    const ended = new Promise((resolve) => res.once('end', resolve));
+
+    close();
+    await ended;
+
+    const afterClose = await getSSE(`${baseUrl}/events`);
+    assert.equal(afterClose.statusCode, 503);
+    afterClose.resume();
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('server.close timed out with an SSE client')), 500);
+      server.close((error) => {
+        clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      });
+    });
   });
 });

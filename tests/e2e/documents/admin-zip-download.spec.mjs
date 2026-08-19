@@ -59,7 +59,7 @@ test.describe("Documents admin zip download", () => {
     await waitForPageReady(studentPage);
 
     // Get the submission ID for the isolated session.
-    const detailRes = await studentPage.request.get(`/documents/api/sessions/${sessionId}`);
+    const detailRes = await studentPage.request.get(`/competition/api/v1/documents/sessions/${sessionId}`);
     const detail = await detailRes.json();
     submissionId = detail.submission.id;
 
@@ -71,7 +71,7 @@ test.describe("Documents admin zip download", () => {
     await page.goto("/documents/admin", { waitUntil: "networkidle" });
 
     const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
-    const statusResp = page.waitForResponse((res) => res.url().includes("/api/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
+    const statusResp = page.waitForResponse((res) => res.url().includes("/competition/api/v1/documents/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
     await statusResp;
 
@@ -86,7 +86,7 @@ test.describe("Documents admin zip download", () => {
   });
 
   test("admin can download zip via API", async ({ page }) => {
-    const zipRes = await page.request.get(`/documents/api/admin/submissions/${submissionId}/zip`);
+    const zipRes = await page.request.get(`/competition/api/v1/documents/admin/submissions/${submissionId}/zip`);
     expect(zipRes.status()).toBe(200);
     expect(zipRes.headers()["content-type"]).toBe("application/zip");
     const disposition = decodeURIComponent(zipRes.headers()["content-disposition"]);
@@ -134,7 +134,7 @@ test.describe("Documents admin zip download", () => {
     await chiefPage.goto("/documents/admin", { waitUntil: "networkidle" });
 
     const sessionLink = chiefPage.locator(".session-link").filter({ hasText: SESSION_NAME });
-    const statusResp = chiefPage.waitForResponse((res) => res.url().includes("/api/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
+    const statusResp = chiefPage.waitForResponse((res) => res.url().includes("/competition/api/v1/documents/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
     await statusResp;
 

@@ -1,8 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Three concurrent inspection editors", () => {
   test.afterAll(async ({ browser }) => {
@@ -10,41 +11,62 @@ test.describe("Three concurrent inspection editors", () => {
     const page = await context.newPage();
 
     // Get template to find item IDs by name
-    const templateRes = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+    const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const category = template.find((c) => c.name === "전기 검차");
     const items = category.subcategories[0].groups[0].items;
     const passfailItem = items.find((i) => i.name === "전압 확인");
     const numberItem = items.find((i) => i.name === "절연 저항 측정");
 
+    const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/30`);
+    const sheetData = await dataRes.json();
+
     // Clear answers for team 30 via API
     const headers = { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
     if (passfailItem) {
-      await fetch(`${BASE_URL}/inspection/api/sheet/answer`, {
+      await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/answer`, {
         method: "PUT",
         headers,
-        body: JSON.stringify({ year: YEAR, team_num: 30, item_id: passfailItem.id, value: "" }),
+        body: JSON.stringify({
+          year: YEAR,
+          team_num: 30,
+          item_id: passfailItem.id,
+          value: "",
+          expectedValue: sheetData.answers[passfailItem.id]?.value || "",
+        }),
       });
     }
     if (numberItem) {
-      await fetch(`${BASE_URL}/inspection/api/sheet/answer`, {
+      await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/answer`, {
         method: "PUT",
         headers,
-        body: JSON.stringify({ year: YEAR, team_num: 30, item_id: numberItem.id, value: "" }),
+        body: JSON.stringify({
+          year: YEAR,
+          team_num: 30,
+          item_id: numberItem.id,
+          value: "",
+          expectedValue: sheetData.answers[numberItem.id]?.value || "",
+        }),
       });
     }
 
     // Clear memo for passfail item
     if (passfailItem) {
-      await fetch(`${BASE_URL}/inspection/api/sheet/memo`, {
+      await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/memo`, {
         method: "PUT",
         headers,
-        body: JSON.stringify({ year: YEAR, team_num: 30, item_id: passfailItem.id, memo: "" }),
+        body: JSON.stringify({
+          year: YEAR,
+          team_num: 30,
+          item_id: passfailItem.id,
+          memo: "",
+          expectedMemo: sheetData.answers[passfailItem.id]?.memo || "",
+        }),
       });
     }
 
     // Clear inspector
-    await fetch(`${BASE_URL}/inspection/api/sheet/inspector`, {
+    await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/inspector`, {
       method: "PUT",
       headers,
       body: JSON.stringify({ year: YEAR, team_num: 30, category_id: category.id, inspector: "" }),
@@ -64,9 +86,9 @@ test.describe("Three concurrent inspection editors", () => {
     const page3 = await context3.newPage();
 
     // SSE setup before navigation
-    const sse1 = page1.waitForResponse((res) => res.url().includes("/api/sheet/events"));
-    const sse2 = page2.waitForResponse((res) => res.url().includes("/api/sheet/events"));
-    const sse3 = page3.waitForResponse((res) => res.url().includes("/api/sheet/events"));
+    const sse1 = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/events"));
+    const sse2 = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/events"));
+    const sse3 = page3.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/events"));
 
     // All navigate to team 30's inspection sheet
     await page1.goto(`/inspection/${YEAR}/30`);
@@ -95,7 +117,7 @@ test.describe("Three concurrent inspection editors", () => {
     // Context 2: fill number input on "절연 저항 측정"
     const numRow2 = page2.locator(".item-row").filter({ hasText: "절연 저항 측정" });
     const numInput2 = numRow2.locator('input[type="number"]');
-    const answerSave = page2.waitForResponse((res) => res.url().includes("/api/sheet/answer") && res.status() === 200);
+    const answerSave = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/answer") && res.status() === 200);
     await numInput2.fill("42");
     await answerSave;
 
@@ -111,7 +133,7 @@ test.describe("Three concurrent inspection editors", () => {
     await memoText3.click();
     const memoInput3 = memoRow3.locator(".memo-input");
     await expect(memoInput3).toBeVisible();
-    const memoSave = page3.waitForResponse((res) => res.url().includes("/api/sheet/memo") && res.status() === 200);
+    const memoSave = page3.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/memo") && res.status() === 200);
     await memoInput3.fill("3명 동시 편집 테스트");
     await memoInput3.blur();
     await memoSave;

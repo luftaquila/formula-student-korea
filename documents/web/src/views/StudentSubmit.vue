@@ -10,7 +10,7 @@ const route = useRoute();
 const router = useRouter();
 const { notyf } = useNotification();
 
-const BASE_URL = import.meta.env.PROD ? "/documents" : "";
+const BASE_URL = "/competition/api/v1/documents";
 
 const loading = ref(true);
 const uploading = ref(false);
@@ -142,7 +142,7 @@ async function submit() {
         resolve(JSON.parse(xhr.responseText));
       };
       xhr.onerror = () => reject(new Error("네트워크 오류"));
-      xhr.open("POST", `${BASE_URL}/api/sessions/${route.params.id}/submit`);
+      xhr.open("POST", `${BASE_URL}/sessions/${route.params.id}/submit`);
       xhr.send(formData);
     });
 
@@ -170,12 +170,12 @@ onUnmounted(() => window.removeEventListener("beforeunload", onBeforeUnload));
 
 function downloadFile(fileId) {
   if (!submission.value) return;
-  window.open(`${BASE_URL}/api/submissions/${submission.value.id}/files/${fileId}`, "_blank");
+  window.open(`${BASE_URL}/submissions/${submission.value.id}/files/${fileId}`, "_blank");
 }
 
 function downloadAll() {
   if (!submission.value) return;
-  window.open(`${BASE_URL}/api/submissions/${submission.value.id}/zip`, "_blank");
+  window.open(`${BASE_URL}/submissions/${submission.value.id}/zip`, "_blank");
 }
 
 onMounted(fetchSession);

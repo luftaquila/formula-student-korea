@@ -1,11 +1,12 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable, enduranceTable, ENDURANCE_TABLE } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 async function fillAndSave(page, input, value) {
   const saved = page.waitForResponse(
-    (res) => res.url().includes("/api/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
+    (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
   );
   // 사용자가 실제로 하는 동작 그대로 둔다. 리렌더링이 타이핑 중인 값을 덮어쓰면 저장이
   // 나가지 않고 여기서 타임아웃 나야 한다 — 그게 이 테스트가 잡아야 하는 회귀다.
@@ -17,7 +18,7 @@ async function fillAndSave(page, input, value) {
 
 async function clearFields(page, teamNum, fields) {
   for (const field of fields) {
-    const response = await page.request.put("/score/api/score/endurance", {
+    const response = await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: teamNum, field, value: null },
     });
     expect(response.ok()).toBeTruthy();
@@ -77,13 +78,13 @@ test.describe("Score endurance input", () => {
     }
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[1]?.status).toBe("DNS");
 
     // The scoring contract is part of the same DNS lifecycle. Keeping this
     // assertion here avoids a second spec mutating the same endurance row.
-    const scoreResponse = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const scoreResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const scoreData = await scoreResponse.json();
     const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
     expect(enduranceEvent).toBeTruthy();
@@ -112,11 +113,11 @@ test.describe("Score endurance input", () => {
     await expect(row.locator(".record-value.dnf")).toContainText("DNF");
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[2]?.status).toBe("DNF");
 
-    const scoreResponse = await page.request.get(`/score/api/score?year=${YEAR}`);
+    const scoreResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const scoreData = await scoreResponse.json();
     const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
     expect(enduranceEvent).toBeTruthy();
@@ -154,7 +155,7 @@ test.describe("Score endurance input", () => {
     await expect(finalRecordCell.locator(".record-value")).toBeVisible();
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[3]?.driver1_time).toBe(330500); // 5:30.500 in ms
     expect(data[3]?.driver_change_time).toBe(5000); // 0:05.000 in ms
@@ -204,7 +205,7 @@ test.describe("Score endurance input", () => {
     // But the cone/oc values should be saved
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[10]?.driver1_cones).toBe(Number(newCones));
     expect(data[10]?.driver2_oc).toBe(Number(newOc));
@@ -243,7 +244,7 @@ test.describe("Score endurance input", () => {
     await expect(row.locator(".record-value.dnf")).toContainText("DSQ");
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[30]?.status).toBe("DSQ");
 
@@ -278,7 +279,7 @@ test.describe("Score endurance input", () => {
     await fillAndSave(page, d2Penalty, newPenalty);
 
     // Verify via API
-    const response = await page.request.get(`/score/api/score/endurance?year=${YEAR}`);
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     const data = await response.json();
     expect(data[31]?.driver1_start_delay).toBe(Number(newDelay));
     expect(data[31]?.driver2_penalty).toBe(Number(newPenalty));

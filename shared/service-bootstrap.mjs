@@ -3,7 +3,7 @@ import { createApp, createDbRun, ensureDataDir, setupProcessHandlers } from "./e
 import { createLogger } from "./logger.mjs";
 import { servicePort } from "./services.mjs";
 
-// 10개 서비스 index.mjs가 반복하던 공통 골격: DB 생성 → logger → createApp →
+// supporting service와 Competition module factory가 공유하는 골격: DB 생성 → logger → createApp →
 // /api/logs·/api/health 라우트 → dbRun. authRoleFn(역할 게이트)은 서비스 소유
 // 정책이므로 서비스별 함수 그대로 주입받는다 — 골격만 공유한다.
 //
@@ -13,19 +13,51 @@ export function createServiceSkeleton({
   name, express, Database, options = {}, authRoleFn,
   dbFile, maxLogRows, validateUserCacheTtl,
 }) {
-  const db = createDatabase(Database, options.dbPath || `./data/${dbFile || `${name}.db`}`);
+  // Competition injects one configured SQLite connection into every module.
+  // Independently deployed supporting services own the connection they create.
+  const ownsDb = !options.db;
+  const db = options.db || createDatabase(Database, options.dbPath || `./data/${dbFile || `${name}.db`}`);
   const logger = createLogger(db, name, maxLogRows);
-  const deps = { express, validateUser: options.validateUser };
-  if (validateUserCacheTtl !== undefined) deps.validateUserCacheTtl = validateUserCacheTtl;
+  const deps = {
+    express,
+    validateUser: options.validateUser,
+    staticRoot: options.staticRoot,
+  };
+  const requestedCacheTtl = options.validateUserCacheTtl ?? validateUserCacheTtl;
+  if (requestedCacheTtl !== undefined) deps.validateUserCacheTtl = requestedCacheTtl;
   const app = createApp(deps, authRoleFn);
+  app.locals.staticRoot = options.staticRoot || "./web/dist";
   app.get("/api/logs", logger.queryHandler);
   app.get("/api/health", (req, res) => res.send("ok"));
-  return { app, db, logger, dbRun: createDbRun() };
+  if (options.mutationGuard) {
+    app.use((req, res, next) => {
+      if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+      try {
+        options.mutationGuard(req);
+        return next();
+      } catch (error) {
+        const status = Number(error?.status) || 500;
+        logger.warn(req, "competition_year.write_rejected", {
+          error: error?.message || String(error),
+          code: error?.code,
+          year: error?.year,
+          method: req.method,
+          path: req.path,
+        }, error?.year == null ? req.path : String(error.year));
+        return res.status(status).json({
+          code: error?.code || "MUTATION_GUARD_FAILED",
+          message: status >= 500 ? "대회 연도 쓰기 조건을 확인할 수 없습니다." : error.message,
+          ...(error?.year ? { year: error.year } : {}),
+        });
+      }
+    });
+  }
+  return { app, db, logger, dbRun: createDbRun(), ownsDb };
 }
 
 // SPA fallback은 모든 서비스 라우트 **뒤에** 등록해야 하므로 골격이 아니라 각 팩토리
 // 말미에서 서비스가 직접 호출한다. root override는 테스트 픽스처 격리용.
-export function addSpaFallback(app, root = "./web/dist") {
+export function addSpaFallback(app, root = app.locals.staticRoot || "./web/dist") {
   app.get("/{*splat}", (req, res) => res.sendFile("index.html", { root }));
 }
 

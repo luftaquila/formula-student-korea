@@ -5,7 +5,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 const INSPECTION_TYPE = "electric";
 
 async function apiRegister(num) {
-  return fetch(`${BASE_URL}/queue/api/admin/register/${INSPECTION_TYPE}`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${INSPECTION_TYPE}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
     body: JSON.stringify({ num, phone: "01000000000" }),
@@ -13,7 +13,7 @@ async function apiRegister(num) {
 }
 
 async function apiEnterBooth(num, boothNum = 1) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
     body: JSON.stringify({ num }),
@@ -21,14 +21,14 @@ async function apiEnterBooth(num, boothNum = 1) {
 }
 
 async function apiExitBooth(boothNum = 1) {
-  return fetch(`${BASE_URL}/queue/api/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
+  return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
   });
 }
 
 async function apiGetQueue() {
-  const res = await fetch(`${BASE_URL}/queue/api/admin/inspection/${INSPECTION_TYPE}`, {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${INSPECTION_TYPE}`, {
     headers: { Cookie: getAuthCookie("official") },
   });
   return res.json();
@@ -47,11 +47,11 @@ test.describe("Queue rank real-time updates via SSE", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       headers: { Cookie: getAuthCookie("chief") },
     });
     originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ value: 0 }),
@@ -65,7 +65,7 @@ test.describe("Queue rank real-time updates via SSE", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/queue/api/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
         body: JSON.stringify({ value: originalPenalty }),
@@ -83,7 +83,7 @@ test.describe("Queue rank real-time updates via SSE", () => {
     // Open admin view
     const context = await browser.newContext({ storageState: storageStatePath("official") });
     const page = await context.newPage();
-    const ssePromise = page.waitForResponse((res) => res.url().includes("/api/events"));
+    const ssePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/events"));
     await page.goto("/queue/admin");
     await waitForPageReady(page);
     await ssePromise;
@@ -93,7 +93,7 @@ test.describe("Queue rank real-time updates via SSE", () => {
     await expect(electricTab).toBeVisible({ timeout: 10000 });
     const isActive = await electricTab.evaluate((el) => el.classList.contains("active"));
     if (!isActive) {
-      const queueRefresh = page.waitForResponse((res) => res.url().includes("/api/admin/inspection/") && res.status() === 200);
+      const queueRefresh = page.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/admin/inspection/") && res.status() === 200);
       await electricTab.click();
       await queueRefresh;
     }
@@ -122,7 +122,7 @@ test.describe("Queue rank real-time updates via SSE", () => {
     // Open public queue page
     const publicContext = await browser.newContext();
     const publicPage = await publicContext.newPage();
-    const ssePromise = publicPage.waitForResponse((res) => res.url().includes("/api/events"));
+    const ssePromise = publicPage.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/events"));
     await publicPage.goto("/queue");
     await waitForPageReady(publicPage);
     await ssePromise;

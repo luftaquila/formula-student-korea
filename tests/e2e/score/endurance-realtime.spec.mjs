@@ -1,11 +1,12 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, enduranceTable } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 async function fillAndSave(page, input, value) {
   const saved = page.waitForResponse(
-    (res) => res.url().includes("/api/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
+    (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
   );
   // 사용자가 실제로 하는 동작 그대로 둔다. 리렌더링이 타이핑 중인 값을 덮어쓰면 저장이
   // 나가지 않고 여기서 타임아웃 나야 한다 — 그게 이 테스트가 잡아야 하는 회귀다.
@@ -25,7 +26,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     try {
       // Clear all fields we may have set for team #32 (중앙대학교, entry num 32)
       for (const field of ["driver1_time", "driver1_cones"]) {
-        await page.request.put(`/score/api/score/endurance`, {
+        await page.request.put(`/competition/api/v1/score/score/endurance`, {
           data: { year: YEAR, team_num: 32, field, value: null },
         });
       }
@@ -41,8 +42,8 @@ test.describe("Score endurance real-time sync via SSE", () => {
     const page2 = await context2.newPage();
 
     // Set up SSE listeners before navigation
-    const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
-    const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
+    const sse1 = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
+    const sse2 = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
 
     await page1.goto("/score/endurance");
     await page2.goto("/score/endurance");
@@ -74,7 +75,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
 
     // Cleanup is not a second UI-save assertion. Use the API so client-side
     // SSE reconciliation cannot turn it into a no-op with no response.
-    const cleanup = await page1.request.put("/score/api/score/endurance", {
+    const cleanup = await page1.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 32, field: "driver1_time", value: null },
     });
     expect(cleanup.ok()).toBeTruthy();
@@ -91,8 +92,8 @@ test.describe("Score endurance real-time sync via SSE", () => {
     const page2 = await context2.newPage();
 
     // Set up SSE listeners before navigation
-    const sse1 = page1.waitForResponse((res) => res.url().includes("/api/score/events"));
-    const sse2 = page2.waitForResponse((res) => res.url().includes("/api/score/events"));
+    const sse1 = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
+    const sse2 = page2.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
 
     await page1.goto("/score/endurance");
     await page2.goto("/score/endurance");
@@ -103,7 +104,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     await sse2;
 
     // Pre-set driver1_cones = 3 for team #32 via API so we have a known starting value
-    await page1.request.put(`/score/api/score/endurance`, {
+    await page1.request.put(`/competition/api/v1/score/score/endurance`, {
       data: { year: YEAR, team_num: 32, field: "driver1_cones", value: 3 },
     });
 
@@ -118,7 +119,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     await expect(conesInput2).toBeFocused();
 
     // From context 1: set driver1_cones = 9 via API (SSE will be deferred in context 2)
-    await page1.request.put(`/score/api/score/endurance`, {
+    await page1.request.put(`/competition/api/v1/score/score/endurance`, {
       data: { year: YEAR, team_num: 32, field: "driver1_cones", value: 9 },
     });
 
@@ -135,7 +136,7 @@ test.describe("Score endurance real-time sync via SSE", () => {
     await expect(conesInput2).toHaveValue("9", { timeout: 5000 });
 
     // Cleanup: clear value
-    await page1.request.put(`/score/api/score/endurance`, {
+    await page1.request.put(`/competition/api/v1/score/score/endurance`, {
       data: { year: YEAR, team_num: 32, field: "driver1_cones", value: null },
     });
 

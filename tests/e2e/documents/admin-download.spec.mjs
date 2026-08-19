@@ -71,7 +71,7 @@ test.describe("Documents admin submission and download", () => {
     await expect(page.locator(".session-notice")).toContainText("격리된 E2E 제출 세션");
 
     const responsePromise = page.context().waitForEvent("response", {
-      predicate: (response) => response.url().includes("/documents/api/admin/submissions/")
+      predicate: (response) => response.url().includes("/competition/api/v1/documents/admin/submissions/")
         && response.url().includes("/files/"),
     });
     const previewPromise = page.waitForEvent("popup");

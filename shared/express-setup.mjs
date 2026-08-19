@@ -108,6 +108,32 @@ export function createCachedValidator(inner, ttlMs = 5000, maxEntries = 10000) {
   return validate;
 }
 
+export function createRemoteUserValidator() {
+  return async (email) => {
+    try {
+      const res = await fetch(`${serviceUrl("auth")}/api/users/role/${encodeURIComponent(email)}`, {
+        // 시크릿이 없으면 빈 헤더로 나간다. 빈 값은 falsy라 auth의 내부 인증 분기가
+        // 아예 잡히지 않고 쿠키 경로로 흘러 401로 거부된다 → transient fail-close.
+        headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return { valid: true, role: data.role };
+      }
+      if (res.status === 404) return { valid: false, role: null };
+      // 404(사용자 삭제/비활성)만 확정 무효다. 5xx/네트워크 오류는 auth 일시 장애이므로
+      // transient로 표시 — 이 요청은 fail-close로 거부(req.user=null)하되 세션 쿠키는
+      // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다.
+      console.warn(`[auth] fail-close: auth returned ${res.status} for ${email}`);
+      return { valid: false, role: null, transient: true };
+    } catch (e) {
+      console.warn(`[auth] fail-close: auth unreachable for ${email}: ${e.message || e}`);
+      return { valid: false, role: null, transient: true };
+    }
+  };
+}
+
 export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
@@ -188,32 +214,7 @@ export function createApp(deps, authRoleFn) {
   //
   // INTERNAL_SECRET 누락도 위 부팅 검사가 담당한다. 여기서 다시 검사하면 "설정이 없으면
   // 조용히 재검증을 끈다"는 이 PR이 없애려는 실패 모드가 한 칸 옆에서 되살아난다.
-  let validateUser = deps.validateUser || null;
-  if (!validateUser) {
-    validateUser = async (email) => {
-      try {
-        const res = await fetch(`${serviceUrl("auth")}/api/users/role/${encodeURIComponent(email)}`, {
-          // 시크릿이 없으면 빈 헤더로 나간다. 빈 값은 falsy라 auth의 내부 인증 분기가
-          // 아예 잡히지 않고 쿠키 경로로 흘러 401로 거부된다 → transient fail-close.
-          headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
-          signal: AbortSignal.timeout(3000),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          return { valid: true, role: data.role };
-        }
-        if (res.status === 404) return { valid: false, role: null };
-        // 404(사용자 삭제/비활성)만 확정 무효다. 5xx/네트워크 오류는 auth 일시 장애이므로
-        // transient로 표시 — 이 요청은 fail-close로 거부(req.user=null)하되 세션 쿠키는
-        // 지우지 않아 복구 후 재-OAuth 없이 세션이 이어진다.
-        console.warn(`[auth] fail-close: auth returned ${res.status} for ${email}`);
-        return { valid: false, role: null, transient: true };
-      } catch (e) {
-        console.warn(`[auth] fail-close: auth unreachable for ${email}: ${e.message || e}`);
-        return { valid: false, role: null, transient: true };
-      }
-    };
-  }
+  let validateUser = deps.validateUser || createRemoteUserValidator();
 
   // 유효 결과만 5초 캐시. N개 서비스 × 매 요청이 auth로 동기 왕복하던 비용을 없애되,
   // 삭제·강등 전파 지연 상한은 TTL로 유계된다(5초, 운영 승인값). 무효·transient는
@@ -279,7 +280,7 @@ export function createApp(deps, authRoleFn) {
       // logger의 저장소가 방금 실패한 바로 그것이기 때문이다 — createLogger(db)는 검증기가
       // 조회하던 같은 DB에 INSERT 하고, 로그 뷰어도 그 DB를 읽는다. 이 분기를 타게 만드는
       // 대표적 원인(auth의 SQLITE_BUSY/IOERR)에서는 DB 로깅이 정확히 무용하다. 프로세스
-      // stderr는 그 상황에서도 남는 유일한 채널이다. CLAUDE.md 로깅 정책의 예외 항목 참고.
+      // stderr는 그 상황에서도 남는 유일한 채널이다. CONTRIBUTING.md 로깅 정책의 예외 항목 참고.
       let result;
       try {
         result = await validateUser(req.user.email);
@@ -335,7 +336,11 @@ export function createApp(deps, authRoleFn) {
       });
       const role = authRoleFn(gateReq);
       if (!role) return next(); // public
-      const isApi = gatePath.startsWith("/api/");
+      // Nested module apps see `/years/...` here even when Express mounted
+      // them below `/competition/api/v1/...`. Include baseUrl so versioned API
+      // routes keep API-style 401/403 responses instead of UI redirects.
+      const basePath = String(req.baseUrl || "").toLowerCase().replace(/\/+$/, "");
+      const isApi = gatePath.startsWith("/api/") || basePath.startsWith("/competition/api/");
       if (!req.user) {
         if (!isApi) return res.redirect("/");
         return res.status(401).send("인증이 필요합니다.");
@@ -391,17 +396,18 @@ export function createDbRun() {
     try {
       return { success: true, result: fn() };
     } catch (e) {
+      const internalError = e?.message || String(e);
       if (e.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
-        return { success: false, status: 400, error: "이미 존재하는 항목입니다." };
+        return { success: false, status: 400, error: "이미 존재하는 항목입니다.", internalError };
       }
       if (e.code === "SQLITE_CONSTRAINT_UNIQUE") {
-        return { success: false, status: 400, error: "UNIQUE 제약 조건 위반입니다." };
+        return { success: false, status: 400, error: "UNIQUE 제약 조건 위반입니다.", internalError };
       }
       if (e.status && e.message) {
-        return { success: false, status: e.status, error: e.message };
+        return { success: false, status: e.status, error: e.message, internalError };
       }
       console.error("[DB]", e.message || e);
-      return { success: false, status: 500, error: "서버 오류가 발생했습니다." };
+      return { success: false, status: 500, error: "서버 오류가 발생했습니다.", internalError };
     }
   };
 }

@@ -1,4 +1,5 @@
-const YEAR = new Date().getFullYear();
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+const YEAR = currentCompetitionYear();
 
 export const PDF_CONTENT = Buffer.from(
   "%PDF-1.0\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R>>endobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF",
@@ -16,7 +17,7 @@ export async function createDocumentSession(request, name, options = {}) {
   const start = new Date(now - 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace("T", " ");
   const end = new Date(now + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace("T", " ");
   const lateEnd = new Date(now + 8 * 24 * 60 * 60 * 1000).toISOString().slice(0, 16).replace("T", " ");
-  const response = await request.post("/documents/api/admin/sessions", {
+  const response = await request.post("/competition/api/v1/documents/admin/sessions", {
     data: {
       name,
       notice: options.notice ?? "격리된 E2E 제출 세션",
@@ -35,14 +36,14 @@ export async function createDocumentSession(request, name, options = {}) {
 
 export async function deleteDocumentSession(request, sessionId) {
   if (!sessionId) return;
-  const response = await request.delete(`/documents/api/admin/sessions/${sessionId}`);
+  const response = await request.delete(`/competition/api/v1/documents/admin/sessions/${sessionId}`);
   if (![200, 404].includes(response.status())) {
     throw new Error(`delete document session ${sessionId}: ${response.status()} ${await response.text()}`);
   }
 }
 
 export async function submitDocument(request, sessionId, name, options = {}) {
-  const response = await request.post(`/documents/api/sessions/${sessionId}/submit`, {
+  const response = await request.post(`/competition/api/v1/documents/sessions/${sessionId}/submit`, {
     multipart: {
       files: {
         name,

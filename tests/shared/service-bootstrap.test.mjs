@@ -23,7 +23,7 @@ import {
 setupTestEnv();
 
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from '../../shared/service-bootstrap.mjs';
-import { servicePort, SERVICE_NAMES } from '../../shared/services.mjs';
+import { servicePort, RUNTIME_SERVICE_NAMES } from '../../shared/services.mjs';
 
 describe('createServiceSkeleton', () => {
   const dbPath = tmpDbPath();
@@ -125,9 +125,13 @@ describe('servicePort', () => {
       assert.ok(m, `compose.yml must define a '${name}' service`);
       return m[1];
     }
-    for (const name of SERVICE_NAMES) {
+    for (const name of RUNTIME_SERVICE_NAMES) {
       const port = servicePort(name);
       const block = composeBlock(name);
+      if (name === 'competition') {
+        assert.ok(block.includes(`:${port}/health/ready`));
+        continue;
+      }
       // 빌드 PORT와 헬스체크 포트는 독립적으로 드리프트할 수 있다(예: 헬스체크만 다른
       // 포트로 바뀌면 컨테이너가 unhealthy) — 둘 다 각각 요구한다.
       assert.ok(

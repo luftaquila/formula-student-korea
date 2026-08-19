@@ -12,7 +12,7 @@ const router = useRouter();
 
 const { success, error, warning } = useNotification();
 
-const { activeInspections, allBooths, lastBoothUpdate } = useSSE();
+const { activeInspections, allBooths, lastBoothUpdate, lastEntriesUpdate } = useSSE();
 
 const visibleInspections = computed(() =>
   activeInspections.value.filter((i) => !i.hidden_from_register),
@@ -86,6 +86,11 @@ watch(lastBoothUpdate, (update) => {
   if (update && update.type === inspection.value) {
     syncElapsedTimers();
   }
+});
+
+watch(lastEntriesUpdate, async () => {
+  try { entries.value = await fetchEntries(); }
+  catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
 });
 
 async function submit() {

@@ -5,7 +5,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 const INSPECTION_TYPE = "battery";
 
 async function apiResetPriorities(type = INSPECTION_TYPE) {
-  await fetch(`${BASE_URL}/queue/api/admin/priority/${type}/all`, {
+  await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${type}/all`, {
     method: "DELETE",
     headers: { Cookie: getAuthCookie("chief") },
   });
@@ -72,7 +72,7 @@ test.describe("Queue priority management", () => {
 
   test("remove team priority by clearing input", async ({ page }) => {
     // First set a priority via API
-    await fetch(`${BASE_URL}/queue/api/admin/priority/${INSPECTION_TYPE}`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ num: 2, priority: 1 }),
@@ -125,12 +125,12 @@ test.describe("Queue priority management", () => {
 
   test("reset all priorities for an inspection type", async ({ page }) => {
     // First set priorities for entries 1 and 2 via API
-    await fetch(`${BASE_URL}/queue/api/admin/priority/${INSPECTION_TYPE}`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ num: 1, priority: 1 }),
     });
-    await fetch(`${BASE_URL}/queue/api/admin/priority/${INSPECTION_TYPE}`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
       body: JSON.stringify({ num: 2, priority: 2 }),
@@ -151,7 +151,7 @@ test.describe("Queue priority management", () => {
     page.on("dialog", (dialog) => dialog.accept());
 
     // Reset all priorities via API (since the UI button is per-inspection-type within inspection-config)
-    await fetch(`${BASE_URL}/queue/api/admin/priority/${INSPECTION_TYPE}/all`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}/all`, {
       method: "DELETE",
       headers: { Cookie: getAuthCookie("chief") },
     });
@@ -255,7 +255,7 @@ test.describe("Queue priority management", () => {
     }
 
     // Restore original state
-    const restorePromise = page.waitForResponse((res) => res.url().includes("/api/admin/inspection/") && res.status() === 200);
+    const restorePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/admin/inspection/") && res.status() === 200);
     await firstToggle.click();
     await restorePromise;
   });

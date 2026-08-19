@@ -11,8 +11,8 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_SECRET,
-  TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
+import { currentCompetitionYear } from '../../shared/competition-year.mjs';
 
 setupTestEnv();
 
@@ -20,6 +20,7 @@ import { createTrafficApp } from '../../traffic/index.mjs';
 
 const requireFromTraffic = createRequire(import.meta.resolve('../../traffic/index.mjs'));
 const Database = requireFromTraffic('better-sqlite3');
+const CURRENT_YEAR = currentCompetitionYear();
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
@@ -150,163 +151,13 @@ describe('POST /api/records', () => {
   });
 });
 
-// ─── Records yearly summary and internal lifecycle ──────────────────────
-describe('Records lifecycle sync', () => {
-  const YEAR = new Date().getFullYear();
-  const RECORD_NAME = `FSK ${YEAR} Lifecycle Run`;
-
-  it('returns year records in one response and renumbers/invalidates team rows', async () => {
-    const createRes = await client.post('/api/records', {
-      body: {
-        name: 'Lifecycle Run',
-        data: {
-          time: '2026-01-02T10:00:00',
-          type: '가속',
-          entry: { num: 901, univ: 'OldUniv', team: 'OldTeam' },
-          result: 45000,
-        },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(createRes.status, 201);
-
-    const yearRes = await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie });
-    assert.equal(yearRes.status, 200);
-    const yearRows = await yearRes.json();
-    const table = yearRows.find((row) => row.name === RECORD_NAME);
-    assert.ok(table, 'year endpoint should include lifecycle record table');
-    assert.ok(table.records.some((row) => row.num === 901));
-
-    const patchRes = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year: YEAR, prevNum: 901, newNum: 902, entry: { univ: 'NewUniv', team: 'NewTeam' } },
-    });
-    assert.equal(patchRes.status, 200);
-    let rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
-    let row = rows.find((r) => r.num === 902);
-    assert.ok(row);
-    assert.equal(row.univ, 'NewUniv');
-    assert.equal(row.team, 'NewTeam');
-
-    const deleteRes = await client.delete(`/api/internal/team/902?year=${YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(deleteRes.status, 200);
-    rows = await (await client.get(`/api/records/${encodeURIComponent(RECORD_NAME)}`, { cookie: adminCookie })).json();
-    row = rows.find((r) => r.num === 902);
-    assert.equal(row.invalidated, 1);
-    assert.equal(row.scoreboard, 0);
-  });
-
-  it('excludes hidden record tables from the year endpoint (visibility filter)', async () => {
-    // record-visibility 제외는 score에서 traffic getYearRecordGroups로 이동했으므로
-    // 여기서 COALESCE(v.visible, 1) != 0 필터를 직접 검증한다.
-    const createRes = await client.post('/api/records', {
-      body: {
-        name: 'Hidden Run',
-        data: {
-          time: '2026-01-04T10:00:00',
-          type: '가속',
-          entry: { num: 910, univ: 'HideUniv', team: 'HideTeam' },
-          result: 47000,
-        },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(createRes.status, 201);
-    const name = `FSK ${YEAR} Hidden Run`;
-
-    const included = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
-    assert.ok(included.some((t) => t.name === name), 'visible table should appear in the year endpoint');
-
-    // 숨김 토글 (첫 PUT은 visible=0)
-    const hideRes = await client.put(`/api/records/${encodeURIComponent(name)}/visibility`, { cookie: adminCookie });
-    assert.equal(hideRes.status, 200);
-    assert.equal((await hideRes.json()).visible, 0);
-
-    const afterHide = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
-    assert.ok(!afterHide.some((t) => t.name === name), 'hidden table must be excluded from the year endpoint');
-
-    // 다시 표시 토글 (visible=1)
-    const showRes = await client.put(`/api/records/${encodeURIComponent(name)}/visibility`, { cookie: adminCookie });
-    assert.equal((await showRes.json()).visible, 1);
-    const afterShow = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
-    assert.ok(afterShow.some((t) => t.name === name), 'un-hidden table should reappear in the year endpoint');
-  });
-
-  it('treats prevNum === newNum as a no-op and does not invalidate the team\'s records', async () => {
-    const createRes = await client.post('/api/records', {
-      body: {
-        name: 'Self Renumber Run',
-        data: {
-          time: '2026-01-03T10:00:00',
-          type: '가속',
-          entry: { num: 905, univ: 'SelfUniv', team: 'SelfTeam' },
-          result: 46000,
-        },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(createRes.status, 201);
-    const name = `FSK ${YEAR} Self Renumber Run`;
-
-    const res = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year: YEAR, prevNum: 905, newNum: 905, entry: { univ: 'SelfUniv', team: 'SelfTeam' } },
-    });
-    assert.equal(res.status, 200);
-
-    const rows = await (await client.get(`/api/records/${encodeURIComponent(name)}`, { cookie: adminCookie })).json();
-    const row = rows.find((r) => r.num === 905);
-    assert.ok(row, 'record for #905 should still exist');
-    // self-renumber는 목적지(=자기 번호) record를 invalidate하므로, 가드가 없으면 invalidated=1이 된다.
-    assert.equal(row.invalidated, 0, 'self-renumber must not invalidate the team\'s own records');
-  });
-
-  it('clears armed wireless sessions on team delete and updates bound runs on renumber', async () => {
-    const deleteSelect = await client.post('/api/wireless/select', {
-      body: { event_type: '가속', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
-      cookie: adminCookie,
-    });
-    assert.equal(deleteSelect.status, 200);
-    await client.post('/api/wireless/arm', {
-      body: { event_type: '가속', action: 'green', green_tick: '1600000000', team: { num: 977, univ: 'DeleteUniv', team: 'DeleteTeam' }, event_name: 'LIFE-DELETE' },
-      cookie: adminCookie,
-    });
-    const del = await client.delete(`/api/internal/team/977?year=${YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(del.status, 200);
-    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    let accel = state.sessions.find(s => s.event_type === '가속');
-    assert.equal(accel.armed, false);
-    assert.equal(accel.team, null);
-    assert.equal(accel.event_name, null);
-
-    const NAME = 'LIFE-RENUMBER';
-    await client.post('/api/wireless/arm', {
-      body: { event_type: '오토크로스', action: 'green', green_tick: '1600000000', team: { num: 978, univ: 'OldUniv', team: 'OldTeam' }, event_name: NAME },
-      cookie: adminCookie,
-    });
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { year: YEAR, prevNum: 978, newNum: 979, entry: { univ: 'NewUniv', team: 'NewTeam' } },
-    });
-    assert.equal(renumber.status, 200);
-    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const autoX = state.sessions.find(s => s.event_type === '오토크로스');
-    assert.equal(autoX.team.num, 979);
-    assert.equal(autoX.team.univ, 'NewUniv');
-    assert.equal(autoX.team.team, 'NewTeam');
-
-    const dnf = await client.post('/api/wireless/dnf', { body: { event_type: '오토크로스' }, cookie: adminCookie });
-    assert.equal(dnf.status, 200);
-    const rows = await (await client.get(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie })).json();
-    assert.ok(rows.some(r => r.num === 979 && r.univ === 'NewUniv' && r.team === 'NewTeam' && r.result === -1), 'renumbered bound run should save under new team number');
-    assert.ok(!rows.some(r => r.num === 978), 'stale team number should not be used after renumber');
-
-    await client.delete(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie });
+describe('GET /api/records/year/:year', () => {
+  it('returns visible records for the requested competition year', async () => {
+    const year = currentCompetitionYear();
+    const response = await client.get(`/api/records/year/${year}`, { cookie: adminCookie });
+    assert.equal(response.status, 200);
+    const tables = await response.json();
+    assert.ok(tables.some((table) => table.name === `FSK ${year} 가속 1차`));
   });
 });
 
@@ -349,14 +200,14 @@ describe('GET /api/records (after creation)', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.ok(Array.isArray(data));
-    const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;
+    const tableName = `FSK ${CURRENT_YEAR} 가속 1차`;
     assert.ok(data.includes(tableName));
   });
 });
 
 describe('GET /api/records/:name (existing)', () => {
   it('returns records from created table', async () => {
-    const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;
+    const tableName = `FSK ${CURRENT_YEAR} 가속 1차`;
     const res = await client.get(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
@@ -373,7 +224,7 @@ describe('GET /api/records/:name (existing)', () => {
 });
 
 describe('PATCH /api/records/:name/:rowid', () => {
-  const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;
+  const tableName = `FSK ${CURRENT_YEAR} 가속 1차`;
 
   it('toggles invalidated (invalidated ON → scoreboard auto OFF)', async () => {
     const res = await client.patch(`/api/records/${encodeURIComponent(tableName)}/1`, {
@@ -446,7 +297,7 @@ describe('PATCH /api/records/:name/:rowid', () => {
   });
 
   it('returns 404 for non-existent table', async () => {
-    const res = await client.patch(`/api/records/${encodeURIComponent('NoSuchTable')}/1`, {
+    const res = await client.patch(`/api/records/${encodeURIComponent(`FSK ${CURRENT_YEAR} NoSuchTable`)}/1`, {
       body: { field: 'invalidated' },
       cookie: adminCookie,
     });
@@ -493,7 +344,7 @@ describe('GET /api/records/visibility', () => {
 });
 
 describe('PUT /api/records/:name/visibility', () => {
-  const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;
+  const tableName = `FSK ${CURRENT_YEAR} 가속 1차`;
 
   it('toggles visibility off', async () => {
     const res = await client.put(`/api/records/${encodeURIComponent(tableName)}/visibility`, { cookie: adminCookie });
@@ -524,7 +375,7 @@ describe('PUT /api/records/:name/visibility', () => {
 
 describe('DELETE /api/records/:name', () => {
   it('deletes table', async () => {
-    const tableName = `FSK ${new Date().getFullYear()} 가속 1차`;
+    const tableName = `FSK ${CURRENT_YEAR} 가속 1차`;
     const res = await client.delete(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
     assert.equal(res.status, 200);
 
@@ -558,6 +409,16 @@ describe('POST /api/controllers', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 201);
+    const audit = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'controller.upload' ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(audit.actor_email, 'admin@test.com');
+    assert.deepEqual(JSON.parse(audit.detail), {
+      rowid: 1,
+      timestamp: '2026-01-01T10:00:00.000Z',
+      bytes: 9,
+    });
   });
 
   it('validates required fields (missing timestamp → 400)', async () => {
@@ -566,6 +427,20 @@ describe('POST /api/controllers', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+    const audit = db.prepare(`
+      SELECT level, actor_email, target, detail FROM logs
+      WHERE action = 'controller.upload' ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(audit.level, 'warn');
+    assert.equal(audit.actor_email, 'admin@test.com');
+    assert.equal(audit.target, 'controller');
+    assert.deepEqual(JSON.parse(audit.detail), {
+      error: '타임스탬프가 누락되었습니다.',
+      reason: '타임스탬프가 누락되었습니다.',
+      operation: 'upload',
+      timestamp: null,
+      data_type: 'string',
+    });
   });
 
   it('validates required fields (missing data → 400)', async () => {
@@ -746,7 +621,7 @@ describe('SSE broadcast payloads', () => {
   });
 
   it('PATCH /api/records/:name/:rowid broadcasts full updated row', async () => {
-    const tableName = `FSK ${new Date().getFullYear()} SSE 테스트 1차`;
+    const tableName = `FSK ${CURRENT_YEAR} SSE 테스트 1차`;
 
     // Get the row's rowid
     const listRes = await client.get(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
@@ -802,6 +677,16 @@ describe('POST /api/wireless/ingest', () => {
     assert.equal(row.master_tick, bigTick, 'master_tick string preserved');
     assert.equal(row.rssi, -70.5);
     assert.equal(Object.hasOwn(row, 'raw'), false);
+    const audit = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'wireless.ingest' AND level = 'info'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(audit.actor_email, 'admin@test.com');
+    const detail = JSON.parse(audit.detail);
+    assert.deepEqual(detail.counts, { events: 1, telemetry: 0, stored: 1, deduped: 0, rejected: 0 });
+    assert.deepEqual(detail.source_nodes, ['1']);
+    assert.ok(detail.event_id_range.first <= detail.event_id_range.last);
   });
 
   it('is idempotent on (node_id, ev_seq, master_tick) — retransmits dedupe', async () => {
@@ -977,6 +862,69 @@ describe('POST /api/wireless/ingest', () => {
 
     s = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
     assert.equal(s.bridge.online, false, 'bridge offline without waiting for the 15s watchdog');
+  });
+
+  it('keeps bridge memory and persistence aligned across failed online and offline transitions', async () => {
+    await client.post('/api/wireless/bridge/offline', { cookie: adminCookie });
+    db.exec(`CREATE TRIGGER reject_bridge_online
+      BEFORE UPDATE OF bridge_online ON wireless_light
+      WHEN NEW.bridge_online = 1
+      BEGIN SELECT RAISE(ABORT, 'injected bridge online failure'); END`);
+    try {
+      const failedOnline = await client.post('/api/wireless/ingest', {
+        body: { events: [{ node_id: 'bridge-recovery', master_tick: '1', ev_seq: 1 }] },
+        cookie: adminCookie,
+      });
+      assert.equal(failedOnline.status, 500);
+      let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+      assert.equal(state.bridge.online, false);
+      assert.equal(state.light.bridge_online, 0);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM wireless_event WHERE node_id = 'bridge-recovery'").get().count, 0);
+    } finally {
+      db.exec('DROP TRIGGER reject_bridge_online');
+    }
+
+    const recovered = await client.post('/api/wireless/ingest', {
+      body: { events: [{ node_id: 'bridge-recovery', master_tick: '1', ev_seq: 1 }] },
+      cookie: adminCookie,
+    });
+    assert.equal(recovered.status, 200);
+    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(state.bridge.online, true);
+    assert.equal(state.light.bridge_online, 1);
+
+    db.exec(`CREATE TRIGGER reject_bridge_offline
+      BEFORE UPDATE OF bridge_online ON wireless_light
+      WHEN NEW.bridge_online = 0
+      BEGIN SELECT RAISE(ABORT, 'injected bridge offline failure'); END`);
+    try {
+      const failedOffline = await client.post('/api/wireless/bridge/offline', { cookie: adminCookie });
+      assert.equal(failedOffline.status, 500);
+      assert.equal(await failedOffline.text(), '브리지 상태를 저장할 수 없습니다.');
+      state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+      assert.equal(state.bridge.online, true);
+      assert.equal(state.light.bridge_online, 1);
+    } finally {
+      db.exec('DROP TRIGGER reject_bridge_offline');
+    }
+
+    const offline = await client.post('/api/wireless/bridge/offline', { cookie: adminCookie });
+    assert.equal(offline.status, 200);
+    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    assert.equal(state.bridge.online, false);
+    assert.equal(state.light.bridge_online, 0);
+
+    const warnings = db.prepare(`
+      SELECT action, detail FROM logs
+      WHERE level = 'warn' AND action IN ('wireless.ingest', 'wireless.bridge')
+        AND detail LIKE '%injected bridge%'
+      ORDER BY id
+    `).all();
+    assert.deepEqual(warnings.map((row) => row.action), ['wireless.ingest', 'wireless.bridge']);
+    assert.match(JSON.parse(warnings[0].detail).error, /injected bridge online failure/);
+    assert.equal(JSON.parse(warnings[0].detail).phase, 'database_mutation');
+    assert.match(JSON.parse(warnings[1].detail).error, /injected bridge offline failure/);
+    assert.equal(JSON.parse(warnings[1].detail).phase, 'bridge_transition');
   });
 });
 
@@ -1236,6 +1184,15 @@ describe('Wireless sessions & arm', () => {
     assert.equal(sess.event_type, '가속');
     assert.equal(sess.event_name, 'E2E-Select');
     assert.ok(sess.team && sess.team.num === 7 && sess.team.univ === 'KAIST');
+    const audit = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'wireless.select' AND target = '가속'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(audit.actor_email, 'admin@test.com');
+    const detail = JSON.parse(audit.detail);
+    assert.equal(detail.after.team.num, 7);
+    assert.equal(detail.after.event_name, 'E2E-Select');
   });
 
   it('POST /api/wireless/arm rejects invalid event/action (400)', async () => {
@@ -1284,6 +1241,17 @@ describe('Wireless lease (per-event exclusive control)', () => {
     const otherLease = await client.post('/api/wireless/lease/오토크로스', { cookie: otherCookie });
     assert.equal(otherLease.status, 409);
 
+    const rejectedAudits = db.prepare(`
+      SELECT action, actor_email, detail FROM logs
+      WHERE level = 'warn' AND target = '오토크로스'
+        AND action IN ('wireless.arm', 'wireless.lease')
+      ORDER BY id DESC LIMIT 2
+    `).all().reverse();
+    assert.deepEqual(rejectedAudits.map((row) => row.action), ['wireless.arm', 'wireless.lease']);
+    assert.ok(rejectedAudits.every((row) => row.actor_email === 'other@test.com'));
+    assert.deepEqual(rejectedAudits.map((row) => JSON.parse(row.detail).operation), ['green', 'claim']);
+    assert.ok(rejectedAudits.every((row) => JSON.parse(row.detail).reason.includes('다른 사용자가 제어 중')));
+
     // 보유자는 arm 가능.
     const ownArm = await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'green', green_tick: '16000000' }, cookie: adminCookie });
     assert.equal(ownArm.status, 200);
@@ -1293,7 +1261,35 @@ describe('Wireless lease (per-event exclusive control)', () => {
     assert.equal(rel.status, 200);
     const relSess = await rel.json();
     assert.equal(relSess.controller, null);
+    const audits = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'wireless.lease' AND target = '오토크로스' AND level = 'info'
+      ORDER BY id DESC LIMIT 2
+    `).all().reverse();
+    assert.deepEqual(audits.map((row) => JSON.parse(row.detail).operation), ['claim', 'release']);
+    assert.ok(audits.every((row) => row.actor_email === 'admin@test.com'));
     await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie });
+  });
+
+  it('logs a controlled database failure while claiming a lease', async () => {
+    db.exec(`CREATE TRIGGER reject_lease_claim
+      BEFORE UPDATE ON wireless_session
+      WHEN OLD.event_type = '내구' AND NEW.controller IS NOT OLD.controller
+      BEGIN SELECT RAISE(ABORT, 'injected lease failure'); END`);
+    try {
+      const res = await client.post('/api/wireless/lease/내구', { cookie: adminCookie });
+      assert.equal(res.status, 500);
+      const audit = db.prepare(`
+        SELECT actor_email, detail FROM logs
+        WHERE action = 'wireless.lease' AND level = 'warn' AND target = '내구'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(audit.actor_email, 'admin@test.com');
+      assert.equal(JSON.parse(audit.detail).operation, 'claim');
+      assert.match(JSON.parse(audit.detail).error, /injected lease failure/);
+    } finally {
+      db.exec('DROP TRIGGER reject_lease_claim');
+    }
   });
 
   it('lease/arm without auth returns 401', async () => {
@@ -1358,7 +1354,7 @@ describe('GET /api/time (shared clock)', () => {
 
 // ─── 서버 권위 기록 엔진 (Phase 4b) ────────────────────────────────────────
 describe('Wireless server-authoritative record engine', () => {
-  const YEAR = new Date().getFullYear();
+  const YEAR = CURRENT_YEAR;
   const tbl = (name) => `FSK ${YEAR} ${name}`;
 
   it('computes and saves a start→finish record from ingested events', async () => {
@@ -1431,6 +1427,26 @@ describe('Wireless server-authoritative record engine', () => {
     assert.equal(mine.length, 1, '랩이 한 기록에 이어붙는다(행 1개)');
     assert.equal(mine[0].result, 4500, '총합 시간');
     assert.equal(mine[0].detail, '00:01.000 / 00:02.000 / 00:01.500', '랩 목록 detail');
+    const audits = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'wireless.record' AND level = 'info' AND target = ?
+      ORDER BY id
+    `).all(tbl(NAME));
+    assert.equal(audits.length, 3, 'first lap insert and every later lap update are audited');
+    assert.ok(audits.every((row) => row.actor_email === 'system'));
+    const lastAudit = JSON.parse(audits.at(-1).detail);
+    assert.equal(lastAudit.run_id?.length > 0, true);
+    assert.equal(lastAudit.team_num, 12);
+    assert.equal(lastAudit.lap_count, 3);
+    assert.equal(lastAudit.lap_detail, '00:01.000 / 00:02.000 / 00:01.500');
+    assert.deepEqual(lastAudit.before, {
+      result: 3000,
+      detail: '00:01.000 / 00:02.000',
+    });
+    assert.deepEqual(lastAudit.after, {
+      result: 4500,
+      detail: '00:01.000 / 00:02.000 / 00:01.500',
+    });
 
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
     await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
@@ -1445,6 +1461,17 @@ describe('Wireless server-authoritative record engine', () => {
     assert.equal(res.status, 200);
     const rows = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
     assert.ok(rows.some((r) => r.type === ev && r.result === -1 && r.num === 3), 'DNF record saved');
+    const dnfAudit = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'wireless.dnf' AND target = ? ORDER BY id DESC LIMIT 1
+    `).get(ev);
+    assert.equal(dnfAudit.actor_email, 'admin@test.com');
+    assert.equal(JSON.parse(dnfAudit.detail).team.num, 3);
+    const recordAudit = db.prepare(`
+      SELECT actor_email FROM logs
+      WHERE action = 'wireless.record' AND target = ? ORDER BY id DESC LIMIT 1
+    `).get(tbl(NAME));
+    assert.equal(recordAudit.actor_email, 'admin@test.com');
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
     await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
   });
@@ -1546,12 +1573,53 @@ describe('Wireless physical command downlink', () => {
     assert.ok(armedState.sessions.find((session) => session.event_type === '가속').run_id);
     const reset = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'reset' }, cookie: adminCookie });
     assert.equal(reset.status, 200);
+    const resetAudit = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE action = 'wireless.command' AND target = '가속' AND level = 'info'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(resetAudit.actor_email, 'admin@test.com');
+    assert.deepEqual(JSON.parse(resetAudit.detail), {
+      action: 'reset',
+      before: { reset_pending: 0 },
+      after: { reset_pending: 1 },
+    });
     const beforeOff = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
     assert.ok(beforeOff.sessions.find((session) => session.event_type === '가속').run_id, 'reset remains pending until physical OFF');
     await client.post('/api/wireless/light', { body: { color: 'off' }, cookie: adminCookie });
     const afterOff = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
     assert.equal(afterOff.sessions.find((session) => session.event_type === '가속').run_id, null);
     await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
+  });
+
+  it('audits a reset database failure without publishing the command', async () => {
+    await client.post('/api/wireless/ingest', {
+      body: { events: [{ node_id: 'cmd-failure', master_tick: '101', ev_seq: 1 }] },
+      cookie: adminCookie,
+    });
+    await client.put('/api/wireless/physical-event', { body: { event_type: '내구' }, cookie: adminCookie });
+    db.exec(`CREATE TRIGGER reject_wireless_reset
+      BEFORE UPDATE ON wireless_session
+      WHEN OLD.event_type = '내구' AND NEW.reset_pending = 1
+      BEGIN SELECT RAISE(ABORT, 'injected reset failure'); END`);
+    try {
+      const reset = await client.post('/api/wireless/command', {
+        body: { event_type: '내구', action: 'reset' },
+        cookie: adminCookie,
+      });
+      assert.equal(reset.status, 500);
+      const audit = db.prepare(`
+        SELECT actor_email, detail FROM logs
+        WHERE action = 'wireless.command' AND target = '내구' AND level = 'warn'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(audit.actor_email, 'admin@test.com');
+      assert.match(JSON.parse(audit.detail).error, /injected reset failure/);
+      assert.equal(JSON.parse(audit.detail).action, 'reset');
+    } finally {
+      db.exec('DROP TRIGGER reject_wireless_reset');
+      await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
+    }
   });
 
   it('command without auth returns 401', async () => {
@@ -1562,7 +1630,7 @@ describe('Wireless physical command downlink', () => {
 
 // ─── 버그 수정 가드 (검증/음수/DNF) ────────────────────────────────────────
 describe('Wireless save guards', () => {
-  const YEAR = new Date().getFullYear();
+  const YEAR = CURRENT_YEAR;
 
   it('select rejects a malformed team (400)', async () => {
     const r1 = await client.post('/api/wireless/select', { body: { event_type: '가속', team: { num: '5', univ: 'X', team: 'Y' } }, cookie: adminCookie });
@@ -1648,6 +1716,363 @@ describe('Wireless save guards', () => {
     const count = db.prepare("SELECT COUNT(*) AS c FROM wireless_event WHERE node_id = ? AND master_tick = ?").get('no-seq', '123456').c;
     assert.equal(count, 0, 'NULL ev_seq 중복 row가 남지 않아야 함');
   });
+
+  it('persists structured warnings for early wireless business rejections', async () => {
+    const beforeId = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id;
+    const oversized = Array.from({ length: 201 }, (_, index) => ({
+      node_id: `oversized-${index}`, master_tick: String(index + 1), ev_seq: index + 1,
+    }));
+    const requests = [
+      client.post('/api/wireless/ingest', { body: { events: oversized }, cookie: adminCookie }),
+      client.post('/api/wireless/select', { body: { event_type: '짐카나' }, cookie: adminCookie }),
+      client.post('/api/wireless/select', {
+        body: { event_type: '가속', team: { num: 0, univ: 'X', team: 'Y' } }, cookie: adminCookie,
+      }),
+      client.post('/api/wireless/arm', {
+        body: { event_type: '가속', action: 'green', green_tick: {} }, cookie: adminCookie,
+      }),
+      client.post('/api/wireless/command', {
+        body: { event_type: '가속', action: 'blink' }, cookie: adminCookie,
+      }),
+      client.post('/api/wireless/lease/짐카나', { cookie: adminCookie }),
+      client.delete('/api/wireless/lease/짐카나', { cookie: adminCookie }),
+    ];
+    const responses = await Promise.all(requests);
+    assert.deepEqual(responses.map((response) => response.status), [400, 400, 400, 400, 400, 400, 400]);
+
+    await client.post('/api/wireless/select', {
+      body: { event_type: '오토크로스', team: { num: 4, univ: 'A', team: 'B' }, event_name: 'AUDIT-DNF' },
+      cookie: adminCookie,
+    });
+    await client.post('/api/wireless/arm', {
+      body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie,
+    });
+    const dnf = await client.post('/api/wireless/dnf', {
+      body: { event_type: '오토크로스' }, cookie: adminCookie,
+    });
+    assert.equal(dnf.status, 400);
+
+    const warnings = db.prepare(`
+      SELECT action, actor_email, target, detail FROM logs
+      WHERE id > ? AND level = 'warn'
+        AND action IN ('wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.dnf')
+      ORDER BY id
+    `).all(beforeId);
+    const actions = new Set(warnings.map((row) => row.action));
+    assert.deepEqual(actions, new Set([
+      'wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.dnf',
+    ]));
+    for (const row of warnings) {
+      const detail = JSON.parse(row.detail);
+      assert.equal(row.actor_email, 'admin@test.com');
+      assert.equal(typeof detail.operation, 'string');
+      assert.equal(typeof detail.reason, 'string');
+      assert.ok(row.target);
+    }
+  });
+});
+
+describe('Traffic TeamStore query-port failure auditing', () => {
+  it('returns controlled select and green-arm failures with stable team context', async () => {
+    const failingPath = tmpDbPath();
+    const failingStore = {
+      getById: () => { throw new Error('injected traffic team lookup failure'); },
+    };
+    const created = createTrafficApp({
+      dbPath: failingPath,
+      validateUser: TRUST_JWT,
+      teamStore: failingStore,
+    });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    const team = { id: 91, teamId: 91, num: 91, univ: 'Lookup U', team: 'Lookup T' };
+    try {
+      const select = await isolated.post('/api/wireless/select', {
+        body: { event_type: '가속', team, event_name: 'Lookup Select' },
+        cookie: adminCookie,
+      });
+      assert.equal(select.status, 500);
+      assert.equal(await select.text(), '팀 기준 정보를 확인할 수 없습니다.');
+
+      const arm = await isolated.post('/api/wireless/arm', {
+        body: { event_type: '가속', action: 'green', green_tick: '1', team, event_name: 'Lookup Arm' },
+        cookie: adminCookie,
+      });
+      assert.equal(arm.status, 500);
+      assert.equal(await arm.text(), '팀 기준 정보를 확인할 수 없습니다.');
+
+      const logs = created.db.prepare(`
+        SELECT action, detail FROM logs
+        WHERE level = 'warn' AND action IN ('wireless.select', 'wireless.arm')
+        ORDER BY id
+      `).all();
+      assert.deepEqual(logs.map((row) => row.action), ['wireless.select', 'wireless.arm']);
+      for (const row of logs) {
+        assert.deepEqual(JSON.parse(row.detail), {
+          error: 'injected traffic team lookup failure',
+          phase: 'canonical_team_lookup',
+          event_type: '가속',
+          year: CURRENT_YEAR,
+          team_id: 91,
+        });
+      }
+    } finally {
+      await stopServer(started.server);
+      for (const timer of created.timers || []) clearInterval(timer);
+      created.closeSse?.();
+      created.db.close();
+      cleanup(failingPath);
+    }
+  });
+});
+
+describe('Traffic mutation state preflight auditing', () => {
+  it('returns controlled audited failures for every session/light consumer and event-mode lookup', async () => {
+    const isolatedPath = tmpDbPath();
+    const rawDb = new Database(isolatedPath);
+    let failSession = false;
+    let failEventMode = false;
+    const proxyDb = new Proxy(rawDb, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return (sql) => {
+            if (failSession && sql.includes('FROM wireless_session ORDER BY event_type')) {
+              throw new Error('injected wireless session preflight failure');
+            }
+            if (failEventMode && sql.includes('SELECT enabled FROM event_mode WHERE event_type = ?')) {
+              throw new Error('injected event mode preflight failure');
+            }
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const created = createTrafficApp({ db: proxyDb, validateUser: TRUST_JWT });
+    for (const timer of created.timers || []) clearInterval(timer);
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      failSession = true;
+      const requests = [
+        () => isolated.post('/api/wireless/arm', {
+          body: { event_type: '가속', action: 'off' }, cookie: adminCookie,
+        }),
+        () => isolated.post('/api/wireless/select', {
+          body: { event_type: '가속', team: null, event_name: null }, cookie: adminCookie,
+        }),
+        () => isolated.post('/api/wireless/dnf', {
+          body: { event_type: '가속' }, cookie: adminCookie,
+        }),
+        () => isolated.post('/api/wireless/command', {
+          body: { event_type: '가속', action: 'off' }, cookie: adminCookie,
+        }),
+        () => isolated.post('/api/wireless/lease/가속', { cookie: adminCookie }),
+        () => isolated.delete('/api/wireless/lease/가속', { cookie: adminCookie }),
+      ];
+      const responses = [];
+      for (const request of requests) responses.push(await request());
+      assert.deepEqual(responses.map((response) => response.status), [500, 500, 500, 500, 500, 500]);
+      for (const response of responses) assert.match(await response.text(), /상태를 확인할 수 없습니다/);
+
+      failSession = false;
+      failEventMode = true;
+      const eventMode = await isolated.put('/api/event-modes/가속', { cookie: adminCookie });
+      assert.equal(eventMode.status, 500);
+      assert.equal(await eventMode.text(), '경기 모드 상태를 확인할 수 없습니다.');
+      failEventMode = false;
+
+      const warnings = rawDb.prepare(`
+        SELECT action, target, detail FROM logs
+        WHERE level = 'warn' AND action IN (
+          'wireless.arm', 'wireless.select', 'wireless.dnf', 'wireless.command', 'wireless.lease',
+          'event_mode.toggle'
+        ) ORDER BY id
+      `).all();
+      assert.deepEqual(warnings.map((row) => row.action), [
+        'wireless.arm', 'wireless.select', 'wireless.dnf', 'wireless.command',
+        'wireless.lease', 'wireless.lease', 'event_mode.toggle',
+      ]);
+      for (const row of warnings) {
+        const detail = JSON.parse(row.detail);
+        assert.equal(detail.phase, 'mutation_preflight');
+        assert.equal(row.target, '가속');
+        assert.match(detail.error, /injected (wireless session|event mode) preflight failure/);
+        assert.equal(typeof detail.operation, 'string');
+      }
+    } finally {
+      failSession = false;
+      failEventMode = false;
+      await stopServer(started.server);
+      created.closeSse?.();
+      rawDb.close();
+      cleanup(isolatedPath);
+    }
+  });
+});
+
+describe('Traffic record and background mutation auditing', () => {
+  it('audits record preflight rejections and throwing lookups', async () => {
+    const isolatedPath = tmpDbPath();
+    const rawDb = new Database(isolatedPath);
+    rawDb.exec(`
+      CREATE TABLE competition_team (
+        id INTEGER PRIMARY KEY,
+        year INTEGER NOT NULL,
+        num INTEGER NOT NULL,
+        active INTEGER NOT NULL
+      );
+      INSERT INTO competition_team (id, year, num, active) VALUES
+        (1, ${CURRENT_YEAR}, 1, 1),
+        (2, ${CURRENT_YEAR}, 2, 0);
+    `);
+    let failRecordLookup = false;
+    const proxyDb = new Proxy(rawDb, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return (sql) => {
+            if (failRecordLookup && sql.includes('SELECT 1 FROM record WHERE name = ? LIMIT 1')) {
+              throw new Error('injected traffic record lookup failure');
+            }
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const created = createTrafficApp({ db: proxyDb, validateUser: TRUST_JWT });
+    for (const timer of created.timers || []) clearInterval(timer);
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    const activeName = `FSK ${CURRENT_YEAR} Audit Active`;
+    const inactiveName = `FSK ${CURRENT_YEAR} Audit Inactive`;
+    try {
+      const create = await isolated.post('/api/records', {
+        body: {
+          name: 'Audit Active',
+          data: {
+            time: '2026-01-01T00:00:00.000Z',
+            type: '가속',
+            entry: { num: 1, univ: 'Active U', team: 'Active T' },
+            result: 1000,
+          },
+        },
+        cookie: adminCookie,
+      });
+      assert.equal(create.status, 201, await create.text());
+      rawDb.prepare(`
+        INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result)
+        VALUES (?, 1, '2026-01-01T00:00:00.000Z', 2, 'Inactive U', 'Inactive T', '가속', 1000)
+      `).run(inactiveName);
+
+      const missingTable = await isolated.patch(`/api/records/${encodeURIComponent(`FSK ${CURRENT_YEAR} Missing`)}/1`, {
+        body: { field: 'detail', value: 'x' }, cookie: adminCookie,
+      });
+      const missingRow = await isolated.patch(`/api/records/${encodeURIComponent(activeName)}/999`, {
+        body: { field: 'detail', value: 'x' }, cookie: adminCookie,
+      });
+      const inactive = await isolated.patch(`/api/records/${encodeURIComponent(inactiveName)}/1`, {
+        body: { field: 'detail', value: 'x' }, cookie: adminCookie,
+      });
+      const missingDelete = await isolated.delete('/api/records/MissingDelete', { cookie: adminCookie });
+      const missingVisibility = await isolated.put('/api/records/MissingVisibility/visibility', { cookie: adminCookie });
+      assert.deepEqual(
+        [missingTable.status, missingRow.status, inactive.status, missingDelete.status, missingVisibility.status],
+        [404, 404, 409, 404, 404],
+      );
+
+      failRecordLookup = true;
+      const failedLookup = await isolated.patch(`/api/records/${encodeURIComponent(activeName)}/1`, {
+        body: { field: 'detail', value: 'x' }, cookie: adminCookie,
+      });
+      assert.equal(failedLookup.status, 500);
+      assert.equal(await failedLookup.text(), '기록 정보를 확인할 수 없습니다.');
+      failRecordLookup = false;
+
+      const warnings = rawDb.prepare(`
+        SELECT action, actor_email, detail FROM logs
+        WHERE level = 'warn' AND action IN ('record.update', 'record.delete', 'record.visibility')
+        ORDER BY id
+      `).all();
+      assert.deepEqual(warnings.map((row) => row.action), [
+        'record.update', 'record.update', 'record.update',
+        'record.delete', 'record.visibility', 'record.update',
+      ]);
+      assert.ok(warnings.every((row) => row.actor_email === 'admin@test.com'));
+      const details = warnings.map((row) => JSON.parse(row.detail));
+      assert.deepEqual(details.slice(0, 5).map((detail) => detail.reason_code), [
+        'record_not_found', 'record_row_not_found', 'inactive_or_missing_team',
+        'record_not_found', 'record_not_found',
+      ]);
+      assert.equal(details[5].error, 'injected traffic record lookup failure');
+      assert.equal(details[5].phase, 'record_preflight');
+    } finally {
+      await stopServer(started.server);
+      created.closeSse?.();
+      rawDb.close();
+      cleanup(isolatedPath);
+    }
+  });
+
+  it('audits lease expiry and event retention successes through exported callbacks', () => {
+    const isolatedPath = tmpDbPath();
+    const created = createTrafficApp({
+      dbPath: isolatedPath,
+      validateUser: TRUST_JWT,
+    });
+    for (const timer of created.timers || []) clearInterval(timer);
+    try {
+      created.db.prepare(`
+        UPDATE wireless_session
+        SET controller = 'expired@test.invalid#tab', lease_expires_at = '2000-01-01T00:00:00.000Z'
+        WHERE event_type = '가속'
+      `).run();
+      const lease = created.runLeaseWatch();
+      assert.equal(lease.expired, 1);
+      const leaseLog = created.db.prepare(`
+        SELECT actor_email, detail FROM logs
+        WHERE action = 'wireless.lease.expire' AND target = '가속'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(leaseLog.actor_email, 'system');
+      assert.deepEqual(JSON.parse(leaseLog.detail), {
+        event_type: '가속',
+        before: {
+          controller: 'expired@test.invalid#tab',
+          lease_expires_at: '2000-01-01T00:00:00.000Z',
+        },
+        after: { controller: null, lease_expires_at: null },
+      });
+
+      const insert = created.db.prepare(`
+        INSERT INTO wireless_event (id, node_id, master_tick, ev_seq) VALUES (?, ?, ?, ?)
+      `);
+      for (const id of [1, 2, 500001, 500002]) insert.run(id, `retention-${id}`, String(id), id % 65536);
+      const retention = created.runEventRetention();
+      assert.deepEqual(retention, { skipped: false, removed: 2, cutoff: 2 });
+      assert.deepEqual(
+        created.db.prepare('SELECT id FROM wireless_event ORDER BY id').all().map((row) => row.id),
+        [500001, 500002],
+      );
+      const retentionLog = created.db.prepare(`
+        SELECT actor_email, detail FROM logs
+        WHERE action = 'wireless.event.retention' AND level = 'info'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(retentionLog.actor_email, 'system');
+      assert.deepEqual(JSON.parse(retentionLog.detail), {
+        cutoff_id: 2,
+        removed: 2,
+        retained_limit: 500000,
+      });
+    } finally {
+      created.closeSse?.();
+      created.db.close();
+      cleanup(isolatedPath);
+    }
+  });
 });
 
 // ─── Legacy per-record table → normalized `record` migration ─────────────
@@ -1699,120 +2124,5 @@ describe('Traffic legacy record consolidation migration', () => {
     migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
-  });
-});
-
-describe('Entry active-state synchronization', () => {
-  const YEAR = new Date().getFullYear();
-  const NUM = 990;
-  const NAME = `FSK ${YEAR} Inactive Run`;
-
-  it('preserves records while hiding and blocking an inactive team', async () => {
-    const created = await client.post('/api/records', {
-      body: {
-        name: 'Inactive Run',
-        data: { time: new Date().toISOString(), type: '가속', entry: { num: NUM, univ: 'U', team: 'T' }, result: 41000 },
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(created.status, 201);
-    const rowid = (await created.json()).record.rowid;
-    await client.post('/api/wireless/select', {
-      body: { event_type: '가속', team: { num: NUM, univ: 'U', team: 'T' }, event_name: 'Inactive Run' },
-      cookie: adminCookie,
-    });
-
-    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
-    await sse.ready;
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: NUM, year: YEAR, active: false, revision: 30 },
-    });
-    assert.equal(deactivate.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    sse.close();
-    const statusEvent = sse.events.find((event) => event.event === 'team-active');
-    assert.deepEqual(statusEvent?.data, { year: YEAR, team_num: NUM, active: false, revision: 30 });
-    assert.equal(
-      sse.events.some((event) => event.event === 'records' && 'active' in event.data),
-      false,
-      'status snapshots must not be published as records mutation payloads',
-    );
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ? AND num = ?").get(NAME, NUM).c, 1);
-    assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
-    const yearGroups = await (await client.get(`/api/records/year/${YEAR}`, { cookie: adminCookie })).json();
-    assert.ok(!yearGroups.some((group) => group.records.some((row) => row.num === NUM)));
-    assert.equal((await client.patch(`/api/records/${encodeURIComponent(NAME)}/${rowid}`, {
-      body: { field: 'cones', value: 1 }, cookie: adminCookie,
-    })).status, 409);
-    assert.equal((await client.post('/api/records', {
-      body: { name: 'Blocked Run', data: { time: new Date().toISOString(), type: '가속', entry: { num: NUM, univ: 'U', team: 'T' }, result: 42000 } },
-      cookie: adminCookie,
-    })).status, 409);
-    const session = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const accel = session.sessions.find((item) => item.event_type === '가속');
-    assert.equal(accel.team, null, 'in-progress team selection is cleared');
-
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: NUM, year: YEAR, active: true, revision: 29 },
-    });
-    assert.deepEqual(await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json(), []);
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: NUM, year: YEAR, active: true, revision: 31 },
-    });
-    const restored = await (await client.get(`/api/records/${encodeURIComponent(NAME)}`, { cookie: adminCookie })).json();
-    assert.equal(restored[0].result, 41000);
-  });
-
-  it('clears a renumbered wireless selection when the following bulk event deactivates it', async () => {
-    const prevNum = 991;
-    const newNum = 992;
-    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 70)")
-      .run(YEAR, prevNum);
-    const selected = await client.post('/api/wireless/select', {
-      body: {
-        event_type: '스키드패드',
-        team: { num: prevNum, univ: 'Old Univ', team: 'Old Team' },
-        event_name: 'Renumber Then Deactivate',
-      },
-      cookie: adminCookie,
-    });
-    assert.equal(selected.status, 200);
-
-    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
-    await sse.ready;
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: {
-        year: YEAR,
-        prevNum,
-        newNum,
-        entry: { univ: 'New Univ', team: 'New Team', active: false, active_revision: 71 },
-      },
-    });
-    assert.equal(renumber.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(YEAR, newNum),
-      { active: 1, revision: 70 },
-    );
-    let state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.equal(state.sessions.find((item) => item.event_type === '스키드패드').team.num, newNum);
-
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: newNum, year: YEAR, active: false, revision: 71 },
-    });
-    assert.equal(deactivate.status, 200);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    sse.close();
-
-    state = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.equal(state.sessions.find((item) => item.event_type === '스키드패드').team, null);
-    assert.deepEqual(
-      sse.events.find((event) => event.event === 'team-active')?.data,
-      { year: YEAR, team_num: newNum, active: false, revision: 71 },
-    );
   });
 });

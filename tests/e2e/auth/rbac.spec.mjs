@@ -20,11 +20,11 @@ test.describe("Cross-application RBAC", () => {
         });
       }
 
-      expect((await page.request.get("/entry/api/entries")).status()).toBe(200);
-      expect((await page.request.post("/entry/api/entries", {
-        data: { num: 999, univ: "test", team: "test", type: "EV" },
+      expect((await page.request.get("/competition/api/v1/teams")).status()).toBe(200);
+      expect((await page.request.post("/competition/api/v1/teams", {
+        data: { number: 999, university: "test", name: "test" },
       })).status()).toBe(401);
-      expect((await page.request.get("/traffic/api/records")).status()).toBe(401);
+      expect((await page.request.get("/competition/api/v1/traffic/records")).status()).toBe(401);
     });
   });
 
@@ -39,8 +39,8 @@ test.describe("Cross-application RBAC", () => {
 
       await page.goto("/documents");
       await expect(page).toHaveURL(/\/documents/);
-      const res = await page.request.post("/entry/api/entries", {
-        data: { num: 999, univ: "test", team: "test", type: "EV" },
+      const res = await page.request.post("/competition/api/v1/teams", {
+        data: { number: 999, university: "test", name: "test" },
       });
       expect(res.status()).toBe(403);
     });
@@ -59,7 +59,7 @@ test.describe("Cross-application RBAC", () => {
       await expect(page).toHaveURL(/\/inspection/);
       await page.goto("/queue/admin");
       await expect(page).toHaveURL(/\/queue\/admin/);
-      expect((await page.request.get("/traffic/api/records")).status()).toBe(403);
+      expect((await page.request.get("/competition/api/v1/traffic/records")).status()).toBe(403);
     });
   });
 
@@ -67,7 +67,7 @@ test.describe("Cross-application RBAC", () => {
     await withPage(browser, null, async (page) => {
       await page.goto("/queue");
       await expect(page).toHaveURL(/\/queue/);
-      expect((await page.request.get("/queue/api/active")).status()).toBe(200);
+      expect((await page.request.get("/competition/api/v1/queue/active")).status()).toBe(200);
     });
   });
 });

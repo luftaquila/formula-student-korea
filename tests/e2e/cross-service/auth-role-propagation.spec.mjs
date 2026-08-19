@@ -14,7 +14,7 @@ import { createJWT } from "../../../shared/express-setup.mjs";
 // spec covers the orthogonal DEACTIVATION → downstream-denial path against a
 // different service (documents), which that spec does not exercise.
 //
-// We use the documents service: GET /documents/api/sessions is student-gated, so
+// We use the documents service: GET /competition/api/v1/documents/sessions is student-gated, so
 // an `official` user (official > student) gets 200 while active and 401 once auth
 // deactivates them. It returns 200 even with no student-team mapping, so the result
 // hinges purely on the active flag — exactly what we're proving.
@@ -72,7 +72,7 @@ test.describe("Auth deactivation propagates to downstream service (fail-close)",
 
     // 3. While ACTIVE: the user can act on documents (a student-gated API that an
     //    official clears). Documents validates against auth per request.
-    const okRes = await fetch(`${BASE_URL}/documents/api/sessions`, {
+    const okRes = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions`, {
       headers: { Cookie: officialCookie },
     });
     expect(okRes.status).toBe(200);
@@ -106,7 +106,7 @@ test.describe("Auth deactivation propagates to downstream service (fail-close)",
     // 6. The NEXT documents request with the SAME (still cryptographically valid) JWT
     //    is now rejected: validateUser → 404 → req.user nulled → 401 on API route.
     await expect.poll(async () => {
-      const res = await fetch(`${BASE_URL}/documents/api/sessions`, {
+      const res = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions`, {
         headers: { Cookie: officialCookie },
       });
       return res.status;
@@ -122,7 +122,7 @@ test.describe("Auth deactivation propagates to downstream service (fail-close)",
     expect(reactivateRes.status).toBe(200);
 
     await expect.poll(async () => {
-      const res = await fetch(`${BASE_URL}/documents/api/sessions`, {
+      const res = await fetch(`${BASE_URL}/competition/api/v1/documents/sessions`, {
         headers: { Cookie: officialCookie },
       });
       return res.status;

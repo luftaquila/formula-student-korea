@@ -1,7 +1,9 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-Records`;
 
 test.describe("Traffic record management", () => {
@@ -13,13 +15,13 @@ test.describe("Traffic record management", () => {
     const page = await context.newPage();
 
     // Create a record by POSTing via the API
-    const response = await page.request.post("/traffic/api/records", {
+    const response = await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Records",
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 5432,
           detail: "e2e test record",
         },
@@ -28,13 +30,13 @@ test.describe("Traffic record management", () => {
     expect(response.status()).toBe(201);
 
     // Add a second record for completeness
-    const response2 = await page.request.post("/traffic/api/records", {
+    const response2 = await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Records",
         data: {
           time: new Date().toISOString(),
           type: "오토크로스",
-          entry: { num: 2, univ: "한양대학교", team: "ACES" },
+          entry: await trafficEntry(2),
           result: 12345,
           detail: "e2e autocross record",
         },
@@ -83,11 +85,11 @@ test.describe("Traffic record management", () => {
 
     // Edit via API (UI inline edit with Vue :value binding is unreliable in Playwright)
     // Use team 1 (서울대학교) which appears as first row in the seeded table
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     const targetRecord = records.find((r) => r.num === 1);
     expect(targetRecord).toBeTruthy();
-    const patchRes = await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${targetRecord.rowid}`, {
+    const patchRes = await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${targetRecord.rowid}`, {
       data: { field: "cones", value: newCones },
     });
     expect(patchRes.status()).toBe(200);
@@ -115,11 +117,11 @@ test.describe("Traffic record management", () => {
     const newOc = Number(currentOc) === 1 ? 2 : 1;
 
     // Edit via API (UI inline edit with Vue :value binding is unreliable in Playwright)
-    const recordsRes = await page.request.get(`/traffic/api/records/${TABLE_NAME}`);
+    const recordsRes = await page.request.get(`/competition/api/v1/traffic/records/${TABLE_NAME}`);
     const records = await recordsRes.json();
     const targetRecord = records.find((r) => r.num === 1);
     expect(targetRecord).toBeTruthy();
-    const patchRes = await page.request.patch(`/traffic/api/records/${TABLE_NAME}/${targetRecord.rowid}`, {
+    const patchRes = await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${targetRecord.rowid}`, {
       data: { field: "oc", value: newOc },
     });
     expect(patchRes.status()).toBe(200);
@@ -192,13 +194,13 @@ test.describe("Traffic record management", () => {
   test("deletes a record table", async ({ page }) => {
     // Create a temporary record file to delete
     const tempName = "E2E-Delete-Test";
-    const createRes = await page.request.post("/traffic/api/records", {
+    const createRes = await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: tempName,
         data: {
           time: new Date().toISOString(),
           type: "가속",
-          entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+          entry: await trafficEntry(1),
           result: 1234,
           detail: "delete test",
         },
@@ -221,7 +223,7 @@ test.describe("Traffic record management", () => {
     page.on("dialog", (dialog) => dialog.accept());
 
     // Delete the record table via API
-    const deleteRes = await page.request.delete(`/traffic/api/records/FSK ${YEAR} ${tempName}`);
+    const deleteRes = await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${tempName}`);
     expect(deleteRes.status()).toBe(200);
 
     // Reload and verify the file is gone
@@ -254,7 +256,7 @@ test.describe("Traffic record management", () => {
     const newDetail = currentDetail === "수정된 상세" ? "변경된 메모" : "수정된 상세";
 
     // Edit the detail text
-    const detailSavePromise = page.waitForResponse((res) => res.url().includes("/api/records/") && res.status() === 200);
+    const detailSavePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/traffic/records/") && res.status() === 200);
     await detailInput.fill(newDetail);
     await detailInput.blur();
     await detailSavePromise;
@@ -267,7 +269,7 @@ test.describe("Traffic record management", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    await page.request.delete(`/traffic/api/records/FSK ${YEAR} E2E-Records`);
+    await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} E2E-Records`);
     await context.close();
   });
 });

@@ -3,12 +3,12 @@ import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
-import { requireInternalRequest } from "../shared/express-setup.mjs";
-import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
+import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { serviceUrl } from "../shared/services.mjs";
-import { registerTeamStatusSnapshotRoute } from "../shared/team-status.mjs";
+import { competitionYearBounds, currentCompetitionYear } from "../shared/competition-year.mjs";
+import { ensureInactiveTeamView } from "../shared/team-status.mjs";
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -24,6 +24,7 @@ export const INSPECTIONS = {
 export function createQueueApp(options = {}) {
 
 const inspections = INSPECTIONS;
+const smsRequest = options.smsRequest || https.request;
 const QUEUE_LOG_MAX_ROWS = 100000;
 const BOOTH_LOG_MAX_ROWS = 100000;
 
@@ -37,6 +38,11 @@ function primaryKeyColumns(db, table) {
 
 function tableExists(db, table) {
   return !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+}
+
+function tableColumns(db, table) {
+  if (!tableExists(db, table)) return new Set();
+  return new Set(db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
 }
 
 // Rate limiter for public endpoints
@@ -88,6 +94,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     return null; // SPA (public display)
   },
 });
+ensureInactiveTeamView(db);
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
@@ -189,9 +196,11 @@ db.transaction(() => {
     booth_num INTEGER,
     active BOOLEAN DEFAULT TRUE,
     occupied_by INTEGER NULL,
+    occupied_team_id INTEGER NULL,
     entered_at INTEGER NULL,
     PRIMARY KEY (inspection, booth_num)
   );`);
+  addColumn(db, "booth", "occupied_team_id INTEGER");
 
   // 부스 사용 로그 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS booth_log (
@@ -212,16 +221,6 @@ db.transaction(() => {
     inspection TEXT,
     timestamp INTEGER
   );`);
-
-  // Entry 서비스가 전파한 최신 활성 상태. 행이 없으면 하위 호환을 위해 활성으로 본다.
-  db.exec(`CREATE TABLE IF NOT EXISTS team_status (
-    year INTEGER NOT NULL,
-    team_num INTEGER NOT NULL,
-    active INTEGER NOT NULL CHECK(active IN (0, 1)),
-    revision INTEGER NOT NULL,
-    PRIMARY KEY (year, team_num)
-  );`);
-  db.exec("CREATE INDEX IF NOT EXISTS idx_team_status_inactive ON team_status(year, active, team_num)");
 
   // 검차 종류 메타 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
@@ -246,7 +245,7 @@ db.transaction(() => {
 
 // 연도 컬럼 마이그레이션 (기존 스키마 생성과 분리)
 {
-  const yr = new Date().getFullYear();
+  const yr = currentCompetitionYear();
 
   // team_priority: year를 PK에 추가
   const tpInfo = db.prepare("PRAGMA table_info(team_priority)").all();
@@ -306,14 +305,10 @@ db.transaction(() => {
         ciInsert.run(row.num, type, row.phone, row.year);
       }
     }
-    // INSPECTIONS에서 사라진 검차 타입으로만 등록된 행은 위 필터에서 한 건도 옮겨지지
-    // 못한다. 무조건 DROP하면 그 등록 상태가 영구 소실되므로, raw 테이블을 삭제하지 않고
-    // current_legacy로 보존한다(auth의 ops_contacts_legacy 패턴과 동일).
-    if (tableExists(db, "current_legacy")) {
-      db.exec("DROP TABLE current");
-    } else {
-      db.exec("ALTER TABLE current RENAME TO current_legacy");
-    }
+    // The normalized tables are the only runtime model. Unknown inspection
+    // names are intentionally not retained in a second compatibility table.
+    db.exec("DROP TABLE current");
+    db.exec("DROP TABLE IF EXISTS current_legacy");
   }
 
   if (primaryKeyColumns(db, "inspection_history").join(",") !== "num,inspection,year,timestamp") {
@@ -371,12 +366,30 @@ db.transaction(() => {
    Express 앱 설정
    ============================================ */
 function currentYear() {
-  return new Date().getFullYear();
+  return currentCompetitionYear();
 }
 
-function isTeamActive(num, year = currentYear()) {
-  const row = db.prepare("SELECT active FROM team_status WHERE year = ? AND team_num = ?").get(year, num);
-  return !row || !!row.active;
+function activeTeam(num, year = currentYear()) {
+  if (options.teamStore) {
+    return options.teamStore.getByNumber(year, num, { includeInactive: false });
+  }
+  return { id: null, year, number: num, active: true };
+}
+
+function requestTeamActivity(req, res, { action, num, year = currentYear() }) {
+  try {
+    const team = activeTeam(num, year);
+    return { ok: true, active: !!team, team };
+  } catch (error) {
+    logger.warn(req, action, {
+      error: error?.message || String(error),
+      phase: "canonical_team_lookup",
+      year,
+      team_num: num,
+    }, `#${num}`);
+    res.status(500).send("팀 활성 상태를 확인할 수 없습니다.");
+    return { ok: false, active: false };
+  }
 }
 
 function parseYearQuery(value) {
@@ -462,23 +475,6 @@ function addCurrentInspection(num, phone, type, year) {
   throw { status: 400, message: `이미 ${name} 검차에 등록된 엔트리입니다.` };
 }
 
-function renumberCurrentRows(prevNum, newNum, year) {
-  const current = getCurrentEntry(prevNum, year);
-  if (!current) return 0;
-  db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(newNum, year);
-  db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(prevNum, year);
-  setCurrentInspections(newNum, current.phone, current.inspections, year);
-  return 1;
-}
-
-function renumberNumYearRows(table, prevNum, newNum, year, quoted = false) {
-  const tableRef = quoted ? `'${table}'` : table;
-  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${tableRef} WHERE num = ? AND year = ?`).get(prevNum, year).count;
-  if (existing === 0) return 0;
-  db.prepare(`DELETE FROM ${tableRef} WHERE num = ? AND year = ?`).run(newNum, year);
-  return db.prepare(`UPDATE ${tableRef} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
-}
-
 function insertQueueRow(type, num, phone, timestamp, year) {
   db.prepare("INSERT INTO inspection_queue (inspection, num, phone, timestamp, year) VALUES (?, ?, ?, ?, ?)")
     .run(type, num, phone, timestamp, year);
@@ -493,26 +489,10 @@ function getQueueRow(type, num, year) {
     .get(type, num, year);
 }
 
-function renumberQueueRows(type, prevNum, newNum, year) {
-  const existing = db.prepare("SELECT COUNT(*) AS count FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?")
-    .get(type, prevNum, year).count;
-  if (existing === 0) return 0;
-  db.prepare("DELETE FROM inspection_queue WHERE inspection = ? AND num = ? AND year = ?").run(type, newNum, year);
-  return db.prepare("UPDATE inspection_queue SET num = ? WHERE inspection = ? AND num = ? AND year = ?")
-    .run(newNum, type, prevNum, year).changes;
-}
-
-function renumberLogRows(table, prevNum, newNum, year) {
-  const existing = db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE num = ? AND year = ?`).get(prevNum, year).count;
-  if (existing === 0) return 0;
-  db.prepare(`DELETE FROM ${table} WHERE num = ? AND year = ?`).run(newNum, year);
-  return db.prepare(`UPDATE ${table} SET num = ? WHERE num = ? AND year = ?`).run(newNum, prevNum, year).changes;
-}
-
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager();
+const { broadcast: broadcastEvent, handler: sseHandler, close: closeSse } = createSSEManager();
 
 // SSE 엔드포인트
 app.get("/api/events", sseHandler(() => {
@@ -541,6 +521,15 @@ function broadcastPenalties() {
   // SSE endpoint is public, so only broadcast an invalidation signal. Authorized
   // clients fetch the protected penalty list separately.
   broadcastEvent("penalties", {});
+}
+function sourceEvent(event, data) {
+  broadcastEvent(event, data);
+  if (event !== "entries") return;
+  // TeamStore applies renumber/deactivation cleanup before this callback. Reuse
+  // the module's existing invalidations so open clients also discard queue and
+  // booth state that referred to the previous canonical team row.
+  broadcastEvent("queue", { type: null, activeInspections: getActiveInspections() });
+  for (const type of Object.keys(inspections)) broadcastBooth(type);
 }
 
 /* ============================================
@@ -605,8 +594,8 @@ function buildQueueQuery({ ignoreReinspection, ignorePriority }) {
     LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
     WHERE t.inspection = ? AND t.year = ?
       AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = t.year AND s.team_num = t.num AND s.active = 0
+        SELECT 1 FROM competition_inactive_team s
+        WHERE s.year = t.year AND s.team_num = t.num
       )
     ORDER BY ${orderClauses.join(", ")}
   `;
@@ -654,8 +643,8 @@ function getQueueRank(inspection, num, year) {
       LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
       WHERE t.inspection = ? AND t.year = ?
         AND NOT EXISTS (
-          SELECT 1 FROM team_status s
-          WHERE s.year = t.year AND s.team_num = t.num AND s.active = 0
+          SELECT 1 FROM competition_inactive_team s
+          WHERE s.year = t.year AND s.team_num = t.num
         )
     ) AS sub WHERE sub.num = ?
   `);
@@ -887,6 +876,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   const num = numValidation.value;
   const phone = phoneValidation.value;
   const type = typeValidation.value;
+  const year = currentYear();
 
   try {
     const entries = await getEntries();
@@ -900,6 +890,9 @@ app.post("/api/admin/register/:type", async (req, res) => {
     return res.status(500).send("엔트리를 조회할 수 없습니다.");
   }
 
+  const activity = requestTeamActivity(req, res, { action: "queue.register", num, year });
+  if (!activity.ok) return;
+
   let denyReason = null;
   const result = dbRun(() => {
     db.transaction(() => {
@@ -907,9 +900,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
         throw { status: 400, message: "대기열이 비활성화 상태입니다." };
       }
 
-      const year = currentYear();
-
-      if (!isTeamActive(num, year)) {
+      if (!activity.active) {
         throw { status: 409, message: "비활성화된 엔트리는 대기열에 등록할 수 없습니다." };
       }
 
@@ -967,12 +958,12 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   const type = typeValidation.value;
   const year = currentYear();
 
-  // SMS 발송용: 삭제 전 N번째 대기자 조회
-  const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-  const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
-
   const result = dbRun(() => {
-    db.transaction(() => {
+    return db.transaction(() => {
+      // SMS 대상 조회도 취소 mutation의 preflight다. 실패하면 삭제를 시작하지
+      // 않고 동일한 audited boundary에서 응답한다.
+      const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+      const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
       const queueEntry = getQueueRow(type, num, year);
       if (!queueEntry) {
         throw { status: 400, message: "존재하지 않는 엔트리입니다." };
@@ -1011,11 +1002,18 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
       // 대기열 이벤트 로그 기록 (트랜잭션 내부)
       db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)").run("cancel", num, type, Date.now(), year);
+      return { prev };
     })();
   });
 
   if (!result.success) {
-    logger.warn(req, "queue.cancel", { error: result.error }, `#${num}`);
+    logger.warn(req, "queue.cancel", {
+      error: result.internalError || result.error,
+      phase: "mutation_preflight",
+      year,
+      team_num: num,
+      inspection: type,
+    }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1028,7 +1026,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
   res.status(200).send();
 
   // SMS 발송 (N번째 대기자에게)
-  sendSmsNotification(type, prev);
+  sendSmsNotification(type, result.result.prev);
 });
 
 // GET /api/admin/penalties - 현재 연도에 적용 중인 취소 페널티 조회
@@ -1047,8 +1045,8 @@ app.get("/api/admin/penalties", (req, res) => {
       JOIN inspection i ON i.type = cp.inspection
       WHERE cp.year = ? AND cp.until > ?
         AND NOT EXISTS (
-          SELECT 1 FROM team_status s
-          WHERE s.year = cp.year AND s.team_num = cp.num AND s.active = 0
+          SELECT 1 FROM competition_inactive_team s
+          WHERE s.year = cp.year AND s.team_num = cp.num
         )
       ORDER BY cp.until ASC, cp.num ASC, cp.inspection ASC
     `).all(year, now),
@@ -1076,9 +1074,11 @@ app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
   const type = typeValidation.value;
   const num = numValidation.value;
   const year = currentYear();
+  const activity = requestTeamActivity(req, res, { action: "penalty.restore", num, year });
+  if (!activity.ok) return;
   const result = dbRun(() =>
     db.transaction(() => {
-      if (!isTeamActive(num, year)) {
+      if (!activity.active) {
         throw { status: 409, message: "비활성화된 엔트리의 대기열 상태는 복구할 수 없습니다." };
       }
       if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
@@ -1179,8 +1179,8 @@ app.get("/api/admin/priority/:type", (req, res) => {
       SELECT p.* FROM team_priority p
       WHERE p.inspection = ? AND p.year = ?
         AND NOT EXISTS (
-          SELECT 1 FROM team_status s
-          WHERE s.year = p.year AND s.team_num = p.num AND s.active = 0
+          SELECT 1 FROM competition_inactive_team s
+          WHERE s.year = p.year AND s.team_num = p.num
         )
       ORDER BY p.priority ASC, p.num ASC
     `).all(req.params.type, currentYear()),
@@ -1210,7 +1210,20 @@ app.post("/api/admin/priority/:type", (req, res) => {
     return res.status(400).send(priorityValidation.error);
   }
 
-  if (!isTeamActive(numValidation.value)) {
+  const activity = requestTeamActivity(req, res, {
+    action: "priority.set",
+    num: numValidation.value,
+  });
+  if (!activity.ok) return;
+  if (!activity.active) {
+    logger.warn(req, "priority.set", {
+      error: "inactive_or_missing_team",
+      reason: "inactive_or_missing_team",
+      year: currentYear(),
+      team_num: numValidation.value,
+      inspection: req.params.type,
+      requested_priority: priorityValidation.value,
+    }, `#${numValidation.value}`);
     return res.status(409).send("비활성화된 엔트리에는 우선순위를 설정할 수 없습니다.");
   }
 
@@ -1246,22 +1259,31 @@ app.delete("/api/admin/priority/:type", (req, res) => {
   }
 
   const year = currentYear();
-  const prior = db.prepare("SELECT priority FROM team_priority WHERE num = ? AND inspection = ? AND year = ?").get(numValidation.value, req.params.type, year);
-  const result = dbRun(() =>
-    db.prepare("DELETE FROM team_priority WHERE num = ? AND inspection = ? AND year = ?").run(numValidation.value, req.params.type, year),
-  );
+  const result = dbRun(() => db.transaction(() => {
+    const prior = db.prepare("SELECT priority FROM team_priority WHERE num = ? AND inspection = ? AND year = ?")
+      .get(numValidation.value, req.params.type, year);
+    const deleted = db.prepare("DELETE FROM team_priority WHERE num = ? AND inspection = ? AND year = ?")
+      .run(numValidation.value, req.params.type, year);
+    return { prior, deleted };
+  })());
 
   if (!result.success) {
-    logger.warn(req, "priority.delete", { error: result.error }, `#${numValidation.value}`);
+    logger.warn(req, "priority.delete", {
+      error: result.internalError || result.error,
+      phase: "mutation_preflight",
+      year,
+      team_num: numValidation.value,
+      inspection: req.params.type,
+    }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
-  if (!result.result.changes) {
+  if (!result.result.deleted.changes) {
     logger.warn(req, "priority.delete", { error: "존재하지 않는 우선순위 엔트리" }, "#" + numValidation.value);
     return res.status(400).send("존재하지 않는 우선순위 엔트리입니다.");
   }
 
-  logger.log(req, "priority.delete", { inspection: req.params.type, priority: prior?.priority }, `#${numValidation.value}`);
+  logger.log(req, "priority.delete", { inspection: req.params.type, priority: result.result.prior?.priority }, `#${numValidation.value}`);
 
   // SSE 브로드캐스트: 우선순위 변경 -> 대기열 순서 변경
   broadcastQueue(req.params.type);
@@ -1299,8 +1321,8 @@ app.get("/api/admin/history/status", (req, res) => {
     FROM inspection_history h
     WHERE h.year = ?
       AND NOT EXISTS (
-        SELECT 1 FROM team_status s
-        WHERE s.year = h.year AND s.team_num = h.num AND s.active = 0
+        SELECT 1 FROM competition_inactive_team s
+        WHERE s.year = h.year AND s.team_num = h.num
       )
   `).all(year);
 
@@ -1530,16 +1552,24 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
 
   const year = currentYear();
 
-  if (!isTeamActive(num, year)) {
+  const activity = requestTeamActivity(req, res, { action: "booth.enter", num, year });
+  if (!activity.ok) return;
+  if (!activity.active) {
+    logger.warn(req, "booth.enter", {
+      error: "inactive_or_missing_team",
+      reason: "inactive_or_missing_team",
+      year,
+      team_num: num,
+      inspection: type,
+      booth: boothNum,
+    }, `#${num}`);
     return res.status(409).send("비활성화된 엔트리는 부스에 입장시킬 수 없습니다.");
   }
 
-  // SMS 발송용: 삭제 전 N번째 대기자 조회
-  const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
-  const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
-
   const result = dbRun(() => {
-    db.transaction(() => {
+    return db.transaction(() => {
+      const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+      const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
       // 대기열에 팀이 있는지 확인
       const queueEntry = getQueueRow(type, num, year);
       if (!queueEntry) {
@@ -1564,8 +1594,8 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
       deleteQueueRow(type, num, year);
 
       // 부스 점유
-      db.prepare("UPDATE booth SET occupied_by = ?, entered_at = ? WHERE inspection = ? AND booth_num = ?").run(
-        num, now, type, boothNum
+      db.prepare("UPDATE booth SET occupied_by = ?, occupied_team_id = ?, entered_at = ? WHERE inspection = ? AND booth_num = ?").run(
+        num, activity.team?.id ?? null, now, type, boothNum
       );
 
       // 부스 로그 기록
@@ -1584,15 +1614,28 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
         const remaining = current.inspections.filter((i) => i !== type);
         setCurrentInspections(num, current.phone, remaining, year);
       }
+      return { prev };
     })();
   });
 
   if (!result.success) {
-    logger.warn(req, "booth.enter", { error: result.error }, `#${num}`);
+    logger.warn(req, "booth.enter", {
+      error: result.internalError || result.error,
+      phase: "mutation_preflight",
+      year,
+      team_num: num,
+      inspection: type,
+      booth: boothNum,
+    }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "booth.enter", { inspection: type, booth: boothNum }, `#${num}`);
+  logger.log(req, "booth.enter", {
+    inspection: type,
+    booth: boothNum,
+    year,
+    team_id: activity.team?.id ?? null,
+  }, `#${num}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
   broadcastBooth(type);
@@ -1601,7 +1644,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
   res.status(200).send();
 
   // SMS 발송 (N번째 대기자에게)
-  sendSmsNotification(type, prev);
+  sendSmsNotification(type, result.result.prev);
 });
 
 // POST /api/admin/booths/:type/:boothNum/exit - 부스에서 퇴장 (검차 완료)
@@ -1618,8 +1661,7 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
     return res.status(400).send("올바르지 않은 부스 번호입니다.");
   }
 
-  const year = currentYear();
-
+  let boothBefore = null;
   const result = dbRun(() =>
     db.transaction(() => {
       const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
@@ -1629,33 +1671,106 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
       if (booth.occupied_by === null) {
         throw { status: 400, message: "비어있는 부스입니다." };
       }
+      boothBefore = {
+        occupied_by: booth.occupied_by,
+        occupied_team_id: booth.occupied_team_id ?? null,
+        entered_at: booth.entered_at ?? null,
+      };
 
       const now = Date.now();
-      const num = booth.occupied_by;
+      const current = currentYear();
+      const persistedTeamId = Number(booth.occupied_team_id);
+      const hasPersistedTeamId = Number.isInteger(persistedTeamId) && persistedTeamId > 0;
+      const canonical = hasPersistedTeamId && options.teamStore?.getById
+        ? options.teamStore.getById(persistedTeamId)
+        : null;
+      if (hasPersistedTeamId && options.teamStore?.getById
+          && (!canonical || canonical.number !== booth.occupied_by)) {
+        throw { status: 409, message: "부스의 팀 정보가 일치하지 않습니다." };
+      }
+      const num = canonical?.number ?? booth.occupied_by;
+      const stateYear = canonical?.year ?? current;
+      const historicalState = stateYear !== current;
+      const logHasTeamId = tableColumns(db, "booth_log").has("team_id");
+      let logMutation;
+      if (logHasTeamId && hasPersistedTeamId) {
+        logMutation = historicalState
+          ? db.prepare(`
+              DELETE FROM booth_log
+              WHERE team_id = ? AND inspection = ? AND booth_num = ? AND year = ? AND exited_at IS NULL
+            `).run(persistedTeamId, type, boothNum, stateYear)
+          : db.prepare(`
+              UPDATE booth_log SET exited_at = ?
+              WHERE team_id = ? AND inspection = ? AND booth_num = ? AND year = ? AND exited_at IS NULL
+            `).run(now, persistedTeamId, type, boothNum, stateYear);
+      } else {
+        logMutation = historicalState
+          ? db.prepare(`
+              DELETE FROM booth_log
+              WHERE num = ? AND inspection = ? AND booth_num = ? AND year = ? AND exited_at IS NULL
+            `).run(num, type, boothNum, stateYear)
+          : db.prepare(`
+              UPDATE booth_log SET exited_at = ?
+              WHERE num = ? AND inspection = ? AND booth_num = ? AND year = ? AND exited_at IS NULL
+            `).run(now, num, type, boothNum, stateYear);
+      }
+      if (logMutation.changes !== 1) {
+        throw { status: 409, message: "부스 사용 기록이 일치하지 않습니다." };
+      }
 
-      // 부스 비우기
-      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?").run(
-        type, boothNum
-      );
+      // 연도가 바뀐 뒤 남은 점유는 완료 이력으로 오인하지 않고 미완료 transient 상태로 정리한다.
+      if (!historicalState) {
+        if (tableColumns(db, "inspection_history").has("team_id") && hasPersistedTeamId) {
+          db.prepare(`
+            INSERT INTO inspection_history (num, inspection, timestamp, year, team_id)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(num, type, now, stateYear, persistedTeamId);
+        } else {
+          db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)")
+            .run(num, type, now, stateYear);
+        }
+      }
 
-      // 부스 로그 퇴장 시간 기록
-      db.prepare(
-        "UPDATE booth_log SET exited_at = ? WHERE num = ? AND inspection = ? AND booth_num = ? AND year = ? AND exited_at IS NULL"
-      ).run(now, num, type, boothNum, year);
+      db.prepare(`
+        UPDATE booth SET occupied_by = NULL, occupied_team_id = NULL, entered_at = NULL
+        WHERE inspection = ? AND booth_num = ?
+      `).run(type, boothNum);
 
-      // 검차 이력에 추가 (재검 판단용)
-      db.prepare("INSERT INTO inspection_history (num, inspection, timestamp, year) VALUES (?, ?, ?, ?)").run(num, type, now, year);
-
-      return num;
+      return {
+        num,
+        teamId: hasPersistedTeamId ? persistedTeamId : null,
+        stateYear,
+        currentYear: current,
+        normalizedHistoricalState: historicalState,
+        before: boothBefore,
+        logAction: historicalState ? "deleted_incomplete" : "closed",
+      };
     })()
   );
 
   if (!result.success) {
-    logger.warn(req, "booth.exit", { error: result.error }, type);
+    logger.warn(req, "booth.exit", {
+      error: result.internalError || result.error,
+      inspection: type,
+      booth: boothNum,
+      current_year: currentYear(),
+      before: boothBefore,
+    }, type);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "booth.exit", { inspection: type, booth: boothNum }, `#${result.result}`);
+  logger.log(req, "booth.exit", {
+    inspection: type,
+    booth: boothNum,
+    team_id: result.result.teamId,
+    team_num: result.result.num,
+    state_year: result.result.stateYear,
+    current_year: result.result.currentYear,
+    normalized_historical_state: result.result.normalizedHistoricalState,
+    before: result.result.before,
+    after: { occupied_by: null, occupied_team_id: null, entered_at: null },
+    open_log: { action: result.result.logAction, count: 1 },
+  }, `#${result.result.num}`);
 
   // SSE 브로드캐스트: 부스 및 대기열 변경
   broadcastBooth(type);
@@ -1672,24 +1787,23 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
 app.get("/api/admin/stats/timerange", (req, res) => {
   const year = parseYearQuery(req.query.year);
   if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
-  const yearStart = new Date(year, 0, 1).getTime();
-  const yearEnd = new Date(year + 1, 0, 1).getTime() - 1;
+  const { from: yearStart, to: yearEnd } = competitionYearBounds(year);
 
   const result = dbRun(() => {
     const q = db.prepare(
       `SELECT MIN(timestamp) as minTs, MAX(timestamp) as maxTs FROM queue_log
        WHERE year = ? AND timestamp >= ? AND timestamp <= ?
          AND NOT EXISTS (
-           SELECT 1 FROM team_status s
-           WHERE s.year = queue_log.year AND s.team_num = queue_log.num AND s.active = 0
+           SELECT 1 FROM competition_inactive_team s
+           WHERE s.year = queue_log.year AND s.team_num = queue_log.num
          )`
     ).get(year, yearStart, yearEnd);
     const b = db.prepare(
       `SELECT MIN(entered_at) as minTs, MAX(COALESCE(exited_at, entered_at)) as maxTs FROM booth_log
        WHERE year = ? AND entered_at >= ? AND entered_at <= ?
          AND NOT EXISTS (
-           SELECT 1 FROM team_status s
-           WHERE s.year = booth_log.year AND s.team_num = booth_log.num AND s.active = 0
+           SELECT 1 FROM competition_inactive_team s
+           WHERE s.year = booth_log.year AND s.team_num = booth_log.num
          )`
     ).get(year, yearStart, yearEnd);
 
@@ -1723,13 +1837,13 @@ app.get("/api/admin/stats", (req, res) => {
   }
 
   const queueLogConditions = ["year = ?", `NOT EXISTS (
-    SELECT 1 FROM team_status s
-    WHERE s.year = queue_log.year AND s.team_num = queue_log.num AND s.active = 0
+    SELECT 1 FROM competition_inactive_team s
+    WHERE s.year = queue_log.year AND s.team_num = queue_log.num
   )`];
   const queueLogParams = [year];
   const boothLogConditions = ["year = ?", "exited_at IS NOT NULL", `NOT EXISTS (
-    SELECT 1 FROM team_status s
-    WHERE s.year = booth_log.year AND s.team_num = booth_log.num AND s.active = 0
+    SELECT 1 FROM competition_inactive_team s
+    WHERE s.year = booth_log.year AND s.team_num = booth_log.num
   )`];
   const boothLogParams = [year];
 
@@ -1818,7 +1932,9 @@ app.get("/api/admin/stats/:num", (req, res) => {
   const { from, to, inspection } = req.query;
   const year = parseYearQuery(req.query.year);
   if (year == null) return res.status(400).send("올바르지 않은 연도입니다.");
-  if (!isTeamActive(num, year)) return res.status(404).send("엔트리를 찾을 수 없습니다.");
+  const activity = requestTeamActivity(req, res, { action: "stats.view", num, year });
+  if (!activity.ok) return;
+  if (!activity.active) return res.status(404).send("엔트리를 찾을 수 없습니다.");
 
   if (inspection) {
     const typeValidation = validateInspection(inspection);
@@ -1972,6 +2088,11 @@ app.get("/api/admin/settings/sms", (req, res) => {
 app.patch("/api/admin/settings/sms", (req, res) => {
   if (req.body.value === true) {
     if (!smsConfig) {
+      logger.warn(req, "settings.sms", {
+        error: "sms_configuration_unavailable",
+        reason: "sms_configuration_unavailable",
+        requested_enabled: true,
+      }, "sms");
       return res.status(400).send("SMS 설정이 되어 있지 않습니다. 이메일/SMS 서비스에서 설정해 주세요.");
     }
   }
@@ -2053,15 +2174,11 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
    유틸리티 함수
    ============================================ */
 async function getEntries() {
-  const entryServer = serviceUrl("entry");
-  const headers = {};
-  if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
-  const res = await fetch(`${entryServer}/api/entries`, { headers, signal: AbortSignal.timeout(5000) });
-  if (!res.ok) throw new Error("엔트리를 조회할 수 없습니다.");
-  return res.json();
+  if (!options.teamStore) throw new Error("Competition team store is required");
+  return options.teamStore.moduleEntries(currentYear());
 }
 
-let smsConfig = null;
+let smsConfig = options.smsConfig || null;
 
 // On a co-restart the email service is usually not up yet, so a connection
 // failure here is a transient startup race — the 5-min refresh recovers it.
@@ -2113,7 +2230,8 @@ async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
 }
 
 // Refresh SMS config every 5 minutes to pick up admin changes
-setInterval(loadSmsConfig, 5 * 60 * 1000).unref();
+const smsConfigRefreshTimer = setInterval(loadSmsConfig, 5 * 60 * 1000);
+smsConfigRefreshTimer.unref();
 
 // SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게
 let lastSmsSkipWarn = 0;
@@ -2166,28 +2284,55 @@ function sendSmsNotification(type, prev) {
 
       payload.headers["x-ncp-apigw-signature-v2"] = secret;
 
-      const sms = https.request(payload, (res) => {
+      const sms = smsRequest(payload, (res) => {
+        let responseSettled = false;
+        const finishResponse = (log) => {
+          if (responseSettled) return;
+          responseSettled = true;
+          log();
+        };
         let data = "";
         res.on("data", (chunk) => (data += chunk));
         res.on("end", () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            logger.log(null, "sms.send", { response: data, num: target.num, type });
-          } else {
-            logger.warn(null, "sms.send", { error: data, status: res.statusCode, num: target.num, type });
-          }
+          finishResponse(() => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              logger.log(null, "sms.send", { response: data, num: target.num, type });
+            } else {
+              logger.warn(null, "sms.send", { error: data, status: res.statusCode, num: target.num, type });
+            }
+          });
         });
+        res.on("aborted", () => {
+          finishResponse(() => logger.warn(
+            null, "sms.error", { error: "response aborted", num: target.num, type },
+          ));
+        });
+        res.on("error", (e) => {
+          finishResponse(() => logger.warn(
+            null, "sms.error", { error: e.message, num: target.num, type },
+          ));
+        });
+        res.on("close", () => finishResponse(() => logger.warn(
+          null, "sms.error", { error: "response closed before completion", num: target.num, type },
+        )));
       });
 
       sms.setTimeout(5000, () => {
-        logger.warn(null, "sms.timeout", { num: target.num, type });
-        sms.destroy();
+        try {
+          logger.warn(null, "sms.timeout", { num: target.num, type });
+          sms.destroy();
+        } catch (error) {
+          throw error;
+        }
       });
-      sms.on("error", (e) => logger.warn(null, "sms.error", { error: e.message, num: target.num, type }));
+      sms.on("error", (e) => {
+        logger.warn(null, "sms.error", { error: e.message, num: target.num, type });
+      });
       sms.write(
         JSON.stringify({
           type: "SMS",
           from: smsConfig.phone_number_sms_sender,
-          content: `[FSK ${new Date().getFullYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
+          content: `[FSK ${currentCompetitionYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
           messages: [{ to: target.phone }],
         }),
       );
@@ -2199,250 +2344,9 @@ function sendSmsNotification(type, prev) {
 }
 
 /* ============================================
-   Internal API: 엔트리 상태/삭제 연동
-   ============================================ */
-
-// queue는 team_status를 자체 스키마로 관리하지만(부스·우선순위 정리 같은 부수효과가
-// 딸려서), entry의 정합성 점검 대상인 건 같다. 스냅샷 라우트만 공유 모듈에서 가져온다.
-registerTeamStatusSnapshotRoute(app, { db, dbRun, requireInternalRequest });
-
-// PATCH /api/internal/team-active - 엔트리 활성 상태 동기화
-app.patch("/api/internal/team-active", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const numValidation = validateEntryNum(req.body.num);
-  const yearCheck = validateYear(req.body.year);
-  const revision = Number(req.body.revision);
-  if (!numValidation.valid || !yearCheck.valid || typeof req.body.active !== "boolean" ||
-      !Number.isInteger(revision) || revision < 0) {
-    return res.status(400).send("올바르지 않은 엔트리 상태 요청입니다.");
-  }
-  const num = numValidation.value;
-  const year = yearCheck.value;
-  const active = req.body.active;
-
-  const result = dbRun(() => db.transaction(() => {
-    const current = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, num);
-    if (current && current.revision >= revision) return { applied: false, freedTypes: [] };
-
-    db.prepare(`
-      INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)
-      ON CONFLICT(year, team_num) DO UPDATE SET active = excluded.active, revision = excluded.revision
-    `).run(year, num, active ? 1 : 0, revision);
-
-    const freedTypes = [];
-    if (!active) {
-      for (const type of Object.keys(inspections)) deleteQueueRow(type, num, year);
-      db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
-      db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);
-      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND year = ?").run(num, year);
-
-      // booth에는 연도 컬럼이 없으므로 현재 연도 이벤트는 점유 자체를 기준으로
-      // 정리한다. 과거 연도 이벤트는 같은 번호의 현재 팀 부스를 건드리지 않도록
-      // 해당 연도의 미종료 로그가 연결된 부스만 해제한다.
-      const occupied = year === currentYear()
-        ? db.prepare("SELECT inspection, booth_num FROM booth WHERE occupied_by = ?").all(num)
-        : db.prepare(`
-            SELECT inspection, booth_num FROM booth
-            WHERE occupied_by = ? AND EXISTS (
-              SELECT 1 FROM booth_log l
-              WHERE l.num = ? AND l.year = ? AND l.inspection = booth.inspection
-                AND l.booth_num = booth.booth_num AND l.exited_at IS NULL
-            )
-          `).all(num, num, year);
-      for (const booth of occupied) {
-        db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?")
-          .run(booth.inspection, booth.booth_num);
-        freedTypes.push(booth.inspection);
-      }
-      // 완료되지 않은 부스 세션은 현재 운영 상태이므로 제거한다. 완료 이력은 그대로 보존한다.
-      db.prepare("DELETE FROM booth_log WHERE num = ? AND year = ? AND exited_at IS NULL").run(num, year);
-    }
-    return { applied: true, freedTypes: [...new Set(freedTypes)] };
-  })());
-
-  if (!result.success) {
-    logger.warn(req, "team.active", { error: result.error, year, active, revision }, `#${num}`);
-    return res.status(result.status).send(result.error);
-  }
-  if (result.result.applied) {
-    logger.log(req, "team.active", { year, active, revision }, `#${num}`);
-    broadcastQueue(null);
-    if (year === currentYear()) broadcastPenalties();
-    for (const type of result.result.freedTypes) broadcastBooth(type);
-  }
-  res.status(200).send();
-});
-
-// DELETE /api/internal/team/:num - 엔트리 삭제 시 관련 데이터 정리
-app.delete("/api/internal/team/:num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const numValidation = validateEntryNum(req.params.num);
-  if (!numValidation.valid) {
-    logger.warn(req, "team.cascade_delete", { error: numValidation.error, num: req.params.num });
-    return res.status(400).send(numValidation.error);
-  }
-
-  const num = numValidation.value;
-  const yearCheck = validateYear(req.query.year);
-  if (!yearCheck.valid) {
-    logger.warn(req, "team.cascade_delete", { error: "invalid year", year: req.query.year }, `#${num}`);
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-  const year = yearCheck.value;
-
-  const result = dbRun(() => {
-    db.transaction(() => {
-      // 모든 검차 대기열에서 제거
-      for (const type of Object.keys(inspections)) {
-        deleteQueueRow(type, num, year);
-      }
-
-      // current에서 제거
-      db.prepare("DELETE FROM current_inspection WHERE num = ? AND year = ?").run(num, year);
-
-      // 우선순위 제거
-      db.prepare("DELETE FROM team_priority WHERE num = ? AND year = ?").run(num, year);
-
-      // 취소 페널티 제거
-      db.prepare("DELETE FROM cancel_penalty WHERE num = ? AND year = ?").run(num, year);
-
-      // 검차 이력 제거
-      db.prepare("DELETE FROM inspection_history WHERE num = ? AND year = ?").run(num, year);
-
-      // 활성 상태 스냅샷 제거
-      db.prepare("DELETE FROM team_status WHERE team_num = ? AND year = ?").run(num, year);
-
-      // 부스 점유 해제
-      const booths = db.prepare(`
-        SELECT inspection, booth_num
-        FROM booth
-        WHERE occupied_by = ?
-          AND EXISTS (
-            SELECT 1 FROM booth_log l
-            WHERE l.num = ?
-              AND l.year = ?
-              AND l.inspection = booth.inspection
-              AND l.booth_num = booth.booth_num
-              AND l.exited_at IS NULL
-          )
-      `).all(num, num, year);
-      for (const b of booths) {
-        db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ? AND booth_num = ?").run(b.inspection, b.booth_num);
-      }
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team.cascade_delete", { error: result.error, year }, "#" + num);
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team.cascade_delete", { year }, "#" + num);
-
-  // SSE 브로드캐스트
-  broadcastQueue(null);
-  if (year === currentYear()) broadcastPenalties();
-
-  res.status(200).send();
-});
-
-// PATCH /api/internal/team-num - 엔트리 번호 변경 시 대기열 관련 num 일괄 갱신
-app.patch("/api/internal/team-num", (req, res) => {
-  if (!requireInternalRequest(req, res)) return;
-
-  const prevNumValidation = validateEntryNum(req.body.prevNum);
-  const newNumValidation = validateEntryNum(req.body.newNum);
-  const year = Number(req.body.year);
-  if (!prevNumValidation.valid) {
-    logger.warn(req, "team_num.update", { error: prevNumValidation.error, prevNum: req.body.prevNum });
-    return res.status(400).send(prevNumValidation.error);
-  }
-  if (!newNumValidation.valid) {
-    logger.warn(req, "team_num.update", { error: newNumValidation.error, newNum: req.body.newNum });
-    return res.status(400).send(newNumValidation.error);
-  }
-  if (!validateYear(year).valid) {
-    logger.warn(req, "team_num.update", { error: "invalid year", year: req.body.year });
-    return res.status(400).send("연도를 지정해야 합니다.");
-  }
-
-  const prevNum = prevNumValidation.value;
-  const newNum = newNumValidation.value;
-  // self-renumber는 helper가 목적지(=자기 번호) 행을 먼저 지운 뒤 갱신하므로 데이터 손실. 조기 반환.
-  if (prevNum === newNum) return res.status(200).send();
-
-  const result = dbRun(() => {
-    return db.transaction(() => {
-      let changed = 0;
-      for (const type of Object.keys(inspections)) {
-        changed += renumberQueueRows(type, prevNum, newNum, year);
-      }
-      changed += renumberCurrentRows(prevNum, newNum, year);
-      changed += renumberNumYearRows("team_priority", prevNum, newNum, year);
-      changed += renumberNumYearRows("cancel_penalty", prevNum, newNum, year);
-      changed += renumberNumYearRows("inspection_history", prevNum, newNum, year);
-      const previousStatus = db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(year, prevNum);
-      // 새 활성 상태/revision은 뒤따르는 team.active 이벤트가 적용해야 비활성화
-      // 정리 작업이 생략되지 않는다. 재전달 때 source가 없으면 destination도 보존한다.
-      if (previousStatus) {
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, newNum);
-        db.prepare("DELETE FROM team_status WHERE year = ? AND team_num = ?").run(year, prevNum);
-        db.prepare("INSERT INTO team_status (year, team_num, active, revision) VALUES (?, ?, ?, ?)")
-          .run(year, newNum, previousStatus.active, previousStatus.revision);
-        changed += 1;
-      }
-      changed += db.prepare(`
-        UPDATE booth
-        SET occupied_by = ?
-        WHERE occupied_by = ?
-          AND EXISTS (
-            SELECT 1 FROM booth_log l
-            WHERE l.num = ?
-              AND l.year = ?
-              AND l.inspection = booth.inspection
-              AND l.booth_num = booth.booth_num
-              AND l.exited_at IS NULL
-          )
-      `).run(newNum, prevNum, prevNum, year).changes;
-      changed += renumberLogRows("booth_log", prevNum, newNum, year);
-      changed += renumberLogRows("queue_log", prevNum, newNum, year);
-      if (changed > 0) {
-        db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)")
-          .run("renumber", newNum, null, Date.now(), year);
-      }
-      return changed;
-    })();
-  });
-
-  if (!result.success) {
-    logger.warn(req, "team_num.update", { error: result.error, year, prevNum, newNum });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "team_num.update", { year, prevNum, newNum });
-
-  broadcastQueue(null);
-  if (year === currentYear()) broadcastPenalties();
-  for (const type of Object.keys(inspections)) {
-    broadcastBooth(type);
-  }
-
-  res.status(200).send();
-});
-
-/* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-addSpaFallback(app);
+if (!options.skipSpaFallback) addSpaFallback(app);
 
-return { app, db, loadSmsConfig };
+return { app, db, loadSmsConfig, closeSse, sourceEvent, timers: [rateLimitTimer, smsConfigRefreshTimer] };
 }
-
-// Serve immediately; SMS config loads in the background and retries through
-// the startup window so a co-restart with the email service doesn't block
-// listening or log a spurious "fetch failed" warning.
-runIfDirect(import.meta, "queue", createQueueApp, {
-  postListen: ({ loadSmsConfig }) => loadSmsConfig({ retries: 10, delayMs: 3000 }),
-});

@@ -23,3 +23,5 @@ backups
 playwright-report
 test-results
 scripts
+!competition/scripts
+!competition/scripts/**

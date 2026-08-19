@@ -1,7 +1,7 @@
 import { ref } from "vue";
 import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 
-const { on, useSSE: useConnection, reconnected } = createServiceSSE("/score", "/api/score/events");
+const { on, useSSE: useConnection, reconnected } = createServiceSSE("/competition/api/v1/score", "/api/score/events");
 
 // Shared state across all components
 const lastInspectionUpdate = ref(null);

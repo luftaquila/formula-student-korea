@@ -2,6 +2,7 @@ export function createSSEManager(maxClients = 200) {
   // 각 클라이언트는 { res, meta }. meta에는 연결 시점의 { ip, ...(metaFn 결과) }가 담긴다.
   // role 같은 값을 metaFn으로 넣으면 broadcast의 filterFn으로 대상을 좁힐 수 있다.
   const clients = new Set();
+  let closed = false;
   // per-IP 연결 수(선택적 상한용).
   const ipCounts = new Map();
 
@@ -46,9 +47,10 @@ export function createSSEManager(maxClients = 200) {
   }
 
   // Heartbeat to keep connections alive through proxies
-  setInterval(() => {
+  const heartbeatTimer = setInterval(() => {
     for (const client of clients) writeTo(client, ": keepalive\n\n");
-  }, 30000).unref();
+  }, 30000);
+  heartbeatTimer.unref();
 
   // 선택적 주기 재검증: revalidate가 등록된 연결만 대상(예: course rover SSE의 role 재확인).
   // 연결 시점 meta는 스냅샷이라 강등이 재연결 전까지 반영 안 되는데(즉시-권한-반영 원칙 위배),
@@ -59,8 +61,9 @@ export function createSSEManager(maxClients = 200) {
   // 루프는 의도적으로 직렬이다. app.validateUser의 5초 캐시 + in-flight 병합 덕에 같은
   // 이메일은 왕복 한 번으로 합쳐지고, 직렬 순회는 auth로의 동시 요청을 1개로 묶는다 —
   // 병렬화하면 auth가 느려진 바로 그 순간(재검증이 오래 걸리는 순간)에 herd를 되살린다.
-  setInterval(async () => {
+  const revalidationTimer = setInterval(async () => {
     for (const client of clients) {
+      if (closed) break;
       if (!client.revalidate) continue;
       let next;
       try {
@@ -68,6 +71,7 @@ export function createSSEManager(maxClients = 200) {
       } catch {
         continue; // 일시 오류 → 연결 유지
       }
+      if (closed) break;
       if (next == null) {
         try { client.res.end(); } catch {}
         removeClient(client);
@@ -75,7 +79,8 @@ export function createSSEManager(maxClients = 200) {
         client.meta = next;
       }
     }
-  }, 30000).unref();
+  }, 30000);
+  revalidationTimer.unref();
 
   // handler(initDataFn)
   // handler(initDataFn, { meta: (req) => ({...}), maxPerIp })
@@ -87,6 +92,9 @@ export function createSSEManager(maxClients = 200) {
     const maxPerIp = opts.maxPerIp || 0;
     const revalidate = opts.revalidate || null;
     return (req, res) => {
+      if (closed) {
+        return res.status(503).send("서버가 종료 중입니다. 잠시 후 다시 시도해주세요.");
+      }
       if (clients.size >= maxClients) {
         return res.status(503).send("연결이 너무 많습니다. 잠시 후 다시 시도해주세요.");
       }
@@ -123,7 +131,18 @@ export function createSSEManager(maxClients = 200) {
     };
   }
 
-  return { broadcast, handler };
+  function close() {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeatTimer);
+    clearInterval(revalidationTimer);
+    for (const client of [...clients]) {
+      try { client.res.end(); } catch {}
+      removeClient(client);
+    }
+  }
+
+  return { broadcast, handler, close };
 }
 
 function clientIp(req) {

@@ -10,13 +10,13 @@ test.describe("Wireless sensor mapping", () => {
   test.afterAll(async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const p = await ctx.newPage();
-    await p.request.delete(`/traffic/api/wireless/mapping/${NODE}`).catch(() => {});
+    await p.request.delete(`/competition/api/v1/traffic/wireless/mapping/${NODE}`).catch(() => {});
     await ctx.close();
   });
 
   test("maps a discovered node and persists it", async ({ page }) => {
     // 노드를 진단 ingest로 노출
-    await page.request.post("/traffic/api/wireless/ingest", {
+    await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
       data: { telemetry: [{ node_id: NODE, rssi: -70, snr: 9, offset_us: 100, skew_ppm: 3, latency_ms: 20, link_state: "online" }] },
     });
 
@@ -32,14 +32,14 @@ test.describe("Wireless sensor mapping", () => {
     await row.locator("select").nth(1).selectOption("finish");
 
     const saved = page.waitForResponse(
-      (r) => r.url().includes(`/api/wireless/mapping/${NODE}`) && r.request().method() === "PUT" && r.status() === 200,
+      (r) => r.url().includes(`/competition/api/v1/traffic/wireless/mapping/${NODE}`) && r.request().method() === "PUT" && r.status() === 200,
     );
     await page.getByTestId(`mapping-save-${NODE}`).click();
     await saved;
     await expectNotification(page, "success", "할당 저장");
 
     // 서버에 영속되었는지 확인
-    const res = await page.request.get("/traffic/api/wireless/mapping");
+    const res = await page.request.get("/competition/api/v1/traffic/wireless/mapping");
     const list = await res.json();
     const m = list.find((x) => x.node_id === NODE);
     expect(m).toBeTruthy();

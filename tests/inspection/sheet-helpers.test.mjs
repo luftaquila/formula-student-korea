@@ -9,7 +9,6 @@ import {
   formatStopwatchElapsed,
   isResponseItem,
   isPdfItem,
-  normalizeRestorableAnswerDraft,
   isMultiSourceCalculation,
   calculationForMode,
   calculationSourcesForOperation,
@@ -129,17 +128,6 @@ describe('Non-response field rules', () => {
     assert.equal(isPdfItem({ answer_type: 'counter' }), true);
   });
 
-  it('drops stopwatch, missing-item, and invalid counter answer drafts', () => {
-    assert.equal(normalizeRestorableAnswerDraft(stopwatch, 'old value'), null);
-    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'number', calculation: { mode: 'computed' } }, 'old value'), null);
-    assert.equal(normalizeRestorableAnswerDraft(undefined, 'old value'), null);
-    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, 'old value'), null);
-  });
-
-  it('normalizes compatible counter drafts and keeps regular answer drafts', () => {
-    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'counter' }, '0012'), '12');
-    assert.equal(normalizeRestorableAnswerDraft({ answer_type: 'text' }, 'old value'), 'old value');
-  });
 });
 
 describe('Calculation editor transitions', () => {

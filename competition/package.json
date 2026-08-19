@@ -1,0 +1,14 @@
+{
+  "name": "fsk-competition",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "archiver": "^7.0.1",
+    "better-sqlite3": "^12.5.0",
+    "busboy": "^1.6.0",
+    "express": "^5.2.1"
+  }
+}

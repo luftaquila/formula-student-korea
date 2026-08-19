@@ -1,0 +1,60 @@
+# Architecture
+
+## System boundary
+
+Competition-critical domains run as modules in one `competition` process, one deployment, and one Better-SQLite3 database. Supporting services remain independent.
+
+| Runtime | Responsibility | Port |
+|---|---|---|
+| `landing` | Landing page and reverse proxy | 9000 |
+| `auth` | Google OAuth, users, roles, and aggregated logs | 9100 |
+| `competition` | Teams, Queue, Inspection, Traffic, Score, Documents, and six SPAs | 9200 |
+| `energymeter` | Energy meter viewer | 9800 |
+| `email` | Email/SMS provider integration | 9900 |
+| `course` | Course, rover, RTK GPS, camera, and teleoperation | 10000 |
+| `calendar` | Competition schedules | 11000 |
+| `files` | FileBrowser storage with Auth forward-auth | 8080 |
+
+Entry, Queue, Inspection, Traffic, Score, and Documents are not deployable legacy profiles. They have no runtime service URLs, HTTP fan-out, lifecycle outboxes, reconciliation, or copied team lists.
+
+## Teams and years
+
+`competition_team` is the only team source of truth. Its `id` is the stable identity used by operational rows. Team number, university, team name, and vehicle-type name are mutable projections updated transactionally in the shared database.
+
+Competition years are interpreted in `Asia/Seoul`. Reads may select any valid year. Every Competition mutation is allowed only for the current KST year and otherwise fails with `409 YEAR_READ_ONLY`. There is no draft/finalize state, roster version, snapshot, replacement version, or soft-delete inference.
+
+Teams are created individually or imported once into an empty current year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current year.
+
+## Runtime communication
+
+The stable UI locations are `/entry`, `/queue`, `/inspection`, `/traffic`, `/score`, and `/documents`. The only Competition API namespace is `/competition/api/v1`: Teams and vehicle types are flat resources, while the other domains use `/competition/api/v1/{module}/...`. Nested `/{module}/api/...`, standalone module APIs, and internal team lifecycle routes are absent and return `404`.
+
+Modules share one SQLite connection and one authentication validator. Successful Team and vehicle-type mutations emit only a year-scoped `entries` invalidation signal, without roster payloads, copied rosters, or direct live-state propagation. Score invalidates its derived caches; Queue, Inspection, and Traffic forward the signal over module-local SSE, and their SPAs re-query canonical team data for that year.
+
+Traffic submits the stable `competition_team.id`; the server resolves that ID against the current active team at save time and persists only the canonical number and labels, rejecting stale, historical, inactive, or missing identities.
+
+## Inspection concurrent edits
+
+Inspection answers and memos have no numeric client or database version. A save includes the value last read by the editor as `expectedValue` or `expectedMemo`. If it differs from the current stored value, the server returns `409 INSPECTION_STALE_WRITE` and does not persist the request. The UI discards the stale local edit and tells the operator to refresh and retry. Saves for the same field are serialized in the browser; there is no local-storage draft or conflict-resolution UI.
+
+## Documents files
+
+The database and Documents upload tree are one consistency unit. Documents rejects symbolic links in every existing component of the configured upload-root path before creating or cleaning directories, then synchronously removes `_tmp` contents, unreferenced files and symlinks, and empty directories before the process becomes ready. Cleanup errors fail startup. Missing database-referenced files and metadata that does not match the runtime path-shape rules are audited and rejected by migration, backup, and restore validation.
+
+The one-shot legacy migrator copies only files referenced by `submission_file` metadata. Files absent from metadata are legacy orphans and are deliberately ignored. There is no background file-delete job.
+
+## Migration, backup, and rollback
+
+The migrator is the only code that understands the six legacy databases. It opens sources read-only, verifies they do not change, binds operational data to stable team IDs, copies referenced uploads, validates the result, and publishes new artifacts create-if-absent. Its adjacent JSON report is audit evidence only and is not required for runtime, backup, or restore identity.
+
+Competition backup and restore require an exact manifest containing Competition, Auth, Calendar, Course, and Email, then validate the complete database schemas, SQLite integrity, foreign keys, canonical team references, and referenced uploads before publishing or replacing artifacts. Validation is read-only and fail-closed. FileBrowser remains an external service: its mounted file tree is copied when present, but its private database and lifecycle are not part of this coordinated state contract.
+
+Rollback does not translate Competition writes back into legacy schemas. Stop Competition, restore the coordinated pre-cutover legacy database/upload backup, and deploy the retained legacy Git revision.
+
+## Authentication and audit
+
+Roles are `public < student < official < chief < admin`. Services revalidate through Auth and fail closed; only HTTP 200 confirms a user. Caddy removes externally supplied internal-auth headers.
+
+All Competition module logs live in the shared database with a module discriminator. Every successful mutation and every business, database, or integration failure records enough before/after context to audit destructive changes.
+
+See the [cutover runbook](runbooks/competition-cutover.md), [backup/restore runbook](runbooks/backup-restore.md), and [ADR 0001](adr/0001-competition-modular-monolith.md).

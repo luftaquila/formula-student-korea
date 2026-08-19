@@ -1,7 +1,8 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 
 test.describe("Inspection template management", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -105,7 +106,7 @@ test.describe("Inspection template management", () => {
     const suffix = `${Date.now()}`;
     const originalName = `E2E edit ${suffix}`;
     const updatedName = `E2E edited ${suffix}`;
-    const create = await page.request.post("/inspection/api/sheet/template", {
+    const create = await page.request.post("/competition/api/v1/inspection/sheet/template", {
       data: { year: YEAR, level: "category", name: originalName, sort_order: 999 },
     });
     expect(create.status()).toBe(200);
@@ -119,7 +120,7 @@ test.describe("Inspection template management", () => {
       const nameInput = page.locator(".category-header .cat-name");
       await expect(nameInput).toHaveValue(originalName);
       const savePromise = page.waitForResponse(
-        (response) => response.url().endsWith(`/api/sheet/template/${id}`) && response.request().method() === "PUT",
+        (response) => response.url().endsWith(`/competition/api/v1/inspection/sheet/template/${id}`) && response.request().method() === "PUT",
       );
       await nameInput.fill(updatedName);
       await nameInput.blur();
@@ -130,7 +131,7 @@ test.describe("Inspection template management", () => {
       await page.locator(".tabs .tab").filter({ hasText: updatedName }).click();
       await expect(page.locator(".category-header .cat-name")).toHaveValue(updatedName);
     } finally {
-      const cleanup = await page.request.delete(`/inspection/api/sheet/template/${id}`);
+      const cleanup = await page.request.delete(`/competition/api/v1/inspection/sheet/template/${id}`);
       expect(cleanup.status()).toBe(200);
     }
   });

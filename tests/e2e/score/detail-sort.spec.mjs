@@ -1,8 +1,10 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
+import { trafficEntry } from "../helpers/traffic.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-Sort-Test`;
 
 test.describe("Score detail sort mode toggle", () => {
@@ -20,7 +22,7 @@ test.describe("Score detail sort mode toggle", () => {
     ];
 
     for (const record of records) {
-      await fetch(`${BASE_URL}/traffic/api/records`, {
+      await fetch(`${BASE_URL}/competition/api/v1/traffic/records`, {
         method: "POST",
         headers,
         body: JSON.stringify({
@@ -28,7 +30,7 @@ test.describe("Score detail sort mode toggle", () => {
           data: {
             time: new Date().toISOString(),
             type: "가속",
-            entry: { num: 1, univ: "서울대학교", team: "SNU Racing" },
+            entry: await trafficEntry(1),
             result: record.result,
             detail: record.detail,
           },
@@ -37,7 +39,7 @@ test.describe("Score detail sort mode toggle", () => {
     }
 
     // Set cones/oc on some records to differentiate time vs score ordering
-    const recordsRes = await fetch(`${BASE_URL}/traffic/api/records/${encodeURIComponent(TABLE_NAME)}`, {
+    const recordsRes = await fetch(`${BASE_URL}/competition/api/v1/traffic/records/${encodeURIComponent(TABLE_NAME)}`, {
       headers: { Cookie: getAuthCookie("admin") },
     });
     const allRecords = await recordsRes.json();
@@ -45,7 +47,7 @@ test.describe("Score detail sort mode toggle", () => {
     // Set 2 cones on the fastest record (58000) so it's not the best by score
     const fastestRecord = allRecords.find((r) => r.result === 58000);
     if (fastestRecord) {
-      await fetch(`${BASE_URL}/traffic/api/records/${encodeURIComponent(TABLE_NAME)}/${fastestRecord.rowid}`, {
+      await fetch(`${BASE_URL}/competition/api/v1/traffic/records/${encodeURIComponent(TABLE_NAME)}/${fastestRecord.rowid}`, {
         method: "PATCH",
         headers,
         body: JSON.stringify({ field: "cones", value: 5 }),
@@ -54,7 +56,7 @@ test.describe("Score detail sort mode toggle", () => {
   });
 
   test.afterAll(async () => {
-    await fetch(`${BASE_URL}/traffic/api/records/${encodeURIComponent(TABLE_NAME)}`, {
+    await fetch(`${BASE_URL}/competition/api/v1/traffic/records/${encodeURIComponent(TABLE_NAME)}`, {
       method: "DELETE",
       headers: { Cookie: getAuthCookie("admin") },
     });

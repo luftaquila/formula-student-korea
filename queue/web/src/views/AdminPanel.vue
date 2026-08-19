@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch, nextTick } from "vue";
 import { useRouter } from "vue-router";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import {
   fetchEntries,
   fetchAllInspections,
@@ -31,7 +32,7 @@ import { isChief } from "@shared/officialsStore.js";
 const { success, error, warning } = useNotification();
 const router = useRouter();
 
-const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, reconnected } = useSSE();
+const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, lastEntriesUpdate, reconnected } = useSSE();
 
 const entries = ref({});
 const inspections = ref([]);
@@ -86,6 +87,11 @@ watch(lastBoothUpdate, (update) => {
 
 watch(lastPenaltyUpdate, () => {
   if (penaltyModalOpen.value) refreshPenaltyList();
+});
+
+watch(lastEntriesUpdate, async () => {
+  try { entries.value = await fetchEntries(); }
+  catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
 });
 
 watch(reconnected, () => {
@@ -443,7 +449,7 @@ function goToInspection(num) {
   // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
   // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
   const base = import.meta.env.PROD ? "/inspection" : "";
-  window.location.href = `${base}/${new Date().getFullYear()}/${num}`;
+  window.location.href = `${base}/${currentCompetitionYear()}/${num}`;
 }
 
 </script>

@@ -8,10 +8,10 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // Representative admin-gated endpoints across read + write surfaces.
 const adminGated = [
-  { method: "get", path: "/traffic/api/records", body: undefined },
-  { method: "post", path: "/traffic/api/records", body: { name: `rbac-${Date.now()}` } },
-  { method: "put", path: "/traffic/api/event-modes/practice", body: { enabled: true } },
-  { method: "get", path: "/traffic/api/event-modes", body: undefined },
+  { method: "get", path: "/competition/api/v1/traffic/records", body: undefined },
+  { method: "post", path: "/competition/api/v1/traffic/records", body: { name: `rbac-${Date.now()}` } },
+  { method: "put", path: "/competition/api/v1/traffic/event-modes/practice", body: { enabled: true } },
+  { method: "get", path: "/competition/api/v1/traffic/event-modes", body: undefined },
 ];
 
 test.describe("traffic RBAC", () => {
@@ -38,8 +38,8 @@ test.describe("traffic RBAC", () => {
     }
   });
 
-  test("unauthenticated read succeeds (200) on GET /traffic/api/time (public)", async ({ request }) => {
-    const res = await request.get("/traffic/api/time");
+  test("unauthenticated read succeeds (200) on GET /competition/api/v1/traffic/time (public)", async ({ request }) => {
+    const res = await request.get("/competition/api/v1/traffic/time");
     expect(res.status()).toBe(200);
   });
 });

@@ -1,11 +1,12 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
-const YEAR = new Date().getFullYear();
+const YEAR = currentCompetitionYear();
 const TEAM = 28;
 
 async function findItemContext(page, name) {
-  const response = await page.request.get(`/inspection/api/sheet/template?year=${YEAR}`);
+  const response = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
   const template = await response.json();
   for (const category of template) {
     for (const subcategory of category.subcategories || []) {
@@ -22,14 +23,42 @@ async function findItem(page, name) {
   return (await findItemContext(page, name)).item;
 }
 
+async function replaceAnswer(page, itemId, value) {
+  const current = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
+  const data = await current.json();
+  const response = await page.request.put("/competition/api/v1/inspection/sheet/answer", {
+    data: {
+      year: YEAR,
+      team_num: TEAM,
+      item_id: itemId,
+      value,
+      expectedValue: data.answers[itemId]?.value || "",
+    },
+  });
+  expect(response.status()).toBe(200);
+}
+
+async function replaceMemo(page, itemId, memo) {
+  const current = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
+  const data = await current.json();
+  const response = await page.request.put("/competition/api/v1/inspection/sheet/memo", {
+    data: {
+      year: YEAR,
+      team_num: TEAM,
+      item_id: itemId,
+      memo,
+      expectedMemo: data.answers[itemId]?.memo || "",
+    },
+  });
+  expect(response.status()).toBe(200);
+}
+
 test.describe("Inspection answer and memo save reliability", () => {
   test.use({ storageState: storageStatePath("official") });
 
   test("coalesces rapid PASS/FAIL changes to the final visible value", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "" },
-    });
+    await replaceAnswer(page, item.id, "");
 
     await page.goto(`/inspection/${YEAR}/${TEAM}`);
     await waitForPageReady(page);
@@ -43,7 +72,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await pass.click();
 
     await expect.poll(async () => {
-      const response = await page.request.get(`/inspection/api/sheet/data/${YEAR}/${TEAM}`);
+      const response = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
       const data = await response.json();
       return data.answers[item.id]?.value;
     }, { timeout: 10000 }).toBe("PASS");
@@ -51,16 +80,12 @@ test.describe("Inspection answer and memo save reliability", () => {
     await expect(fail).not.toHaveClass(/btn-danger/);
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(initialRowHeight);
 
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "" },
-    });
+    await replaceAnswer(page, item.id, "");
   });
 
   test("shows and edits the full multiline memo without overlapping save state", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
-    await page.request.put("/inspection/api/sheet/memo", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, memo: "" },
-    });
+    await replaceMemo(page, item.id, "");
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/inspection/${YEAR}/${TEAM}`);
@@ -82,7 +107,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await textarea.blur();
 
     await expect.poll(async () => {
-      const response = await page.request.get(`/inspection/api/sheet/data/${YEAR}/${TEAM}`);
+      const response = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
       const data = await response.json();
       return data.answers[item.id]?.memo;
     }, { timeout: 10000 }).toBe("첫째 줄\n둘째 줄");
@@ -94,19 +119,15 @@ test.describe("Inspection answer and memo save reliability", () => {
     await summary.locator(".memo-summary-toggle").click();
     await expect(summary.locator(".memo-summary-preview")).toContainText("첫째 줄");
 
-    await page.request.put("/inspection/api/sheet/memo", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, memo: "" },
-    });
+    await replaceMemo(page, item.id, "");
   });
 
   test("retains an optimistic answer after a failed save and retries it", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "" },
-    });
+    await replaceAnswer(page, item.id, "");
 
     let failedOnce = false;
-    await page.route("**/inspection/api/sheet/answer", async route => {
+    await page.route("**/competition/api/v1/inspection/sheet/answer", async route => {
       if (!failedOnce && route.request().method() === "PUT") {
         failedOnce = true;
         await route.fulfill({ status: 503, body: "temporary failure" });
@@ -128,15 +149,13 @@ test.describe("Inspection answer and memo save reliability", () => {
     await row.locator(".save-error button").click();
 
     await expect.poll(async () => {
-      const response = await page.request.get(`/inspection/api/sheet/data/${YEAR}/${TEAM}`);
+      const response = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
       const data = await response.json();
       return data.answers[item.id]?.value;
     }, { timeout: 10000 }).toBe("PASS");
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(initialRowHeight);
 
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "" },
-    });
+    await replaceAnswer(page, item.id, "");
   });
 
   test("keeps item text, check tables, and memo controls at full width", async ({ page }) => {
@@ -164,10 +183,8 @@ test.describe("Inspection answer and memo save reliability", () => {
 
   test("counts a check table once using only currently configured cells", async ({ page }) => {
     const { item, category } = await findItemContext(page, "점검 체크리스트");
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: JSON.stringify({ "99_99": "1" }) },
-    });
-    await page.request.put("/inspection/api/sheet/category-result", {
+    await replaceAnswer(page, item.id, JSON.stringify({ "99_99": "1" }));
+    await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "PASS" },
     });
 
@@ -192,23 +209,17 @@ test.describe("Inspection answer and memo save reliability", () => {
     await cells.nth(1).check();
     await expect.poll(async () => Number(await progress.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
 
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "" },
-    });
-    await page.request.put("/inspection/api/sheet/category-result", {
+    await replaceAnswer(page, item.id, "");
+    await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "" },
     });
   });
 
   test("shows progress above FAIL, unanswered, and memo summaries in that order", async ({ page }) => {
     const { item, category } = await findItemContext(page, "전압 확인");
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "FAIL" },
-    });
-    await page.request.put("/inspection/api/sheet/memo", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, memo: "상단 순서 확인" },
-    });
-    await page.request.put("/inspection/api/sheet/category-result", {
+    await replaceAnswer(page, item.id, "FAIL");
+    await replaceMemo(page, item.id, "상단 순서 확인");
+    await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "PASS" },
     });
 
@@ -261,13 +272,9 @@ test.describe("Inspection answer and memo save reliability", () => {
       element => element.getBoundingClientRect().top,
     ))).toBe(0);
 
-    await page.request.put("/inspection/api/sheet/answer", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, value: "" },
-    });
-    await page.request.put("/inspection/api/sheet/memo", {
-      data: { year: YEAR, team_num: TEAM, item_id: item.id, memo: "" },
-    });
-    await page.request.put("/inspection/api/sheet/category-result", {
+    await replaceAnswer(page, item.id, "");
+    await replaceMemo(page, item.id, "");
+    await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "" },
     });
   });

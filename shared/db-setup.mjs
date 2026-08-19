@@ -76,15 +76,40 @@ export function normalizeTimestampColumn(db, table, column, normalize = normaliz
 
 // 테이블을 "최신 maxRows행만 보존"하도록 강제한다. AFTER INSERT 트리거로 매 삽입마다
 // 한도를 넘는 오래된 행을 즉시 정리하고, 기존 초과분도 한 번 정리한다. keyColumn은
-// 단조 증가하는 정수 키(기본 "id"; rowid 테이블은 "rowid"). maxRows가 양의 정수가
+// 단조 증가하는 정수 키(기본 "id"; rowid 테이블은 "rowid"). partitionColumn을
+// 지정하면 각 파티션마다 최신 maxRows행을 독립적으로 보존한다. maxRows가 양의 정수가
 // 아니면 보존 비활성화(트리거 미생성).
-export function setupRowCapRetention(db, table, maxRows, { keyColumn = "id" } = {}) {
+export function setupRowCapRetention(db, table, maxRows, { keyColumn = "id", partitionColumn = null } = {}) {
   if (!Number.isInteger(maxRows) || maxRows <= 0) return;
   assertIdentifier(table);
   assertIdentifier(keyColumn);
+  if (partitionColumn != null) assertIdentifier(partitionColumn);
   const trigger = `trg_${table}_retention`;
-  const condition = `${keyColumn} <= COALESCE((SELECT MAX(${keyColumn}) FROM ${table}), 0) - ${maxRows}`;
   db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+  if (partitionColumn) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS ${trigger}
+      AFTER INSERT ON ${table}
+      BEGIN
+        DELETE FROM ${table}
+        WHERE ${partitionColumn} IS NEW.${partitionColumn}
+          AND ${keyColumn} IN (
+            SELECT ${keyColumn} FROM ${table}
+            WHERE ${partitionColumn} IS NEW.${partitionColumn}
+            ORDER BY ${keyColumn} DESC
+            LIMIT -1 OFFSET ${maxRows}
+          );
+      END;`);
+    db.exec(`DELETE FROM ${table} WHERE ${keyColumn} IN (
+      SELECT ${keyColumn} FROM (
+        SELECT ${keyColumn}, ROW_NUMBER() OVER (
+          PARTITION BY ${partitionColumn} ORDER BY ${keyColumn} DESC
+        ) AS retention_rank
+        FROM ${table}
+      ) WHERE retention_rank > ${maxRows}
+    )`);
+    return;
+  }
+  const condition = `${keyColumn} <= COALESCE((SELECT MAX(${keyColumn}) FROM ${table}), 0) - ${maxRows}`;
   db.exec(`CREATE TRIGGER IF NOT EXISTS ${trigger}
     AFTER INSERT ON ${table}
     BEGIN

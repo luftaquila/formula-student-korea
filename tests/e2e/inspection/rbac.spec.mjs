@@ -1,3 +1,4 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
@@ -10,10 +11,10 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // chief-gated template writes
 const chiefTemplateWrites = [
-  { method: "post", path: "/inspection/api/sheet/template", body: { year: new Date().getFullYear(), level: "category", name: `rbac-${Date.now()}` } },
-  { method: "put", path: "/inspection/api/sheet/template/999999", body: { name: `rbac-${Date.now()}` } },
-  { method: "delete", path: "/inspection/api/sheet/template/999999", body: {} },
-  { method: "post", path: "/inspection/api/sheet/template/reorder", body: { ids: [] } },
+  { method: "post", path: "/competition/api/v1/inspection/sheet/template", body: { year: currentCompetitionYear(), level: "category", name: `rbac-${Date.now()}` } },
+  { method: "put", path: "/competition/api/v1/inspection/sheet/template/999999", body: { name: `rbac-${Date.now()}` } },
+  { method: "delete", path: "/competition/api/v1/inspection/sheet/template/999999", body: {} },
+  { method: "post", path: "/competition/api/v1/inspection/sheet/template/reorder", body: { ids: [] } },
 ];
 
 test.describe("inspection RBAC", () => {
@@ -38,8 +39,8 @@ test.describe("inspection RBAC", () => {
         expect(res.status()).toBe(401);
       });
     }
-    const answer = await request.put("/inspection/api/sheet/answer", {
-      data: { year: new Date().getFullYear(), team_num: 98, item_id: 999999, value: "" },
+    const answer = await request.put("/competition/api/v1/inspection/sheet/answer", {
+      data: { year: currentCompetitionYear(), team_num: 98, item_id: 999999, value: "" },
     });
     expect(answer.status()).toBe(401);
   });
@@ -47,13 +48,13 @@ test.describe("inspection RBAC", () => {
   test("official can save an answer through the deployed route", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("official") });
     try {
-      const year = new Date().getFullYear();
-      const templateRes = await ctx.request.get(`/inspection/api/sheet/template?year=${year}`);
+      const year = currentCompetitionYear();
+      const templateRes = await ctx.request.get(`/competition/api/v1/inspection/sheet/template?year=${year}`);
       expect(templateRes.status()).toBe(200);
       const template = await templateRes.json();
       const item = template[0]?.subcategories?.[0]?.groups?.[0]?.items?.[0];
       expect(item?.id).toBeTruthy();
-      const res = await ctx.request.put("/inspection/api/sheet/answer", {
+      const res = await ctx.request.put("/competition/api/v1/inspection/sheet/answer", {
         data: { year, team_num: 98, item_id: item.id, value: "" },
       });
       expect(res.status()).toBe(200);

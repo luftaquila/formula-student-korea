@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, onActivated, onDeactivated, onUnmounte
 import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/useNotification.js";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { formatEnduranceDetail, enduranceTotal } from "@lib/event-timing.mjs";
 import { addRecord, updateRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
@@ -47,7 +48,7 @@ async function persistLap(entry, runToken) {
       const { name, record } = await addRecord(eventName.value.trim(), {
         time: new Date(),
         type: "내구",
-        entry: { num: entry.num, univ: entry.univ, team: entry.team },
+        entry: { id: entry.id, num: entry.num, univ: entry.univ, team: entry.team },
         result: total,
         detail,
       });
@@ -100,7 +101,7 @@ onActivated(() => {
   serial.setMode("endurance", onSensor);
 });
 
-const currentYear = computed(() => new Date().getFullYear());
+const currentYear = computed(() => currentCompetitionYear());
 const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Endurance"}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
 const isLocked = computed(() => serial.green.active);

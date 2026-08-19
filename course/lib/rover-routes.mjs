@@ -2,7 +2,7 @@
 //
 // course/index.mjs는 코스·콘 CRUD와 DB 스키마를 소유하고, 이 모듈은 /api/rover/*,
 // /api/missions* 전체와 관련 인메모리 상태(rover SSE 연결, 미션 추적, 카메라 릴레이)를
-// 소유한다. shared/team-lifecycle.mjs와 같은 register 패턴 — 동작은 분리 전과 동일.
+// 소유한다. 모듈별 register 패턴으로 라우트와 상태를 명시적으로 연결한다.
 import crypto from "crypto";
 import { haversine } from "./geo.mjs";
 
@@ -1357,7 +1357,7 @@ app.post("/api/rover/base/survey-result", (req, res) => {
   }
 
   // Success: record the surveyed coordinate. An ok:true report with bad coords is
-  // an internal-callback contract violation — log it (CLAUDE.md rule 5) before 400.
+  // an internal-callback contract violation — log it (CONTRIBUTING.md logging policy) before 400.
   const coordValidation = validateCoordinate(lat, lng);
   if (!coordValidation.valid) {
     logger.warn(req, "gps.survey.result", { error: coordValidation.error, id, ok: true }, point.name);

@@ -12,16 +12,16 @@ const ENTRY_NUM = 10;
 const PHONE = "01098765432";
 
 async function clearOwnedRegistration(request) {
-  const enter = await request.post(`/queue/api/admin/booths/${TYPE}/1/enter`, {
+  const enter = await request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
     data: { num: ENTRY_NUM },
   });
   expect([200, 400]).toContain(enter.status());
   if (enter.status() === 200) {
-    const exit = await request.post(`/queue/api/admin/booths/${TYPE}/1/exit`);
+    const exit = await request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/exit`);
     expect(exit.status()).toBe(200);
   }
 
-  const penalty = await request.delete(`/queue/api/admin/penalties/${TYPE}/${ENTRY_NUM}`);
+  const penalty = await request.delete(`/competition/api/v1/queue/admin/penalties/${TYPE}/${ENTRY_NUM}`);
   expect([200, 404]).toContain(penalty.status());
 }
 
@@ -98,7 +98,7 @@ test.describe("Queue registration", () => {
 
     const registered = page.waitForResponse(
       (response) =>
-        response.url().includes(`/queue/api/admin/register/${TYPE}`) &&
+        response.url().includes(`/competition/api/v1/queue/admin/register/${TYPE}`) &&
         response.request().method() === "POST",
     );
     await page.getByRole("button", { name: "등록하기" }).click();

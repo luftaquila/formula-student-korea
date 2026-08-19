@@ -1066,7 +1066,7 @@ describe('GET /api/admin/logs', () => {
     // Seed enough auth logs that page 6 must still return rows (regression: the offset
     // scheme's per-service fetch cap emptied deep pages while total said otherwise).
     const insert = db.prepare(
-      "INSERT INTO logs (timestamp, level, actor_email, action, target) VALUES (?, 'info', 'seed@test.com', 'logs.pagination_seed', ?)",
+      "INSERT INTO logs (timestamp, module, level, actor_email, action, target) VALUES (?, 'auth', 'info', 'seed@test.com', 'logs.pagination_seed', ?)",
     );
     const seed = db.transaction(() => {
       for (let i = 0; i < 620; i++) {
@@ -1095,7 +1095,7 @@ describe('GET /api/admin/logs', () => {
 });
 
 // ─── Admin Logs Aggregation: multi-service merge ─────────────────────────
-// LOG_SERVICES는 팩토리 생성 시점에 env를 읽으므로, ENTRY_SERVER를 스텁으로 지정한
+// LOG_SERVICES는 팩토리 생성 시점에 env를 읽으므로, COMPETITION_SERVER를 스텁으로 지정한
 // 별도 앱 인스턴스를 만든다. 스텁은 logger.queryHandler와 같은 응답 형태를 흉내낸다.
 describe('GET /api/admin/logs multi-service merge', () => {
   let stubServer, stubBehavior, mergeServer, mergeClient, mergeDb, mergeDbPath;
@@ -1135,14 +1135,14 @@ describe('GET /api/admin/logs multi-service merge', () => {
       }));
     });
     await new Promise((r) => stubServer.listen(0, r));
-    process.env.ENTRY_SERVER = `http://localhost:${stubServer.address().port}`;
+    process.env.COMPETITION_SERVER = `http://localhost:${stubServer.address().port}`;
 
     mergeDbPath = tmpDbPath();
     const result = createAuthApp({ dbPath: mergeDbPath });
     mergeDb = result.db;
     // auth 쪽에도 스텁과 교차하는 타임스탬프의 로그를 심는다
     const insert = mergeDb.prepare(
-      "INSERT INTO logs (timestamp, level, action) VALUES (?, 'info', ?)",
+      "INSERT INTO logs (timestamp, module, level, action) VALUES (?, 'auth', 'info', ?)",
     );
     for (let i = 0; i < 5; i++) {
       insert.run(`2026-02-01T00:00:0${i}.500Z`, `auth.stub_${i}`);
@@ -1153,7 +1153,7 @@ describe('GET /api/admin/logs multi-service merge', () => {
   });
 
   after(async () => {
-    delete process.env.ENTRY_SERVER;
+    delete process.env.COMPETITION_SERVER;
     await stopServer(mergeServer);
     if (stubServer) await new Promise((r) => stubServer.close(r));
     mergeDb.close();

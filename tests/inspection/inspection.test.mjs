@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -10,14 +11,17 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_SECRET,
-  TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
+import { currentCompetitionYear } from '../../shared/competition-year.mjs';
 
 setupTestEnv();
 
 import { createInspectionApp } from '../../inspection/index.mjs';
 
-const CURRENT_YEAR = new Date().getFullYear();
+const requireFromInspection = createRequire(import.meta.resolve('../../inspection/index.mjs'));
+const Database = requireFromInspection('better-sqlite3');
+
+const CURRENT_YEAR = currentCompetitionYear();
 const PREV_YEAR = CURRENT_YEAR - 1;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
@@ -49,6 +53,104 @@ describe('GET /api/health', () => {
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.equal(text, 'ok');
+  });
+});
+
+describe('Inspection mutation preflight auditing', () => {
+  it('audits every inactive-team branch, a lookup failure, and missing template targets', async () => {
+    const isolatedPath = tmpDbPath();
+    const rawDb = new Database(isolatedPath);
+    rawDb.exec(`
+      CREATE TABLE competition_team (
+        id INTEGER PRIMARY KEY,
+        year INTEGER NOT NULL,
+        num INTEGER NOT NULL,
+        active INTEGER NOT NULL
+      );
+      INSERT INTO competition_team (id, year, num, active) VALUES
+        (991, ${CURRENT_YEAR}, 991, 0),
+        (992, ${CURRENT_YEAR}, 992, 1);
+    `);
+    let failCanonicalLookup = false;
+    const proxyDb = new Proxy(rawDb, {
+      get(target, property) {
+        if (property === 'prepare') {
+          return (sql) => {
+            if (failCanonicalLookup && sql.includes('sqlite_master') && sql.includes('competition_team')) {
+              throw new Error('injected inspection team lookup failure');
+            }
+            return target.prepare(sql);
+          };
+        }
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const created = createInspectionApp({ db: proxyDb, validateUser: TRUST_JWT });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      const inactiveRequests = [
+        () => isolated.put('/api/sheet/answer', {
+          body: { year: CURRENT_YEAR, team_num: 991, item_id: 1, value: 'PASS' }, cookie: officialCookie,
+        }),
+        () => isolated.put('/api/sheet/memo', {
+          body: { year: CURRENT_YEAR, team_num: 991, item_id: 1, memo: 'memo' }, cookie: officialCookie,
+        }),
+        () => isolated.put('/api/sheet/category-result', {
+          body: { year: CURRENT_YEAR, team_num: 991, category_id: 1, result: 'PASS' }, cookie: officialCookie,
+        }),
+        () => isolated.put('/api/sheet/inspector', {
+          body: { year: CURRENT_YEAR, team_num: 991, category_id: 1, inspector: 'Inspector' }, cookie: officialCookie,
+        }),
+      ];
+      const inactiveStatuses = [];
+      for (const request of inactiveRequests) inactiveStatuses.push((await request()).status);
+      assert.deepEqual(inactiveStatuses, [409, 409, 409, 409]);
+
+      failCanonicalLookup = true;
+      const failedLookup = await isolated.put('/api/sheet/memo', {
+        body: { year: CURRENT_YEAR, team_num: 992, item_id: 1, memo: 'memo' }, cookie: officialCookie,
+      });
+      assert.equal(failedLookup.status, 500);
+      assert.equal(await failedLookup.text(), '팀 활성 상태를 확인할 수 없습니다.');
+      failCanonicalLookup = false;
+
+      const missingUpdate = await isolated.put('/api/sheet/template/99991', {
+        body: { name: 'missing' }, cookie: chiefCookie,
+      });
+      const missingDelete = await isolated.delete('/api/sheet/template/99992', { cookie: chiefCookie });
+      assert.deepEqual([missingUpdate.status, missingDelete.status], [404, 404]);
+
+      const logs = rawDb.prepare(`
+        SELECT action, detail FROM logs
+        WHERE level = 'warn' AND action IN (
+          'answer.update', 'memo.update', 'category_result.update', 'inspector.update',
+          'template.update', 'template.delete'
+        ) ORDER BY id
+      `).all();
+      assert.deepEqual(logs.map((row) => row.action), [
+        'answer.update', 'memo.update', 'category_result.update', 'inspector.update',
+        'memo.update', 'template.update', 'template.delete',
+      ]);
+      const details = logs.map((row) => JSON.parse(row.detail));
+      for (const detail of details.slice(0, 4)) {
+        assert.equal(detail.error, 'inactive_or_missing_team');
+        assert.equal(detail.phase, 'canonical_team_lookup');
+        assert.equal(detail.year, CURRENT_YEAR);
+        assert.equal(detail.team_num, 991);
+      }
+      assert.equal(details[4].error, 'injected inspection team lookup failure');
+      assert.equal(details[4].phase, 'canonical_team_lookup');
+      assert.deepEqual(details.slice(5).map((detail) => detail.error), [
+        'template_not_found', 'template_not_found',
+      ]);
+    } finally {
+      await stopServer(started.server);
+      created.closeSse?.();
+      rawDb.close();
+      cleanup(isolatedPath);
+    }
   });
 });
 
@@ -228,7 +330,7 @@ describe('Template CRUD', () => {
     const oldId = Number(info.lastInsertRowid);
 
     const res = await client.delete(`/api/sheet/template/${oldId}`, { cookie: adminCookie });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 409);
 
     // Clean up
     db.prepare("DELETE FROM sheet_template WHERE id = ?").run(oldId);
@@ -280,6 +382,15 @@ describe('Template Reorder', () => {
     assert.equal(res.status, 400);
   });
 
+  it('POST /api/sheet/template/reorder rejects an empty array without throwing', async () => {
+    const res = await client.post('/api/sheet/template/reorder', {
+      body: { items: [] },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+    assert.match(await res.text(), /하나 이상의 항목/);
+  });
+
   it('POST /api/sheet/template/reorder rejects invalid items (400)', async () => {
     const res = await client.post('/api/sheet/template/reorder', {
       body: { items: [{ id: 'abc', sort_order: 'xyz' }] },
@@ -295,6 +406,64 @@ describe('Template Reorder', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('rolls back the complete reorder when an id is missing or belongs to another sibling set', async () => {
+    const parentA = Number((await (await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'AtomicParentA', sort_order: 20 },
+      cookie: adminCookie,
+    })).json()).id);
+    const parentB = Number((await (await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'AtomicParentB', sort_order: 21 },
+      cookie: adminCookie,
+    })).json()).id);
+    const childA = Number((await (await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: parentA, name: 'AtomicChildA', sort_order: 0 },
+      cookie: adminCookie,
+    })).json()).id);
+    const childB = Number((await (await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: parentB, name: 'AtomicChildB', sort_order: 0 },
+      cookie: adminCookie,
+    })).json()).id);
+    try {
+      const missing = await client.post('/api/sheet/template/reorder', {
+        body: { items: [{ id: childA, sort_order: 9 }, { id: 999999, sort_order: 10 }] },
+        cookie: adminCookie,
+      });
+      assert.equal(missing.status, 404);
+      assert.equal(db.prepare('SELECT sort_order FROM sheet_template WHERE id = ?').get(childA).sort_order, 0);
+
+      const mixed = await client.post('/api/sheet/template/reorder', {
+        body: { items: [{ id: childA, sort_order: 7 }, { id: childB, sort_order: 8 }] },
+        cookie: adminCookie,
+      });
+      assert.equal(mixed.status, 400);
+      assert.deepEqual(
+        db.prepare('SELECT id, sort_order FROM sheet_template WHERE id IN (?, ?) ORDER BY id').all(childA, childB),
+        [{ id: childA, sort_order: 0 }, { id: childB, sort_order: 0 }],
+      );
+
+      const duplicate = await client.post('/api/sheet/template/reorder', {
+        body: { items: [{ id: childA, sort_order: 1 }, { id: childA, sort_order: 2 }] },
+        cookie: adminCookie,
+      });
+      assert.equal(duplicate.status, 400);
+      assert.equal(db.prepare('SELECT sort_order FROM sheet_template WHERE id = ?').get(childA).sort_order, 0);
+
+      const warnings = db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'template.reorder' AND level = 'warn'
+          AND id > (SELECT COALESCE(MAX(id), 0) - 10 FROM logs)
+        ORDER BY id DESC LIMIT 3
+      `).all().reverse().map((row) => JSON.parse(row.detail));
+      assert.deepEqual(warnings.map((detail) => detail.reason_code || detail.error), [
+        'missing_ids', 'mixed_siblings', '중복된 항목 id가 있습니다.',
+      ]);
+      assert.deepEqual(warnings[0].missing_ids, [999999]);
+    } finally {
+      await client.delete(`/api/sheet/template/${parentA}`, { cookie: adminCookie });
+      await client.delete(`/api/sheet/template/${parentB}`, { cookie: adminCookie });
+    }
   });
 });
 
@@ -401,16 +570,16 @@ describe('Template Import', () => {
 
 // ─── Configurable calculated fields ────────────────────────────────────
 describe('Configurable calculated fields', () => {
-  const CALC_YEAR = CURRENT_YEAR + 600;
-  const COPY_YEAR = CALC_YEAR + 1;
-  const IMPORT_YEAR = CALC_YEAR + 2;
-  let groupId, sourceId, sourceKey, computedId, computedKey, suggestionId;
+  const CALC_YEAR = CURRENT_YEAR;
+  const COPY_YEAR = CURRENT_YEAR + 600;
+  const IMPORT_YEAR = CURRENT_YEAR + 601;
+  let categoryId, groupId, sourceId, sourceKey, computedId, computedKey, suggestionId;
 
   before(async () => {
     const cat = await client.post('/api/sheet/template', {
       body: { year: CALC_YEAR, level: 'category', name: 'Calculated fields' }, cookie: adminCookie,
     });
-    const categoryId = Number((await cat.json()).id);
+    categoryId = Number((await cat.json()).id);
     const sub = await client.post('/api/sheet/template', {
       body: { year: CALC_YEAR, level: 'subcategory', parent_id: categoryId, name: 'Electrical' }, cookie: adminCookie,
     });
@@ -430,7 +599,8 @@ describe('Configurable calculated fields', () => {
   });
 
   after(() => {
-    db.prepare('DELETE FROM sheet_template WHERE year IN (?, ?, ?)').run(CALC_YEAR, COPY_YEAR, IMPORT_YEAR);
+    db.prepare('DELETE FROM sheet_template WHERE id = ?').run(categoryId);
+    db.prepare('DELETE FROM sheet_template WHERE year IN (?, ?)').run(COPY_YEAR, IMPORT_YEAR);
   });
 
   it('creates and returns a computed field configuration', async () => {
@@ -459,7 +629,7 @@ describe('Configurable calculated fields', () => {
 
   it('rejects direct answers for computed fields but accepts source answers', async () => {
     const sourceResponse = await client.put('/api/sheet/answer', {
-      body: { year: CALC_YEAR, team_num: 1, item_id: sourceId, value: '421.5' }, cookie: officialCookie,
+      body: { year: CALC_YEAR, team_num: 1, item_id: sourceId, value: '421.5', expectedValue: '' }, cookie: officialCookie,
     });
     assert.equal(sourceResponse.status, 200);
 
@@ -489,7 +659,7 @@ describe('Configurable calculated fields', () => {
     suggestionId = Number((await response.json()).id);
 
     const answer = await client.put('/api/sheet/answer', {
-      body: { year: CALC_YEAR, team_num: 1, item_id: suggestionId, value: '10.4' }, cookie: officialCookie,
+      body: { year: CALC_YEAR, team_num: 1, item_id: suggestionId, value: '10.4', expectedValue: '' }, cookie: officialCookie,
     });
     assert.equal(answer.status, 200);
     const data = await (await client.get(`/api/sheet/data/${CALC_YEAR}/1`, { cookie: officialCookie })).json();
@@ -714,7 +884,7 @@ describe('Answer CRUD', () => {
     assert.equal(res.status, 200);
     const saved = await res.json();
     assert.equal(saved.value, 'PASS');
-    assert.equal(saved.version, 1);
+    assert.equal(Object.hasOwn(saved, 'version'), false);
     const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
     assert.equal(data.answers[answerItemId].value, 'PASS');
   });
@@ -735,12 +905,12 @@ describe('Answer CRUD', () => {
     assert.equal(res.status, 400);
   });
 
-  it('PUT /api/sheet/answer rejects previous year (400)', async () => {
+  it('PUT /api/sheet/answer rejects previous year (409)', async () => {
     const res = await client.put('/api/sheet/answer', {
       body: { year: PREV_YEAR, team_num: 1, item_id: answerItemId, value: 'PASS' },
       cookie: officialCookie,
     });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 409);
   });
 
   it('PUT /api/sheet/answer rejects non-existent item (400)', async () => {
@@ -751,7 +921,7 @@ describe('Answer CRUD', () => {
     assert.equal(res.status, 400);
   });
 
-  it('PUT /api/sheet/answer keeps version metadata stable when value is unchanged', async () => {
+  it('PUT /api/sheet/answer keeps audit metadata stable when value is unchanged', async () => {
     const first = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 99, item_id: answerItemId, value: 'PASS' },
       cookie: officialCookie,
@@ -760,7 +930,9 @@ describe('Answer CRUD', () => {
     const firstData = await first.json();
 
     const res = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 99, item_id: answerItemId, value: 'PASS' },
+      body: {
+        year: CURRENT_YEAR, team_num: 99, item_id: answerItemId, value: 'PASS', expectedValue: 'PASS',
+      },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
@@ -768,44 +940,44 @@ describe('Answer CRUD', () => {
     assert.deepEqual(unchanged, firstData);
   });
 
-  it('PUT /api/sheet/answer increments versions and rejects a stale base_version', async () => {
+  it('PUT /api/sheet/answer rejects a stale expectedValue without persisting it', async () => {
     const first = await client.put('/api/sheet/answer', {
       body: {
         year: CURRENT_YEAR,
         team_num: 77,
         item_id: answerItemId,
         value: 'PASS',
-        base_version: 0,
+        expectedValue: '',
         mutation_id: 'answer-v1',
       },
       cookie: officialCookie,
     });
     assert.equal(first.status, 200);
     const firstData = await first.json();
-    assert.equal(firstData.version, 1);
+    assert.equal(Object.hasOwn(firstData, 'version'), false);
     assert.equal(firstData.updated_by, 'Official');
     assert.equal(firstData.mutation_id, 'answer-v1');
 
+    const staleSameValue = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 77, item_id: answerItemId, value: 'PASS', expectedValue: '' },
+      cookie: officialCookie,
+    });
+    assert.equal(staleSameValue.status, 409);
+    assert.equal((await staleSameValue.json()).code, 'INSPECTION_STALE_WRITE');
+
     const stale = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 77, item_id: answerItemId, value: 'FAIL', base_version: 0 },
+      body: { year: CURRENT_YEAR, team_num: 77, item_id: answerItemId, value: 'FAIL', expectedValue: '' },
       cookie: officialCookie,
     });
     assert.equal(stale.status, 409);
     const staleData = await stale.json();
+    assert.equal(staleData.code, 'INSPECTION_STALE_WRITE');
     assert.equal(staleData.current.value, 'PASS');
-    assert.equal(staleData.current.version, 1);
-
-    const next = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 77, item_id: answerItemId, value: 'FAIL', base_version: 1 },
-      cookie: officialCookie,
-    });
-    assert.equal(next.status, 200);
-    assert.equal((await next.json()).version, 2);
 
     const dataRes = await client.get(`/api/sheet/data/${CURRENT_YEAR}/77`, { cookie: officialCookie });
     const data = await dataRes.json();
-    assert.equal(data.answers[answerItemId].value, 'FAIL');
-    assert.equal(data.answers[answerItemId].answer_version, 2);
+    assert.equal(data.answers[answerItemId].value, 'PASS');
+    assert.equal(Object.hasOwn(data.answers[answerItemId], 'answer_version'), false);
     assert.equal(data.answers[answerItemId].answer_updated_by, 'Official');
   });
 });
@@ -849,7 +1021,7 @@ describe('Memo', () => {
     assert.equal(res.status, 200);
     const saved = await res.json();
     assert.equal(saved.memo, 'Test memo text');
-    assert.equal(saved.version, 1);
+    assert.equal(Object.hasOwn(saved, 'version'), false);
     const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
     assert.equal(data.answers[memoItemId].memo, 'Test memo text');
   });
@@ -862,17 +1034,17 @@ describe('Memo', () => {
     assert.equal(res.status, 400);
   });
 
-  it('PUT /api/sheet/memo rejects previous year (400)', async () => {
+  it('PUT /api/sheet/memo rejects previous year (409)', async () => {
     const res = await client.put('/api/sheet/memo', {
       body: { year: PREV_YEAR, team_num: 1, item_id: memoItemId, memo: 'Old memo' },
       cookie: officialCookie,
     });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 409);
   });
 
-  it('PUT /api/sheet/memo versions memo independently from the answer', async () => {
+  it('PUT /api/sheet/memo compares the last-read memo independently from the answer', async () => {
     const answerRes = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, value: 'answer', base_version: 0 },
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, value: 'answer', expectedValue: '' },
       cookie: officialCookie,
     });
     assert.equal(answerRes.status, 200);
@@ -883,36 +1055,44 @@ describe('Memo', () => {
         team_num: 78,
         item_id: memoItemId,
         memo: '첫 메모',
-        base_version: 0,
+        expectedMemo: '',
         mutation_id: 'memo-v1',
       },
       cookie: officialCookie,
     });
     assert.equal(first.status, 200);
     const firstData = await first.json();
-    assert.equal(firstData.version, 1);
+    assert.equal(Object.hasOwn(firstData, 'version'), false);
     assert.equal(firstData.updated_by, 'Official');
 
+    const staleSameMemo = await client.put('/api/sheet/memo', {
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '첫 메모', expectedMemo: '' },
+      cookie: officialCookie,
+    });
+    assert.equal(staleSameMemo.status, 409);
+    assert.equal((await staleSameMemo.json()).code, 'INSPECTION_STALE_WRITE');
+
     const unchanged = await client.put('/api/sheet/memo', {
-      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '첫 메모', base_version: 1 },
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '첫 메모', expectedMemo: '첫 메모' },
       cookie: officialCookie,
     });
     assert.equal(unchanged.status, 200);
-    assert.equal((await unchanged.json()).version, 1);
+    assert.equal(Object.hasOwn(await unchanged.json(), 'version'), false);
 
     const stale = await client.put('/api/sheet/memo', {
-      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '오래된 수정', base_version: 0 },
+      body: { year: CURRENT_YEAR, team_num: 78, item_id: memoItemId, memo: '오래된 수정', expectedMemo: '' },
       cookie: officialCookie,
     });
     assert.equal(stale.status, 409);
     const staleData = await stale.json();
+    assert.equal(staleData.code, 'INSPECTION_STALE_WRITE');
     assert.equal(staleData.current.memo, '첫 메모');
-    assert.equal(staleData.current.version, 1);
 
     const dataRes = await client.get(`/api/sheet/data/${CURRENT_YEAR}/78`, { cookie: officialCookie });
     const data = await dataRes.json();
-    assert.equal(data.answers[memoItemId].answer_version, 1);
-    assert.equal(data.answers[memoItemId].memo_version, 1);
+    assert.equal(data.answers[memoItemId].value, 'answer');
+    assert.equal(data.answers[memoItemId].memo, '첫 메모');
+    assert.equal(Object.hasOwn(data.answers[memoItemId], 'memo_version'), false);
     assert.equal(data.answers[memoItemId].memo_updated_by, 'Official');
   });
 });
@@ -986,7 +1166,7 @@ describe('Inspector', () => {
     assert.equal(data.inspectors[inspectorCategoryId], 'John');
   });
 
-  it('PUT /api/sheet/inspector rejects previous year (400)', async () => {
+  it('PUT /api/sheet/inspector rejects previous year (409)', async () => {
     // Insert a previous-year category directly for this test
     const info = db.prepare(
       "INSERT INTO sheet_template (year, level, name, sort_order) VALUES (?, 'category', 'OldInspCat', 0)"
@@ -997,7 +1177,7 @@ describe('Inspector', () => {
       body: { year: PREV_YEAR, team_num: 1, category_id: oldCatId, inspector: 'Old' },
       cookie: officialCookie,
     });
-    assert.equal(res.status, 400);
+    assert.equal(res.status, 409);
 
     // Clean up
     db.prepare("DELETE FROM sheet_template WHERE id = ?").run(oldCatId);
@@ -1116,7 +1296,7 @@ describe('Number and Text answer types', () => {
 
   it('stores numeric, cleared, and text values through their full transitions', async () => {
     let res = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '42.5' },
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '42.5', expectedValue: '' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
@@ -1126,14 +1306,14 @@ describe('Number and Text answer types', () => {
     assert.equal(data.answers[numberItemId].value, '42.5');
 
     res = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '' },
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: numberItemId, value: '', expectedValue: '42.5' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
     assert.equal((await res.json()).value, '');
 
     res = await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: 1, item_id: textItemId, value: 'Some text answer' },
+      body: { year: CURRENT_YEAR, team_num: 1, item_id: textItemId, value: 'Some text answer', expectedValue: '' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
@@ -1277,14 +1457,12 @@ describe('Answer cleanup when utility field types change', () => {
     const normalized = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/501`, { cookie: officialCookie })).json();
     assert.equal(normalized.answers[counterTransitionItemId].value, '7');
     assert.equal(normalized.answers[counterTransitionItemId].memo, 'leading-zero memo');
-    assert.equal(normalized.answers[counterTransitionItemId].answer_version, 2);
-    assert.equal(normalized.answers[counterTransitionItemId].memo_version, 1);
+    assert.equal(Object.hasOwn(normalized.answers[counterTransitionItemId], 'answer_version'), false);
 
     const cleared = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/502`, { cookie: officialCookie })).json();
     assert.equal(cleared.answers[counterTransitionItemId].value, '');
     assert.equal(cleared.answers[counterTransitionItemId].memo, 'invalid-value memo');
-    assert.equal(cleared.answers[counterTransitionItemId].answer_version, 2);
-    assert.equal(cleared.answers[counterTransitionItemId].memo_version, 1);
+    assert.equal(Object.hasOwn(cleared.answers[counterTransitionItemId], 'answer_version'), false);
   });
 
   it('clears stopwatch answers permanently while preserving memos', async () => {
@@ -1308,8 +1486,7 @@ describe('Answer cleanup when utility field types change', () => {
     let data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/503`, { cookie: officialCookie })).json();
     assert.equal(data.answers[stopwatchTransitionItemId].value, '');
     assert.equal(data.answers[stopwatchTransitionItemId].memo, 'keep this memo');
-    assert.equal(data.answers[stopwatchTransitionItemId].answer_version, 2);
-    assert.equal(data.answers[stopwatchTransitionItemId].memo_version, 1);
+    assert.equal(Object.hasOwn(data.answers[stopwatchTransitionItemId], 'answer_version'), false);
 
     const textRes = await client.put(`/api/sheet/template/${stopwatchTransitionItemId}`, {
       body: { answer_type: 'text' },
@@ -1472,7 +1649,7 @@ describe('SSE broadcast on data changes', () => {
       const text = new TextDecoder().decode(value);
       assert.ok(text.includes('event: answer'), 'should receive answer broadcast event');
       assert.ok(text.includes('"team_num":50'), 'broadcast should include team_num');
-      assert.ok(text.includes('"version":1'), 'broadcast should include answer version');
+      assert.ok(!text.includes('"version"'), 'broadcast must not include an answer version');
     } finally {
       controller.abort();
       reader.releaseLock();
@@ -1502,117 +1679,5 @@ describe('Auth enforcement', () => {
       cookie: officialCookie,
     });
     assert.equal(res.status, 403);
-  });
-});
-
-// ─── Internal API: entry lifecycle ──────────────────────────────────────
-describe('Internal entry lifecycle sync', () => {
-  it('renumbers and deletes sheet data for a team', async () => {
-    const categoryId = db.prepare(
-      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, ?)"
-    ).run(CURRENT_YEAR, 'LifecycleCat').lastInsertRowid;
-    const itemId = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, ?, 'text')"
-    ).run(CURRENT_YEAR, categoryId, 'LifecycleItem').lastInsertRowid;
-
-    db.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value, memo) VALUES (?, ?, ?, ?, ?)")
-      .run(CURRENT_YEAR, 901, itemId, 'OK', 'memo');
-    db.prepare("INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, 'PASS')")
-      .run(CURRENT_YEAR, 901, categoryId);
-    db.prepare("INSERT INTO sheet_inspector (year, team_num, category_id, inspector) VALUES (?, ?, ?, ?)")
-      .run(CURRENT_YEAR, 901, categoryId, 'Inspector');
-
-    const patchRes = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { prevNum: 901, newNum: 902, year: CURRENT_YEAR },
-    });
-    assert.equal(patchRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_category_result WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 1);
-
-    const deleteRes = await client.delete(`/api/internal/team/902?year=${CURRENT_YEAR}`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(deleteRes.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_answer WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_category_result WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
-    assert.equal(db.prepare("SELECT COUNT(*) AS c FROM sheet_inspector WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, 902).c, 0);
-  });
-});
-
-describe('Entry active-state synchronization', () => {
-  it('preserves sheet data while hiding and blocking an inactive team', async () => {
-    const num = 990;
-    const categoryId = db.prepare(
-      "INSERT INTO sheet_template (year, level, sort_order, name) VALUES (?, 'category', 0, ?)"
-    ).run(CURRENT_YEAR, 'InactiveCat').lastInsertRowid;
-    const itemId = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type) VALUES (?, 'item', ?, 0, ?, 'text')"
-    ).run(CURRENT_YEAR, categoryId, 'InactiveItem').lastInsertRowid;
-    db.prepare("INSERT INTO sheet_answer (year, team_num, item_id, value, memo) VALUES (?, ?, ?, 'kept', 'memo')")
-      .run(CURRENT_YEAR, num, itemId);
-    db.prepare("INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, 'PASS')")
-      .run(CURRENT_YEAR, num, categoryId);
-
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year: CURRENT_YEAR, active: false, revision: 20 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.equal(db.prepare("SELECT value FROM sheet_answer WHERE year = ? AND team_num = ? AND item_id = ?").get(CURRENT_YEAR, num, itemId).value, 'kept');
-    assert.equal((await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).status, 404);
-    const summary = await (await client.get(`/api/sheet/summary?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
-    assert.equal(summary.teams[num], undefined);
-    const bulk = await (await client.get(`/api/sheet/bulk-answers?year=${CURRENT_YEAR}&item_ids=${itemId}`, { cookie: officialCookie })).json();
-    assert.equal(bulk[num], undefined);
-    assert.equal((await client.put('/api/sheet/answer', {
-      body: { year: CURRENT_YEAR, team_num: num, item_id: Number(itemId), value: 'blocked' },
-      cookie: officialCookie,
-    })).status, 409);
-
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year: CURRENT_YEAR, active: true, revision: 19 },
-    });
-    assert.equal((await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).status, 404, 'stale activation ignored');
-    await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year: CURRENT_YEAR, active: true, revision: 21 },
-    });
-    const restored = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/${num}`, { cookie: officialCookie })).json();
-    assert.equal(restored.answers[itemId].value, 'kept');
-  });
-
-  it('preserves the old revision on renumber so a following deactivation is applied', async () => {
-    const prevNum = 991;
-    const newNum = 992;
-    db.prepare("INSERT OR REPLACE INTO team_status (year, team_num, active, revision) VALUES (?, ?, 1, 30)")
-      .run(CURRENT_YEAR, prevNum);
-
-    const renumber = await client.patch('/api/internal/team-num', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: {
-        prevNum,
-        newNum,
-        year: CURRENT_YEAR,
-        entry: { univ: 'U', team: 'T', active: false, active_revision: 31 },
-      },
-    });
-    assert.equal(renumber.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
-      { active: 1, revision: 30 },
-    );
-
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: newNum, year: CURRENT_YEAR, active: false, revision: 31 },
-    });
-    assert.equal(deactivate.status, 200);
-    assert.deepEqual(
-      db.prepare("SELECT active, revision FROM team_status WHERE year = ? AND team_num = ?").get(CURRENT_YEAR, newNum),
-      { active: 0, revision: 31 },
-    );
   });
 });

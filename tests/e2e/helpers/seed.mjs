@@ -1,3 +1,4 @@
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { TEST_USERS, getAuthCookie, BASE_URL } from "./auth.mjs";
 
 const headers = (role = "admin") => ({
@@ -28,12 +29,23 @@ export async function seedUsers() {
 }
 
 export async function seedVehicleTypes() {
-  await api("POST", "/entry/api/vehicle-types", { name: "EV" }, "admin", 201);
-  await api("POST", "/entry/api/vehicle-types", { name: "CV" }, "admin", 201);
+  const year = currentCompetitionYear();
+  await api("POST", `/competition/api/v1/vehicle-types?year=${year}`, { name: "EV" }, "admin", 201);
+  await api("POST", `/competition/api/v1/vehicle-types?year=${year}`, { name: "CV" }, "admin", 201);
+}
+
+async function canonicalEntry(entry, year) {
+  const types = await (await api("GET", `/competition/api/v1/vehicle-types?year=${year}`)).json();
+  return {
+    number: entry.num,
+    university: entry.univ,
+    name: entry.team,
+    vehicleTypeId: types.find((type) => type.name === entry.type)?.id ?? null,
+  };
 }
 
 export async function seedEntries() {
-  const year = new Date().getFullYear();
+  const year = currentCompetitionYear();
   const entries = [
     { num: 1, univ: "서울대학교", team: "SNU Racing", type: "EV" },
     { num: 2, univ: "한양대학교", team: "ACES", type: "EV" },
@@ -45,12 +57,47 @@ export async function seedEntries() {
     { num: 32, univ: "중앙대학교", team: "CAU Speed", type: "EV" },
   ];
   for (const entry of entries) {
-    await api("POST", `/entry/api/entries?year=${year}`, entry, "admin", 201);
+    await api("POST", `/competition/api/v1/teams?year=${year}`, await canonicalEntry(entry, year), "admin", 201);
   }
 }
 
+export async function seedInspectionEntries() {
+  const year = currentCompetitionYear();
+  const entries = [
+    { num: 7, univ: "검차검증대학교", team: "Validation Team", type: "EV" },
+    { num: 28, univ: "검차신뢰성대학교", team: "Reliability Team", type: "EV" },
+    { num: 98, univ: "검차권한대학교", team: "RBAC Team", type: "CV" },
+  ];
+  for (const entry of entries) {
+    await api("POST", `/competition/api/v1/teams?year=${year}`, await canonicalEntry(entry, year), "admin", 201);
+  }
+}
+
+export async function seedQueueEntries() {
+  const year = currentCompetitionYear();
+  const entries = [
+    { num: 95, univ: "E2E Queue Status", team: "Queue Status", type: "EV" },
+    { num: 96, univ: "E2E Queue State", team: "Queue State", type: "EV" },
+    { num: 97, univ: "E2E Queue Booth", team: "Queue Booth", type: "EV" },
+  ];
+  for (const entry of entries) {
+    await api("POST", `/competition/api/v1/teams?year=${year}`, await canonicalEntry(entry, year), "admin", 201);
+  }
+}
+
+export async function seedCrossServiceEntries() {
+  const year = currentCompetitionYear();
+  const entry = {
+    num: 800,
+    univ: "코너웨이트대학교",
+    team: "Corner Weight",
+    type: "EV",
+  };
+  await api("POST", `/competition/api/v1/teams?year=${year}`, await canonicalEntry(entry, year), "admin", 201);
+}
+
 export async function seedInspectionTemplate() {
-  const year = new Date().getFullYear();
+  const year = currentCompetitionYear();
   const template = [
     {
       name: "전기 검차",
@@ -98,13 +145,13 @@ export async function seedInspectionTemplate() {
       ],
     },
   ];
-  await api("POST", "/inspection/api/sheet/template/import", { year, template }, "admin", 201);
+  await api("POST", "/competition/api/v1/inspection/sheet/template/import", { year, template }, "admin", 201);
 }
 
 export async function seedDocuments() {
-  const year = new Date().getFullYear();
+  const year = currentCompetitionYear();
   // Map student user to team 1
-  await api("POST", "/documents/api/admin/student-teams", {
+  await api("POST", "/competition/api/v1/documents/admin/student-teams", {
     email: TEST_USERS.student.email,
     team_num: 1,
     year,
@@ -118,7 +165,7 @@ export async function seedDocuments() {
 
   const fmt = (d) => d.toISOString().slice(0, 16).replace("T", " ");
 
-  await api("POST", "/documents/api/admin/sessions", {
+  await api("POST", "/competition/api/v1/documents/admin/sessions", {
     name: "E2E 테스트 세션",
     notice: "테스트용 제출 세션입니다.",
     start_at: fmt(start),
@@ -139,6 +186,9 @@ const seeders = {
   users: ["users", seedUsers],
   "vehicle-types": ["vehicle types", seedVehicleTypes],
   entries: ["entries", seedEntries],
+  "inspection-entries": ["inspection-only entries", seedInspectionEntries],
+  "queue-entries": ["queue-only entries", seedQueueEntries],
+  "cross-service-entries": ["cross-service-only entries", seedCrossServiceEntries],
   inspection: ["inspection template", seedInspectionTemplate],
   documents: ["documents", seedDocuments],
 };
