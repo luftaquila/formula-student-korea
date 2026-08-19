@@ -1824,4 +1824,59 @@ describe('Queue legacy → normalized migration', () => {
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = 'battery'").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5").get().c, 1);
   });
+
+  it('removes an old compatibility table even when the original current table is already absent', () => {
+    const legacyPath = tmpDbPath();
+    const seed = new Database(legacyPath);
+    seed.exec(`
+      CREATE TABLE current_legacy (
+        num INTEGER PRIMARY KEY,
+        phone TEXT NOT NULL,
+        inspection TEXT NOT NULL
+      );
+      INSERT INTO current_legacy VALUES (7, '01000000000', 'removed-inspection');
+    `);
+    seed.close();
+
+    let migrated;
+    try {
+      migrated = createQueueApp({ dbPath: legacyPath, validateUser: TRUST_JWT }).db;
+      assert.equal(
+        migrated.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'current_legacy'").get(),
+        undefined,
+      );
+    } finally {
+      migrated?.close();
+      cleanup(legacyPath);
+    }
+  });
+
+  it('fails closed instead of dropping a malformed compatibility table', () => {
+    const legacyPath = tmpDbPath();
+    const injected = new Database(legacyPath);
+    injected.exec(`
+      CREATE TABLE current (num INTEGER PRIMARY KEY, phone TEXT, inspection TEXT);
+      INSERT INTO current VALUES (7, '01000000000', 'battery');
+      CREATE TABLE current_legacy (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+      INSERT INTO current_legacy VALUES (1, 'must survive');
+    `);
+
+    try {
+      assert.throws(
+        () => createQueueApp({ db: injected, validateUser: TRUST_JWT }),
+        /unsupported Queue current_legacy schema: columns=id,payload primaryKey=id/,
+      );
+      assert.equal(
+        injected.prepare("SELECT payload FROM current_legacy WHERE id = 1").get().payload,
+        'must survive',
+      );
+      assert.deepEqual(
+        injected.prepare("SELECT num, phone, inspection FROM current WHERE num = 7").get(),
+        { num: 7, phone: '01000000000', inspection: 'battery' },
+      );
+    } finally {
+      injected.close();
+      cleanup(legacyPath);
+    }
+  });
 });

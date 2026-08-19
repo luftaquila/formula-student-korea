@@ -63,6 +63,11 @@ function fixtures({ pendingOutbox = false } = {}) {
           id INTEGER PRIMARY KEY, num INTEGER, inspection TEXT, booth_num INTEGER,
           entered_at INTEGER, exited_at INTEGER, created_at INTEGER
         );
+        CREATE TABLE current_legacy (
+          num INTEGER NOT NULL, phone TEXT NOT NULL, inspection TEXT NOT NULL, year INTEGER NOT NULL,
+          PRIMARY KEY (num, year)
+        );
+        INSERT INTO current_legacy VALUES (7, '01000000000', 'unknown-inspection', 2026);
       `);
       db.prepare("INSERT INTO settings VALUES ('sms_rank', '8')").run();
     }
@@ -191,6 +196,13 @@ describe("legacy database migration", () => {
     assert.equal(db.prepare(
       "SELECT 1 FROM sqlite_master WHERE name = 'competition_year_version'",
     ).get(), undefined);
+    assert.equal(db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE name = 'current_legacy'",
+    ).get(), undefined);
+    // The generic read-only importer must not silently special-case this table.
+    // Queue's owner migration consumes the copied compatibility state during
+    // the normal module-factory pass, just like its other legacy tables.
+    assert.equal(report.tables["queue.current_legacy"], 1);
     assert.equal(db.pragma("integrity_check")[0].integrity_check, "ok");
     db.close();
     assert.equal(report.uploads.referencedFiles, 1);
@@ -336,6 +348,31 @@ describe("legacy database migration", () => {
     assert.equal(fs.existsSync(targetUploads), false);
     const source = new Database(sources.queue, { readonly: true });
     assert.equal(source.prepare("SELECT payload FROM obsolete_queue_state WHERE id = 1").get().payload, "legacy-only");
+    source.close();
+  });
+
+  it("rejects a malformed retired Queue table before publishing any artifact", async () => {
+    const { sources, target, sourceUploads, targetUploads } = fixtures();
+    const queue = new Database(sources.queue);
+    queue.exec(`
+      DROP TABLE current_legacy;
+      CREATE TABLE current_legacy (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+      INSERT INTO current_legacy VALUES (1, 'not Queue compatibility state');
+    `);
+    queue.close();
+
+    await assert.rejects(
+      migrateLegacyDatabases({ targetPath: target, sources, sourceUploads, targetUploads }),
+      /unsupported Queue current_legacy schema: columns=id,payload primaryKey=id/,
+    );
+    assert.equal(fs.existsSync(target), false);
+    assert.equal(fs.existsSync(`${target}.migration.json`), false);
+    assert.equal(fs.existsSync(targetUploads), false);
+    const source = new Database(sources.queue, { readonly: true });
+    assert.equal(
+      source.prepare("SELECT payload FROM current_legacy WHERE id = 1").get().payload,
+      "not Queue compatibility state",
+    );
     source.close();
   });
 

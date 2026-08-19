@@ -45,6 +45,19 @@ function tableColumns(db, table) {
   return new Set(db.prepare(`PRAGMA table_info('${table}')`).all().map((column) => column.name));
 }
 
+function assertRetiredCurrentTableShape(db) {
+  if (!tableExists(db, "current_legacy")) return;
+  const columns = [...tableColumns(db, "current_legacy")].sort();
+  const primaryKey = primaryKeyColumns(db, "current_legacy").join(",");
+  const expectedColumns = columns.join(",") === "inspection,num,phone"
+    || columns.join(",") === "inspection,num,phone,year";
+  if (!expectedColumns || !["num", "num,year"].includes(primaryKey)) {
+    throw new Error(
+      `unsupported Queue current_legacy schema: columns=${columns.join(",")} primaryKey=${primaryKey || "none"}`,
+    );
+  }
+}
+
 // Rate limiter for public endpoints
 const rateLimitMap = new Map();
 const rateLimitTimer = setInterval(() => {
@@ -94,6 +107,10 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     return null; // SPA (public display)
   },
 });
+// Reject an unknown same-name object before Queue-owned normalization can
+// consume any predecessor state. The one-shot migrator runs this on its
+// private staging copy, never on a source database.
+assertRetiredCurrentTableShape(db);
 ensureInactiveTeamView(db);
 
 db.transaction(() => {
@@ -308,8 +325,8 @@ db.transaction(() => {
     // The normalized tables are the only runtime model. Unknown inspection
     // names are intentionally not retained in a second compatibility table.
     db.exec("DROP TABLE current");
-    db.exec("DROP TABLE IF EXISTS current_legacy");
   }
+  db.exec("DROP TABLE IF EXISTS current_legacy");
 
   if (primaryKeyColumns(db, "inspection_history").join(",") !== "num,inspection,year,timestamp") {
     db.transaction(() => {
