@@ -131,7 +131,7 @@ test.describe("Queue booth management", () => {
     await waitForPageReady(page);
 
     // Click the battery tab and wait for loading to complete
-    const batteryTab = page.locator(".tab", { hasText: "배터리" });
+    const batteryTab = page.locator(".tab", { hasText: "축전지" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
     await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
@@ -148,7 +148,7 @@ test.describe("Queue booth management", () => {
     await waitForPageReady(page);
 
     // Select battery tab and wait for loading to complete
-    const batteryTab = page.locator(".tab", { hasText: "배터리" });
+    const batteryTab = page.locator(".tab", { hasText: "축전지" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
     await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
@@ -184,7 +184,7 @@ test.describe("Queue booth management", () => {
     await waitForPageReady(page);
 
     // Select battery tab and wait for loading to complete
-    const batteryTab = page.locator(".tab", { hasText: "배터리" });
+    const batteryTab = page.locator(".tab", { hasText: "축전지" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
     await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });
@@ -209,7 +209,7 @@ test.describe("Queue booth management", () => {
     await waitForPageReady(page);
 
     // Select battery tab and wait for loading to complete
-    const batteryTab = page.locator(".tab", { hasText: "배터리" });
+    const batteryTab = page.locator(".tab", { hasText: "축전지" });
     await expect(batteryTab).toBeVisible({ timeout: 10000 });
     await batteryTab.click();
     await expect(page.locator(".loading")).toBeHidden({ timeout: 10000 });

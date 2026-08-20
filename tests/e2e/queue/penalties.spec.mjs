@@ -12,7 +12,7 @@ test.describe("Queue active penalties modal", () => {
       {
         num: 1,
         inspection: "battery",
-        inspection_name: "배터리",
+        inspection_name: "축전지",
         until,
         can_restore: 1,
       },
@@ -68,7 +68,7 @@ test.describe("Queue active penalties modal", () => {
     await expect(modal).toBeVisible();
     await expect(modal).toContainText("#1");
     await expect(modal).toContainText("서울대학교 SNU Racing");
-    await expect(modal).toContainText("배터리");
+    await expect(modal).toContainText("축전지");
     await expect(modal).toContainText("2건");
     await expect(modal.getByRole("button", { name: "페널티만 해제" })).toHaveCount(2);
     await expect(modal.getByRole("button", { name: "해제 후 순번 복구" })).toHaveCount(2);
@@ -96,7 +96,7 @@ test.describe("Queue active penalties modal", () => {
       body: JSON.stringify([{
         num: 1,
         inspection: "battery",
-        inspection_name: "배터리",
+        inspection_name: "축전지",
         until: Date.now() + 10 * 60 * 1000,
         can_restore: 0,
       }]),
@@ -120,7 +120,7 @@ test.describe("Queue active penalties modal", () => {
       body: JSON.stringify([{
         num: 1,
         inspection: "battery",
-        inspection_name: "배터리",
+        inspection_name: "축전지",
         until: Date.now() + 10 * 60 * 1000,
         can_restore: 1,
       }]),
