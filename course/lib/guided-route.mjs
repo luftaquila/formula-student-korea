@@ -181,6 +181,121 @@ function buildGraph(cones, frame) {
   return { nodes, edges: [...edgeMap.values()], adjacency, width };
 }
 
+// Recover the shared straight through a skidpad from cone pairs straddling the
+// entry→exit marker axis. This is intentionally marker-constrained: it adds no
+// speculative branches elsewhere and can join same-colour walls at the waist
+// without changing the ordinary side-based circle arcs.
+function augmentAxisCorridor(graph, cones, frame, startMarker, endMarker) {
+  const start = frame.point(startMarker), end = frame.point(endMarker);
+  const axisLength = dist(start, end);
+  if (axisLength < graph.width * 2) return false;
+  const tangent = [(end[0] - start[0]) / axisLength, (end[1] - start[1]) / axisLength];
+  const normal = [-tangent[1], tangent[0]];
+  const walls = cones
+    .filter((cone) => cone.side === "left" || cone.side === "right")
+    .map((cone, index) => {
+      const point = frame.point(cone);
+      const rel = [point[0] - start[0], point[1] - start[1]];
+      return {
+        cone, index, point,
+        along: rel[0] * tangent[0] + rel[1] * tangent[1],
+        lateral: rel[0] * normal[0] + rel[1] * normal[1],
+      };
+    })
+    .filter((sample) => sample.along >= -graph.width && sample.along <= axisLength + graph.width &&
+      Math.abs(sample.lateral) <= graph.width * 1.25);
+  const negative = walls.filter((sample) => sample.lateral < 0);
+  const positive = walls.filter((sample) => sample.lateral > 0);
+  const candidates = [];
+  for (const a of negative) for (const b of positive) {
+    const alongGap = Math.abs(a.along - b.along);
+    const across = Math.abs(a.lateral - b.lateral);
+    const midpointOffset = Math.abs((a.lateral + b.lateral) / 2);
+    if (alongGap > graph.width || across < graph.width * 0.45 || across > graph.width * 2.1 ||
+        midpointOffset > graph.width * 0.45) continue;
+    candidates.push({
+      a, b,
+      score: alongGap * 2 + Math.abs(across - graph.width) + midpointOffset,
+    });
+  }
+  candidates.sort((a, b) => a.score - b.score || a.a.along - b.a.along || a.a.index - b.a.index || a.b.index - b.b.index);
+  const used = new Set(), pairs = [];
+  for (const candidate of candidates) {
+    if (used.has(candidate.a.index) || used.has(candidate.b.index)) continue;
+    used.add(candidate.a.index); used.add(candidate.b.index);
+    const point = [
+      (candidate.a.point[0] + candidate.b.point[0]) / 2,
+      (candidate.a.point[1] + candidate.b.point[1]) / 2,
+    ];
+    pairs.push({
+      ...candidate,
+      point,
+      along: (candidate.a.along + candidate.b.along) / 2,
+      halfWidth: Math.min(dist(candidate.a.point, candidate.b.point) / 2, graph.width * 0.7),
+    });
+  }
+  pairs.sort((a, b) => a.along - b.along || a.score - b.score);
+  const corridor = [];
+  for (const pair of pairs) {
+    const previous = corridor[corridor.length - 1];
+    if (previous && Math.abs(pair.along - previous.along) < graph.width * 0.3) {
+      if (pair.score < previous.score) corridor[corridor.length - 1] = pair;
+      continue;
+    }
+    corridor.push(pair);
+  }
+  if (corridor.length < 4 || corridor[0].along > graph.width ||
+      corridor[corridor.length - 1].along < axisLength - graph.width) return false;
+  for (let i = 1; i < corridor.length; i++) {
+    if (dist(corridor[i - 1].point, corridor[i].point) > graph.width * 2.2) return false;
+  }
+
+  const baseNodes = graph.nodes.slice();
+  const nearbyBase = corridor.map((pair) => baseNodes
+    .map((node) => ({ node: node.id, distance: dist(pair.point, node.point) }))
+    .filter((candidate) => candidate.distance <= graph.width * 1.25)
+    .sort((a, b) => a.distance - b.distance || a.node - b.node)
+    .slice(0, 2));
+  const connectedStations = nearbyBase
+    .map((connections, index) => connections.length ? corridor[index].along : null)
+    .filter((value) => value != null);
+  if (connectedStations.length < 2 || Math.max(...connectedStations) - Math.min(...connectedStations) < graph.width * 2) return false;
+
+  const existingEdges = new Set(graph.edges.map((edge) => edge.a < edge.b ? `${edge.a}_${edge.b}` : `${edge.b}_${edge.a}`));
+  const addEdge = (a, b, axisCorridor = false) => {
+    if (a === b) return;
+    const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+    if (existingEdges.has(key)) return;
+    const length = dist(graph.nodes[a].point, graph.nodes[b].point);
+    const edge = { id: graph.edges.length, a, b, length, ...(axisCorridor ? { axisCorridor: true } : {}) };
+    graph.edges.push(edge); existingEdges.add(key);
+    graph.adjacency.get(a).push({ node: b, edge: edge.id, length });
+    graph.adjacency.get(b).push({ node: a, edge: edge.id, length });
+  };
+  const corridorIds = corridor.map((pair) => {
+    const altitudeA = typeof pair.a.cone.alt === "number" && Number.isFinite(pair.a.cone.alt) ? pair.a.cone.alt : null;
+    const altitudeB = typeof pair.b.cone.alt === "number" && Number.isFinite(pair.b.cone.alt) ? pair.b.cone.alt : null;
+    const altitudes = [altitudeA, altitudeB].filter((value) => value != null);
+    const node = {
+      id: graph.nodes.length,
+      point: pair.point,
+      halfWidth: pair.halfWidth,
+      altitude: altitudes.length ? altitudes.reduce((sum, value) => sum + value, 0) / altitudes.length : null,
+      leftPoint: pair.a.point.slice(), rightPoint: pair.b.point.slice(),
+      leftAltitude: altitudeA, rightAltitude: altitudeB,
+    };
+    graph.nodes.push(node); graph.adjacency.set(node.id, []);
+    return node.id;
+  });
+  for (let i = 1; i < corridorIds.length; i++) {
+    addEdge(corridorIds[i - 1], corridorIds[i], true);
+  }
+  nearbyBase.forEach((connections, index) => {
+    for (const connection of connections) addEdge(corridorIds[index], connection.node, true);
+  });
+  return true;
+}
+
 function snapMarker(marker, graph, frame, terminal = false) {
   const p = frame.point(marker);
   let best = null;
@@ -250,7 +365,8 @@ function bridgeMarkerComponents(graph, snapped) {
     if (!candidates.length || candidates[0].length > maxGap) candidates = candidatesFor(2);
     const best = candidates[0];
     if (!best || best.length > maxGap) {
-      throw new Error(`${visit}→${visit + 1}단계의 콘 통로가 분리되어 있습니다. 허리·분기점 가까이에 중간 마커를 추가하거나 콘 개구부를 확인하세요.`);
+      const gap = best ? ` (가장 가까운 간격 ${best.length.toFixed(1)} m, 허용 ${maxGap.toFixed(1)} m)` : "";
+      throw new Error(`${visit}→${visit + 1}단계의 콘 통로가 분리되어 있습니다${gap}. 허리·분기점 가까이에 중간 마커를 추가하거나 콘 개구부를 확인하세요.`);
     }
     const bridges = [best];
     // Two open arcs meeting at a skidpad waist need both sides joined, otherwise
@@ -387,7 +503,25 @@ export function computeGuidedRoute(cones, markers, steps, opts = {}) {
     return marker;
   });
   const frame = project(cones);
-  const graph = buildGraph(cones, frame);
+  const sideGraph = buildGraph(cones, frame);
+  // A connected all-degree-2 graph can only describe one loop. That is valid
+  // for a circuit, but a skidpad has distinct entry/exit arms outside that
+  // collapsed loop. In that specific topology, recover only the shared axis
+  // corridor from geometric cone pairs; arbitrary open routes whose terminal
+  // markers already lie on the loop stay on the ordinary side graph.
+  // Marker-free endurance/autocross never enters this module at all.
+  const openGuidedRoute = steps[0] !== steps[steps.length - 1];
+  const collapsedToSingleLoop = new Set(graphComponents(sideGraph)).size === 1 &&
+    sideGraph.nodes.every((node) => (sideGraph.adjacency.get(node.id)?.length || 0) === 2);
+  const terminalOutsideLoop = [ordered[0], ordered[ordered.length - 1]].some((marker) => {
+    const point = frame.point(marker);
+    return Math.min(...sideGraph.nodes.map((node) => dist(point, node.point))) > sideGraph.width * 1.25;
+  });
+  const graph = sideGraph;
+  if (openGuidedRoute && collapsedToSingleLoop && terminalOutsideLoop &&
+      !augmentAxisCorridor(graph, cones, frame, ordered[0], ordered[ordered.length - 1])) {
+    throw new Error("진입·진출 마커 축에서 연속된 중앙 통로를 찾지 못했습니다. 양쪽 팔 끝에 마커를 두고 중앙 통로의 콘 쌍을 확인하세요.");
+  }
   const interiorMarkerIds = new Set(steps.slice(1, -1));
   const snappedByMarker = new Map();
   const snapped = ordered.map((marker, index) => {
