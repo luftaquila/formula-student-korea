@@ -103,7 +103,9 @@ test.describe("Registration queue", () => {
       await publicPage.getByRole("button", { name: "내 순번 조회" }).click();
       expect((await lookedUp).status()).toBe(200);
       await expect(publicPage.locator(".result-card")).toContainText("1번째");
+      await expect(publicPage.locator(".result-card .result-total")).toContainText("1팀");
       await expect(publicPage.locator(".result-card")).not.toContainText("PNU Racing");
+      await expect(publicPage.locator(".queue-total")).toHaveCount(0);
 
       const officialSse = officialPage.waitForResponse((response) => response.url().includes(`${PREFIX}/events`));
       await officialPage.goto("/registration/manage");

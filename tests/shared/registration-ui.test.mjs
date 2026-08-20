@@ -79,8 +79,25 @@ test("registration public screens expose only the total wait instead of other ca
   const register = await readRegistrationSource("src/views/Register.vue");
   const markup = `${templateOf(lookup)}\n${templateOf(register)}`;
 
-  assert.match(markup, /전체 대기/);
+  assert.match(templateOf(lookup), /class="result-total">\/ <span class="mono">\{\{ status\?\.waiting \?\? "-" \}\}<\/span>팀/);
+  assert.match(templateOf(register), /status\.waiting/);
   assert.doesNotMatch(markup, /현재 호출된 엔트리가 없습니다|호출된 엔트리|status\.called/);
+});
+
+test("registration lookup shows the total beside the personal rank without a duplicate card", async () => {
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+  const markup = templateOf(lookup);
+
+  assert.match(markup, /class="rank-block"[\s\S]*result\.position[\s\S]*class="result-total"/);
+  assert.doesNotMatch(markup, /queue-total/);
+  assert.doesNotMatch(lookup, /\.queue-total/);
+});
+
+test("registration lookup keeps the entry and phone inputs on one row like the queue page", async () => {
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+
+  assert.match(lookup, /\.input-row \{ display: flex; gap: 0\.75rem; \}/);
+  assert.doesNotMatch(lookup, /\.input-row \{[^}]*flex-direction: column/);
 });
 
 test("registration operations use a single-step completion flow without call state", async () => {
@@ -121,7 +138,7 @@ test("registration forms prefill 010 and keep the queue-style minimal result", a
   assert.doesNotMatch(markup, /엔트리와 연락처를 입력해 대기열에 등록하세요/);
   assert.doesNotMatch(templateOf(lookup), />대기 중<|다음 차례입니다|앞에 .*팀|result-details|다른 대기 조회|전화번호는 등록할 때|자동으로 업데이트/);
   assert.doesNotMatch(templateOf(lookup), /lookup-message/);
-  assert.match(templateOf(lookup), /class="card result-card"[\s\S]*v-else-if="notFound" class="result-message"/);
+  assert.match(templateOf(lookup), /class="card result-card"[\s\S]*v-if="notFound" class="result-message"/);
   assert.match(templateOf(lookup), /result\.position/);
 });
 

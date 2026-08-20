@@ -146,26 +146,16 @@ onUnmounted(() => events?.close());
       <section class="card result-card">
         <div class="card-header"><h3>📋 실시간 대기 순번</h3></div>
         <div class="card-body result-body">
-          <template v-if="result">
-            <div class="rank-block">
-              <strong class="mono">{{ result.position }}</strong>
-              <span>번째</span>
-            </div>
-          </template>
-          <p v-else-if="notFound" class="result-message">대기 중인 등록 내역이 없습니다.</p>
+          <p v-if="notFound" class="result-message">대기 중인 등록 내역이 없습니다.</p>
           <p v-else-if="error" class="result-message">{{ error }}</p>
-          <div v-else class="result-placeholder">-</div>
+          <div v-else class="rank-block" :class="{ placeholder: !result }">
+            <strong class="mono">{{ result ? result.position : "-" }}</strong>
+            <span v-if="result">번째</span>
+            <span class="result-total">/ <span class="mono">{{ status?.waiting ?? "-" }}</span>팀</span>
+          </div>
         </div>
       </section>
     </div>
-
-    <section class="card queue-total-card">
-      <div class="card-body queue-total">
-        <span>전체 대기</span>
-        <strong class="mono">{{ status?.waiting ?? "-" }}</strong>
-        <span>팀</span>
-      </div>
-    </section>
   </div>
 </template>
 
@@ -185,15 +175,9 @@ onUnmounted(() => events?.close());
 .result-card { display: flex; flex-direction: column; }
 .result-body { display: flex; flex: 1; min-height: 9rem; flex-direction: column; justify-content: center; gap: 1rem; }
 .result-message { color: var(--accent-danger); font-weight: 600; text-align: center; }
-.result-placeholder { color: var(--text-tertiary); font-family: "JetBrains Mono", monospace; font-size: 3rem; text-align: center; }
 .rank-block { text-align: center; }
 .rank-block strong { font-size: 3.3rem; line-height: 1; color: var(--accent-primary); }
 .rank-block > span { margin-left: 0.3rem; font-size: 1.1rem; font-weight: 600; }
-.queue-total { display: flex; align-items: baseline; justify-content: center; gap: 0.5rem; }
-.queue-total span { color: var(--text-secondary); font-weight: 600; }
-.queue-total strong { color: var(--accent-primary); font-size: 2.5rem; line-height: 1; }
-@media (max-width: 600px) {
-  .input-row { flex-direction: column; }
-  .entry-input { width: 100%; }
-}
+.rank-block.placeholder strong { color: var(--text-tertiary); }
+.result-total { color: var(--text-secondary); font-weight: 500; }
 </style>
