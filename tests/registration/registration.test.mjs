@@ -14,7 +14,7 @@ import {
 } from "../helpers/test-utils.mjs";
 import { currentCompetitionYear } from "../../shared/competition-year.mjs";
 import { createRegistrationApp } from "../../registration/index.mjs";
-import { createModuleYearGuard } from "../../competition/lib/year-guard.mjs";
+import { createModuleYearGuard, normalizedPath } from "../../competition/lib/year-guard.mjs";
 import { ensureCompetitionTeamSchema, TeamStore } from "../../competition/lib/team-store.mjs";
 
 setupTestEnv();
@@ -69,7 +69,7 @@ async function fixture() {
     validateUser: TRUST_JWT,
     validateUserCacheTtl: 0,
     skipSpaFallback: true,
-    mutationGuard: (req) => req.path === "/api/lookup"
+    mutationGuard: (req) => normalizedPath(req) === "/api/lookup"
       ? { module: "registration", years: [] }
       : guard(req),
   });
@@ -406,6 +406,36 @@ describe("Registration queue", () => {
         body: { year: YEAR, notifyRank },
       });
       assert.equal(response.status, 400);
+    }
+  });
+
+  it("publishes a distinct entries invalidation so open clients re-query the roster", async () => {
+    const f = await fixture();
+    const stream = await openSse(`${f.baseUrl}/api/events?year=${YEAR}`);
+    try {
+      assert.equal((await stream.next("init")).year, YEAR);
+      const entriesEvent = stream.next("entries");
+      f.registration.sourceEvent("entries", { year: YEAR });
+      assert.deepEqual(await entriesEvent, { year: YEAR });
+    } finally {
+      await stream.close();
+    }
+  });
+
+  it("ignores source events for other years and other sources", async () => {
+    const f = await fixture();
+    const stream = await openSse(`${f.baseUrl}/api/events?year=${YEAR}`);
+    try {
+      assert.equal((await stream.next("init")).year, YEAR);
+      f.registration.sourceEvent("entries", { year: YEAR - 1 });
+      f.registration.sourceEvent("teams", { year: YEAR });
+      const entriesEvent = stream.next("entries");
+      f.registration.sourceEvent("entries", { year: YEAR });
+      // 다른 연도/다른 소스 이벤트가 먼저 왔더라도 이 연도 스트림이 받는 첫
+      // entries 는 마지막 호출뿐이다.
+      assert.deepEqual(await entriesEvent, { year: YEAR });
+    } finally {
+      await stream.close();
     }
   });
 

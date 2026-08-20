@@ -25,6 +25,14 @@ async function loadStatus() {
   catch { status.value = null; }
 }
 
+async function loadTeams() {
+  try {
+    teams.value = await api.fetchTeams(year.value);
+  } catch (requestError) {
+    error.value = api.errorMessage(requestError);
+  }
+}
+
 function onPhoneInput(event) {
   phone.value = formatPhone(event.target.value);
   error.value = "";
@@ -74,18 +82,16 @@ function startEvents() {
   };
   events.addEventListener("init", refresh);
   events.addEventListener("registration", refresh);
+  // 키오스크는 종일 열려 있다. 엔트리가 추가·수정되면 로스터를 다시 받아야
+  // 새 번호가 "존재하지 않는 엔트리"로 남지 않는다.
+  events.addEventListener("entries", loadTeams);
 }
 
 onMounted(async () => {
-  try {
-    [teams.value] = await Promise.all([
-      api.fetchTeams(year.value),
-      loadStatus(),
-    ]);
-    startEvents();
-  } catch (requestError) {
-    error.value = api.errorMessage(requestError);
-  }
+  // 로스터 조회가 실패해도 SSE 는 반드시 연다 — 그러지 않으면 접수 열림/마감과
+  // 엔트리 변경을 다시 받을 경로가 사라진다.
+  await Promise.allSettled([loadTeams(), loadStatus()]);
+  startEvents();
 });
 
 onUnmounted(() => {

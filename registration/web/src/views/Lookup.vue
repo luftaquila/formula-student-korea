@@ -14,6 +14,14 @@ const error = ref("");
 const busy = ref(false);
 let events = null;
 
+// 마지막으로 실제 조회한 자격증명. 접수 전 조회로 404 를 받았어도 유지해서,
+// 데스크가 등록하면 SSE 갱신에서 순번이 저절로 뜨게 한다.
+const lastQuery = ref(null);
+// 공용 회선에서 여러 명이 화면을 열어두면 조회 rate limit(IP당 분당 60회)에
+// 닿을 수 있으므로 자동 재조회에는 최소 간격을 둔다.
+const REFRESH_INTERVAL_MS = 10_000;
+let lastRefreshAt = 0;
+
 const team = computed(() => teams.value[String(form.value.num).trim()] || null);
 const storageKey = () => `fsk_registration_lookup_${year.value}`;
 
@@ -23,34 +31,64 @@ async function loadStatus() {
   catch { status.value = null; }
 }
 
+async function loadTeams() {
+  try {
+    teams.value = await api.fetchTeams(year.value);
+    return true;
+  } catch (requestError) {
+    error.value = api.errorMessage(requestError);
+    return false;
+  }
+}
+
 function onPhoneInput(event) {
   form.value.phone = formatPhone(event.target.value);
   error.value = "";
 }
 
-async function lookup({ silent = false } = {}) {
+async function lookup() {
   const num = String(form.value.num).trim();
   const phone = String(form.value.phone).trim();
   if (!num || !phone) {
-    if (!silent) {
-      result.value = null;
-      notFound.value = false;
-      error.value = "엔트리 번호와 전화번호를 입력하세요.";
-    }
+    result.value = null;
+    notFound.value = false;
+    lastQuery.value = null;
+    error.value = "엔트리 번호와 전화번호를 입력하세요.";
     return;
   }
-  if (!silent) busy.value = true;
+  busy.value = true;
   error.value = "";
   try {
     result.value = await api.lookupRegistration({ year: year.value, num, phone });
     notFound.value = false;
+    lastQuery.value = { num, phone };
+    lastRefreshAt = Date.now();
     localStorage.setItem(storageKey(), JSON.stringify({ num, phone }));
   } catch (requestError) {
     result.value = null;
     notFound.value = requestError?.status === 404;
-    if (!silent) error.value = api.errorMessage(requestError);
+    // 404 는 "아직 대기 내역이 없다"는 뜻이라 자격증명 자체는 다시 쓸 수 있다.
+    lastQuery.value = notFound.value ? { num, phone } : null;
+    lastRefreshAt = Date.now();
+    error.value = api.errorMessage(requestError);
   } finally {
-    if (!silent) busy.value = false;
+    busy.value = false;
+  }
+}
+
+async function refreshLookup({ force = false } = {}) {
+  const credentials = lastQuery.value;
+  if (!credentials) return;
+  const now = Date.now();
+  if (!force && now - lastRefreshAt < REFRESH_INTERVAL_MS) return;
+  lastRefreshAt = now;
+  try {
+    result.value = await api.lookupRegistration({ year: year.value, ...credentials });
+    notFound.value = false;
+    error.value = "";
+  } catch (requestError) {
+    result.value = null;
+    notFound.value = requestError?.status === 404;
   }
 }
 
@@ -58,12 +96,14 @@ function restoreLookup() {
   result.value = null;
   notFound.value = false;
   error.value = "";
+  lastQuery.value = null;
   form.value = { num: "", phone: "010" };
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey()) || "null");
     if (saved?.num && saved?.phone) {
       form.value = { num: saved.num, phone: formatPhone(saved.phone) };
-      lookup({ silent: true });
+      lastQuery.value = { num: String(saved.num).trim(), phone: String(saved.phone).trim() };
+      refreshLookup({ force: true });
     }
   } catch {}
 }
@@ -74,23 +114,20 @@ function startEvents() {
   events = new EventSource(api.eventsUrl(year.value));
   const refresh = () => {
     loadStatus();
-    if (result.value) lookup({ silent: true });
+    refreshLookup();
   };
   events.addEventListener("init", refresh);
   events.addEventListener("registration", refresh);
+  // 정식 엔트리가 바뀌면 로스터를 다시 받는다(초기 로드가 실패했을 때의 복구 경로도 된다).
+  events.addEventListener("entries", loadTeams);
 }
 
 onMounted(async () => {
-  try {
-    [teams.value] = await Promise.all([
-      api.fetchTeams(year.value),
-      loadStatus(),
-    ]);
-    restoreLookup();
-    startEvents();
-  } catch (requestError) {
-    error.value = api.errorMessage(requestError);
-  }
+  // 로스터 조회가 실패해도 SSE 와 저장된 조회 복원은 계속 진행한다. 실패한 로스터는
+  // entries 이벤트에서 다시 받는다.
+  await Promise.allSettled([loadTeams(), loadStatus()]);
+  restoreLookup();
+  startEvents();
 });
 
 onUnmounted(() => events?.close());
@@ -164,28 +201,3 @@ onUnmounted(() => events?.close());
     </div>
   </div>
 </template>
-
-<style scoped>
-.queue-status { display: flex; flex-direction: column; gap: 1.5rem; }
-.status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
-.input-row { display: flex; gap: 0.75rem; }
-.input-col { display: flex; flex-direction: column; }
-.input-col.flex-1 { flex: 1; }
-.entry-input { width: 5rem; text-align: center; }
-.input-col.flex-1 .form-input { text-align: center; }
-.team-display { margin-top: 0.75rem; min-height: 2.5rem; }
-.team-badge { padding: 0.5rem 1rem; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; color: var(--accent-primary); font-size: 0.875rem; font-weight: 600; text-align: center; }
-.team-badge.error { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.3); color: var(--accent-danger); font-weight: 500; }
-.team-badge.placeholder { background: transparent; border-color: transparent; visibility: hidden; }
-.btn-block { width: 100%; margin-top: 1rem; }
-.result-card { display: flex; flex-direction: column; }
-.result-body { display: flex; flex: 1; min-height: 9rem; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
-.result-message { color: var(--accent-danger); font-weight: 600; text-align: center; }
-.result-display { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
-.result-row { display: flex; align-items: baseline; gap: 0.3rem; }
-.result-name { font-size: 1.1rem; font-weight: 600; }
-.result-rank { color: var(--accent-primary); font-family: "JetBrains Mono", monospace; font-size: 2.5rem; font-variant-numeric: tabular-nums; line-height: 1; }
-.result-row.placeholder .result-rank { color: var(--text-tertiary); }
-.result-suffix { font-size: 1.1rem; font-weight: 600; }
-.result-total { color: var(--text-secondary); font-size: 1.1rem; font-weight: 500; }
-</style>

@@ -95,9 +95,12 @@ test("registration lookup shows the total beside the personal rank without a dup
 
 test("registration lookup keeps the entry and phone inputs on one row like the queue page", async () => {
   const lookup = await readRegistrationSource("src/views/Lookup.vue");
+  const shared = await readFile(new URL("../../shared/styles/lookup-status.css", import.meta.url), "utf8");
 
-  assert.match(lookup, /\.input-row \{ display: flex; gap: 0\.75rem; \}/);
-  assert.doesNotMatch(lookup, /\.input-row \{[^}]*flex-direction: column/);
+  // `.input-row` is a row in the shared sheet and no breakpoint stacks it, so the
+  // two lookup screens keep the same one-line form on a phone.
+  assert.doesNotMatch(shared, /\.input-row \{[^}]*flex-direction: column/);
+  assert.doesNotMatch(lookup, /flex-direction: column/);
 });
 
 test("registration operations use a single-step completion flow without call state", async () => {
@@ -154,20 +157,46 @@ test("registration team labels keep one badge structure that cannot be mistaken 
     assert.match(markup, /class="team-badge"/);
     assert.match(markup, /class="team-badge error"/);
     assert.match(markup, /class="team-badge placeholder"/);
-    assert.match(source, /\.team-display \{ margin-top: 0\.75rem; min-height: 2\.5rem; \}/);
-    assert.match(source, /\.team-badge \{[^}]*background: rgba\(59, 130, 246, 0\.12\);[^}]*border: 1px solid rgba\(59, 130, 246, 0\.3\);[^}]*border-radius: 6px;[^}]*color: var\(--accent-primary\);[^}]*font-size: 0\.875rem;[^}]*font-weight: 600;/);
-    assert.match(source, /\.team-badge\.error \{[^}]*background: rgba\(239, 68, 68, 0\.12\);[^}]*color: var\(--accent-danger\);/);
+    // The label must not be filled like the primary submit button next to it.
     assert.doesNotMatch(source, /\.team-badge \{[^}]*background: var\(--accent-primary\)/);
     assert.doesNotMatch(source, /\.team-badge \{[^}]*color: white/);
   }
 });
 
 test("registration lookup keeps the submit button flush with the query card", async () => {
+  const shared = await readFile(new URL("../../shared/styles/lookup-status.css", import.meta.url), "utf8");
+
+  // The result card stretches to the query card instead of fixing a taller body,
+  // so no dead space is left under the submit button.
+  assert.match(shared, /\.queue-status \.result-card \{[^}]*flex-direction: column;/);
+  assert.match(shared, /\.queue-status \.result-body \{[^}]*flex: 1;/);
+  assert.doesNotMatch(shared, /min-height: 15\.5rem/);
+});
+
+test("registration screens re-query the roster on the entries invalidation", async () => {
+  const [register, lookup] = await Promise.all([
+    readRegistrationSource("src/views/Register.vue"),
+    readRegistrationSource("src/views/Lookup.vue"),
+  ]);
+
+  for (const source of [register, lookup]) {
+    // A kiosk or lookup page stays open all day: a canonical team change has to
+    // refresh the roster, otherwise a new entry number stays "존재하지 않는 엔트리".
+    assert.match(source, /events\.addEventListener\("entries", loadTeams\)/);
+    // A failed roster fetch must not skip startEvents(); the entries event is the
+    // recovery path, so the mount can never leave the page without a stream.
+    assert.match(source, /await Promise\.allSettled\(\[loadTeams\(\), loadStatus\(\)\]\)/);
+  }
+});
+
+test("registration lookup retries a not-found lookup on invalidation with a throttle", async () => {
   const lookup = await readRegistrationSource("src/views/Lookup.vue");
 
-  assert.match(lookup, /\.result-card \{ display: flex; flex-direction: column; \}/);
-  assert.match(lookup, /\.result-body \{[^}]*flex: 1;/);
-  assert.doesNotMatch(lookup, /\.result-body \{[^}]*min-height: 15\.5rem;/);
+  // A participant who looked up before the desk registered them must not stay
+  // pinned to "없습니다" — the stored credentials are retried on invalidation.
+  assert.match(lookup, /lastQuery\.value = notFound\.value \? \{ num, phone \} : null/);
+  assert.match(lookup, /REFRESH_INTERVAL_MS/);
+  assert.doesNotMatch(lookup, /if \(result\.value\) lookup\(/);
 });
 
 test("registration settings use concise labels and a numeric notification rank", async () => {

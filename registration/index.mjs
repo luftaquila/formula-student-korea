@@ -472,16 +472,27 @@ export function createRegistrationApp(options = {}) {
         });
       }
 
-      const result = dbRun(() => db.prepare(`
-        INSERT INTO registration_queue (team_id, phone) VALUES (?, ?)
-      `).run(team.id, phone));
-      if (!result.success) {
-        logger.warn(req, "registration.register", {
-          error: result.error, team: auditTeam(team), phone: maskedPhone(phone),
-        }, String(team.id));
-        return res.status(result.status).json({ code: "REGISTRATION_CREATE_FAILED", message: result.error });
+      let inserted;
+      try {
+        inserted = db.prepare(`
+          INSERT INTO registration_queue (team_id, phone) VALUES (?, ?)
+        `).run(team.id, phone);
+      } catch (insertError) {
+        // 위 중복 검사와 INSERT 사이에 다른 요청이 끼면 부분 유니크 인덱스
+        // idx_registration_queue_active_team 가 막는다. dbRun 은 이를 400 +
+        // 원시 SQL 문구로 바꿔 계약을 깨므로, 여기서 중복 응답으로 직접 매핑한다.
+        if (String(insertError?.code || "").startsWith("SQLITE_CONSTRAINT")) {
+          logger.warn(req, "registration.register", {
+            reason: "duplicate_race", team: auditTeam(team), error: insertError.message,
+          }, String(team.id));
+          return res.status(409).json({
+            code: "REGISTRATION_ALREADY_ACTIVE",
+            message: "이미 대기 중인 엔트리입니다.",
+          });
+        }
+        throw insertError;
       }
-      const id = Number(result.result.lastInsertRowid);
+      const id = Number(inserted.lastInsertRowid);
       const position = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
@@ -667,7 +678,12 @@ export function createRegistrationApp(options = {}) {
   });
 
   function sourceEvent(event, data) {
-    if (event === "entries" && data?.year) broadcastChange(data.year);
+    if (event !== "entries" || !data?.year) return;
+    // 정식 팀이 바뀌면 열려 있는 화면이 로스터를 다시 받아야 한다. 대기열 변동
+    // (registration)과 구분되는 이벤트로 알려, 큐가 움직일 때마다 로스터를
+    // 재조회하지는 않게 한다.
+    broadcast("entries", { year: data.year }, (meta) => meta.year === data.year);
+    broadcastChange(data.year);
   }
 
   if (!options.skipSpaFallback) addSpaFallback(app);
