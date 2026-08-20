@@ -193,13 +193,14 @@ const seeders = {
   documents: ["documents", seedDocuments],
 };
 
-export async function seedSelected(names) {
+export async function seedSelected(names, { afterEach } = {}) {
   for (const name of names) {
     const seeder = seeders[name];
     if (!seeder) throw new Error(`[seed] Unknown seed group: ${name}`);
     const [label, run] = seeder;
     console.log(`[seed] Seeding ${label}...`);
     await run();
+    await afterEach?.(name);
   }
   console.log("[seed] Seeding complete.");
 }

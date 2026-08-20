@@ -1,4 +1,4 @@
-import { writeStorageStates, BASE_URL } from "./helpers/auth.mjs";
+import { writeStorageStates, getAuthCookie, BASE_URL } from "./helpers/auth.mjs";
 import { seedSelected } from "./helpers/seed.mjs";
 
 const ALL_SERVICES = [
@@ -45,7 +45,34 @@ async function waitForServices(maxRetries = 30, intervalMs = 2000) {
   throw new Error("Services did not become healthy in time");
 }
 
+export async function waitForCompetitionAuthentication({
+  maxRetries = 10,
+  intervalMs = 500,
+  fetchImpl = fetch,
+  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  log = console.log,
+} = {}) {
+  const path = "/competition/api/v1/logs?limit=1";
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const ready = await fetchImpl(`${BASE_URL}${path}`, {
+      headers: { Cookie: getAuthCookie("admin") },
+      signal: AbortSignal.timeout(3000),
+    }).then((response) => response.ok).catch(() => false);
+
+    if (ready) {
+      log(`[setup] Competition authentication ready (attempt ${attempt})`);
+      return;
+    }
+    log(`[setup] Waiting for Competition authentication (attempt ${attempt}/${maxRetries})`);
+    if (attempt < maxRetries) await sleep(intervalMs);
+  }
+  throw new Error("Competition authentication did not become ready in time");
+}
+
 export default async function globalSetup() {
+  const services = selectedNames("E2E_SERVICES", ALL_SERVICES);
+  const seeds = selectedNames("E2E_SEEDS", ALL_SEEDS);
+
   console.log("[setup] Waiting for services...");
   await waitForServices();
 
@@ -53,7 +80,18 @@ export default async function globalSetup() {
   writeStorageStates();
 
   console.log("[setup] Seeding test data...");
-  await seedSelected(selectedNames("E2E_SEEDS", ALL_SEEDS));
+  await seedSelected(seeds, {
+    // Public health proves that Caddy and Competition can answer, but not that
+    // Competition's fail-close Auth revalidation path is usable. User seeding
+    // also starts asynchronous notification requests, so verify the protected
+    // path after that work rather than racing the first Competition mutation.
+    afterEach: async (name) => {
+      if (name === "users" && services.includes("competition")) {
+        console.log("[setup] Verifying Competition authentication...");
+        await waitForCompetitionAuthentication();
+      }
+    },
+  });
 
   console.log("[setup] Global setup complete.");
 }
