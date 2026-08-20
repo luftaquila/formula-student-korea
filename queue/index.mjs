@@ -1,14 +1,12 @@
-import https from "https";
-import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
-import { serviceUrl } from "../shared/services.mjs";
 import { competitionYearBounds, currentCompetitionYear } from "../shared/competition-year.mjs";
 import { ensureInactiveTeamView } from "../shared/team-status.mjs";
+import { createSmsClient } from "../shared/sms-client.mjs";
 
 export const INSPECTIONS = {
   battery: "배터리",
@@ -24,7 +22,6 @@ export const INSPECTIONS = {
 export function createQueueApp(options = {}) {
 
 const inspections = INSPECTIONS;
-const smsRequest = options.smsRequest || https.request;
 const QUEUE_LOG_MAX_ROWS = 100000;
 const BOOTH_LOG_MAX_ROWS = 100000;
 
@@ -2104,7 +2101,7 @@ app.get("/api/admin/settings/sms", (req, res) => {
 // PATCH /api/admin/settings/sms - SMS 설정 변경
 app.patch("/api/admin/settings/sms", (req, res) => {
   if (req.body.value === true) {
-    if (!smsConfig) {
+    if (!smsClient.isAvailable()) {
       logger.warn(req, "settings.sms", {
         error: "sms_configuration_unavailable",
         reason: "sms_configuration_unavailable",
@@ -2195,60 +2192,13 @@ async function getEntries() {
   return options.teamStore.moduleEntries(currentYear());
 }
 
-let smsConfig = options.smsConfig || null;
-
-// On a co-restart the email service is usually not up yet, so a connection
-// failure here is a transient startup race — the 5-min refresh recovers it.
-// Retry the startup window (retries > 0) before logging, so a normal restart
-// doesn't leave a "fetch failed" warning every time. An HTTP error response
-// (email up but the endpoint is failing) is a real problem and warns at once.
-async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
-  const emailServer = serviceUrl("email");
-  // 예전 조건에 있던 EMAIL_SERVER 검사는 뺐다. 이 diff에서 "설정 없음 = 아무것도 안 함"이
-  // 버그를 숨긴 게 아니라 실제 정보였던 유일한 자리다 — email 없이 뜨는 스택에서는 그게
-  // "SMS 설정 조회 대상 없음"을 뜻했다. FSK는 email이 항상 있으므로 무해하지만, 그런
-  // 스택에서는 5분마다 http://email:9900을 재시도하며 sms.config_fetch를 계속 남기게 된다.
-  // INTERNAL_SECRET은 프로덕션 부팅 시 강제된다(express-setup) — dev/test에서만 비어 있다.
-  if (process.env.INTERNAL_SECRET) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const headers = { "X-Internal-Service": process.env.INTERNAL_SECRET };
-        const res = await fetch(`${emailServer}/api/internal/sms-config`, { headers, signal: AbortSignal.timeout(5000) });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.naver_cloud_access_key && data.naver_cloud_secret_key && data.naver_cloud_sms_service_id && data.phone_number_sms_sender) {
-            smsConfig = data;
-          } else {
-            // 200인데 설정이 불완전 = 소스(email)에서 설정이 지워진 확정 상태 — 낡은
-            // 설정으로 발송하지 않도록 무효화한다. (HTTP 오류·연결 실패는 transient라
-            // 기존 smsConfig를 유지한다 — auth 재검증의 404-vs-5xx 구분과 같은 원칙.)
-            smsConfig = null;
-          }
-          return;
-        }
-        logger.warn(null, "sms.config_fetch", { status: res.status });
-        break; // HTTP error — retrying won't help
-      } catch (e) {
-        // Connection failure: email not reachable yet. Retry quietly, then warn
-        // once the startup grace window is exhausted (a genuine outage).
-        if (attempt < retries) {
-          await new Promise((r) => setTimeout(r, delayMs));
-          continue;
-        }
-        logger.warn(null, "sms.config_fetch", { error: e.message });
-      }
-      break;
-    }
-  }
-  // 주의: 어떤 실패 경로에서도 settings의 sms 값은 건드리지 않는다. 예전에는 여기서
-  // sms=FALSE를 영속화해서, email 부팅 레이스 한 번에 관리자가 켠 SMS가 조용히 꺼진 채
-  // 복구되지 않았다. 설정은 관리자만 바꾼다 — 설정 조회 실패는 발송 시점에 skip으로만
-  // 나타난다(sendSmsNotification).
-}
-
-// Refresh SMS config every 5 minutes to pick up admin changes
-const smsConfigRefreshTimer = setInterval(loadSmsConfig, 5 * 60 * 1000);
-smsConfigRefreshTimer.unref();
+const smsClient = createSmsClient({
+  logger,
+  smsRequest: options.smsRequest,
+  smsConfig: options.smsConfig,
+  fetchImpl: options.fetchImpl,
+});
+const loadSmsConfig = smsClient.loadConfig;
 
 // SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게
 let lastSmsSkipWarn = 0;
@@ -2271,89 +2221,27 @@ function sendSmsNotification(type, prev) {
     target = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
-      if (!smsConfig) {
+      if (!smsClient.isAvailable()) {
         warnSmsSkipThrottled({
           reason: "SMS 설정을 사용할 수 없습니다(email 서비스 미응답 또는 설정 미완성)",
           num: target.num, type,
         });
         return;
       }
-
-      const payload = {
-        hostname: "sens.apigw.ntruss.com",
-        port: 443,
-        path: `/sms/v2/services/${smsConfig.naver_cloud_sms_service_id}/messages`,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "x-ncp-apigw-timestamp": String(Date.now()),
-          "x-ncp-iam-access-key": smsConfig.naver_cloud_access_key,
-          "x-ncp-apigw-signature-v2": "",
-        },
-      };
-
-      const secret = crypto
-        .createHmac("sha256", smsConfig.naver_cloud_secret_key)
-        .update(
-          `${payload.method} ${payload.path}\n${payload.headers["x-ncp-apigw-timestamp"]}\n${smsConfig.naver_cloud_access_key}`,
-        )
-        .digest("base64");
-
-      payload.headers["x-ncp-apigw-signature-v2"] = secret;
-
-      const sms = smsRequest(payload, (res) => {
-        let responseSettled = false;
-        const finishResponse = (log) => {
-          if (responseSettled) return;
-          responseSettled = true;
-          log();
-        };
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => {
-          finishResponse(() => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              logger.log(null, "sms.send", { response: data, num: target.num, type });
-            } else {
-              logger.warn(null, "sms.send", { error: data, status: res.statusCode, num: target.num, type });
-            }
-          });
-        });
-        res.on("aborted", () => {
-          finishResponse(() => logger.warn(
-            null, "sms.error", { error: "response aborted", num: target.num, type },
-          ));
-        });
-        res.on("error", (e) => {
-          finishResponse(() => logger.warn(
-            null, "sms.error", { error: e.message, num: target.num, type },
-          ));
-        });
-        res.on("close", () => finishResponse(() => logger.warn(
-          null, "sms.error", { error: "response closed before completion", num: target.num, type },
-        )));
-      });
-
-      sms.setTimeout(5000, () => {
-        try {
-          logger.warn(null, "sms.timeout", { num: target.num, type });
-          sms.destroy();
-        } catch (error) {
-          throw error;
-        }
-      });
-      sms.on("error", (e) => {
-        logger.warn(null, "sms.error", { error: e.message, num: target.num, type });
-      });
-      sms.write(
-        JSON.stringify({
-          type: "SMS",
-          from: smsConfig.phone_number_sms_sender,
-          content: `[FSK ${currentCompetitionYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
-          messages: [{ to: target.phone }],
+      smsClient.send(
+        target.phone,
+        `[FSK ${currentCompetitionYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
+      ).then(
+        ({ response, status }) => logger.log(null, "sms.send", {
+          response, status, num: target.num, type,
+        }),
+        (error) => logger.warn(null, error?.code === "SMS_TIMEOUT" ? "sms.timeout" : "sms.error", {
+          error: error?.response || error?.message || String(error),
+          status: error?.status,
+          num: target.num,
+          type,
         }),
       );
-      sms.end();
     }
   } catch (e) {
     logger.warn(null, "sms.error", { error: String(e), num: target?.num, type });
@@ -2365,5 +2253,5 @@ function sendSmsNotification(type, prev) {
    ============================================ */
 if (!options.skipSpaFallback) addSpaFallback(app);
 
-return { app, db, loadSmsConfig, closeSse, sourceEvent, timers: [rateLimitTimer, smsConfigRefreshTimer] };
+return { app, db, loadSmsConfig, closeSse, sourceEvent, timers: [rateLimitTimer, smsClient.timer] };
 }
