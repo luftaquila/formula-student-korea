@@ -1,6 +1,6 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntryYears } = createApiClient("/competition/api/v1/registration");
+const { request } = createApiClient("/competition/api/v1/registration");
 
 async function json(endpoint, options) {
   const response = await request(endpoint, options);
@@ -12,7 +12,6 @@ const body = (value) => ({
   body: JSON.stringify(value),
 });
 
-export const fetchYears = fetchEntryYears;
 export const fetchStatus = (year) => json(`/api/status?year=${year}`);
 export const lookupRegistration = (data) => json("/api/lookup", { method: "POST", ...body(data) });
 export const fetchTeam = (number, year) => json(`/api/team/${number}?year=${year}`);

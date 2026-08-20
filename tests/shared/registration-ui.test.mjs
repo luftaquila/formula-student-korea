@@ -53,3 +53,14 @@ test("registration pages do not expose service tabs or internal role names", asy
   assert.match(templateOf(sources[0]), /class="logo-icon"/);
   assert.match(templateOf(sources[0]), /FSK \{\{ getPageTitle\(\) \}\}/);
 });
+
+test("registration user interfaces stay on the current competition year", async () => {
+  const [lookup, register] = await Promise.all([
+    readRegistrationSource("src/views/Lookup.vue"),
+    readRegistrationSource("src/views/Register.vue"),
+  ]);
+
+  assert.match(lookup, /currentCompetitionYear\(\)/);
+  assert.match(register, /currentCompetitionYear\(\)/);
+  assert.doesNotMatch(`${lookup}\n${register}`, /fetchYears|대회 연도|year-select/);
+});

@@ -1,10 +1,10 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { displayPhone, formatPhone } from "@shared/format-phone.js";
 import * as api from "../api.js";
 
-const years = ref([]);
-const year = ref(null);
+const year = ref(currentCompetitionYear());
 const status = ref(null);
 const form = ref({ num: "", phone: "" });
 const result = ref(null);
@@ -83,16 +83,11 @@ function startEvents() {
   events.addEventListener("registration", refresh);
 }
 
-watch(year, () => {
-  loadStatus();
-  restoreLookup();
-  startEvents();
-});
-
 onMounted(async () => {
   try {
-    years.value = await api.fetchYears();
-    year.value = years.value[0];
+    await loadStatus();
+    restoreLookup();
+    startEvents();
   } catch (requestError) {
     error.value = api.errorMessage(requestError);
   }
@@ -105,11 +100,8 @@ onUnmounted(() => events?.close());
   <div class="queue-status">
     <div class="status-grid">
       <section class="card query-card">
-        <div class="card-header card-header-row">
+        <div class="card-header">
           <h3>🔍 대기 순번 조회</h3>
-          <select v-if="years.length" v-model="year" class="form-select year-select" aria-label="대회 연도">
-            <option v-for="item in years" :key="item" :value="item">{{ item }}년</option>
-          </select>
         </div>
         <form class="card-body" @submit.prevent="lookup()">
           <div class="input-row">
@@ -144,7 +136,7 @@ onUnmounted(() => events?.close());
             <p v-else-if="error" class="error-text">{{ error }}</p>
             <p v-else class="muted">등록할 때 입력한 전화번호로 조회하세요.</p>
           </div>
-          <button class="btn btn-primary btn-block" type="submit" :disabled="busy || !year">
+          <button class="btn btn-primary btn-block" type="submit" :disabled="busy">
             {{ busy ? "조회 중…" : "내 순번 조회" }}
           </button>
         </form>
@@ -215,9 +207,7 @@ onUnmounted(() => events?.close());
 <style scoped>
 .queue-status { display: flex; flex-direction: column; gap: 1.5rem; }
 .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
-.card-header-row,
 .status-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
-.year-select { padding: 0.35rem 0.65rem; font-size: 0.8125rem; }
 .input-row { display: flex; gap: 0.75rem; }
 .input-col { display: flex; flex-direction: column; }
 .input-col.flex-1 { flex: 1; }
@@ -246,7 +236,6 @@ onUnmounted(() => events?.close());
 .called-label { flex: none; color: var(--text-secondary); font-size: 0.875rem; font-weight: 600; }
 .tips { color: var(--text-tertiary); font-size: 0.8125rem; text-align: center; }
 @media (max-width: 600px) {
-  .card-header-row,
   .status-header,
   .called-list { align-items: flex-start; flex-direction: column; }
   .input-row { flex-direction: column; }

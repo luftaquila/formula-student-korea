@@ -1,9 +1,10 @@
 <script setup>
 import { onMounted, onUnmounted, ref, watch } from "vue";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { formatPhone } from "@shared/format-phone.js";
 import * as api from "../api.js";
 
-const year = ref(null);
+const year = ref(currentCompetitionYear());
 const status = ref(null);
 const number = ref("");
 const phone = ref("010");
@@ -134,8 +135,6 @@ function startEvents() {
 
 onMounted(async () => {
   try {
-    const years = await api.fetchYears();
-    year.value = years[0];
     await loadStatus();
     startEvents();
   } catch (requestError) {
