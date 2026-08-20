@@ -112,7 +112,7 @@ function addRegistrationYears(req, db, years) {
     );
     return;
   }
-  const registrationId = Number(path.match(/^\/api\/queue\/([^/]+)\/(?:call|done|cancel)$/)?.[1]);
+  const registrationId = Number(path.match(/^\/api\/queue\/([^/]+)\/(?:done|cancel)$/)?.[1]);
   if (Number.isInteger(registrationId)) {
     addStoredYear(years, db.prepare(`
       SELECT t.year

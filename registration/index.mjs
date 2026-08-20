@@ -10,7 +10,22 @@ import {
 } from "../shared/competition-year.mjs";
 import { createSmsClient } from "../shared/sms-client.mjs";
 
-const ACTIVE_STATUSES = Object.freeze(["waiting", "called"]);
+// 대기열에 남아 있는 유일한 상태. 'called' 는 운영 흐름에서 제거됐다(완료/취소만 쓴다).
+const ACTIVE_STATUS = "waiting";
+
+// 신규 생성과 레거시 재작성이 같은 문장을 쓰도록 한 곳에 둔다 — 스키마 계약은 이
+// DDL 텍스트를 해시하므로 두 경로가 갈리면 배포 검증이 실패한다.
+const QUEUE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS registration_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL REFERENCES competition_team(id),
+      phone TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'waiting'
+        CHECK(status IN ('waiting','done','canceled')),
+      notified INTEGER NOT NULL DEFAULT 0 CHECK(notified IN (0,1,2)),
+      notify_claimed_at TEXT,
+      registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      finished_at TEXT
+    );`;
 const SMS_PREFIX = (year) => `[FSK ${year}]`;
 const DEFAULT_SETTINGS = Object.freeze({ open: false, sms: false, notifyRank: 3 });
 
@@ -74,26 +89,35 @@ export function createRegistrationApp(options = {}) {
 
   db.pragma("foreign_keys = ON");
   db.transaction(() => {
-    db.exec(`CREATE TABLE IF NOT EXISTS registration_queue (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      team_id INTEGER NOT NULL REFERENCES competition_team(id),
-      phone TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'waiting'
-        CHECK(status IN ('waiting','called','done','canceled')),
-      notified INTEGER NOT NULL DEFAULT 0 CHECK(notified IN (0,1,2)),
-      notify_claimed_at TEXT,
-      registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-      called_at TEXT,
-      finished_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_registration_queue_status
+    // 마이그레이션: 은퇴한 'called' 상태(그리고 called_at)를 가진 기존 DB를 재작성한다.
+    // SQLite 는 CHECK 제약을 바꿀 수 없다. 스키마 계약은 새로 만든 DB의 DDL 문장을
+    // 해시하므로, 재작성 후에도 같은 텍스트가 남도록 QUEUE_TABLE_SQL 을 그대로 쓴다
+    // (score 의 내구 테이블 재작성과 같은 방식). 인덱스는 레거시 테이블과 함께 사라지고
+    // 아래 CREATE INDEX IF NOT EXISTS 가 새 정의로 다시 만든다.
+    const legacyColumns = db.prepare("PRAGMA table_info(registration_queue)").all().map((column) => column.name);
+    if (legacyColumns.includes("called_at")) {
+      db.exec("ALTER TABLE registration_queue RENAME TO registration_queue_with_called_status");
+      db.exec(QUEUE_TABLE_SQL);
+      db.exec(`
+        INSERT INTO registration_queue
+          (id, team_id, phone, status, notified, notify_claimed_at, registered_at, finished_at)
+          SELECT id, team_id, phone,
+                 CASE WHEN status = 'called' THEN 'waiting' ELSE status END,
+                 notified, notify_claimed_at, registered_at, finished_at
+          FROM registration_queue_with_called_status;
+        DROP TABLE registration_queue_with_called_status;
+      `);
+    }
+
+    db.exec(QUEUE_TABLE_SQL);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_registration_queue_status
       ON registration_queue(status, id);
     CREATE INDEX IF NOT EXISTS idx_registration_queue_team
       ON registration_queue(team_id, status, id);
     CREATE INDEX IF NOT EXISTS idx_registration_queue_finished
       ON registration_queue(finished_at) WHERE finished_at IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_registration_queue_active_team
-      ON registration_queue(team_id) WHERE status IN ('waiting','called');
+      ON registration_queue(team_id) WHERE status = 'waiting';
 
     CREATE TABLE IF NOT EXISTS registration_settings (
       year INTEGER PRIMARY KEY CHECK(year BETWEEN 2000 AND 2099),
@@ -174,7 +198,7 @@ export function createRegistrationApp(options = {}) {
   function registrationRow(id) {
     return db.prepare(`
       SELECT q.id, q.team_id, q.phone, q.status, q.notified,
-             q.registered_at, q.called_at, q.finished_at,
+             q.registered_at, q.finished_at,
              t.year, t.num, t.univ, t.name, t.active
       FROM registration_queue q
       JOIN competition_team t ON t.id = q.team_id
@@ -186,7 +210,7 @@ export function createRegistrationApp(options = {}) {
     const waiting = db.prepare(`
       SELECT COUNT(*) AS count
       FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-      WHERE t.year = ? AND q.status IN ('waiting','called')
+      WHERE t.year = ? AND q.status = 'waiting'
     `).get(year).count;
     return { year, open: settingsForYear(year).open, waiting };
   }
@@ -234,7 +258,7 @@ export function createRegistrationApp(options = {}) {
                t.num, t.univ, t.name
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
         WHERE t.year = ? AND t.num = ? AND q.phone = ?
-          AND q.status IN ('waiting','called')
+          AND q.status = 'waiting'
       `).get(year, number, phone);
       if (!row) {
         logger.warn(req, "registration.lookup", {
@@ -246,12 +270,12 @@ export function createRegistrationApp(options = {}) {
       const waitingTotal = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status IN ('waiting','called')
+        WHERE t.year = ? AND q.status = 'waiting'
       `).get(year).count;
       const position = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status IN ('waiting','called') AND q.id <= ?
+        WHERE t.year = ? AND q.status = 'waiting' AND q.id <= ?
       `).get(year, row.id).count;
 
       return res.json({
@@ -280,7 +304,7 @@ export function createRegistrationApp(options = {}) {
         SELECT q.id, q.team_id AS teamId, t.num AS number, t.univ AS university, t.name,
                q.phone, q.registered_at AS registeredAt, q.notified
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status IN ('waiting','called')
+        WHERE t.year = ? AND q.status = 'waiting'
         ORDER BY q.id
       `).all(year).map((row, index) => ({ ...row, position: index + 1 }));
       const today = db.prepare(`
@@ -354,7 +378,7 @@ export function createRegistrationApp(options = {}) {
       SELECT q.id, q.team_id, q.phone, q.notified,
              t.year, t.num, t.univ, t.name, t.active
       FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-      WHERE t.year = ? AND q.status IN ('waiting','called')
+      WHERE t.year = ? AND q.status = 'waiting'
       ORDER BY q.id LIMIT 1 OFFSET ?
     `).get(year, rank - 1);
   }
@@ -374,7 +398,7 @@ export function createRegistrationApp(options = {}) {
       const claim = dbRun(() => db.prepare(`
         UPDATE registration_queue
         SET notified = 2, notify_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE id = ? AND status IN ('waiting','called')
+        WHERE id = ? AND status = 'waiting'
           AND (notified = 0 OR (
             notified = 2 AND (
               notify_claimed_at IS NULL
@@ -438,7 +462,7 @@ export function createRegistrationApp(options = {}) {
       }
       const active = db.prepare(`
         SELECT id, status FROM registration_queue
-        WHERE team_id = ? AND status IN ('waiting','called')
+        WHERE team_id = ? AND status = 'waiting'
       `).get(team.id);
       if (active) {
         logger.warn(req, "registration.register", {
@@ -474,12 +498,12 @@ export function createRegistrationApp(options = {}) {
       const position = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status IN ('waiting','called') AND q.id <= ?
+        WHERE t.year = ? AND q.status = 'waiting' AND q.id <= ?
       `).get(team.year, id).count;
       const waitingTotal = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status IN ('waiting','called')
+        WHERE t.year = ? AND q.status = 'waiting'
       `).get(team.year).count;
 
       logger.log(req, "registration.register", {
@@ -525,9 +549,8 @@ export function createRegistrationApp(options = {}) {
         return res.status(409).json({ code: "REGISTRATION_ALREADY_PROCESSED", message: "이미 처리된 대기 내역입니다." });
       }
 
-      const previousAdvanceTargetId = ACTIVE_STATUSES.includes(row.status)
-        ? advanceTarget(row.year, settingsForYear(row.year).notifyRank)?.id
-        : undefined;
+      // from.includes(row.status) above already proved the row is still waiting.
+      const previousAdvanceTargetId = advanceTarget(row.year, settingsForYear(row.year).notifyRank)?.id;
 
       const placeholders = from.map(() => "?").join(",");
       const result = dbRun(() => db.prepare(`
@@ -565,7 +588,7 @@ export function createRegistrationApp(options = {}) {
         after: to,
       }, String(row.id));
 
-      if (ACTIVE_STATUSES.includes(row.status)) notifyUpcoming(row.year, previousAdvanceTargetId);
+      notifyUpcoming(row.year, previousAdvanceTargetId);
       broadcastChange(row.year);
       return res.status(200).json({ id: row.id, status: to });
     } catch (error) {
@@ -581,10 +604,10 @@ export function createRegistrationApp(options = {}) {
   }
 
   app.post("/api/queue/:id/done", (req, res) => transition(req, res, {
-    from: ACTIVE_STATUSES, to: "done", timestampColumn: "finished_at", action: "registration.done",
+    from: [ACTIVE_STATUS], to: "done", timestampColumn: "finished_at", action: "registration.done",
   }));
   app.post("/api/queue/:id/cancel", (req, res) => transition(req, res, {
-    from: ACTIVE_STATUSES, to: "canceled", timestampColumn: "finished_at", action: "registration.cancel",
+    from: [ACTIVE_STATUS], to: "canceled", timestampColumn: "finished_at", action: "registration.cancel",
   }));
 
   app.get("/api/settings", (req, res) => {

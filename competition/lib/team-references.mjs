@@ -89,7 +89,7 @@ export function clearCanonicalTeamTransientState(db, team) {
       UPDATE registration_queue
       SET status = 'canceled',
           finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-      WHERE team_id = ? AND status IN ('waiting','called')
+      WHERE team_id = ? AND status = 'waiting'
     `).run(team.id).changes;
     if (count) changes.registration_queue = count;
   }

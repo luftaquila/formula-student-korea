@@ -160,6 +160,38 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function restoreRetiredCalledStatus(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    DROP TABLE registration_queue;
+    CREATE TABLE registration_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL REFERENCES competition_team(id),
+      phone TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'waiting'
+        CHECK(status IN ('waiting','called','done','canceled')),
+      notified INTEGER NOT NULL DEFAULT 0 CHECK(notified IN (0,1,2)),
+      notify_claimed_at TEXT,
+      registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      called_at TEXT,
+      finished_at TEXT
+    );
+    CREATE INDEX idx_registration_queue_status ON registration_queue(status, id);
+    CREATE INDEX idx_registration_queue_team ON registration_queue(team_id, status, id);
+    CREATE INDEX idx_registration_queue_finished
+      ON registration_queue(finished_at) WHERE finished_at IS NOT NULL;
+    CREATE UNIQUE INDEX idx_registration_queue_active_team
+      ON registration_queue(team_id) WHERE status IN ('waiting','called');
+  `);
+  const teamId = writer.prepare("SELECT id FROM competition_team ORDER BY id LIMIT 1").get()?.id;
+  writer.prepare(`
+    INSERT INTO registration_queue (team_id, phone, status, called_at)
+    VALUES (?, '01012345678', 'called', '2026-08-20T00:00:00.000Z')
+  `).run(teamId);
+  writer.close();
+  return teamId;
+}
+
 function removeRegistrationSchema(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
@@ -714,6 +746,51 @@ describe("Competition backup/restore artifact validation", () => {
     const malformed = validateMigrationReport(report);
     assert.notEqual(malformed.status, 0);
     assert.match(malformed.stderr, /형식이 올바르지 않습니다/);
+  });
+
+  it("upgrades a registration queue that still carries the retired called status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-called-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    const boot = () => createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+
+    let created = boot();
+    created.teams.createTeam(currentCompetitionYear(), { number: 41, university: "Upgrade University", name: "Upgrade Team" });
+    created.close();
+    restoreRetiredCalledStatus(dbPath);
+
+    // A deployment snapshot taken before the upgrade must still validate: the
+    // shipped contract is listed as upgradable, and the runtime rebuilds on boot.
+    assert.equal(validateDatabase(dbPath).status, 0);
+
+    created = boot();
+    try {
+      const columns = created.db.prepare("PRAGMA table_info(registration_queue)").all().map(({ name }) => name);
+      assert.equal(columns.includes("called_at"), false);
+      const row = created.db.prepare("SELECT id, status FROM registration_queue").get();
+      assert.deepEqual(row, { id: 1, status: "waiting" }, "a called row becomes waiting again");
+      const activeIndex = created.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE name = 'idx_registration_queue_active_team'",
+      ).get().sql;
+      assert.match(activeIndex, /WHERE status = 'waiting'/);
+    } finally {
+      created.close();
+    }
+
+    // The rebuild has to leave the exact DDL a fresh database produces, otherwise
+    // the next deployment validation would reject the upgraded database.
+    const reader = new Database(dbPath, { readonly: true });
+    const upgraded = captureCompetitionSchemaContract(reader);
+    reader.close();
+    assert.equal(upgraded.length, COMPETITION_SCHEMA_CONTRACT.objectCount);
+    assert.equal(competitionSchemaContractDigest(upgraded), COMPETITION_SCHEMA_CONTRACT.sha256);
+    assert.equal(validateDatabase(dbPath).status, 0);
   });
 
   it("accepts a full Competition database and rejects a schema-shaped subset", () => {

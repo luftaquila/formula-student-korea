@@ -21,7 +21,7 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 131,
-  sha256: "6f97860d38a0b4f04adda2f2d0e92d65feb029386540c12e24e38ab9be5c1ce8",
+  sha256: "66e3d7c77e67e20986753a75d1aba69a614bb34130dcc4e31c1275011bbac8ad",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
@@ -31,6 +31,14 @@ export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
 // its 0/1 constraint before serving. Any other schema still fails closed, and
 // the next validation must match the current contract.
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    // registration_queue still carrying the retired 'called' status and its
+    // called_at column; createRegistrationApp rebuilds the table before serving.
+    objectCount: 131,
+    sha256: "6f97860d38a0b4f04adda2f2d0e92d65feb029386540c12e24e38ab9be5c1ce8",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
   Object.freeze({
     objectCount: 125,
     sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
@@ -60,7 +68,7 @@ export function competitionSchemaContractDigest(contract) {
 const REQUIRED_COLUMNS = Object.freeze({
   competition_team: ["id", "year", "num", "univ", "name", "vehicle_type_id", "active", "created_at", "updated_at"],
   competition_vehicle_type: ["id", "year", "display_name", "color", "sort_order"],
-  registration_queue: ["id", "team_id", "phone", "status", "notified", "notify_claimed_at", "registered_at", "called_at", "finished_at"],
+  registration_queue: ["id", "team_id", "phone", "status", "notified", "notify_claimed_at", "registered_at", "finished_at"],
   registration_settings: ["year", "open", "sms", "notify_rank", "updated_at"],
   inspection: ["type", "name", "active"],
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
