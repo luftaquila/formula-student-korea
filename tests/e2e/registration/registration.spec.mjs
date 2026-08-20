@@ -100,7 +100,7 @@ test.describe("Registration queue", () => {
       await publicPage.locator("#lookup-phone").fill(PHONE);
       const lookedUp = publicPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");
-      await publicPage.getByRole("button", { name: "내 순번 조회" }).click();
+      await publicPage.getByRole("button", { name: "조회", exact: true }).click();
       expect((await lookedUp).status()).toBe(200);
       await expect(publicPage.locator(".result-card")).toContainText("1번째");
       await expect(publicPage.locator(".result-card .result-total")).toContainText("1팀");

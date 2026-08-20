@@ -142,7 +142,7 @@ onUnmounted(() => events?.close());
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.35-4.35" />
             </svg>
-            {{ busy ? "조회 중…" : "내 순번 조회" }}
+            {{ busy ? "조회 중…" : "조회" }}
           </button>
         </form>
       </section>
