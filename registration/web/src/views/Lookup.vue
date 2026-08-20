@@ -132,7 +132,7 @@ onUnmounted(() => events?.close());
             <span v-else-if="form.num" class="error-text">존재하지 않는 엔트리</span>
             <span v-else aria-hidden="true">&nbsp;</span>
           </div>
-          <div class="lookup-message">
+          <div v-if="notFound || error" class="lookup-message">
             <p v-if="notFound && !error" class="error-text">대기 중인 등록 내역이 없습니다.</p>
             <p v-else-if="error" class="error-text">{{ error }}</p>
           </div>

@@ -120,5 +120,6 @@ test("registration forms prefill 010 and keep the queue-style minimal result", a
   assert.doesNotMatch(register, /\.submit-group[^}]*margin-top:\s*auto/);
   assert.doesNotMatch(markup, /엔트리와 연락처를 입력해 대기열에 등록하세요/);
   assert.doesNotMatch(templateOf(lookup), />대기 중<|다음 차례입니다|앞에 .*팀|result-details|다른 대기 조회|전화번호는 등록할 때|자동으로 업데이트/);
+  assert.match(templateOf(lookup), /v-if="notFound \|\| error" class="lookup-message"/);
   assert.match(templateOf(lookup), /result\.position/);
 });
