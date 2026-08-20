@@ -34,6 +34,7 @@ import {
 import { useNotification } from "@shared/useNotification.js";
 import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
 import { computeCenterline } from "@lib/centerline.mjs";
+import { computeGuidedRoute } from "@lib/guided-route.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
 import { isAdmin } from "@shared/officialsStore.js";
 import { useWhepStream } from "../composables/useWhepStream.js";
@@ -60,6 +61,7 @@ const appNavState = inject("navState", null);
 const courses = ref([]);
 const conesMap = ref({});
 const memosMap = ref({}); // 코스별 메모 스티커: courseId → memo[] { id, course_id, lat, lng, width, height, content }
+const routeMap = ref({}); // 코스별 { markers, steps }; steps may repeat marker ids
 // 지도가 움직일 때마다 올려서 지리 좌표 고정 메모의 화면 위치·크기를 재계산시키는 트리거.
 const mapFrame = ref(0);
 const visibility = ref(loadPref("visibility", {}, (v) => JSON.parse(v))); // per-course show/hide, persisted
@@ -69,12 +71,14 @@ const newCourseName = ref("");
 // Course ZIP export / JSON import lives in a composable; destructured so the
 // template keeps using importInput/exportingId/exportCourse/triggerImport/importCourse by name.
 const { importInput, exportingId, exportCourse, triggerImport, importCourse } = useCourseImportExport({
-  courses, conesMap, memosMap, activeCourseId, visibility, newCourseName, courseDirOpts, notifyError,
+  courses, conesMap, memosMap, routeMap, activeCourseId, visibility, newCourseName, courseDirOpts, notifyError,
 });
 const currentSide = ref("left");
 const roverLoading = ref(false);
 const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // default locked; screen tap/drag can't add/move/rotate/delete cones; persisted
 const showCenterline = ref(loadPref("showCenterline", true, (v) => v === "true")); // course centerline graphic; default on; persisted
+const routeEditMode = ref(false); // unlocked map taps place reusable route markers
+const routeError = ref("");
 // Per-course start cone + travel direction live on the server course row
 // (course.start_cone_id / course.reverse), shared by every operator and synced
 // over the 'courses' SSE broadcast — no longer a per-device localStorage pref.
@@ -96,6 +100,7 @@ function onRailClick(key) {
 function hideLiveMapLayers() {
   if (!map) return;
   for (const m of Object.values(markers)) { try { map.removeLayer(m); } catch {} }
+  clearRouteMarkers();
   // Null the refs, not just detach: setDeviceMarker treats a non-null marker as
   // "already on the map" and only setLatLng()s it, so leaving a dangling
   // reference means restoreLiveMapLayers() can never re-add it.
@@ -110,6 +115,7 @@ function hideLiveMapLayers() {
 function restoreLiveMapLayers() {
   if (!map) return;
   rebuildAllMarkers();
+  rebuildRouteMarkers();
   syncDeviceMarkers(roverStatus.value);
   if (pathStart) renderPath();
   renderSprayMarkers();
@@ -138,6 +144,7 @@ const { toolMode, measureHint, measureResult, enterToolMode, exitToolMode, reset
 });
 // Drop rotate/select/multiselect so an active measurement tool is the exclusive mode.
 function clearOtherModes() {
+  routeEditMode.value = false;
   if (rotateMode.value) exitRotateMode();
   selectMode.value = false;
   if (multiSelectedIds.value.size > 0) { multiSelectedIds.value = new Set(); updateMultiSelectIcons(); }
@@ -654,6 +661,7 @@ let missionPlannedMarkers = [];
 let missionPlannedPath = null;
 let missionActualPath = null;
 let centerlineLayer = null;   // Leaflet layer group drawing the active course centerline
+let routeMarkerLayers = [];   // reusable ordered-route markers for the active course
 let centerlineTimer = null;   // debounce handle for recompute
 let missionReplayMarker = null;
 
@@ -805,11 +813,15 @@ watch(activeTab, (next, prev) => {
     if (rotateMode.value) exitRotateMode();
     if (toolMode.value !== "none") exitToolMode();
     selectMode.value = false;
+    routeEditMode.value = false;
   }
   const prevWasMissions = prev === "history" && historyView.value === "missions";
   const nextIsMissions = next === "history" && historyView.value === "missions";
   if (prevWasMissions || nextIsMissions) return;
-  if ((next === "courses") !== (prev === "courses")) rebuildAllMarkers();
+  if ((next === "courses") !== (prev === "courses")) {
+    rebuildAllMarkers();
+    rebuildRouteMarkers();
+  }
 });
 watch(inspectorWidth, (v) => savePref("inspectorWidth", v));
 
@@ -1366,6 +1378,88 @@ const activeMemos = computed(() => {
   return memosMap.value[id] || [];
 });
 
+const activeRoute = computed(() => routeMap.value[activeCourseId.value] || { markers: [], steps: [] });
+const routeMarkerById = computed(() => new Map(activeRoute.value.markers.map((marker) => [marker.id, marker])));
+const hasGuidedRoute = computed(() => activeRoute.value.steps.length >= 2);
+
+async function fetchRoute(courseId) {
+  if (!courseId) return;
+  try {
+    const res = await request(`/api/courses/${courseId}/route`);
+    routeMap.value[courseId] = await res.json();
+  } catch (err) {
+    notifyError(err.message);
+  }
+}
+
+async function addRouteMarker(lat, lng) {
+  const courseId = activeCourseId.value;
+  if (!courseId) return;
+  try {
+    const n = activeRoute.value.markers.length + 1;
+    await request(`/api/courses/${courseId}/route/markers`, {
+      method: "POST",
+      body: JSON.stringify({ lat, lng, label: `M${n}` }),
+    });
+    await fetchRoute(courseId);
+  } catch (err) { notifyError(err.message); }
+}
+
+async function updateRouteMarker(marker, patch) {
+  try {
+    await request(`/api/route/markers/${marker.id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    await fetchRoute(marker.course_id);
+  } catch (err) {
+    notifyError(err.message);
+    const current = routeMap.value[marker.course_id] || { markers: [], steps: [] };
+    routeMap.value[marker.course_id] = { markers: current.markers.map((item) => ({ ...item })), steps: current.steps.slice() };
+  }
+}
+
+async function deleteRouteMarker(marker) {
+  if (!confirm(`주행 마커 "${marker.label || marker.id}"와 모든 방문 단계를 삭제하시겠습니까?`)) return;
+  try {
+    const res = await request(`/api/route/markers/${marker.id}`, { method: "DELETE" });
+    routeMap.value[marker.course_id] = await res.json();
+  } catch (err) { notifyError(err.message); }
+}
+
+async function saveRouteSteps(steps) {
+  const courseId = activeCourseId.value;
+  if (!courseId) return;
+  try {
+    const res = await request(`/api/courses/${courseId}/route/steps`, {
+      method: "PUT", body: JSON.stringify({ steps }),
+    });
+    routeMap.value[courseId] = await res.json();
+  } catch (err) { notifyError(err.message); }
+}
+
+function appendRouteVisit(markerId) {
+  saveRouteSteps([...activeRoute.value.steps, markerId]);
+}
+
+function moveRouteVisit(index, delta) {
+  const steps = activeRoute.value.steps.slice();
+  const target = index + delta;
+  if (target < 0 || target >= steps.length) return;
+  [steps[index], steps[target]] = [steps[target], steps[index]];
+  saveRouteSteps(steps);
+}
+
+function removeRouteVisit(index) {
+  const steps = activeRoute.value.steps.slice();
+  steps.splice(index, 1);
+  saveRouteSteps(steps);
+}
+
+function toggleRouteEditMode() {
+  if (editLocked.value) return;
+  const next = !routeEditMode.value;
+  clearOtherModes();
+  routeEditMode.value = next;
+}
+
 // EPSG:3857(웹 메르카토르) 기준 위도별 m/px 해상도. 회전과 무관한 스칼라라
 // leaflet-rotate 상태에서도 m↔px 변환이 정확하다.
 function metersPerPixel(lat) {
@@ -1423,9 +1517,26 @@ function courseDirOpts(courseId, cones) {
 function recomputeCenterline() {
   centerlineTimer = null;
   const cones = activeCones.value;
-  centerline.value = cones.length >= 6
-    ? computeCenterline(cones, { step: 1.0, ...courseDirOpts(activeCourseId.value, cones) })
-    : null;
+  routeError.value = "";
+  if (cones.length < 6) {
+    centerline.value = null;
+  } else if (hasGuidedRoute.value) {
+    try {
+      centerline.value = computeGuidedRoute(
+        cones,
+        activeRoute.value.markers,
+        activeRoute.value.steps,
+        { step: 1.0 },
+      );
+    } catch (err) {
+      centerline.value = null;
+      routeError.value = err?.message || String(err);
+    }
+  } else {
+    // No complete marker route: preserve the established endurance/autocross
+    // centerline path, including start-cone and reverse semantics.
+    centerline.value = computeCenterline(cones, { step: 1.0, ...courseDirOpts(activeCourseId.value, cones) });
+  }
   drawCenterline();
 }
 function drawCenterline() {
@@ -1434,9 +1545,16 @@ function drawCenterline() {
   const pts = centerline.value.points;
   const latlngs = pts.map((p) => [p.lat, p.lng]);
   // Dark casing under a light dashed line so the centerline reads over satellite tiles.
+  const guided = !!centerline.value.metric?.routeNodeIds;
   const layers = [
     L.polyline(latlngs, { color: "#0b1021", weight: 5, opacity: 0.45, interactive: false }),
-    L.polyline(latlngs, { color: "#f8fafc", weight: 2.5, opacity: 0.95, dashArray: "7 6", interactive: false }),
+    L.polyline(latlngs, {
+      color: guided ? "#34d399" : "#f8fafc",
+      weight: 2.5,
+      opacity: 0.95,
+      dashArray: "7 6",
+      interactive: false,
+    }),
   ];
   const arrow = startArrow(pts);
   if (arrow) layers.push(...arrow);
@@ -1475,6 +1593,10 @@ function startArrow(pts) {
 }
 watch(showCenterline, (v) => { savePref("showCenterline", v); drawCenterline(); });
 watch(activeCones, scheduleCenterline);
+watch(activeRoute, () => {
+  scheduleCenterline();
+  rebuildRouteMarkers();
+}, { deep: true });
 watch(activeTab, drawCenterline);
 // Start/direction now live on the server course row. Recompute the centerline
 // whenever the active course's reverse/start changes — this client's own edit or
@@ -1629,7 +1751,7 @@ function rebuildAllMarkers(onlyCourseId = null) {
       // Leaflet doesn't probe every marker on every touchmove (mobile jank).
       // Per-cone drag is also suspended while rotating or measuring so those
       // gestures don't accidentally move a single cone.
-      const canDrag = isActive && activeTab.value === "courses" && !editLocked.value
+      const canDrag = isActive && activeTab.value === "courses" && !editLocked.value && !routeEditMode.value
         && !rotateMode.value && toolMode.value === "none" && !selectMode.value;
       const marker = L.marker([cone.lat, cone.lng], {
         icon,
@@ -1639,6 +1761,7 @@ function rebuildAllMarkers(onlyCourseId = null) {
 
       if (isActive) {
         marker.on("click", (e) => {
+          if (routeEditMode.value) return;
           // A measurement tool consumes cone taps as measurement points.
           if (toolMode.value !== "none") { handleMeasureClick(L.latLng(cone.lat, cone.lng)); return; }
           // While rotating, cone taps are ignored — the selection is locked in.
@@ -1748,6 +1871,55 @@ function rebuildAllMarkers(onlyCourseId = null) {
   }
 }
 
+function clearRouteMarkers() {
+  if (map) for (const marker of routeMarkerLayers) { try { map.removeLayer(marker); } catch {} }
+  routeMarkerLayers = [];
+}
+
+// Route markers are distinct from cones: one physical marker can appear in the
+// visit list several times. The icon therefore shows visit ranks, not a copied
+// marker per lap. Markers become interactive only in route-edit mode so normal
+// cone selection and map panning retain their existing behavior.
+function rebuildRouteMarkers() {
+  clearRouteMarkers();
+  if (!map || activeTab.value !== "courses" || !activeCourseId.value) return;
+  const visits = new Map();
+  activeRoute.value.steps.forEach((id, index) => {
+    const ranks = visits.get(id) || [];
+    ranks.push(index + 1);
+    visits.set(id, ranks);
+  });
+  const interactive = routeEditMode.value && !editLocked.value;
+  activeRoute.value.markers.forEach((routeMarker, markerIndex) => {
+    const ranks = visits.get(routeMarker.id) || [];
+    const visibleRanks = ranks.length > 3 ? `${ranks.slice(0, 2).join("·")}…` : ranks.join("·");
+    const text = visibleRanks || `M${markerIndex + 1}`;
+    const marker = L.marker([routeMarker.lat, routeMarker.lng], {
+      draggable: interactive,
+      interactive,
+      zIndexOffset: 900,
+      icon: L.divIcon({
+        className: "route-marker-host",
+        html: `<div class="route-marker-pin${ranks.length ? " has-visits" : ""}"><span>${text}</span></div>`,
+        iconSize: [34, 34],
+        iconAnchor: [17, 17],
+      }),
+    });
+    if (interactive) {
+      marker.on("click", (event) => {
+        if (event.originalEvent) L.DomEvent.stopPropagation(event.originalEvent);
+        appendRouteVisit(routeMarker.id);
+      });
+      marker.on("dragend", async () => {
+        const { lat, lng } = marker.getLatLng();
+        await updateRouteMarker(routeMarker, { lat, lng });
+      });
+    }
+    marker.addTo(map);
+    routeMarkerLayers.push(marker);
+  });
+}
+
 function updateMultiSelectIcons() {
   const aid = activeCourseId.value;
   if (!aid) return;
@@ -1791,7 +1963,16 @@ function scrollConeListTop() {
 watch(editLocked, (v) => {
   savePref("editLocked", v);
   if (v && rotateMode.value) exitRotateMode(); // rotate is an edit op — locking exits it
-  if (map && activeTab.value === "courses") rebuildAllMarkers();
+  if (v) routeEditMode.value = false;
+  if (map && activeTab.value === "courses") {
+    rebuildAllMarkers();
+    rebuildRouteMarkers();
+  }
+});
+watch(routeEditMode, () => {
+  if (!map || activeTab.value !== "courses") return;
+  rebuildAllMarkers();
+  rebuildRouteMarkers();
 });
 // Keep the rotate handle pinned to the selection's centroid. If the selection
 // drops below two cones there's nothing to rotate, so leave rotate mode.
@@ -1804,6 +1985,7 @@ watch(multiSelectedIds, (set) => {
 // cone draggability and the container's touch-action, so rebuild the markers.
 watch(selectMode, (on) => {
   if (on) {
+    routeEditMode.value = false;
     if (rotateMode.value) exitRotateMode();
     if (toolMode.value !== "none") exitToolMode();
   }
@@ -1894,6 +2076,7 @@ watch(activeCourseId, async (v, prev) => {
   if (rotateMode.value) exitRotateMode();
   if (toolMode.value !== "none") exitToolMode();
   selectMode.value = false;
+  routeEditMode.value = false;
   undoStack.value = []; // undo entries reference cone ids of the old course
   selectedConeId.value = null;
   multiSelectedIds.value = new Set();
@@ -1905,7 +2088,10 @@ watch(activeCourseId, async (v, prev) => {
   // alignment must refresh course-scoped UI without clearing or abandoning the
   // mission path that restoreActiveMission is installing in the same tick.
   if (!missionAlignment) clearPath({ endMissionOnServer: !missionEnded });
-  if (map) rebuildAllMarkers();
+  if (map) {
+    rebuildAllMarkers();
+    rebuildRouteMarkers();
+  }
   if (v != null) {
     savePref("activeCourseId", v);
     // Pan to the newly selected course so the operator doesn't hand-pan: the
@@ -1929,12 +2115,14 @@ async function fetchAll() {
     // first paint waits only on the slowest single course, not their sum.
     await Promise.all(courses.value.map(async (c) => {
       if (visibility.value[c.id] === undefined) visibility.value[c.id] = true;
-      const [cones, memos] = await Promise.all([
+      const [cones, memos, route] = await Promise.all([
         request(`/api/courses/${c.id}/cones`).then((r) => r.json()).catch(() => []),
         request(`/api/courses/${c.id}/memos`).then((r) => r.json()).catch(() => []),
+        request(`/api/courses/${c.id}/route`).then((r) => r.json()).catch(() => ({ markers: [], steps: [] })),
       ]);
       conesMap.value[c.id] = cones;
       memosMap.value[c.id] = memos;
+      routeMap.value[c.id] = route;
     }));
     if (!activeCourseId.value && courses.value.length) {
       // Restore the last-used course so a refresh doesn't silently drop
@@ -2023,6 +2211,7 @@ async function initMap() {
   }
   setupSelectionBox();
   rebuildAllMarkers();
+  rebuildRouteMarkers();
   renderSurveyPoints();
 }
 
@@ -2075,6 +2264,12 @@ function onMapClick(e) {
   // 동일), 폐기는 전용 "미션 종료" 버튼으로만 수행한다.
   if (roverMode.value === "stopped") return;
   if (roverMode.value === "executing") return;
+  if (routeEditMode.value) {
+    if (activeTab.value === "courses" && activeCourseId.value && !editLocked.value) {
+      addRouteMarker(e.latlng.lat, e.latlng.lng);
+    }
+    return;
+  }
   // Locked courses tab: cones are canvas dots (no per-marker click), so the map
   // tap does the selection the DOM marker normally would — snap to the nearest
   // cone to select it (the inspector can still edit/delete a selected cone while
@@ -4635,6 +4830,8 @@ function connectSSE() {
     for (const id of Object.keys(conesMap.value)) {
       if (!data.courses.find((c) => c.id === parseInt(id))) {
         delete conesMap.value[id];
+        delete memosMap.value[id];
+        delete routeMap.value[id];
         delete visibility.value[id];
       }
     }
@@ -4666,6 +4863,12 @@ function connectSSE() {
     // 끊긴다. 그 경우 건너뛰고, 조작 종료 후의 PATCH 에코가 최종 상태로 맞춘다.
     if (memoBusy && data.courseId === activeCourseId.value) return;
     memosMap.value[data.courseId] = data.memos;
+  });
+
+  eventSource.addEventListener("route", (e) => {
+    const data = parseSSE(e);
+    if (!data) return;
+    routeMap.value[data.courseId] = { markers: data.markers || [], steps: data.steps || [] };
   });
 
   eventSource.addEventListener("rover", (e) => {
@@ -4970,6 +5173,7 @@ function onGlobalKeydown(e) {
     if (showPreflight.value) { cancelPreflight(); e.preventDefault(); return; }
     // Then back out of the editing modes.
     if (rotateMode.value) { exitRotateMode(); e.preventDefault(); return; }
+    if (routeEditMode.value) { routeEditMode.value = false; e.preventDefault(); return; }
     if (selectMode.value) { selectMode.value = false; e.preventDefault(); return; }
     if (toolMode.value !== "none") { exitToolMode(); e.preventDefault(); return; }
     return;
@@ -5651,7 +5855,7 @@ onUnmounted(() => {
               class="map-fab-panel map-fab-tools"
             >
               <button
-                v-if="centerline?.ok"
+                v-if="centerline?.ok && !hasGuidedRoute"
                 :class="['fab-icon-btn', 'fab-tool', { active: isReversed }]"
                 @click="toggleReverse"
                 aria-label="진행방향 전환"
@@ -5664,6 +5868,13 @@ onUnmounted(() => {
                   <line x1="3" y1="16" x2="21" y2="16" />
                 </svg>
               </button>
+              <button
+                :class="['fab-icon-btn', 'fab-tool', { active: routeEditMode }]"
+                :disabled="editLocked"
+                @click="toggleRouteEditMode"
+                aria-label="주행 순서 마커 편집"
+                :title="editLocked ? '편집 잠금을 해제해야 주행 마커를 배치할 수 있습니다' : '주행 순서 — 지도에 마커 배치·이동, 마커 탭으로 방문 추가'"
+              >🚩</button>
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: showCenterline }]"
                 @click="showCenterline = !showCenterline"
@@ -5725,6 +5936,15 @@ onUnmounted(() => {
               <span v-if="multiSelectedIds.size" class="measure-result">{{ multiSelectedIds.size }}개</span>
               <button v-if="multiSelectedIds.size" class="btn btn-ghost btn-sm" @click="clearMultiSelection">해제</button>
               <button class="btn btn-ghost btn-sm" @click="selectMode = false">닫기</button>
+            </div>
+
+            <!-- Reusable marker placement: tapping empty pavement creates one
+                 physical marker; tapping an existing marker appends a visit. -->
+            <div v-if="routeEditMode" class="map-overlay map-overlay-row measure-overlay route-overlay">
+              <span class="measure-tool-name">🚩 주행 순서</span>
+              <span class="measure-hint">빈 곳 탭: 마커 추가 · 마커 탭: 방문 추가 · 드래그: 이동</span>
+              <span class="measure-result">{{ activeRoute.markers.length }}개 / {{ activeRoute.steps.length }}단계</span>
+              <button class="btn btn-ghost btn-sm" @click="routeEditMode = false">닫기</button>
             </div>
 
             <!-- Memo label layer — geo-anchored text annotations over the map.
@@ -5845,8 +6065,45 @@ onUnmounted(() => {
                 <!-- Cones panel for the selected course -->
                 <template v-if="activeCourse">
                   <header class="tab-header tab-header-sub">
-                    <h3>{{ activeCourse.name }}<span v-if="centerline?.ok" class="centerline-len"> ({{ Math.round(centerline.length) }} m)</span><span v-if="editLocked" class="lock-badge" title="편집 잠김">🔒</span></h3>
+                    <h3>{{ activeCourse.name }}<span v-if="centerline?.ok" class="centerline-len"> ({{ Math.round(centerline.length) }} m{{ hasGuidedRoute ? ' · 마커 경로' : '' }})</span><span v-if="editLocked" class="lock-badge" title="편집 잠김">🔒</span></h3>
                   </header>
+
+                  <div class="inspector-group route-editor">
+                    <div class="route-editor-heading">
+                      <div class="group-title">주행 순서 마커</div>
+                      <span :class="['route-mode-badge', { guided: hasGuidedRoute }]">{{ hasGuidedRoute ? '마커 경로' : '자동 중심선' }}</span>
+                    </div>
+                    <p class="hint">마커가 2단계 이상이면 표시 순서대로 중심선을 만듭니다. 같은 마커를 반복 방문에 여러 번 사용할 수 있습니다.</p>
+                    <p v-if="routeError" class="route-error">{{ routeError }}</p>
+                    <div class="route-marker-list">
+                      <div v-for="(marker, markerIndex) in activeRoute.markers" :key="marker.id" class="route-marker-row">
+                        <span class="route-marker-index">M{{ markerIndex + 1 }}</span>
+                        <input
+                          :value="marker.label"
+                          maxlength="50"
+                          :disabled="editLocked"
+                          aria-label="주행 마커 이름"
+                          @change="updateRouteMarker(marker, { label: $event.target.value })"
+                        />
+                        <button class="btn btn-ghost btn-sm route-icon-action" :disabled="editLocked" @click="appendRouteVisit(marker.id)" title="방문 단계 맨 뒤에 추가">＋</button>
+                        <button class="del-btn" :disabled="editLocked" @click="deleteRouteMarker(marker)" title="마커와 해당 방문 삭제">×</button>
+                      </div>
+                      <div v-if="activeRoute.markers.length === 0" class="empty-msg">잠금을 풀고 🚩 도구로 노면 위에 마커를 배치하세요.</div>
+                    </div>
+                    <div v-if="activeRoute.steps.length" class="route-step-list">
+                      <div v-for="(markerId, index) in activeRoute.steps" :key="`${index}-${markerId}`" class="route-step-row">
+                        <span class="route-step-rank">{{ index + 1 }}</span>
+                        <span class="route-step-name">{{ routeMarkerById.get(markerId)?.label || `M${markerId}` }}</span>
+                        <button class="route-step-action" :disabled="editLocked || index === 0" @click="moveRouteVisit(index, -1)" title="앞으로">↑</button>
+                        <button class="route-step-action" :disabled="editLocked || index === activeRoute.steps.length - 1" @click="moveRouteVisit(index, 1)" title="뒤로">↓</button>
+                        <button class="route-step-action danger" :disabled="editLocked" @click="removeRouteVisit(index)" title="이 방문만 삭제">×</button>
+                      </div>
+                    </div>
+                    <div class="route-editor-actions">
+                      <button class="btn btn-ghost btn-sm" :disabled="editLocked" @click="toggleRouteEditMode">{{ routeEditMode ? '배치 종료' : '지도에서 배치' }}</button>
+                      <button class="btn btn-ghost btn-sm" :disabled="editLocked || activeRoute.steps.length === 0" @click="saveRouteSteps([])">순서 초기화</button>
+                    </div>
+                  </div>
 
                   <div v-if="multiSelectedIds.size > 0" class="inspector-group selected">
                     <div class="group-title">{{ multiSelectedIds.size }}개 선택됨</div>
@@ -5888,7 +6145,7 @@ onUnmounted(() => {
                       <button class="btn btn-danger btn-lg-touch" @click="deleteCone(selectedConeId)">삭제</button>
                       <button class="btn btn-ghost btn-lg-touch" @click="selectedConeId = null">취소</button>
                     </div>
-                    <div class="edit-buttons">
+                    <div v-if="!hasGuidedRoute" class="edit-buttons">
                       <button
                         :class="['btn', 'btn-lg-touch', isStartCone ? 'btn-primary' : 'btn-ghost']"
                         @click="setStartCone"
@@ -6879,6 +7136,8 @@ onUnmounted(() => {
 }
 .map-overlay-row > span { white-space: nowrap; }
 .map-overlay-row .btn { white-space: nowrap; }
+.route-overlay { flex-wrap: wrap; justify-content: center; }
+.route-overlay .measure-hint { white-space: normal; text-align: center; }
 
 /* Floating map controls (courses tab). Two panels share this base look:
    the edit panel (bottom-right) and the tools panel (top-right). Theme-aware
@@ -7161,6 +7420,51 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--accent-primary) 7%, var(--bg-primary));
   border-color: var(--accent-primary);
 }
+.route-editor-heading,
+.route-editor-actions,
+.route-marker-row,
+.route-step-row {
+  display: flex; align-items: center; gap: 0.35rem;
+}
+.route-editor-heading { justify-content: space-between; }
+.route-mode-badge {
+  border-radius: 999px; padding: 0.1rem 0.45rem;
+  background: var(--bg-primary); color: var(--text-secondary);
+  font-size: 0.68rem; font-weight: 700;
+}
+.route-mode-badge.guided { background: rgba(16, 185, 129, 0.18); color: #10b981; }
+.route-error {
+  margin: 0; padding: 0.4rem 0.5rem; border-radius: 5px;
+  background: rgba(239, 68, 68, 0.12); color: #ef4444;
+  font-size: 0.75rem; line-height: 1.35;
+}
+.route-marker-list,
+.route-step-list { display: flex; flex-direction: column; gap: 0.25rem; }
+.route-step-list {
+  max-height: 13rem; overflow-y: auto; padding-top: 0.4rem;
+  border-top: 1px solid var(--border-color);
+}
+.route-marker-index,
+.route-step-rank {
+  flex: 0 0 2rem; color: #10b981; font: 700 0.72rem/1 "JetBrains Mono", monospace;
+}
+.route-marker-row input {
+  min-width: 0; flex: 1; padding: 0.3rem 0.4rem;
+  border: 1px solid var(--border-color); border-radius: 4px;
+  background: var(--bg-primary); color: var(--text-primary); font-size: 0.76rem;
+}
+.route-icon-action { min-width: 2rem; padding: 0.2rem; }
+.route-step-name {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-size: 0.75rem; color: var(--text-primary);
+}
+.route-step-action {
+  width: 1.7rem; height: 1.7rem; padding: 0; border: 0; border-radius: 4px;
+  background: var(--bg-primary); color: var(--text-secondary); cursor: pointer;
+}
+.route-step-action.danger { color: #ef4444; }
+.route-step-action:disabled { opacity: 0.35; cursor: default; }
+.route-editor-actions { justify-content: flex-end; flex-wrap: wrap; }
 .group-title {
   font-size: 0.85rem; font-weight: 700; color: var(--text-primary);
 }
@@ -7858,7 +8162,7 @@ onUnmounted(() => {
   /* Keep the top-right tools in a single horizontal row on mobile (they were
      stacked vertically before). Drop the centred active-tool overlay / rotation
      HUD below the tool row so they don't collide on narrow screens. */
-  .map-fab-tools { flex-direction: row; flex-wrap: nowrap; }
+  .map-fab-tools { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; }
   .measure-overlay, .rotate-hud { top: 4.5rem; }
 
   .inspector-handle { display: none; }
@@ -7930,6 +8234,17 @@ onUnmounted(() => {
 </style>
 
 <style>
+.route-marker-host { background: transparent; border: 0; }
+.route-marker-pin {
+  width: 30px; height: 30px; box-sizing: border-box;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid #fff; border-radius: 50% 50% 50% 4px;
+  transform: rotate(-45deg); background: #64748b; color: #fff;
+  box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
+  font: 700 9px/1 "JetBrains Mono", ui-monospace, monospace;
+}
+.route-marker-pin.has-visits { background: #10b981; }
+.route-marker-pin > span { transform: rotate(45deg); }
 .selection-box {
   position: absolute;
   border: 2px dashed #38bdf8;

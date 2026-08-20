@@ -82,6 +82,30 @@ db.exec(`CREATE TABLE IF NOT EXISTS memo (
 );`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_memo_course ON memo(course_id);`);
 
+// Ordered route guides are independent from cones: markers are physical map
+// anchors, while route_step may reference the same marker repeatedly to express
+// multi-lap or branched walks (for example a skidpad's left 2 + right 2 laps).
+db.exec(`CREATE TABLE IF NOT EXISTS route_marker (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_route_marker_course ON route_marker(course_id);`);
+db.exec(`CREATE TABLE IF NOT EXISTS route_step (
+  course_id INTEGER NOT NULL,
+  position INTEGER NOT NULL CHECK(position >= 0),
+  marker_id INTEGER NOT NULL,
+  PRIMARY KEY (course_id, position),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE,
+  FOREIGN KEY (marker_id) REFERENCES route_marker(id) ON DELETE CASCADE
+);`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_route_step_marker ON route_step(marker_id);`);
+
 // 기존 DB 마이그레이션: memo에 rotation(회전 각도, deg) 추가. 비파괴적 ADD COLUMN.
 {
   const cols = db.prepare("PRAGMA table_info(memo)").all().map((c) => c.name);
@@ -487,6 +511,14 @@ function validateMemoContent(content) {
   return { valid: true, value: content };
 }
 
+function validateRouteMarkerLabel(label) {
+  if (label === undefined || label === null) return { valid: true, value: "" };
+  if (typeof label !== "string") return { valid: false, error: "주행 마커 이름이 올바르지 않습니다." };
+  const value = label.trim();
+  if (value.length > 50) return { valid: false, error: "주행 마커 이름이 너무 깁니다. (최대 50자)" };
+  return { valid: true, value };
+}
+
 function getCourseById(id) {
   return db.prepare("SELECT * FROM course WHERE id = ?").get(id);
 }
@@ -497,6 +529,17 @@ function getConeById(id) {
 
 function getMemoById(id) {
   return db.prepare("SELECT * FROM memo WHERE id = ?").get(id);
+}
+
+function getRouteMarkerById(id) {
+  return db.prepare("SELECT * FROM route_marker WHERE id = ?").get(id);
+}
+
+function getCourseRoute(courseId) {
+  return {
+    markers: db.prepare("SELECT * FROM route_marker WHERE course_id = ? ORDER BY id").all(courseId),
+    steps: db.prepare("SELECT marker_id FROM route_step WHERE course_id = ? ORDER BY position").all(courseId).map((row) => row.marker_id),
+  };
 }
 
 /* ============================================
@@ -640,15 +683,19 @@ app.get("/api/courses/:id/export", (req, res) => {
   const startIndex = course.start_cone_id != null
     ? cones.findIndex((c) => c.id === course.start_cone_id)
     : -1;
+  const route = getCourseRoute(id);
+  const routeMarkerIndex = new Map(route.markers.map((marker, index) => [marker.id, index]));
   const data = {
     name: course.name,
     reverse: !!course.reverse,
     start_cone_index: startIndex >= 0 ? startIndex : null,
     cones: cones.map((c) => ({ lat: c.lat, lng: c.lng, alt: c.alt, side: c.side })),
     memos: getMemos(id).map((m) => ({ lat: m.lat, lng: m.lng, width: m.width, height: m.height, rotation: m.rotation, content: m.content })),
+    route_markers: route.markers.map((marker) => ({ lat: marker.lat, lng: marker.lng, label: marker.label })),
+    route_steps: route.steps.map((markerId) => routeMarkerIndex.get(markerId)),
   };
 
-  logger.log(req, "course.export", { cone_count: cones.length }, course.name);
+  logger.log(req, "course.export", { cone_count: cones.length, route_marker_count: route.markers.length, route_step_count: route.steps.length }, course.name);
 
   res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(course.name)}.json"`);
   res.json(data);
@@ -819,6 +866,23 @@ app.post("/api/courses/import", (req, res) => {
     if (!cnv.valid) { logger.warn(req, "course.import", cnv.error, name); return res.status(400).send(cnv.error); }
   }
 
+  const routeMarkers = req.body.route_markers === undefined ? [] : req.body.route_markers;
+  const routeSteps = req.body.route_steps === undefined ? [] : req.body.route_steps;
+  if (!Array.isArray(routeMarkers) || !Array.isArray(routeSteps) || routeMarkers.length > 200 || routeSteps.length > 500) {
+    logger.warn(req, "course.import", "올바르지 않은 주행 마커 데이터입니다.", name);
+    return res.status(400).send("올바르지 않은 주행 마커 데이터입니다.");
+  }
+  for (const marker of routeMarkers) {
+    const cv = validateCoordinate(marker.lat, marker.lng);
+    if (!cv.valid) { logger.warn(req, "course.import", cv.error, name); return res.status(400).send(cv.error); }
+    const lv = validateRouteMarkerLabel(marker.label);
+    if (!lv.valid) { logger.warn(req, "course.import", lv.error, name); return res.status(400).send(lv.error); }
+  }
+  if (routeSteps.some((index) => !Number.isInteger(index) || index < 0 || index >= routeMarkers.length)) {
+    logger.warn(req, "course.import", "주행 순서가 존재하지 않는 마커를 참조합니다.", name);
+    return res.status(400).send("주행 순서가 존재하지 않는 마커를 참조합니다.");
+  }
+
   const reverse = req.body.reverse ? 1 : 0;
   const startIndex = req.body.start_cone_index;
   const result = dbRun(() => {
@@ -839,7 +903,16 @@ app.post("/api/courses/import", (req, res) => {
           memoInsert.run(courseId, memo.lat, memo.lng, memo.width, memo.height, validateMemoRotation(memo.rotation).value, typeof memo.content === "string" ? memo.content : "");
         }
       }
-      return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId), memos: getMemos(courseId) };
+      const markerIds = [];
+      if (routeMarkers.length) {
+        const markerInsert = db.prepare("INSERT INTO route_marker (course_id, lat, lng, label) VALUES (?, ?, ?, ?)");
+        for (const marker of routeMarkers) {
+          markerIds.push(Number(markerInsert.run(courseId, marker.lat, marker.lng, validateRouteMarkerLabel(marker.label).value).lastInsertRowid));
+        }
+        const stepInsert = db.prepare("INSERT INTO route_step (course_id, position, marker_id) VALUES (?, ?, ?)");
+        routeSteps.forEach((markerIndex, position) => stepInsert.run(courseId, position, markerIds[markerIndex]));
+      }
+      return { course: db.prepare("SELECT * FROM course WHERE id = ?").get(courseId), cones: getCones(courseId), memos: getMemos(courseId), route: getCourseRoute(courseId) };
     })();
   });
 
@@ -850,11 +923,14 @@ app.post("/api/courses/import", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "course.import", { cone_count: cones.length, memo_count: memos.length }, nameValidation.value);
+  logger.log(req, "course.import", { cone_count: cones.length, memo_count: memos.length, route_marker_count: routeMarkers.length, route_step_count: routeSteps.length }, nameValidation.value);
   broadcastEvent("courses", { type: "create", course: result.result.course, courses: getCourses() });
   broadcastEvent("cones", { type: "add", courseId: result.result.course.id, cones: result.result.cones });
   if (result.result.memos.length) {
     broadcastEvent("memos", { type: "add", courseId: result.result.course.id, memos: result.result.memos });
+  }
+  if (result.result.route.markers.length) {
+    broadcastEvent("route", { type: "import", courseId: result.result.course.id, ...result.result.route });
   }
   res.status(201).json(result.result.course);
 });
@@ -1065,6 +1141,144 @@ app.delete("/api/cones/:id", (req, res) => {
   broadcastEvent("cones", { type: "delete", courseId: cone.course_id, coneId: id, cones: getCones(cone.course_id) });
   if (wasStart) broadcastEvent("courses", { type: "start_reset", course: delCourse, courses: getCourses() });
   res.status(200).send();
+});
+
+/* ============================================
+   API 라우트: 주행 순서 마커
+   ============================================ */
+
+function rejectRouteRequest(req, res, status, action, message, course = null, context = {}) {
+  logger.warn(req, action, { error: message, ...context }, course?.name);
+  return res.status(status).send(message);
+}
+
+app.get("/api/courses/:id/route", (req, res) => {
+  const courseId = parseInt(req.params.id, 10);
+  if (isNaN(courseId)) return rejectRouteRequest(req, res, 400, "course_route.read", "올바르지 않은 코스 ID입니다.");
+  const course = getCourseById(courseId);
+  if (!course) return rejectRouteRequest(req, res, 404, "course_route.read", "코스를 찾을 수 없습니다.", null, { course_id: courseId });
+  const result = dbRun(() => getCourseRoute(courseId));
+  if (!result.success) return rejectRouteRequest(req, res, result.status, "course_route.read", result.error, course, { course_id: courseId });
+  res.json(result.result);
+});
+
+app.post("/api/courses/:id/route/markers", (req, res) => {
+  const courseId = parseInt(req.params.id, 10);
+  if (isNaN(courseId)) return rejectRouteRequest(req, res, 400, "route_marker.create", "올바르지 않은 코스 ID입니다.");
+  const course = getCourseById(courseId);
+  if (!course) return rejectRouteRequest(req, res, 404, "route_marker.create", "코스를 찾을 수 없습니다.", null, { course_id: courseId });
+  const body = req.body || {};
+  const coord = validateCoordinate(body.lat, body.lng);
+  if (!coord.valid) return rejectRouteRequest(req, res, 400, "route_marker.create", coord.error, course, { lat: body.lat, lng: body.lng });
+  const label = validateRouteMarkerLabel(body.label);
+  if (!label.valid) return rejectRouteRequest(req, res, 400, "route_marker.create", label.error, course);
+  const markerCount = db.prepare("SELECT COUNT(*) AS n FROM route_marker WHERE course_id = ?").get(courseId).n;
+  if (markerCount >= 200) return rejectRouteRequest(req, res, 400, "route_marker.create", "주행 마커는 코스당 최대 200개까지 만들 수 있습니다.", course, { marker_count: markerCount });
+  const result = dbRun(() => {
+    const info = db.prepare("INSERT INTO route_marker (course_id, lat, lng, label) VALUES (?, ?, ?, ?)")
+      .run(courseId, body.lat, body.lng, label.value);
+    const marker = db.prepare("SELECT * FROM route_marker WHERE id = ?").get(info.lastInsertRowid);
+    return { marker, route: getCourseRoute(courseId) };
+  });
+  if (!result.success) {
+    logger.warn(req, "route_marker.create", { error: result.error, lat: body.lat, lng: body.lng }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "route_marker.create", { marker_id: result.result.marker.id, lat: body.lat, lng: body.lng, label: label.value }, course.name);
+  broadcastEvent("route", { type: "marker_add", courseId, ...result.result.route });
+  res.status(201).json(result.result.marker);
+});
+
+app.patch("/api/route/markers/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return rejectRouteRequest(req, res, 400, "route_marker.update", "올바르지 않은 주행 마커 ID입니다.");
+  const marker = getRouteMarkerById(id);
+  if (!marker) return rejectRouteRequest(req, res, 404, "route_marker.update", "주행 마커를 찾을 수 없습니다.", null, { marker_id: id });
+  const course = getCourseById(marker.course_id);
+  const body = req.body || {};
+  const sets = [], values = [];
+  if (body.lat !== undefined || body.lng !== undefined) {
+    const lat = body.lat ?? marker.lat, lng = body.lng ?? marker.lng;
+    const coord = validateCoordinate(lat, lng);
+    if (!coord.valid) return rejectRouteRequest(req, res, 400, "route_marker.update", coord.error, course, { marker_id: id, lat, lng });
+    if (body.lat !== undefined) { sets.push("lat = ?"); values.push(body.lat); }
+    if (body.lng !== undefined) { sets.push("lng = ?"); values.push(body.lng); }
+  }
+  if (body.label !== undefined) {
+    const label = validateRouteMarkerLabel(body.label);
+    if (!label.valid) return rejectRouteRequest(req, res, 400, "route_marker.update", label.error, course, { marker_id: id });
+    sets.push("label = ?"); values.push(label.value);
+  }
+  if (!sets.length) return rejectRouteRequest(req, res, 400, "route_marker.update", "수정할 필드가 없습니다.", course, { marker_id: id });
+  sets.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')");
+  const result = dbRun(() => {
+    db.prepare(`UPDATE route_marker SET ${sets.join(", ")} WHERE id = ?`).run(...values, id);
+    return { marker: getRouteMarkerById(id), route: getCourseRoute(marker.course_id) };
+  });
+  if (!result.success) {
+    logger.warn(req, "route_marker.update", { error: result.error, marker_id: id }, course?.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "route_marker.update", {
+    marker_id: id,
+    before: { lat: marker.lat, lng: marker.lng, label: marker.label },
+    after: { lat: result.result.marker.lat, lng: result.result.marker.lng, label: result.result.marker.label },
+  }, course?.name);
+  broadcastEvent("route", { type: "marker_update", courseId: marker.course_id, ...result.result.route });
+  res.json(result.result.marker);
+});
+
+app.delete("/api/route/markers/:id", (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (isNaN(id)) return rejectRouteRequest(req, res, 400, "route_marker.delete", "올바르지 않은 주행 마커 ID입니다.");
+  const marker = getRouteMarkerById(id);
+  if (!marker) return rejectRouteRequest(req, res, 404, "route_marker.delete", "주행 마커를 찾을 수 없습니다.", null, { marker_id: id });
+  const course = getCourseById(marker.course_id);
+  const before = getCourseRoute(marker.course_id);
+  const result = dbRun(() => db.transaction(() => {
+    db.prepare("DELETE FROM route_marker WHERE id = ?").run(id);
+    // ON DELETE CASCADE removes visits; compact positions to keep exports stable.
+    const steps = db.prepare("SELECT marker_id FROM route_step WHERE course_id = ? ORDER BY position").all(marker.course_id);
+    db.prepare("DELETE FROM route_step WHERE course_id = ?").run(marker.course_id);
+    const insert = db.prepare("INSERT INTO route_step (course_id, position, marker_id) VALUES (?, ?, ?)");
+    steps.forEach((row, position) => insert.run(marker.course_id, position, row.marker_id));
+    return getCourseRoute(marker.course_id);
+  })());
+  if (!result.success) {
+    logger.warn(req, "route_marker.delete", { error: result.error, marker_id: id, visit_count: before.steps.filter((x) => x === id).length }, course?.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "route_marker.delete", { marker_id: id, lat: marker.lat, lng: marker.lng, label: marker.label, removed_visits: before.steps.filter((x) => x === id).length }, course?.name);
+  broadcastEvent("route", { type: "marker_delete", courseId: marker.course_id, ...result.result });
+  res.status(200).json(result.result);
+});
+
+app.put("/api/courses/:id/route/steps", (req, res) => {
+  const courseId = parseInt(req.params.id, 10);
+  if (isNaN(courseId)) return rejectRouteRequest(req, res, 400, "course_route.update", "올바르지 않은 코스 ID입니다.");
+  const course = getCourseById(courseId);
+  if (!course) return rejectRouteRequest(req, res, 404, "course_route.update", "코스를 찾을 수 없습니다.", null, { course_id: courseId });
+  const steps = req.body?.steps;
+  if (!Array.isArray(steps) || steps.length > 500 || steps.some((id) => !Number.isInteger(id))) {
+    return rejectRouteRequest(req, res, 400, "course_route.update", "주행 순서가 올바르지 않습니다. (정수 마커 ID, 최대 500단계)", course, { requested: steps });
+  }
+  const markers = db.prepare("SELECT id FROM route_marker WHERE course_id = ?").all(courseId);
+  const allowed = new Set(markers.map((row) => row.id));
+  if (steps.some((id) => !allowed.has(id))) return rejectRouteRequest(req, res, 400, "course_route.update", "다른 코스이거나 존재하지 않는 주행 마커가 포함되어 있습니다.", course, { requested: steps });
+  const before = getCourseRoute(courseId).steps;
+  const result = dbRun(() => db.transaction(() => {
+    db.prepare("DELETE FROM route_step WHERE course_id = ?").run(courseId);
+    const insert = db.prepare("INSERT INTO route_step (course_id, position, marker_id) VALUES (?, ?, ?)");
+    steps.forEach((markerId, position) => insert.run(courseId, position, markerId));
+    return getCourseRoute(courseId);
+  })());
+  if (!result.success) {
+    logger.warn(req, "course_route.update", { error: result.error, before, requested: steps }, course.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "course_route.update", { before, after: steps }, course.name);
+  broadcastEvent("route", { type: "steps", courseId, ...result.result });
+  res.json(result.result);
 });
 
 /* ============================================

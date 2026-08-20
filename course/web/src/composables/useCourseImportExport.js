@@ -3,8 +3,10 @@ import { request } from "../api.js";
 import { computeCenterline } from "@lib/centerline.mjs";
 import { buildRoadEdges } from "@lib/road-edges.mjs";
 import { buildTrackModel } from "@lib/track-build.mjs";
+import { computeGuidedRoute } from "@lib/guided-route.mjs";
+import { buildGuidedTrackModel } from "@lib/guided-track-build.mjs";
 import { packTrackEntries, safeTrackName } from "@lib/pack-track.mjs";
-import { buildEnrichedJSON } from "@lib/course-export.mjs";
+import { buildEnrichedJSON, buildGuidedEnrichedJSON } from "@lib/course-export.mjs";
 import { renderTwoPanelPNG } from "../export/panel-canvas.js";
 import JSZip from "jszip";
 
@@ -15,7 +17,7 @@ import JSZip from "jszip";
 //   activeCourseId/visibility/newCourseName  view state written on import
 //   courseDirOpts(id, cones)   centerline start/direction opts (shared with the map)
 //   notifyError(msg)           toast on failure
-export function useCourseImportExport({ courses, conesMap, memosMap, activeCourseId, visibility, newCourseName, courseDirOpts, notifyError }) {
+export function useCourseImportExport({ courses, conesMap, memosMap, routeMap, activeCourseId, visibility, newCourseName, courseDirOpts, notifyError }) {
   const importInput = ref(null);
   const exportingId = ref(null);
   // Fixed per-file timestamp so a re-export of the same course is reproducible
@@ -40,20 +42,31 @@ export function useCourseImportExport({ courses, conesMap, memosMap, activeCours
         cones = await res.json();
       }
 
-      // memos are captured into the exported JSON for archival/inspection. NOTE: import
-      // below only recreates cones — POST /api/courses/import ignores memos — so an
-      // export→import is NOT a full round-trip for memo labels.
+      // Memos and route markers are captured too, so the enriched JSON remains
+      // a complete export→import round-trip rather than a cone-only archive.
       let memos = memosMap.value[id];
       if (!memos) {
         try { memos = await (await request(`/api/courses/${id}/memos`)).json(); } catch { memos = []; }
       }
 
-      // same start/direction as the on-map centerline so the export matches
-      const cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
-      if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
-
-      const edges = buildRoadEdges(cl);   // AC track road: widened +1 m/side (except slalom)
-      const track = buildTrackModel(cl, edges, { name: safeName });
+      let routeConfig = routeMap.value[id];
+      if (!routeConfig) {
+        try { routeConfig = await (await request(`/api/courses/${id}/route`)).json(); }
+        catch { routeConfig = { markers: [], steps: [] }; }
+      }
+      const guided = Array.isArray(routeConfig.steps) && routeConfig.steps.length >= 2;
+      let cl, edges, track;
+      if (guided) {
+        cl = computeGuidedRoute(cones, routeConfig.markers, routeConfig.steps, { step: 1.0 });
+        edges = null;
+        track = buildGuidedTrackModel(cl, cones, { name: safeName });
+      } else {
+        // same start/direction as the on-map centerline so the export matches
+        cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
+        if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
+        edges = buildRoadEdges(cl);   // AC track road: widened +1 m/side (except slalom)
+        track = buildTrackModel(cl, edges, { name: safeName });
+      }
 
       // inner Assetto Corsa track zip (content/tracks/<safeName>/...); the in-game
       // UI name (ui_track.json) keeps the original, spaces and all.
@@ -64,11 +77,14 @@ export function useCourseImportExport({ courses, conesMap, memosMap, activeCours
       }
       const trackZipBlob = await trackZip.generateAsync({ type: "blob", compression: "DEFLATE" });
 
-      const enriched = buildEnrichedJSON({ name, cones, memos, cl, edges, track });
-      // Preview PNG shows the cone-true road width (survey), unaffected by the AC
-      // drivability widening above.
-      const pngEdges = buildRoadEdges(cl, { extraWidthPerSide: 0 });
-      const png = await renderTwoPanelPNG(cl, pngEdges, { name });
+      const enriched = guided
+        ? buildGuidedEnrichedJSON({ name, cones, memos, route: cl, track })
+        : buildEnrichedJSON({ name, cones, memos, cl, edges, track });
+      // A guided surface has no single left/right ribbon; use the exact AC minimap
+      // raster. Legacy previews retain the cone-true two-panel rendering.
+      const png = guided
+        ? entries[`content/tracks/${safeName}/map.png`]
+        : await renderTwoPanelPNG(cl, buildRoadEdges(cl, { extraWidthPerSide: 0 }), { name });
 
       // outer zip with the three deliverables (path-safe file names)
       const outer = new JSZip();
@@ -108,7 +124,15 @@ export function useCourseImportExport({ courses, conesMap, memosMap, activeCours
       const data = JSON.parse(text);
       const res = await request("/api/courses/import", {
         method: "POST",
-        body: JSON.stringify({ name, cones: data.cones }),
+        body: JSON.stringify({
+          name,
+          cones: data.cones,
+          memos: data.memos,
+          reverse: data.reverse,
+          start_cone_index: data.start_cone_index,
+          route_markers: data.route_markers,
+          route_steps: data.route_steps,
+        }),
       });
       const created = await res.json();
       newCourseName.value = "";
