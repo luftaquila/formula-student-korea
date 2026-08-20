@@ -448,7 +448,6 @@ function clearState(message) {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
-  margin-top: 1.25rem;
 }
 
 .booth-type-header {
