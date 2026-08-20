@@ -195,7 +195,9 @@ test("registration lookup retries a not-found lookup on invalidation with a thro
   // A participant who looked up before the desk registered them must not stay
   // pinned to "없습니다" — the stored credentials are retried on invalidation.
   assert.match(lookup, /lastQuery\.value = notFound\.value \? \{ num, phone \} : null/);
-  assert.match(lookup, /REFRESH_INTERVAL_MS/);
+  // A live result refreshes immediately; only the 404 retry is throttled, so a
+  // completed registration still clears the card on the very next invalidation.
+  assert.match(lookup, /if \(!force && !result\.value && now - lastRefreshAt < REFRESH_INTERVAL_MS\) return;/);
   assert.doesNotMatch(lookup, /if \(result\.value\) lookup\(/);
 });
 

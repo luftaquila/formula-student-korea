@@ -79,8 +79,10 @@ async function lookup() {
 async function refreshLookup({ force = false } = {}) {
   const credentials = lastQuery.value;
   if (!credentials) return;
+  // 순번이 이미 떠 있는 화면은 지체 없이 갱신한다. 스로틀은 접수 전 조회(404)의
+  // 재시도에만 걸어, 미등록자 화면이 조회 rate limit 을 갉아먹지 않게 한다.
   const now = Date.now();
-  if (!force && now - lastRefreshAt < REFRESH_INTERVAL_MS) return;
+  if (!force && !result.value && now - lastRefreshAt < REFRESH_INTERVAL_MS) return;
   lastRefreshAt = now;
   try {
     result.value = await api.lookupRegistration({ year: year.value, ...credentials });
