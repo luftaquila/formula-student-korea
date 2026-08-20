@@ -59,19 +59,22 @@ test.describe("Registration queue", () => {
     const officialPage = await officialContext.newPage();
 
     try {
+      await chiefPage.setViewportSize({ width: 1024, height: 768 });
       const chiefStatus = chiefPage.waitForResponse((response) =>
         response.url().includes(`${PREFIX}/status`) && response.status() === 200);
       await chiefPage.goto("/registration/register");
       await waitForPageReady(chiefPage);
       await chiefStatus;
 
-      const teamLookup = chiefPage.waitForResponse((response) =>
-        response.url().includes(`${PREFIX}/team/${ENTRY_NUMBER}`) && response.status() === 200);
       await chiefPage.locator("#register-number").fill(String(ENTRY_NUMBER));
-      await teamLookup;
       await expect(chiefPage.locator(".team-result")).toContainText("PNU Racing");
       await chiefPage.locator("#register-phone").fill(PHONE);
       await chiefPage.locator(".consent-card").click();
+      const consentBox = await chiefPage.locator(".agreement-group").boundingBox();
+      const actionsBox = await chiefPage.locator(".submit-group").boundingBox();
+      expect(consentBox).not.toBeNull();
+      expect(actionsBox).not.toBeNull();
+      expect(actionsBox.y - (consentBox.y + consentBox.height)).toBeLessThanOrEqual(32);
 
       const registered = chiefPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/queue`) && response.request().method() === "POST");
@@ -85,13 +88,15 @@ test.describe("Registration queue", () => {
       await publicPage.goto("/registration");
       await waitForPageReady(publicPage);
       await publicSse;
+      await expect(publicPage.locator("#lookup-phone")).toHaveValue("010");
       await publicPage.locator("#lookup-number").fill(String(ENTRY_NUMBER));
       await publicPage.locator("#lookup-phone").fill(PHONE);
       const lookedUp = publicPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");
       await publicPage.getByRole("button", { name: "내 순번 조회" }).click();
       expect((await lookedUp).status()).toBe(200);
-      await expect(publicPage.locator(".result-card")).toContainText("대기 중");
+      await expect(publicPage.locator(".result-card")).toContainText("1번째");
+      await expect(publicPage.locator(".result-card")).not.toContainText("PNU Racing");
 
       const officialSse = officialPage.waitForResponse((response) => response.url().includes(`${PREFIX}/events`));
       await officialPage.goto("/registration/manage");

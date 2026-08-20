@@ -92,3 +92,33 @@ test("registration operations use a single-step completion flow without call sta
   assert.doesNotMatch(`${templateOf(manage)}\n${templateOf(lookup)}`, /호출 중|>호출<|바로 완료|호출됨|등록 차례입니다/);
   assert.doesNotMatch(api, /callRegistration|\/call/);
 });
+
+test("registration inputs resolve canonical teams immediately without status copy", async () => {
+  const register = await readRegistrationSource("src/views/Register.vue");
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+  const api = await readRegistrationSource("src/api.js");
+  const markup = `${templateOf(register)}\n${templateOf(lookup)}`;
+
+  assert.match(api, /fetchEntries/);
+  assert.match(api, /fetchTeams/);
+  assert.match(register, /computed\(\(\) => teams\.value/);
+  assert.match(markup, /team\.univ/);
+  assert.match(markup, /team\.team/);
+  assert.doesNotMatch(register, /checking|lookupTimer|setTimeout|fetchTeam\(/);
+  assert.doesNotMatch(api, /export const fetchTeam\b/);
+  assert.doesNotMatch(markup, /엔트리 확인 중|이미 대기 중|확인됨|번호를 입력하면 학교와 팀을 확인합니다/);
+});
+
+test("registration forms prefill 010 and keep the queue-style minimal result", async () => {
+  const register = await readRegistrationSource("src/views/Register.vue");
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+  const markup = `${templateOf(register)}\n${templateOf(lookup)}`;
+
+  assert.match(register, /const phone = ref\("010"\)/);
+  assert.match(register, /phone\.value = "010"/);
+  assert.match(lookup, /form = ref\(\{ num: "", phone: "010" \}\)/);
+  assert.doesNotMatch(register, /\.submit-group[^}]*margin-top:\s*auto/);
+  assert.doesNotMatch(markup, /엔트리와 연락처를 입력해 대기열에 등록하세요/);
+  assert.doesNotMatch(templateOf(lookup), />대기 중<|다음 차례입니다|앞에 .*팀|result-details|다른 대기 조회|전화번호는 등록할 때|자동으로 업데이트/);
+  assert.match(templateOf(lookup), /result\.position/);
+});

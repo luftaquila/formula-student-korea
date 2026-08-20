@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { formatPhone } from "@shared/format-phone.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -8,18 +8,16 @@ import * as api from "../api.js";
 const { success } = useNotification();
 const year = ref(currentCompetitionYear());
 const status = ref(null);
+const teams = ref({});
 const number = ref("");
 const phone = ref("010");
 const agreed = ref(false);
-const team = ref(null);
-const teamError = ref("");
-const checking = ref(false);
 const error = ref("");
 const busy = ref(false);
 
-let lookupTimer = null;
-let lookupSequence = 0;
 let events = null;
+
+const team = computed(() => teams.value[String(number.value).trim()] || null);
 
 async function loadStatus() {
   if (!year.value) return;
@@ -27,66 +25,22 @@ async function loadStatus() {
   catch { status.value = null; }
 }
 
-async function checkTeam(value, sequence = ++lookupSequence) {
-  const trimmed = String(value).trim();
-  team.value = null;
-  teamError.value = "";
-  if (!trimmed || !year.value) {
-    checking.value = false;
-    return;
-  }
-  checking.value = true;
-  try {
-    const found = await api.fetchTeam(trimmed, year.value);
-    if (sequence !== lookupSequence) return;
-    team.value = found;
-  } catch (requestError) {
-    if (sequence !== lookupSequence) return;
-    teamError.value = api.errorMessage(requestError);
-  } finally {
-    if (sequence === lookupSequence) checking.value = false;
-  }
-}
-
-watch(number, (value) => {
-  clearTimeout(lookupTimer);
-  const sequence = ++lookupSequence;
-  team.value = null;
-  teamError.value = "";
-  error.value = "";
-  if (!String(value).trim()) {
-    checking.value = false;
-    return;
-  }
-  checking.value = true;
-  lookupTimer = setTimeout(() => checkTeam(value, sequence), 250);
-});
-
 function onPhoneInput(event) {
   phone.value = formatPhone(event.target.value);
   error.value = "";
 }
 
 function reset() {
-  clearTimeout(lookupTimer);
-  lookupSequence += 1;
   number.value = "";
   phone.value = "010";
   agreed.value = false;
-  team.value = null;
-  teamError.value = "";
-  checking.value = false;
   error.value = "";
 }
 
 async function submit() {
   if (busy.value) return;
   if (!team.value) {
-    error.value = teamError.value || "활성 엔트리 번호를 입력하세요.";
-    return;
-  }
-  if (team.value.queueStatus) {
-    error.value = "이미 대기 중인 엔트리입니다.";
+    error.value = "활성 엔트리 번호를 입력하세요.";
     return;
   }
   if (!/^010\d{8}$/.test(phone.value.replace(/\D/g, ""))) {
@@ -107,7 +61,6 @@ async function submit() {
     success(`엔트리 ${created.number}번을 ${created.position}번째 대기로 등록했습니다.`);
   } catch (requestError) {
     error.value = api.errorMessage(requestError);
-    await checkTeam(number.value);
   } finally {
     busy.value = false;
   }
@@ -118,7 +71,6 @@ function startEvents() {
   events = new EventSource(api.eventsUrl(year.value));
   const refresh = () => {
     loadStatus();
-    if (number.value) checkTeam(number.value);
   };
   events.addEventListener("init", refresh);
   events.addEventListener("registration", refresh);
@@ -126,7 +78,10 @@ function startEvents() {
 
 onMounted(async () => {
   try {
-    await loadStatus();
+    [teams.value] = await Promise.all([
+      api.fetchTeams(year.value),
+      loadStatus(),
+    ]);
     startEvents();
   } catch (requestError) {
     error.value = api.errorMessage(requestError);
@@ -135,7 +90,6 @@ onMounted(async () => {
 
 onUnmounted(() => {
   events?.close();
-  clearTimeout(lookupTimer);
 });
 </script>
 
@@ -150,7 +104,7 @@ onUnmounted(() => {
               {{ status.open ? "접수 중" : "접수 마감" }}
             </span>
             <strong><span class="mono">{{ status.waiting }}</span>팀 대기 중</strong>
-            <p>{{ status.open ? "엔트리와 연락처를 입력해 대기열에 등록하세요." : "지금은 등록 대기 접수를 받지 않습니다." }}</p>
+            <p v-if="!status.open">지금은 등록 대기 접수를 받지 않습니다.</p>
           </div>
         </div>
       </section>
@@ -194,19 +148,9 @@ onUnmounted(() => {
             </div>
           </div>
           <div class="team-result">
-            <span v-if="checking" class="muted">엔트리 확인 중…</span>
-            <template v-else-if="team">
-              <div>
-                <small>{{ team.university }}</small>
-                <strong>{{ team.name }}</strong>
-              </div>
-              <span v-if="team.queueStatus" class="badge badge-warning">
-                이미 대기 중
-              </span>
-              <span v-else class="badge badge-success">확인됨</span>
-            </template>
-            <span v-else-if="teamError" class="error-text">{{ teamError }}</span>
-            <span v-else class="muted">번호를 입력하면 학교와 팀을 확인합니다.</span>
+            <strong v-if="team">{{ team.univ }} {{ team.team }}</strong>
+            <span v-else-if="number" class="error-text">존재하지 않는 엔트리</span>
+            <span v-else aria-hidden="true">&nbsp;</span>
           </div>
         </div>
 
@@ -262,8 +206,6 @@ onUnmounted(() => {
 .kiosk-input::placeholder { color: var(--text-tertiary); font-weight: 400; }
 .entry-input { width: 120px; text-align: center; }
 .team-result { min-height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; padding: 0.875rem 1.25rem; background: var(--bg-hover); border-radius: 10px; }
-.team-result div { display: flex; flex-direction: column; }
-.team-result small { color: var(--text-secondary); }
 .notice-card { align-self: start; width: 100%; text-align: center; }
 .notice-card .card-body { padding: 3rem 2rem; }
 .notice-card p { margin-top: 0.4rem; color: var(--text-secondary); }
@@ -301,7 +243,7 @@ onUnmounted(() => {
 }
 .agreed .consent-check { border-color: var(--accent-success); background: var(--accent-success); }
 .form-error { margin: -0.75rem 0; text-align: center; }
-.submit-group { display: grid; grid-template-columns: 1fr 2fr; gap: 1rem; margin-top: auto; }
+.submit-group { display: grid; grid-template-columns: 1fr 2fr; gap: 1rem; }
 .reset-button,
 .submit-button { min-height: 4rem; padding: 1rem; border: 0; border-radius: 12px; font-size: 1.25rem; font-weight: 700; cursor: pointer; }
 .reset-button { color: var(--text-secondary); background: var(--bg-card); box-shadow: var(--shadow-card); }
