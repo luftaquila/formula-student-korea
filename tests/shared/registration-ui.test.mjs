@@ -123,3 +123,15 @@ test("registration forms prefill 010 and keep the queue-style minimal result", a
   assert.match(templateOf(lookup), /v-if="notFound \|\| error" class="lookup-message"/);
   assert.match(templateOf(lookup), /result\.position/);
 });
+
+test("registration settings use concise labels and a numeric notification rank", async () => {
+  const manage = await readRegistrationSource("src/views/Manage.vue");
+  const markup = templateOf(manage);
+
+  assert.doesNotMatch(markup, /신규 신청을 열거나 닫습니다|설정한 사전 순번에 안내 문자를 발송합니다|이메일\/SMS 서비스에서 SENS 설정이 필요합니다|해당 순번이 된 팀에 한 번 안내합니다/);
+  assert.doesNotMatch(markup, /<select|<option/);
+  assert.match(markup, /type="number"/);
+  assert.match(markup, /min="1"/);
+  assert.match(markup, /max="10"/);
+  assert.match(markup, /notifyRank: Number\(\$event\.target\.value\)/);
+});

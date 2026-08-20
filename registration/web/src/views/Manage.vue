@@ -168,10 +168,7 @@ onUnmounted(() => events?.close());
         <div class="card-header"><h3>⚙️ 설정</h3></div>
         <div class="card-body settings-body">
           <div class="setting-line">
-            <div>
-              <strong>현장 대기 접수</strong>
-              <small>신규 신청을 열거나 닫습니다.</small>
-            </div>
+            <strong>현장 대기 접수</strong>
             <label class="switch">
               <input
                 type="checkbox"
@@ -183,11 +180,7 @@ onUnmounted(() => events?.close());
             </label>
           </div>
           <div class="setting-line">
-            <div>
-              <strong>문자 안내</strong>
-              <small v-if="board.settings.smsAvailable">설정한 사전 순번에 안내 문자를 발송합니다.</small>
-              <small v-else>이메일/SMS 서비스에서 SENS 설정이 필요합니다.</small>
-            </div>
+            <strong>문자 안내</strong>
             <label class="switch">
               <input
                 type="checkbox"
@@ -199,18 +192,22 @@ onUnmounted(() => events?.close());
             </label>
           </div>
           <div class="setting-line rank-setting">
-            <div>
-              <strong>사전 안내 순번</strong>
-              <small>해당 순번이 된 팀에 한 번 안내합니다.</small>
-            </div>
-            <select
-              class="form-select rank-select"
-              :value="board.settings.notifyRank"
-              :disabled="settingsBusy"
-              @change="patchSetting({ notifyRank: Number($event.target.value) })"
-            >
-              <option v-for="rank in 10" :key="rank" :value="rank">{{ rank }}번째</option>
-            </select>
+            <strong>사전 안내 순번</strong>
+            <label class="rank-input">
+              <input
+                class="form-input mono"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                max="10"
+                step="1"
+                aria-label="사전 안내 순번"
+                :value="board.settings.notifyRank"
+                :disabled="settingsBusy"
+                @change="patchSetting({ notifyRank: Number($event.target.value) })"
+              >
+              <span>번째</span>
+            </label>
           </div>
         </div>
       </section>
@@ -241,7 +238,8 @@ onUnmounted(() => events?.close());
 .section-header h4 { font-size: 0.9rem; }
 .settings-panel { position: sticky; top: 1.5rem; }
 .settings-body { padding-top: 0; padding-bottom: 0; }
-.rank-select { width: 8rem; }
+.rank-input { display: flex; align-items: center; gap: 0.5rem; }
+.rank-input .form-input { width: 5rem; text-align: center; }
 .row-actions { display: flex; justify-content: flex-end; gap: 0.4rem; white-space: nowrap; }
 .table-wrap { overflow-x: auto; }
 .data-table td:last-child,
