@@ -6,7 +6,7 @@ import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { competitionYearBounds, currentCompetitionYear } from "../shared/competition-year.mjs";
 import { ensureInactiveTeamView } from "../shared/team-status.mjs";
-import { createSmsClient } from "../shared/sms-client.mjs";
+import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
 
 // 키 순서가 곧 모든 화면의 검차 표시 순서다(withInspectionLengths 에서 이 순서로 정렬).
 export const INSPECTIONS = {
@@ -2211,14 +2211,9 @@ const smsClient = createSmsClient({
 });
 const loadSmsConfig = smsClient.loadConfig;
 
-// SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게
-let lastSmsSkipWarn = 0;
-function warnSmsSkipThrottled(detail) {
-  const now = Date.now();
-  if (now - lastSmsSkipWarn < 60000) return;
-  lastSmsSkipWarn = now;
-  logger.warn(null, "sms.skip", detail);
-}
+// SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게.
+// Registration 의 registration.sms_skip 과 같은 규칙을 공유한다.
+const warnSmsSkipThrottled = createThrottledSkipWarning(logger, "sms.skip");
 
 function sendSmsNotification(type, prev) {
   let target;

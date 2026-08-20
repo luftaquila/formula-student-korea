@@ -8,7 +8,7 @@ import {
   parseCompetitionYear,
   sendYearError,
 } from "../shared/competition-year.mjs";
-import { createSmsClient } from "../shared/sms-client.mjs";
+import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
 
 // 대기열에 남아 있는 유일한 상태. 'called' 는 운영 흐름에서 제거됐다(완료/취소만 쓴다).
 const ACTIVE_STATUS = "waiting";
@@ -341,14 +341,12 @@ export function createRegistrationApp(options = {}) {
     }
   }
 
-  let lastSmsSkipWarning = 0;
+  // Queue 의 sms.skip 과 같은 스로틀 규칙. 사전 안내 자체는 두 모듈이 따로 구현한다 —
+  // 대기열 모양이 다르고(검차는 종목별, 등록은 연도별) 등록만 선점(claim) 프로토콜을
+  // 쓴다. 순번 규칙을 바꿀 때는 양쪽을 함께 봐야 한다.
+  const warnSmsSkip = createThrottledSkipWarning(logger, "registration.sms_skip");
   function warnSmsUnavailable(year) {
-    const now = Date.now();
-    if (now - lastSmsSkipWarning < 60_000) return;
-    lastSmsSkipWarning = now;
-    logger.warn(null, "registration.sms_skip", {
-      reason: "sms_configuration_unavailable", year,
-    }, String(year));
+    warnSmsSkip({ reason: "sms_configuration_unavailable", year }, String(year));
   }
 
   function dispatchSms({ kind, team, registrationId, phone, content, onSuccess, onFailure }) {

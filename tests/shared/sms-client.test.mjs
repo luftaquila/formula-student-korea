@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 
-import { createSmsClient } from "../../shared/sms-client.mjs";
+import { createSmsClient, createThrottledSkipWarning } from "../../shared/sms-client.mjs";
 
 process.env.INTERNAL_SECRET = "test-internal-secret";
 
@@ -99,5 +99,34 @@ describe("shared SMS client", () => {
     };
     const sms = client({ smsConfig: CONFIG, smsRequest });
     await assert.rejects(sms.send("01012345678", "test"), (error) => error.code === "SMS_TIMEOUT");
+  });
+});
+
+describe("createThrottledSkipWarning", () => {
+  it("logs once per interval and reports whether it warned", () => {
+    const warnings = [];
+    const logger = { warn: (req, action, detail, target) => warnings.push({ action, detail, target }) };
+    let now = 1_000_000;
+    const originalNow = Date.now;
+    Date.now = () => now;
+    try {
+      const warn = createThrottledSkipWarning(logger, "sms.skip", 60_000);
+      assert.equal(warn({ reason: "first" }, "t1"), true);
+      now += 59_999;
+      assert.equal(warn({ reason: "suppressed" }), false);
+      now += 1;
+      assert.equal(warn({ reason: "second" }, "t2"), true);
+    } finally {
+      Date.now = originalNow;
+    }
+    assert.deepEqual(warnings, [
+      { action: "sms.skip", detail: { reason: "first" }, target: "t1" },
+      { action: "sms.skip", detail: { reason: "second" }, target: "t2" },
+    ]);
+  });
+
+  it("stays silent without a logger", () => {
+    const warn = createThrottledSkipWarning(undefined, "sms.skip", 0);
+    assert.equal(warn({ reason: "no logger" }), true);
   });
 });

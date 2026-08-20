@@ -22,6 +22,22 @@ function smsError(message, { status, response, code = "SMS_SEND_FAILED" } = {}) 
 }
 
 /**
+ * "SMS 는 켜져 있는데 설정을 쓸 수 없다"는 경고를 스로틀한다. Queue 와 Registration
+ * 이 각자 사전 안내를 보내지만 이 경고는 발송마다 쌓이면 로그를 덮으므로 같은 규칙을
+ * 공유한다.
+ */
+export function createThrottledSkipWarning(logger, action, intervalMs = 60_000) {
+  let lastWarnedAt = 0;
+  return (detail, target) => {
+    const now = Date.now();
+    if (now - lastWarnedAt < intervalMs) return false;
+    lastWarnedAt = now;
+    logger?.warn(null, action, detail, target);
+    return true;
+  };
+}
+
+/**
  * Competition 모듈이 공통으로 사용하는 Naver SENS 클라이언트.
  *
  * Email 서비스는 자격 증명의 단일 소스이고, 이 객체는 성공적으로 읽은 설정을 메모리에
