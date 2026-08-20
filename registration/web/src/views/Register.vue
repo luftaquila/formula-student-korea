@@ -126,6 +126,7 @@ onUnmounted(() => {
                 id="register-number"
                 v-model="number"
                 class="kiosk-input entry-input mono"
+                type="number"
                 inputmode="numeric"
                 autocomplete="off"
                 placeholder="번호"
@@ -147,10 +148,10 @@ onUnmounted(() => {
               >
             </div>
           </div>
-          <div class="team-result">
-            <strong v-if="team">{{ team.univ }} {{ team.team }}</strong>
-            <span v-else-if="number" class="error-text">존재하지 않는 엔트리</span>
-            <span v-else aria-hidden="true">&nbsp;</span>
+          <div class="team-display">
+            <div v-if="team" class="team-badge">{{ team.univ }} {{ team.team }}</div>
+            <div v-else-if="number" class="team-badge error">존재하지 않는 엔트리</div>
+            <div v-else class="team-badge placeholder">&nbsp;</div>
           </div>
         </div>
 
@@ -205,7 +206,10 @@ onUnmounted(() => {
 .kiosk-input:focus { outline: none; border-color: var(--accent-primary); box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15); }
 .kiosk-input::placeholder { color: var(--text-tertiary); font-weight: 400; }
 .entry-input { width: 120px; text-align: center; }
-.team-result { min-height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; padding: 0.875rem 1.25rem; background: var(--bg-hover); border-radius: 10px; }
+.team-display { margin-top: 0.75rem; min-height: 2.5rem; }
+.team-badge { padding: 0.5rem 1rem; background: var(--accent-primary); color: white; border-radius: 8px; font-size: 0.875rem; font-weight: 600; text-align: center; }
+.team-badge.error { background: var(--accent-danger); font-weight: 500; }
+.team-badge.placeholder { background: transparent; visibility: hidden; }
 .notice-card { align-self: start; width: 100%; text-align: center; }
 .notice-card .card-body { padding: 3rem 2rem; }
 .notice-card p { margin-top: 0.4rem; color: var(--text-secondary); }

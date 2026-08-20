@@ -67,7 +67,7 @@ test.describe("Registration queue", () => {
       await chiefStatus;
 
       await chiefPage.locator("#register-number").fill(String(ENTRY_NUMBER));
-      await expect(chiefPage.locator(".team-result")).toContainText("PNU Racing");
+      await expect(chiefPage.locator(".team-badge")).toContainText("부산대학교 PNU Racing");
       await chiefPage.locator("#register-phone").fill(PHONE);
       await chiefPage.locator(".consent-card").click();
       const consentBox = await chiefPage.locator(".agreement-group").boundingBox();
@@ -110,6 +110,8 @@ test.describe("Registration queue", () => {
       await waitingRow.getByRole("button", { name: "완료", exact: true }).click();
       expect((await completed).status()).toBe(200);
       await expect(officialPage.locator(".summary-card").filter({ hasText: "오늘 완료" })).toContainText(/[1-9]\d*/);
+      await expect(publicPage.locator(".result-card")).toContainText("대기 중인 등록 내역이 없습니다.");
+      await expect(publicPage.locator(".query-card")).not.toContainText("대기 중인 등록 내역이 없습니다.");
     } finally {
       await Promise.all([chiefContext.close(), publicContext.close(), officialContext.close()]);
     }

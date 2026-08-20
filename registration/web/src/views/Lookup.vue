@@ -32,7 +32,11 @@ async function lookup({ silent = false } = {}) {
   const num = String(form.value.num).trim();
   const phone = String(form.value.phone).trim();
   if (!num || !phone) {
-    if (!silent) error.value = "엔트리 번호와 전화번호를 입력하세요.";
+    if (!silent) {
+      result.value = null;
+      notFound.value = false;
+      error.value = "엔트리 번호와 전화번호를 입력하세요.";
+    }
     return;
   }
   if (!silent) busy.value = true;
@@ -106,6 +110,7 @@ onUnmounted(() => events?.close());
               <input
                 id="lookup-number"
                 v-model="form.num"
+                type="number"
                 class="form-input entry-input mono"
                 inputmode="numeric"
                 autocomplete="off"
@@ -128,13 +133,9 @@ onUnmounted(() => events?.close());
             </div>
           </div>
           <div class="team-display">
-            <strong v-if="team">{{ team.univ }} {{ team.team }}</strong>
-            <span v-else-if="form.num" class="error-text">존재하지 않는 엔트리</span>
-            <span v-else aria-hidden="true">&nbsp;</span>
-          </div>
-          <div v-if="notFound || error" class="lookup-message">
-            <p v-if="notFound && !error" class="error-text">대기 중인 등록 내역이 없습니다.</p>
-            <p v-else-if="error" class="error-text">{{ error }}</p>
+            <div v-if="team" class="team-badge">{{ team.univ }} {{ team.team }}</div>
+            <div v-else-if="form.num" class="team-badge error">존재하지 않는 엔트리</div>
+            <div v-else class="team-badge placeholder">&nbsp;</div>
           </div>
           <button class="btn btn-primary btn-block" type="submit" :disabled="busy">
             {{ busy ? "조회 중…" : "내 순번 조회" }}
@@ -151,6 +152,8 @@ onUnmounted(() => events?.close());
               <span>번째</span>
             </div>
           </template>
+          <p v-else-if="notFound" class="result-message">대기 중인 등록 내역이 없습니다.</p>
+          <p v-else-if="error" class="result-message">{{ error }}</p>
           <div v-else class="result-placeholder">-</div>
         </div>
       </section>
@@ -174,11 +177,13 @@ onUnmounted(() => events?.close());
 .input-col.flex-1 { flex: 1; }
 .entry-input { width: 5rem; text-align: center; }
 .input-col.flex-1 .form-input { text-align: center; }
-.team-display { min-height: 3.5rem; display: flex; align-items: center; margin-top: 0.75rem; padding: 0.875rem 1.25rem; background: var(--bg-hover); border-radius: 10px; }
-.lookup-message { display: flex; align-items: center; min-height: 2.5rem; margin-top: 0.75rem; }
-.lookup-message p { font-size: 0.8125rem; }
+.team-display { margin-top: 0.75rem; min-height: 2.5rem; }
+.team-badge { padding: 0.5rem 1rem; background: var(--accent-primary); color: white; border-radius: 8px; font-size: 0.875rem; font-weight: 600; text-align: center; }
+.team-badge.error { background: var(--accent-danger); font-weight: 500; }
+.team-badge.placeholder { background: transparent; visibility: hidden; }
 .btn-block { width: 100%; margin-top: 1rem; }
 .result-body { display: flex; min-height: 15.5rem; flex-direction: column; justify-content: center; gap: 1rem; }
+.result-message { color: var(--accent-danger); font-weight: 600; text-align: center; }
 .result-placeholder { color: var(--text-tertiary); font-family: "JetBrains Mono", monospace; font-size: 3rem; text-align: center; }
 .rank-block { text-align: center; }
 .rank-block strong { font-size: 3.3rem; line-height: 1; color: var(--accent-primary); }

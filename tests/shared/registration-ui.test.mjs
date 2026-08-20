@@ -120,8 +120,26 @@ test("registration forms prefill 010 and keep the queue-style minimal result", a
   assert.doesNotMatch(register, /\.submit-group[^}]*margin-top:\s*auto/);
   assert.doesNotMatch(markup, /엔트리와 연락처를 입력해 대기열에 등록하세요/);
   assert.doesNotMatch(templateOf(lookup), />대기 중<|다음 차례입니다|앞에 .*팀|result-details|다른 대기 조회|전화번호는 등록할 때|자동으로 업데이트/);
-  assert.match(templateOf(lookup), /v-if="notFound \|\| error" class="lookup-message"/);
+  assert.doesNotMatch(templateOf(lookup), /lookup-message/);
+  assert.match(templateOf(lookup), /class="card result-card"[\s\S]*v-else-if="notFound" class="result-message"/);
   assert.match(templateOf(lookup), /result\.position/);
+});
+
+test("registration team labels match the existing Queue badge structure and style", async () => {
+  const [register, lookup] = await Promise.all([
+    readRegistrationSource("src/views/Register.vue"),
+    readRegistrationSource("src/views/Lookup.vue"),
+  ]);
+
+  for (const source of [register, lookup]) {
+    const markup = templateOf(source);
+    assert.match(markup, /class="team-display"/);
+    assert.match(markup, /class="team-badge"/);
+    assert.match(markup, /class="team-badge error"/);
+    assert.match(markup, /class="team-badge placeholder"/);
+    assert.match(source, /\.team-display \{ margin-top: 0\.75rem; min-height: 2\.5rem; \}/);
+    assert.match(source, /\.team-badge \{[^}]*background: var\(--accent-primary\);[^}]*border-radius: 8px;[^}]*font-size: 0\.875rem;[^}]*font-weight: 600;[^}]*text-align: center;/);
+  }
 });
 
 test("registration settings use concise labels and a numeric notification rank", async () => {
