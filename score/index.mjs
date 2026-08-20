@@ -116,6 +116,7 @@ db.transaction(() => {
     fuel_extra REAL,
     electric_net_energy REAL,
     energy_dsq INTEGER NOT NULL DEFAULT 0,
+    team_id INTEGER,
     qualified INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (year, team_num)
   )`);

@@ -21,8 +21,23 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 125,
-  sha256: "6a39762baa8d6e2142ec4b0864b31dff4d96d26f7f1a85e785a6b8cf3199e581",
+  sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
 });
+
+// Deployment validates a read-only snapshot before the runtime gets a chance
+// to apply its idempotent schema additions. Accept only the exact immediately
+// preceding contract here; createScoreApp then adds score_endurance.qualified
+// before the process starts serving requests. Any other schema still fails
+// closed, and the next validation must match the current contract.
+const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    objectCount: 125,
+    sha256: "1336208794493a2d46d703cbaa76ecd68f71f1fe6e1081817aef02aaf29a2554",
+    allowedMissingColumns: Object.freeze({
+      score_endurance: Object.freeze(["qualified"]),
+    }),
+  }),
+]);
 
 export function competitionSchemaContractDigest(contract) {
   return crypto.createHash("sha256").update(JSON.stringify(contract)).digest("hex");
@@ -58,15 +73,22 @@ export function assertCompetitionSchema(db) {
   const incompatible = [];
   const contract = captureCompetitionSchemaContract(db);
   const contractDigest = competitionSchemaContractDigest(contract);
-  if (contract.length !== COMPETITION_SCHEMA_CONTRACT.objectCount
-    || contractDigest !== COMPETITION_SCHEMA_CONTRACT.sha256) {
+  const currentContract = contract.length === COMPETITION_SCHEMA_CONTRACT.objectCount
+    && contractDigest === COMPETITION_SCHEMA_CONTRACT.sha256;
+  const upgradeContract = UPGRADABLE_SCHEMA_CONTRACTS.find(({ objectCount, sha256 }) => (
+    contract.length === objectCount && contractDigest === sha256
+  ));
+  if (!currentContract && !upgradeContract) {
     incompatible.push(
       `complete-schema<contract:${contract.length}:${contractDigest}>`,
     );
   }
   for (const [table, required] of Object.entries(REQUIRED_COLUMNS)) {
     const actual = columns(db, table);
-    if (!actual.length || required.some((column) => !actual.includes(column))) {
+    const allowedMissing = upgradeContract?.allowedMissingColumns[table] || [];
+    if (!actual.length || required.some((column) => (
+      !actual.includes(column) && !allowedMissing.includes(column)
+    ))) {
       incompatible.push(`${table}<table:${actual.length ? "definition" : "missing"}>`);
     }
   }

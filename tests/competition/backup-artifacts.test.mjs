@@ -706,6 +706,41 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
+  it("accepts only the exact predecessor schema and upgrades it at runtime without validator writes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-schema-upgrade-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+
+    const predecessor = new Database(dbPath);
+    predecessor.exec("ALTER TABLE score_endurance DROP COLUMN qualified");
+    predecessor.close();
+
+    const predecessorResult = validateDatabase(dbPath);
+    assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
+    const unchanged = new Database(dbPath, { readonly: true });
+    assert.equal(
+      unchanged.pragma("table_info('score_endurance')").some(({ name }) => name === "qualified"),
+      false,
+    );
+    unchanged.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    assert.equal(
+      upgraded.db.pragma("table_info('score_endurance')").some(({ name }) => name === "qualified"),
+      true,
+    );
+    upgraded.close();
+    const upgradedResult = validateDatabase(dbPath);
+    assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
+  });
+
   it("rejects a missing non-sentinel runtime column and removed roster-state schema", () => {
     const columnRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-column-db-validator-"));
     roots.push(columnRoot);
