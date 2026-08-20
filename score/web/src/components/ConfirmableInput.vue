@@ -144,10 +144,12 @@ function confirm() {
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--accent-success);
+  border: 1px solid var(--accent-success);
+  border-radius: 5px;
+  background: var(--accent-success);
+  color: white;
   cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 
 .confirm-input-btn:hover {

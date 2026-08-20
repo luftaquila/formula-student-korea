@@ -11,6 +11,8 @@ async function fillAndSave(page, input, value) {
   await expect(confirm).toBeVisible();
   await expect(confirm).toHaveText("");
   await expect(confirm.locator("svg.confirm-check-icon")).toBeVisible();
+  await expect(confirm).toHaveCSS("background-color", "rgb(39, 166, 68)");
+  await expect(confirm).toHaveCSS("color", "rgb(255, 255, 255)");
   const saved = page.waitForResponse(
     (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
   );
