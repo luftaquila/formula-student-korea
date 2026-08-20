@@ -1,21 +1,22 @@
 # API Reference
 
-This is the maintained HTTP contract. Auth, email, course, and calendar expose their listed `/api/*` routes directly. The six competition modules run in one Competition process on port 9200. Paths shown inside a Competition module section are relative to that module prefix:
+This is the maintained HTTP contract. Auth, email, course, and calendar expose their listed `/api/*` routes directly. The seven competition modules run in one Competition process on port 9200. Paths shown inside a Competition module section are relative to that module prefix:
 
 | Module | External prefix |
 |---|---|
 | Teams (Entry UI) | `/competition/api/v1/teams` |
 | Queue | `/competition/api/v1/queue` |
+| Registration | `/competition/api/v1/registration` |
 | Inspection | `/competition/api/v1/inspection` |
 | Traffic | `/competition/api/v1/traffic` |
 | Score | `/competition/api/v1/score` |
 | Documents | `/competition/api/v1/documents` |
 
-Teams table paths are relative to `/competition/api/v1` because Teams, vehicle types, and meta are flat resources. Other module table paths are relative to their listed module prefix. For example, Queue's `/health` row means `/competition/api/v1/queue/health`. API and SSE clients must use these versioned prefixes. The stable browser UI paths remain `/entry`, `/queue`, `/inspection`, `/traffic`, `/score`, and `/documents`.
+Teams table paths are relative to `/competition/api/v1` because Teams, vehicle types, and meta are flat resources. Other module table paths are relative to their listed module prefix. For example, Queue's `/health` row means `/competition/api/v1/queue/health`. API and SSE clients must use these versioned prefixes. The stable browser UI paths remain `/entry`, `/queue`, `/registration`, `/inspection`, `/traffic`, `/score`, and `/documents`.
 
 Former standalone, nested `/{module}/api/*`, lifecycle, finalize, snapshot, and version routes are not compatibility APIs and return `404`.
 
-Competition years use `Asia/Seoul`. Reads may select any valid year. Every Teams, Queue, Inspection, Traffic, Score, and Documents mutation is allowed only for the current KST year; a different year returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
+Competition years use `Asia/Seoul`. Reads may select any valid year. Every Teams, Queue, Registration, Inspection, Traffic, Score, and Documents mutation is allowed only for the current KST year; a different year returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
 
 Competition process health is separate from module compatibility health:
 
@@ -44,6 +45,7 @@ Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can acce
 
 - **Auth**: OAuth login/callback — 20 requests/minute per IP
 - **Queue**: Public endpoints (`POST /api/state/:num`) — 30 requests/minute per IP
+- **Registration**: Public credential lookup (`POST /lookup`) — 60 requests/minute per IP
 
 ### Common module endpoints
 
@@ -229,6 +231,33 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | PATCH | `/admin/settings/sms-rank` | chief | `{ value: int }` | 200 | Set SMS rank (1-10) |
 | GET | `/admin/settings/cancel-penalty` | official | — | `{ value: int }` | Cancel penalty minutes |
 | PATCH | `/admin/settings/cancel-penalty` | chief | `{ value: int }` | 200 | Set cancel penalty (0-60 min) |
+
+## Registration module (Competition port 9200)
+
+Registration rows use `competition_team.id` as their only team identity. Number and team labels below are canonical values resolved from that team. `waiting` and `called` are active states; `done` and `canceled` remain stored with the submitted phone and timestamps as audit history.
+
+### Public status and lookup
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/events` | public | `?year=` | SSE stream | Initial public status followed by year-only `registration` invalidations |
+| GET | `/status` | public | `?year=` | `{ year, open, waiting, called: [{ teamId, number, calledAt }] }` | Public queue summary and called entry numbers |
+| POST | `/lookup` | public | `{ year, num, phone }` | `{ teamId, number, university, name, status, position, waitingTotal, ... }` | Credentialed active-queue lookup; phone is normalized but never returned |
+
+### Kiosk and operations
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| GET | `/team/:num` | chief | `?year=` | `{ id, year, number, university, name, active, queueStatus }` | Resolve an active canonical team for kiosk registration |
+| GET | `/queue` | official | `?year=` | `{ waiting, called, today, settings }` | Operational board; active rows include phone numbers |
+| POST | `/queue` | chief | `{ teamId, phone }` | `201 { id, teamId, number, position, waitingTotal, ... }` | Add one current-year active team while reception is open |
+| POST | `/queue/:id/call` | official | — | `{ id, status: "called" }` | Atomically call a waiting team and send the call SMS when enabled |
+| POST | `/queue/:id/done` | official | — | `{ id, status: "done" }` | Complete a waiting or called registration |
+| POST | `/queue/:id/cancel` | official | — | `{ id, status: "canceled" }` | Cancel a waiting or called registration |
+| GET | `/settings` | official | `?year=` | `{ year, open, sms, notifyRank, smsAvailable, ... }` | Read year-scoped reception and SMS settings |
+| PATCH | `/settings` | chief | `{ year, open?, sms?, notifyRank? }` | Settings | Atomically update current-year settings (`notifyRank`: 0–20) |
+
+Advance SMS delivery is attempted once when a row first enters the configured leading ranks. A failed attempt releases its database claim so a later queue/settings mutation can retry. The SMS provider configuration remains owned by the Email service.
 
 ## Inspection module (Competition port 9200)
 

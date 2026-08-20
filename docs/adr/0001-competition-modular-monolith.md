@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Decision date: 2026-08-10
-- Revised: 2026-08-12
+- Revised: 2026-08-20
 
 ## Context
 
@@ -10,7 +10,7 @@ Teams, Queue, Inspection, Traffic, Score, and Documents previously ran as separa
 
 ## Decision
 
-Run the six domains as modules in one Node.js process with one SQLite connection and one deployment lifecycle. `competition_team` is the sole team source of truth; `competition_team.id` is the stable operational identity. Projection changes and transient-state cleanup occur in the same database transaction as the team update.
+Run Teams, Queue, Registration, Inspection, Traffic, Score, and Documents as modules in one Node.js process with one SQLite connection and one deployment lifecycle. `competition_team` is the sole team source of truth; `competition_team.id` is the stable operational identity. Projection changes and transient-state cleanup occur in the same database transaction as the team update. Registration was added later under this same boundary instead of creating another runtime.
 
 Use `Asia/Seoul` for competition-year decisions. Permit reads for any year and writes only for the current KST year. Do not model draft/finalize, roster snapshots, roster versions, replacement intent, team soft deletion, or service-level legacy compatibility. Initial import succeeds only when the current year has no teams; subsequent changes use simple per-team CRUD, with deactivation instead of deletion.
 
