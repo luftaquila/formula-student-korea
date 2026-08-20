@@ -248,7 +248,6 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/team/:num` | chief | `?year=` | `{ id, year, number, university, name, active, queueStatus }` | Resolve an active canonical team for kiosk registration |
 | GET | `/queue` | official | `?year=` | `{ waiting, today, settings }` | Operational board; active rows include phone numbers |
 | POST | `/queue` | chief | `{ teamId, phone }` | `201 { id, teamId, number, position, waitingTotal, ... }` | Add one current-year active team while reception is open |
 | POST | `/queue/:id/done` | official | — | `{ id, status: "done" }` | Complete a waiting registration |

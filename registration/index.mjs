@@ -63,7 +63,6 @@ export function createRegistrationApp(options = {}) {
     authRoleFn: (req) => {
       if (["/api/health", "/api/status", "/api/lookup", "/api/events"].includes(req.path)) return null;
       if (req.path === "/api/logs") return "admin";
-      if (req.method === "GET" && /^\/api\/team\/\d+$/.test(req.path)) return "chief";
       if (req.path === "/api/queue" && req.method === "POST") return "chief";
       if (req.path === "/api/settings" && req.method !== "GET") return "chief";
       if (req.path.startsWith("/api/")) return "official";
@@ -109,6 +108,9 @@ export function createRegistrationApp(options = {}) {
     `).run(currentCompetitionYear());
   })();
 
+  // Competition 은 Queue 가 만든 클라이언트를 주입한다 — 자격 증명 사본과 Email
+  // 서비스 폴링이 모듈 수만큼 늘어나지 않게 한다. 독립 실행·테스트에서만 직접 만든다.
+  const ownsSmsClient = !options.smsClient;
   const smsClient = options.smsClient || createSmsClient({
     logger,
     smsRequest: options.smsRequest,
@@ -267,30 +269,6 @@ export function createRegistrationApp(options = {}) {
         reason: "invalid_request", year, number, error: error.message,
       }, year && number ? `${year}#${number}` : "public");
       return sendError(res, error, "REGISTRATION_LOOKUP_FAILED");
-    }
-  });
-
-  app.get("/api/team/:num", (req, res) => {
-    let year;
-    let number;
-    try {
-      year = parseCompetitionYear(req.query.year);
-      number = parsePositiveInteger(req.params.num, "엔트리 번호");
-      const team = options.teamStore.getByNumber(year, number, { includeInactive: false });
-      if (!team) {
-        logger.warn(req, "registration.team_lookup", {
-          reason: "not_found", year, number,
-        }, `${year}#${number}`);
-        return res.status(404).json({ code: "TEAM_NOT_FOUND", message: "등록되지 않은 활성 엔트리 번호입니다." });
-      }
-      const active = db.prepare(`
-        SELECT status FROM registration_queue
-        WHERE team_id = ? AND status IN ('waiting','called')
-      `).get(team.id);
-      return res.json({ ...auditTeam(team), queueStatus: active ? "waiting" : null });
-    } catch (error) {
-      logger.warn(req, "registration.team_lookup", { year, number, error: error.message });
-      return sendError(res, error, "REGISTRATION_TEAM_LOOKUP_FAILED");
     }
   });
 
@@ -691,11 +669,12 @@ export function createRegistrationApp(options = {}) {
   return {
     app,
     db,
-    loadSmsConfig: smsClient.loadConfig || (async () => smsClient.isAvailable()),
+    // 클라이언트를 공유받았으면 그 소유자가 설정을 읽는다.
+    loadSmsConfig: (ownsSmsClient && smsClient.loadConfig) || (async () => smsClient.isAvailable()),
     closeSse,
     sourceEvent,
     drain: () => Promise.allSettled([...pendingTasks]),
     hasPendingTasks: () => pendingTasks.size > 0,
-    timers: [rateLimitTimer, ...(smsClient.timer ? [smsClient.timer] : [])],
+    timers: [rateLimitTimer, ...(ownsSmsClient && smsClient.timer ? [smsClient.timer] : [])],
   };
 }

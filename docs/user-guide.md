@@ -545,7 +545,6 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 | `registration.settings_update` | info/warn | 접수·문자·사전 안내 순번 설정 변경 또는 실패 |
 | `registration.status` | info/warn | 공개 접수 현황 조회 실패 |
 | `registration.lookup` | info/warn | 공개 순번 조회 실패 또는 요청 제한 |
-| `registration.team_lookup` | info/warn | 엔트리 팀 조회 실패 |
 | `registration.queue_view` | warn | 운영 대기 목록 조회 실패 |
 | `registration.settings_view` | warn | 설정 조회 실패 |
 | `registration.sms_send` | info/warn | 사전 순번 안내 문자 발송 결과 |
