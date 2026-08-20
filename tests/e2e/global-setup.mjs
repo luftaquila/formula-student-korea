@@ -45,9 +45,12 @@ async function waitForServices(maxRetries = 30, intervalMs = 2000) {
   throw new Error("Services did not become healthy in time");
 }
 
+// waitForServices above allows 30 x 2000ms for the same containers, so keep this
+// gate in the same order of magnitude: a cold runner whose first Auth roundtrip
+// is slow must not fail the whole shard.
 export async function waitForCompetitionAuthentication({
-  maxRetries = 10,
-  intervalMs = 500,
+  maxRetries = 30,
+  intervalMs = 2000,
   fetchImpl = fetch,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   log = console.log,
