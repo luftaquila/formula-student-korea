@@ -483,7 +483,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | POST | `/api/internal/send` | internal | `{ subject, htmlContent, recipients: [...], source }` | `{ success: true, messageId }` | 다른 서비스용 이메일 전송 API. `source`로 호출 서비스 식별 (e.g., "auth"). 내부 호출은 성공 시 `email.send` info 로그를 남기지 않음 (호출자가 집계 로그를 남기는 전제, email_log 테이블에는 수신자별 행이 그대로 기록). 부분 실패(`email.send_partial`)·전부 실패(`email.send` warn)는 그대로 기록. |
-| GET | `/api/internal/sms-config` | internal | — | `{ naver_cloud_access_key, naver_cloud_secret_key, naver_cloud_sms_service_id, phone_number_sms_sender }` | SMS configuration for the Competition Queue module (unmasked) |
+| GET | `/api/internal/sms-config` | internal | — | `{ naver_cloud_access_key, naver_cloud_secret_key, naver_cloud_sms_service_id, phone_number_sms_sender }` | SMS configuration for the Competition Queue and Registration modules (unmasked) |
 
 ---
 

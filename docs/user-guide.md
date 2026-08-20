@@ -172,7 +172,7 @@ official 권한으로는 검차 우선순위, 취소 페널티 시간, SMS 알�
 * `문자 안내`: 사전 순번 안내 문자를 켜거나 끕니다. Email/SMS 서비스에 SENS 설정이 있어야 켤 수 있습니다.
 * `사전 안내 순번`: 검차 대기열과 같이 설정한 1~10번째 순번이 된 팀에 한 번 안내합니다.
 
-팀 번호가 변경되어도 내부 팀 ID와 대기 이력은 유지됩니다. 팀을 비활성화하면 진행 중인 대기만 취소되고 완료·취소 이력은 삭제되지 않습니다. 과거 연도는 조회만 가능하고 모든 변경은 현재 한국 연도에만 허용됩니다.
+팀 번호가 변경되어도 내부 팀 ID와 대기 이력은 유지됩니다. 팀을 비활성화하면 진행 중인 대기만 취소되고 완료·취소 이력은 삭제되지 않습니다. 이때 줄어든 대기열에 대해서는 사전 안내 문자를 보내지 않습니다 — 문자를 쓰는 대회 진행 중에는 팀 비활성화를 하지 않기 때문입니다. 사전 안내는 `완료`·`취소`로 대기열이 움직일 때만 발송됩니다. 과거 연도는 조회만 가능하고 모든 변경은 현재 한국 연도에만 허용됩니다.
 
 ## 3. 인스펙션 시트
 
@@ -543,7 +543,15 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 | `registration.done` | info/warn | 등록 완료 또는 충돌/실패 |
 | `registration.cancel` | info/warn | 등록 대기 취소 또는 충돌/실패 |
 | `registration.settings_update` | info/warn | 접수·문자·사전 안내 순번 설정 변경 또는 실패 |
+| `registration.status` | info/warn | 공개 접수 현황 조회 실패 |
+| `registration.lookup` | info/warn | 공개 순번 조회 실패 또는 요청 제한 |
+| `registration.team_lookup` | info/warn | 엔트리 팀 조회 실패 |
+| `registration.queue_view` | warn | 운영 대기 목록 조회 실패 |
+| `registration.settings_view` | warn | 설정 조회 실패 |
 | `registration.sms_send` | info/warn | 사전 순번 안내 문자 발송 결과 |
+| `registration.sms_prepare` | warn | 사전 안내 대상 선정 실패 |
+| `registration.sms_claim` | warn | 사전 안내 발송 선점·해제 실패 |
+| `registration.sms_skip` | warn | SENS 설정이 없어 사전 안내를 건너뜀 |
 
 ### Inspection
 | 액션 | 레벨 | 설명 |
