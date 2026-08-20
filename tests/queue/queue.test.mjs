@@ -69,6 +69,13 @@ describe('INSPECTIONS export', () => {
     assert.ok(INSPECTIONS.rain);
     assert.ok(INSPECTIONS.report);
   });
+
+  it('keys carry the operational display order and the accumulator name', () => {
+    assert.deepEqual(Object.keys(INSPECTIONS), [
+      'chassis', 'battery', 'electric', 'tilting', 'rain', 'noise', 'braking', 'report',
+    ]);
+    assert.equal(INSPECTIONS.battery, '축전지');
+  });
 });
 
 // ─── Public endpoints ───────────────────────────────────────────────────
@@ -271,6 +278,12 @@ describe('GET /api/active', () => {
     assert.equal(data.length, 8);
   });
 
+  it('lists them in INSPECTIONS key order, not table insertion order', async () => {
+    const res = await client.get('/api/active');
+    const data = await res.json();
+    assert.deepEqual(data.map((row) => row.type), Object.keys(INSPECTIONS));
+    assert.deepEqual(data.map((row) => row.name), Object.values(INSPECTIONS));
+  });
 });
 
 describe('GET /api/booths/all', () => {
@@ -678,7 +691,7 @@ describe('Active cancel penalty management', () => {
     assert.deepEqual(data, [{
       num: 2,
       inspection: 'battery',
-      inspection_name: '배터리',
+      inspection_name: '축전지',
       until: now + 600000,
       can_restore: 1,
     }]);
@@ -1753,7 +1766,7 @@ describe('Queue legacy → normalized migration', () => {
     const seed = new Database(migPath);
     // legacy inspection meta WITH the removed `length` cache column
     seed.exec(`CREATE TABLE inspection (type TEXT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE, length INTEGER NOT NULL DEFAULT 0)`);
-    seed.prepare("INSERT INTO inspection (type, name, active, length) VALUES (?, ?, ?, ?)").run('battery', '배터리', 1, 7);
+    seed.prepare("INSERT INTO inspection (type, name, active, length) VALUES (?, ?, ?, ?)").run('battery', '축전지', 1, 7);
     // legacy `current` (no year column); inspection is a comma list incl. an invalid type
     seed.exec(`CREATE TABLE current (num INTEGER PRIMARY KEY, phone TEXT, inspection TEXT)`);
     seed.prepare("INSERT INTO current (num, phone, inspection) VALUES (?, ?, ?)").run(1, '01011112222', 'battery,braking,bogus');

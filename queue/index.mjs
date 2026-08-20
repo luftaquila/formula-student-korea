@@ -8,14 +8,15 @@ import { competitionYearBounds, currentCompetitionYear } from "../shared/competi
 import { ensureInactiveTeamView } from "../shared/team-status.mjs";
 import { createSmsClient } from "../shared/sms-client.mjs";
 
+// 키 순서가 곧 모든 화면의 검차 표시 순서다(withInspectionLengths 에서 이 순서로 정렬).
 export const INSPECTIONS = {
-  battery: "배터리",
-  electric: "전기",
   chassis: "섀시",
+  battery: "축전지",
+  electric: "전기",
   tilting: "틸팅",
-  braking: "제동",
-  noise: "소음",
   rain: "우천",
+  noise: "소음",
+  braking: "제동",
   report: "보고서",
 };
 
@@ -239,6 +240,9 @@ db.transaction(() => {
   // 검차 종류 메타 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
+    // 이름은 INSPECTIONS 가 유일한 출처다. 라우트가 name 을 수정하지 않으므로
+    // 상수 변경(배터리 -> 축전지)이 기존 DB에도 반영되도록 매 부팅에 맞춘다.
+    db.prepare(`UPDATE inspection SET name = ? WHERE type = ? AND name != ?`).run(v, k, v);
 
     // 부스 기본 설정: 검차 종류당 1개 부스
     db.prepare(`INSERT OR IGNORE INTO booth_config (inspection, count) VALUES (?, 1)`).run(k);
@@ -418,7 +422,12 @@ function withInspectionLengths(rows, year = currentYear()) {
   for (const r of db.prepare("SELECT inspection, COUNT(*) AS count FROM inspection_queue WHERE year = ? GROUP BY inspection").all(year)) {
     counts.set(r.inspection, r.count);
   }
-  return rows.map((row) => ({ ...row, length: counts.get(row.type) || 0 }));
+  // rowid(= 최초 삽입 순서)가 아니라 INSPECTIONS 키 순서로 노출한다. 기존 DB의
+  // 삽입 순서가 달라도 모든 화면이 같은 순서를 본다.
+  const order = Object.keys(inspections);
+  return rows
+    .map((row) => ({ ...row, length: counts.get(row.type) || 0 }))
+    .sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
 }
 
 function getActiveInspections(year = currentYear()) {
@@ -480,7 +489,7 @@ function addCurrentInspection(num, phone, type, year) {
     (nonReportTypes.length === 1 && nonReportTypes[0] === "battery" && type === "chassis") ||
     (nonReportTypes.length === 1 && nonReportTypes[0] === "chassis" && type === "battery")
   ) {
-    // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
+    // 보고서만 등록 또는 축전지+섀시 동시 등록 허용
     setCurrentInspections(num, phone, [...currentTypes, type], year);
     return;
   }
