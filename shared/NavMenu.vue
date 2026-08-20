@@ -54,7 +54,7 @@ function isActive(href) {
     }
   }
 
-  // Academic conference registration queue
+  // Registration queue
   if (props.currentPath.startsWith("/registration")) {
     if (href === "/registration") {
       return props.currentPath === "/registration" || props.currentPath === "/registration/";

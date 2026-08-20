@@ -26,7 +26,7 @@ async function clearActiveQueue(request) {
   }
 }
 
-test.describe("Academic conference registration queue", () => {
+test.describe("Registration queue", () => {
   test.describe.configure({ mode: "serial" });
 
   test.beforeEach(async ({ request }) => {
@@ -123,8 +123,8 @@ test.describe("Academic conference registration queue", () => {
     try {
       await page.goto("/registration/manage");
       await waitForPageReady(page);
-      await expect(page.getByText("접수 및 문자 설정")).toHaveCount(0);
-      await expect(page.getByText("Chief 이상만 변경")).toBeVisible();
+      await expect(page.getByRole("heading", { name: "설정" })).toHaveCount(0);
+      await expect(page.getByText(/Chief|Official/)).toHaveCount(0);
 
       await page.goto("/registration/register");
       await expect(page).not.toHaveURL(/\/registration\/register/);

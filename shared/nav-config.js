@@ -5,7 +5,7 @@ export const services = [
   // documents page itself explains "팀이 배정되지 않았습니다" on entry.
   { name: "서류 제출", href: "/documents", icon: "documents", studentOnly: true },
   { name: "검차 대기열", href: "/queue", icon: "queue" },
-  { name: "학회 등록 대기열", href: "/registration", icon: "registration" },
+  { name: "등록 대기열", href: "/registration", icon: "registration" },
   { name: "에너지미터", href: "/energymeter", icon: "energy" },
   { name: "대회 일정", href: "/calendar", icon: "calendar" },
 ];
@@ -19,7 +19,7 @@ export const resources = [
 
 export const officials = [
   { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin" },
-  { name: "학회 등록 대기 관리", href: "/registration/manage", icon: "registration-admin" },
+  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin" },
   { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
   { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
   { name: "코스 관리", href: "/course", icon: "course", auth: "chief" },
@@ -39,13 +39,13 @@ export const admins = [
 const icons = {
   home: "🏠",
   queue: "🔧",
-  registration: "🎓",
+  registration: "🎫",
   energy: "⚡",
   notice: "💡",
   rules: "📖",
   forum: "svg",
   "queue-admin": "🛠️",
-  "registration-admin": "🗂️",
+  "registration-admin": "🎛️",
   traffic: "🚦",
   entry: "🏁",
   sheet: "📋",

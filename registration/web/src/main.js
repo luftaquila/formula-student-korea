@@ -15,9 +15,9 @@ initTestBanner();
 const router = createRouter({
   history: createWebHistory(import.meta.env.PROD ? "/registration" : ""),
   routes: [
-    { path: "/", component: () => import("./views/Lookup.vue"), meta: { title: "등록 대기 현황" } },
-    { path: "/manage", component: () => import("./views/Manage.vue"), meta: { title: "학회 등록 대기 관리", role: "official" } },
-    { path: "/register", component: () => import("./views/Register.vue"), meta: { title: "학회 등록 대기 신청", role: "chief" } },
+    { path: "/", component: () => import("./views/Lookup.vue") },
+    { path: "/manage", component: () => import("./views/Manage.vue"), meta: { role: "official" } },
+    { path: "/register", component: () => import("./views/Register.vue"), meta: { role: "chief" } },
   ],
 });
 
