@@ -234,7 +234,7 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 
 ## Registration module (Competition port 9200)
 
-Registration rows use `competition_team.id` as their only team identity. Number and team labels below are canonical values resolved from that team. `waiting` and `called` are active states; `done` and `canceled` remain stored with the submitted phone and timestamps as audit history.
+Registration rows use `competition_team.id` as their only team identity. Number and team labels below are canonical values resolved from that team. `waiting` is the operational state; `done` and `canceled` remain stored with the submitted phone and timestamps as audit history. Rows left in the retired `called` state by an earlier preview build are treated as waiting until they are completed or canceled.
 
 ### Public status and lookup
 
@@ -249,15 +249,14 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/team/:num` | chief | `?year=` | `{ id, year, number, university, name, active, queueStatus }` | Resolve an active canonical team for kiosk registration |
-| GET | `/queue` | official | `?year=` | `{ waiting, called, today, settings }` | Operational board; active rows include phone numbers |
+| GET | `/queue` | official | `?year=` | `{ waiting, today, settings }` | Operational board; active rows include phone numbers |
 | POST | `/queue` | chief | `{ teamId, phone }` | `201 { id, teamId, number, position, waitingTotal, ... }` | Add one current-year active team while reception is open |
-| POST | `/queue/:id/call` | official | — | `{ id, status: "called" }` | Atomically call a waiting team and send the call SMS when enabled |
-| POST | `/queue/:id/done` | official | — | `{ id, status: "done" }` | Complete a waiting or called registration |
-| POST | `/queue/:id/cancel` | official | — | `{ id, status: "canceled" }` | Cancel a waiting or called registration |
+| POST | `/queue/:id/done` | official | — | `{ id, status: "done" }` | Complete a waiting registration |
+| POST | `/queue/:id/cancel` | official | — | `{ id, status: "canceled" }` | Cancel a waiting registration |
 | GET | `/settings` | official | `?year=` | `{ year, open, sms, notifyRank, smsAvailable, ... }` | Read year-scoped reception and SMS settings |
-| PATCH | `/settings` | chief | `{ year, open?, sms?, notifyRank? }` | Settings | Atomically update current-year settings (`notifyRank`: 0–20) |
+| PATCH | `/settings` | chief | `{ year, open?, sms?, notifyRank? }` | Settings | Atomically update current-year settings (`notifyRank`: 1–10) |
 
-Advance SMS delivery is attempted once when a row first enters the configured leading ranks. A failed attempt releases its database claim so a later queue/settings mutation can retry. The SMS provider configuration remains owned by the Email service.
+Advance SMS delivery follows Queue behavior: when an active row is completed or canceled, the newly changed team at the exact configured rank receives one notification. Registration and settings changes do not send a message. A failed attempt releases its database claim without rolling back the queue mutation. The SMS provider configuration remains owned by the Email service.
 
 ## Inspection module (Competition port 9200)
 

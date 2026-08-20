@@ -17,7 +17,6 @@ export const lookupRegistration = (data) => json("/api/lookup", { method: "POST"
 export const fetchTeam = (number, year) => json(`/api/team/${number}?year=${year}`);
 export const fetchQueue = (year) => json(`/api/queue?year=${year}`);
 export const createRegistration = (data) => json("/api/queue", { method: "POST", ...body(data) });
-export const callRegistration = (id) => json(`/api/queue/${id}/call`, { method: "POST" });
 export const completeRegistration = (id) => json(`/api/queue/${id}/done`, { method: "POST" });
 export const cancelRegistration = (id) => json(`/api/queue/${id}/cancel`, { method: "POST" });
 export const updateSettings = (data) => json("/api/settings", { method: "PATCH", ...body(data) });

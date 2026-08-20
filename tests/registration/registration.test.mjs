@@ -181,12 +181,19 @@ describe("Registration queue", () => {
 
     const created = await register(f, team);
     assert.equal(created.position, 1);
+    response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.official });
+    await assertStatus(response, 200);
+    const board = await response.json();
+    assert.equal(board.waiting.length, 1);
+    assert.equal(Object.hasOwn(board, "called"), false);
     response = await f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official });
+    assert.equal(response.status, 404);
+    response = await f.client.get(`/api/status?year=${YEAR}`);
+    assert.deepEqual(await response.json(), { year: YEAR, open: true, waiting: 1 });
+    response = await f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official });
     await assertStatus(response, 200);
     response = await f.client.get(`/api/status?year=${YEAR}`);
     assert.deepEqual(await response.json(), { year: YEAR, open: true, waiting: 0 });
-    response = await f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official });
-    await assertStatus(response, 200);
 
     response = await f.client.patch("/api/settings", {
       cookie: cookies.official,
@@ -298,7 +305,7 @@ describe("Registration queue", () => {
     });
     assert.equal(response.status, 409);
     assert.equal((await response.json()).code, "YEAR_READ_ONLY");
-    response = await f.client.post(`/api/queue/${oldRegistrationId}/call`, { cookie: cookies.official });
+    response = await f.client.post(`/api/queue/${oldRegistrationId}/done`, { cookie: cookies.official });
     assert.equal(response.status, 409);
     response = await f.client.patch("/api/settings", {
       cookie: cookies.chief,
@@ -314,20 +321,20 @@ describe("Registration queue", () => {
     const created = await register(f, team);
 
     const responses = await Promise.all([
-      f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official }),
-      f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official }),
+      f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official }),
+      f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official }),
     ]);
     assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
-    assert.equal(f.db.prepare("SELECT status FROM registration_queue WHERE id = ?").get(created.id).status, "called");
+    assert.equal(f.db.prepare("SELECT status FROM registration_queue WHERE id = ?").get(created.id).status, "done");
     const conflict = f.db.prepare(`
       SELECT detail FROM logs
-      WHERE module = 'registration' AND action = 'registration.call' AND level = 'warn'
+      WHERE module = 'registration' AND action = 'registration.done' AND level = 'warn'
       ORDER BY id DESC LIMIT 1
     `).get();
     assert.ok(conflict);
   });
 
-  it("matches Queue SMS targeting while sending a separate call message", async () => {
+  it("matches Queue exact-rank SMS targeting when a registration is completed", async () => {
     const f = await fixture();
     const first = f.team(71);
     const second = f.team(72);
@@ -352,16 +359,15 @@ describe("Registration queue", () => {
     await f.registration.drain();
     assert.equal(f.smsClient.messages.length, 0, "a change behind the configured rank does not send a message");
 
-    const called = await f.client.post(`/api/queue/${firstRegistration.id}/call`, { cookie: cookies.official });
-    await assertStatus(called, 200);
+    const completed = await f.client.post(`/api/queue/${firstRegistration.id}/done`, { cookie: cookies.official });
+    await assertStatus(completed, 200);
     await f.registration.drain();
 
-    assert.equal(f.smsClient.messages.length, 2);
-    const callMessage = f.smsClient.messages.find((message) => message.content.includes("등록 차례"));
-    const advanceMessage = f.smsClient.messages.find((message) => message.content.includes("등록 대기 2번째"));
-    assert.equal(callMessage.phone, "01011111111");
+    assert.equal(f.smsClient.messages.length, 1);
+    const advanceMessage = f.smsClient.messages[0];
+    assert.match(advanceMessage.content, /등록 대기 2번째/);
     assert.equal(advanceMessage.phone, "01033333333");
-    assert.equal(f.smsClient.messages.some((message) => message.phone === "01022222222"), false);
+    assert.equal(f.smsClient.messages.some((message) => ["01011111111", "01022222222"].includes(message.phone)), false);
   });
 
   it("releases a failed exact-rank claim and restricts the rank to Queue limits", async () => {

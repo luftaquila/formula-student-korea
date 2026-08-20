@@ -184,7 +184,7 @@ export function createRegistrationApp(options = {}) {
     const waiting = db.prepare(`
       SELECT COUNT(*) AS count
       FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-      WHERE t.year = ? AND q.status = 'waiting'
+      WHERE t.year = ? AND q.status IN ('waiting','called')
     `).get(year).count;
     return { year, open: settingsForYear(year).open, waiting };
   }
@@ -228,7 +228,7 @@ export function createRegistrationApp(options = {}) {
       if (!phone) throw Object.assign(new Error("올바르지 않은 전화번호입니다."), { status: 400, code: "INVALID_PHONE" });
 
       const row = db.prepare(`
-        SELECT q.id, q.team_id, q.status, q.registered_at, q.called_at,
+        SELECT q.id, q.team_id, q.registered_at,
                t.num, t.univ, t.name
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
         WHERE t.year = ? AND t.num = ? AND q.phone = ?
@@ -244,26 +244,23 @@ export function createRegistrationApp(options = {}) {
       const waitingTotal = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status = 'waiting'
+        WHERE t.year = ? AND q.status IN ('waiting','called')
       `).get(year).count;
-      const position = row.status === "waiting"
-        ? db.prepare(`
-          SELECT COUNT(*) AS count
-          FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-          WHERE t.year = ? AND q.status = 'waiting' AND q.id <= ?
-        `).get(year, row.id).count
-        : null;
+      const position = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
+        WHERE t.year = ? AND q.status IN ('waiting','called') AND q.id <= ?
+      `).get(year, row.id).count;
 
       return res.json({
         teamId: row.team_id,
         number: row.num,
         university: row.univ,
         name: row.name,
-        status: row.status,
+        status: "waiting",
         position,
         waitingTotal,
         registeredAt: row.registered_at,
-        calledAt: row.called_at,
       });
     } catch (error) {
       logger.warn(req, "registration.lookup", {
@@ -290,7 +287,7 @@ export function createRegistrationApp(options = {}) {
         SELECT status FROM registration_queue
         WHERE team_id = ? AND status IN ('waiting','called')
       `).get(team.id);
-      return res.json({ ...auditTeam(team), queueStatus: active?.status || null });
+      return res.json({ ...auditTeam(team), queueStatus: active ? "waiting" : null });
     } catch (error) {
       logger.warn(req, "registration.team_lookup", { year, number, error: error.message });
       return sendError(res, error, "REGISTRATION_TEAM_LOOKUP_FAILED");
@@ -305,16 +302,9 @@ export function createRegistrationApp(options = {}) {
         SELECT q.id, q.team_id AS teamId, t.num AS number, t.univ AS university, t.name,
                q.phone, q.registered_at AS registeredAt, q.notified
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status = 'waiting'
+        WHERE t.year = ? AND q.status IN ('waiting','called')
         ORDER BY q.id
       `).all(year).map((row, index) => ({ ...row, position: index + 1 }));
-      const called = db.prepare(`
-        SELECT q.id, q.team_id AS teamId, t.num AS number, t.univ AS university, t.name,
-               q.phone, q.registered_at AS registeredAt, q.called_at AS calledAt
-        FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status = 'called'
-        ORDER BY q.called_at, q.id
-      `).all(year);
       const today = db.prepare(`
         SELECT
           COALESCE(SUM(q.status = 'done'), 0) AS done,
@@ -327,7 +317,6 @@ export function createRegistrationApp(options = {}) {
       return res.json({
         year,
         waiting,
-        called,
         today: { done: today.done, canceled: today.canceled },
         settings: settingsForYear(year),
       });
@@ -387,7 +376,7 @@ export function createRegistrationApp(options = {}) {
       SELECT q.id, q.team_id, q.phone, q.notified,
              t.year, t.num, t.univ, t.name, t.active
       FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-      WHERE t.year = ? AND q.status = 'waiting'
+      WHERE t.year = ? AND q.status IN ('waiting','called')
       ORDER BY q.id LIMIT 1 OFFSET ?
     `).get(year, rank - 1);
   }
@@ -407,7 +396,7 @@ export function createRegistrationApp(options = {}) {
       const claim = dbRun(() => db.prepare(`
         UPDATE registration_queue
         SET notified = 2, notify_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE id = ? AND status = 'waiting'
+        WHERE id = ? AND status IN ('waiting','called')
           AND (notified = 0 OR (
             notified = 2 AND (
               notify_claimed_at IS NULL
@@ -479,9 +468,7 @@ export function createRegistrationApp(options = {}) {
         }, String(team.id));
         return res.status(409).json({
           code: "REGISTRATION_ALREADY_ACTIVE",
-          message: active.status === "called"
-            ? "이미 호출된 엔트리입니다. 등록 데스크로 오세요."
-            : "이미 대기 중인 엔트리입니다.",
+          message: "이미 대기 중인 엔트리입니다.",
         });
       }
 
@@ -498,12 +485,12 @@ export function createRegistrationApp(options = {}) {
       const position = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status = 'waiting' AND q.id <= ?
+        WHERE t.year = ? AND q.status IN ('waiting','called') AND q.id <= ?
       `).get(team.year, id).count;
       const waitingTotal = db.prepare(`
         SELECT COUNT(*) AS count
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status = 'waiting'
+        WHERE t.year = ? AND q.status IN ('waiting','called')
       `).get(team.year).count;
 
       logger.log(req, "registration.register", {
@@ -530,7 +517,7 @@ export function createRegistrationApp(options = {}) {
     }
   });
 
-  function transition(req, res, { from, to, timestampColumn, action, sendCallSms = false }) {
+  function transition(req, res, { from, to, timestampColumn, action }) {
     let row;
     try {
       const id = parsePositiveInteger(req.params.id, "대기 ID");
@@ -549,7 +536,7 @@ export function createRegistrationApp(options = {}) {
         return res.status(409).json({ code: "REGISTRATION_ALREADY_PROCESSED", message: "이미 처리된 대기 내역입니다." });
       }
 
-      const previousAdvanceTargetId = row.status === "waiting"
+      const previousAdvanceTargetId = ACTIVE_STATUSES.includes(row.status)
         ? advanceTarget(row.year, settingsForYear(row.year).notifyRank)?.id
         : undefined;
 
@@ -589,20 +576,7 @@ export function createRegistrationApp(options = {}) {
         after: to,
       }, String(row.id));
 
-      if (sendCallSms && settingsForYear(row.year).sms) {
-        if (smsClient.isAvailable()) {
-          dispatchSms({
-            kind: "call",
-            team,
-            registrationId: row.id,
-            phone: row.phone,
-            content: `${SMS_PREFIX(row.year)} 엔트리 ${row.num}번 등록 차례입니다. 등록 데스크로 오세요.`,
-          });
-        } else {
-          warnSmsUnavailable(row.year);
-        }
-      }
-      if (row.status === "waiting") notifyUpcoming(row.year, previousAdvanceTargetId);
+      if (ACTIVE_STATUSES.includes(row.status)) notifyUpcoming(row.year, previousAdvanceTargetId);
       broadcastChange(row.year);
       return res.status(200).json({ id: row.id, status: to });
     } catch (error) {
@@ -617,10 +591,6 @@ export function createRegistrationApp(options = {}) {
     }
   }
 
-  app.post("/api/queue/:id/call", (req, res) => transition(req, res, {
-    from: ["waiting"], to: "called", timestampColumn: "called_at",
-    action: "registration.call", sendCallSms: true,
-  }));
   app.post("/api/queue/:id/done", (req, res) => transition(req, res, {
     from: ACTIVE_STATUSES, to: "done", timestampColumn: "finished_at", action: "registration.done",
   }));

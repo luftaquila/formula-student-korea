@@ -19,7 +19,6 @@ let events = null;
 let refreshSequence = 0;
 
 const waiting = computed(() => board.value?.waiting || []);
-const called = computed(() => board.value?.called || []);
 
 async function refresh() {
   const sequence = ++refreshSequence;
@@ -56,10 +55,6 @@ async function runAction(row, action, message) {
   } finally {
     markBusy(row.id, false);
   }
-}
-
-function call(row) {
-  return runAction(row, api.callRegistration, `엔트리 ${row.number}번을 호출했습니다.`);
 }
 
 function complete(row) {
@@ -131,10 +126,6 @@ onUnmounted(() => events?.close());
               <strong>{{ waiting.length }}</strong>
             </div>
             <div class="summary-card">
-              <small>호출 중</small>
-              <strong>{{ called.length }}</strong>
-            </div>
-            <div class="summary-card">
               <small>오늘 완료</small>
               <strong>{{ board.today.done }}</strong>
             </div>
@@ -142,32 +133,6 @@ onUnmounted(() => events?.close());
               <small>오늘 취소</small>
               <strong>{{ board.today.canceled }}</strong>
             </div>
-          </div>
-
-          <div class="queue-section called-section">
-            <div class="section-header">
-              <h4>호출 중</h4>
-              <span class="badge badge-warning">{{ called.length }}팀</span>
-            </div>
-            <div v-if="called.length" class="table-wrap">
-              <table class="data-table">
-                <thead><tr><th>엔트리</th><th>팀</th><th>전화번호</th><th>처리</th></tr></thead>
-                <tbody>
-                  <tr v-for="row in called" :key="row.id">
-                    <td><strong class="mono">{{ row.number }}</strong></td>
-                    <td><small>{{ row.university }}</small><br>{{ row.name }}</td>
-                    <td class="mono">{{ displayPhone(row.phone) }}</td>
-                    <td>
-                      <div class="row-actions">
-                        <button class="btn btn-success btn-sm" type="button" :disabled="busyIds.has(row.id)" @click="complete(row)">완료</button>
-                        <button class="btn btn-ghost btn-sm" type="button" :disabled="busyIds.has(row.id)" @click="cancel(row)">취소</button>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-            <div v-else class="empty-state">호출 중인 팀이 없습니다.</div>
           </div>
 
           <div class="queue-section">
@@ -186,8 +151,7 @@ onUnmounted(() => events?.close());
                     <td class="mono">{{ displayPhone(row.phone) }}</td>
                     <td>
                       <div class="row-actions">
-                        <button class="btn btn-primary btn-sm" type="button" :disabled="busyIds.has(row.id)" @click="call(row)">호출</button>
-                        <button class="btn btn-success btn-sm" type="button" :disabled="busyIds.has(row.id)" @click="complete(row)">바로 완료</button>
+                        <button class="btn btn-success btn-sm" type="button" :disabled="busyIds.has(row.id)" @click="complete(row)">완료</button>
                         <button class="btn btn-ghost btn-sm" type="button" :disabled="busyIds.has(row.id)" @click="cancel(row)">취소</button>
                       </div>
                     </td>
@@ -221,7 +185,7 @@ onUnmounted(() => events?.close());
           <div class="setting-line">
             <div>
               <strong>문자 안내</strong>
-              <small v-if="board.settings.smsAvailable">사전 순번 및 호출 문자를 발송합니다.</small>
+              <small v-if="board.settings.smsAvailable">설정한 사전 순번에 안내 문자를 발송합니다.</small>
               <small v-else>이메일/SMS 서비스에서 SENS 설정이 필요합니다.</small>
             </div>
             <label class="switch">
@@ -265,7 +229,7 @@ onUnmounted(() => events?.close());
 .queue-count { padding: 0.25rem 0.625rem; color: white; background: var(--accent-primary); border-radius: 12px; font-family: "JetBrains Mono", monospace; font-size: 0.75rem; font-weight: 600; }
 .summary-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border-bottom: 1px solid var(--border-color);
 }
 .summary-card { padding: 1rem 1.25rem; border-right: 1px solid var(--border-color); }
@@ -275,7 +239,6 @@ onUnmounted(() => events?.close());
 .queue-section + .queue-section { border-top: 1px solid var(--border-color); }
 .section-header { display: flex; align-items: center; gap: 0.6rem; padding: 0.875rem 1.25rem; background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); }
 .section-header h4 { font-size: 0.9rem; }
-.called-section .section-header h4 { color: var(--accent-warning); }
 .settings-panel { position: sticky; top: 1.5rem; }
 .settings-body { padding-top: 0; padding-bottom: 0; }
 .rank-select { width: 8rem; }
@@ -289,9 +252,6 @@ onUnmounted(() => events?.close());
   .settings-panel { position: static; }
 }
 @media (max-width: 640px) {
-  .summary-grid { grid-template-columns: repeat(2, 1fr); }
-  .summary-card:nth-child(2) { border-right: 0; }
-  .summary-card:nth-child(-n + 2) { border-bottom: 1px solid var(--border-color); }
   .row-actions { flex-wrap: wrap; }
   .top-actions { align-items: stretch; flex-direction: column; }
   .year-label { margin-left: 0; }

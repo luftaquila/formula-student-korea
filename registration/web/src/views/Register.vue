@@ -86,9 +86,7 @@ async function submit() {
     return;
   }
   if (team.value.queueStatus) {
-    error.value = team.value.queueStatus === "called"
-      ? "이미 호출된 엔트리입니다. 등록 데스크로 오세요."
-      : "이미 대기 중인 엔트리입니다.";
+    error.value = "이미 대기 중인 엔트리입니다.";
     return;
   }
   if (!/^010\d{8}$/.test(phone.value.replace(/\D/g, ""))) {
@@ -203,7 +201,7 @@ onUnmounted(() => {
                 <strong>{{ team.name }}</strong>
               </div>
               <span v-if="team.queueStatus" class="badge badge-warning">
-                {{ team.queueStatus === "called" ? "이미 호출됨" : "이미 대기 중" }}
+                이미 대기 중
               </span>
               <span v-else class="badge badge-success">확인됨</span>
             </template>
@@ -224,7 +222,7 @@ onUnmounted(() => {
             <span>
               <strong>개인정보 수집·이용 동의 (필수)</strong>
               <small>항목: 엔트리 번호·휴대전화번호</small>
-              <small>목적: 등록 대기·순번 조회·호출 안내</small>
+              <small>목적: 등록 대기·순번 조회·사전 순번 안내</small>
               <small>보유: 운영 이력과 함께 별도 삭제 전까지 보관</small>
               <small>미동의 시 등록 대기 신청 불가</small>
             </span>

@@ -20,7 +20,7 @@ async function clearActiveQueue(request) {
   const queue = await registrationRequest(request, "official", "GET", `/queue?year=${YEAR}`);
   if (!queue.ok()) return;
   const body = await queue.json();
-  for (const row of [...body.waiting, ...body.called]) {
+  for (const row of body.waiting) {
     const response = await registrationRequest(request, "official", "POST", `/queue/${row.id}/cancel`);
     expect([200, 409]).toContain(response.status());
   }
@@ -100,17 +100,9 @@ test.describe("Registration queue", () => {
       const waitingRow = officialPage.locator("tbody tr").filter({ hasText: "PNU Racing" });
       await expect(waitingRow).toContainText("010-2468-1357");
 
-      const called = officialPage.waitForResponse((response) =>
-        response.url().includes(`${PREFIX}/queue/`) && response.url().endsWith("/call"));
-      await waitingRow.getByRole("button", { name: "호출", exact: true }).click();
-      expect((await called).status()).toBe(200);
-      await expect(publicPage.locator(".result-card")).toContainText("호출됨");
-      await expect(publicPage.getByText("등록 차례입니다")).toBeVisible();
-
-      const calledRow = officialPage.locator("tbody tr").filter({ hasText: "PNU Racing" });
       const completed = officialPage.waitForResponse((response) =>
         response.url().includes(`${PREFIX}/queue/`) && response.url().endsWith("/done"));
-      await calledRow.getByRole("button", { name: "완료", exact: true }).click();
+      await waitingRow.getByRole("button", { name: "완료", exact: true }).click();
       expect((await completed).status()).toBe(200);
       await expect(officialPage.locator(".summary-card").filter({ hasText: "오늘 완료" })).toContainText(/[1-9]\d*/);
     } finally {

@@ -82,3 +82,13 @@ test("registration public screens expose only the total wait instead of other ca
   assert.match(markup, /전체 대기/);
   assert.doesNotMatch(markup, /현재 호출된 엔트리가 없습니다|호출된 엔트리|status\.called/);
 });
+
+test("registration operations use a single-step completion flow without call state", async () => {
+  const manage = await readRegistrationSource("src/views/Manage.vue");
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+  const api = await readRegistrationSource("src/api.js");
+
+  assert.match(templateOf(manage), />완료<\/button>/);
+  assert.doesNotMatch(`${templateOf(manage)}\n${templateOf(lookup)}`, /호출 중|>호출<|바로 완료|호출됨|등록 차례입니다/);
+  assert.doesNotMatch(api, /callRegistration|\/call/);
+});

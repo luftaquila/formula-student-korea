@@ -147,20 +147,14 @@ onUnmounted(() => events?.close());
         <div class="card-body result-body">
           <template v-if="result">
             <div class="result-meta">
-              <span class="badge" :class="result.status === 'called' ? 'badge-warning' : 'badge-primary'">
-                {{ result.status === "called" ? "호출됨" : "대기 중" }}
-              </span>
+              <span class="badge badge-primary">대기 중</span>
               <span>{{ result.university }} · {{ result.name }}</span>
             </div>
-            <div v-if="result.status === 'waiting'" class="rank-block">
+            <div class="rank-block">
               <strong class="mono">{{ result.position }}</strong>
               <span>번째</span>
               <p v-if="ahead">앞에 {{ ahead }}팀이 기다리고 있습니다.</p>
               <p v-else>다음 차례입니다. 등록 데스크 근처에서 대기하세요.</p>
-            </div>
-            <div v-else class="called-block">
-              <strong>등록 차례입니다</strong>
-              <p>등록 데스크로 와주세요.</p>
             </div>
             <dl class="result-details">
               <div><dt>엔트리</dt><dd class="mono">{{ result.number }}번</dd></div>
@@ -203,13 +197,10 @@ onUnmounted(() => events?.close());
 .result-body { display: flex; min-height: 15.5rem; flex-direction: column; justify-content: center; gap: 1rem; }
 .result-meta { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0.5rem; color: var(--text-secondary); font-size: 0.875rem; }
 .result-placeholder { color: var(--text-tertiary); font-family: "JetBrains Mono", monospace; font-size: 3rem; text-align: center; }
-.rank-block,
-.called-block { text-align: center; }
+.rank-block { text-align: center; }
 .rank-block strong { font-size: 3.3rem; line-height: 1; color: var(--accent-primary); }
 .rank-block > span { margin-left: 0.3rem; font-size: 1.1rem; font-weight: 600; }
-.rank-block p,
-.called-block p { margin-top: 0.65rem; color: var(--text-secondary); }
-.called-block strong { font-size: 1.35rem; color: var(--accent-warning); }
+.rank-block p { margin-top: 0.65rem; color: var(--text-secondary); }
 .result-details { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
 .result-details div { text-align: center; }
 .result-details dt { color: var(--text-secondary); font-size: 0.75rem; }
