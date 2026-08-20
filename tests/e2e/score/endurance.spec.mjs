@@ -90,6 +90,99 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 3, ["driver1_time"]);
   });
 
+  test("supports keyboard confirmation and discards keyboard navigation without confirmation", async ({ page }) => {
+    await clearFields(page, 3, ["driver1_time", "driver1_start_delay", "driver1_cones"]);
+
+    const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "성균관대학교" });
+    const timeInput = row.locator("input.time-input").first();
+    const timeConfirm = timeInput.locator("xpath=..").locator("button.confirm-input-btn");
+    await timeInput.click();
+    await timeInput.fill("6:00.000");
+    await timeInput.press("Enter");
+    await expect(timeInput).toBeFocused();
+    await expect(timeConfirm).toBeVisible();
+
+    let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    let data = await response.json();
+    expect(data[3]?.driver1_time ?? null).toBeNull();
+
+    await timeInput.press("Tab");
+    await expect(timeConfirm).toBeFocused();
+    const saved = page.waitForResponse(
+      (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
+    );
+    await timeConfirm.press("Enter");
+    await saved;
+    await expect(timeConfirm).toHaveCount(0);
+
+    response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    data = await response.json();
+    expect(data[3]?.driver1_time).toBe(360000);
+
+    const delayInput = row.locator("input.num-input").nth(0);
+    const delayConfirm = delayInput.locator("xpath=..").locator("button.confirm-input-btn");
+    await delayInput.click();
+    await delayInput.fill("7");
+    await delayInput.press("ArrowRight");
+    await expect(delayConfirm).toHaveCount(0);
+    response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    data = await response.json();
+    expect(data[3]?.driver1_start_delay ?? null).toBeNull();
+
+    const conesInput = row.locator("input.num-input").nth(1);
+    const conesConfirm = conesInput.locator("xpath=..").locator("button.confirm-input-btn");
+    await conesInput.fill("8");
+    await conesInput.press("Tab");
+    await expect(conesConfirm).toBeFocused();
+    await conesConfirm.press("Tab");
+    await expect(conesConfirm).toHaveCount(0);
+    response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    data = await response.json();
+    expect(data[3]?.driver1_cones ?? null).toBeNull();
+
+    await clearFields(page, 3, ["driver1_time", "driver1_start_delay", "driver1_cones"]);
+  });
+
+  test("saves endurance distance only through its confirmation button", async ({ page }) => {
+    const initialResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
+    const initialScore = await initialResponse.json();
+    const initialDistance = initialScore.settings?.["에너지"]?.distance_km ?? null;
+    const changedDistance = initialDistance === 21 ? 22 : 21;
+    const input = page.locator("input.config-input");
+
+    await input.click();
+    await input.fill(String(changedDistance));
+    const confirm = input.locator("xpath=..").locator("button.confirm-input-btn");
+    await expect(confirm).toBeVisible();
+    await page.locator(".card-header h3").click();
+    await expect(confirm).toHaveCount(0);
+    await expect(input).toHaveValue(initialDistance == null ? "" : String(initialDistance));
+
+    let response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
+    let score = await response.json();
+    expect(score.settings?.["에너지"]?.distance_km ?? null).toBe(initialDistance);
+
+    await input.click();
+    await input.fill(String(changedDistance));
+    await input.press("Tab");
+    await expect(confirm).toBeFocused();
+    const saved = page.waitForResponse(
+      (res) => res.url().includes("/competition/api/v1/score/score/setting") && res.request().method() === "PUT" && res.status() === 200,
+    );
+    await confirm.press("Enter");
+    await saved;
+    await expect(confirm).toHaveCount(0);
+
+    response = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
+    score = await response.json();
+    expect(score.settings?.["에너지"]?.distance_km).toBe(changedDistance);
+
+    const cleanup = await page.request.put("/competition/api/v1/score/score/setting", {
+      data: { year: YEAR, event_type: "에너지", setting_key: "distance_km", value: initialDistance },
+    });
+    expect(cleanup.ok()).toBeTruthy();
+  });
+
   test("filters endurance rows by vehicle type", async ({ page }) => {
     const typeFilterGroup = page.locator(".type-filter-group");
     await expect(typeFilterGroup).toBeVisible();

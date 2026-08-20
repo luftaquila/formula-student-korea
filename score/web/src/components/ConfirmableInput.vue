@@ -17,9 +17,25 @@ defineProps({
 
 const emit = defineEmits(["input", "focus", "blur", "confirm"]);
 const inputRef = ref(null);
+const confirmRef = ref(null);
+let confirming = false;
+
+function handleInputBlur(event) {
+  if (event.relatedTarget === confirmRef.value) return;
+  emit("blur", event);
+}
 
 function confirm() {
+  if (document.activeElement === confirmRef.value) {
+    confirming = true;
+    inputRef.value?.focus({ preventScroll: true });
+    confirming = false;
+  }
   emit("confirm", inputRef.value);
+}
+
+function handleConfirmBlur(event) {
+  if (!confirming) emit("blur", event);
 }
 </script>
 
@@ -37,15 +53,16 @@ function confirm() {
       :placeholder="placeholder"
       @input="emit('input', $event)"
       @focus="emit('focus', $event)"
-      @blur="emit('blur', $event)"
+      @blur="handleInputBlur"
     />
     <button
       v-if="editing"
+      ref="confirmRef"
       type="button"
       class="confirm-input-btn"
-      tabindex="-1"
       :aria-label="confirmLabel"
       @mousedown.prevent
+      @blur="handleConfirmBlur"
       @click="confirm"
     >
       <svg class="confirm-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true">
@@ -154,6 +171,11 @@ function confirm() {
 
 .confirm-input-btn:hover {
   filter: brightness(1.08);
+}
+
+.confirm-input-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
 }
 
 .confirm-check-icon {

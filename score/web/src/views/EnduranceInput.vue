@@ -79,6 +79,11 @@ const entryList = computed(() => {
   return list.sort((a, b) => a.num - b.num);
 });
 
+watch(entryList, (list) => {
+  const editingNum = focusedCell.value?.num;
+  if (editingNum != null && !list.some(({ num }) => num === editingNum)) handleCellBlur();
+}, { flush: "sync" });
+
 onMounted(async () => {
   try {
     availableYears.value = await fetchEntryYears();

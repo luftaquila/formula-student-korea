@@ -31,6 +31,9 @@ test.describe("Score endurance real-time sync via SSE", () => {
           data: { year: YEAR, team_num: 32, field, value: null },
         });
       }
+      await page.request.put(`/competition/api/v1/score/score/endurance`, {
+        data: { year: YEAR, team_num: 32, field: "qualified", value: 0 },
+      });
     } catch { /* ignore */ }
     await context.close();
   });
@@ -115,8 +118,9 @@ test.describe("Score endurance real-time sync via SSE", () => {
     const conesInput2 = row2.locator("input.num-input").nth(1); // driver1_cones
     await expect(conesInput2).toHaveValue("3", { timeout: 10000 });
 
-    // In context 2: focus on driver1_cones (triggers focusedCell) but do NOT type
+    // In context 2: type an unconfirmed value while the same field changes remotely.
     await conesInput2.click();
+    await conesInput2.fill("8");
     await expect(conesInput2).toBeFocused();
 
     // From context 1: set driver1_cones = 9 via API (SSE will be deferred in context 2)
@@ -131,13 +135,13 @@ test.describe("Score endurance real-time sync via SSE", () => {
     });
     await expect(markerInput2).toHaveValue("47", { timeout: 10000 });
 
-    // Context 2's focused input should still show "3" (deferred, not updated to 9)
-    await expect(conesInput2).toHaveValue("3");
+    // Context 2's unconfirmed input should still show "8" (deferred, not updated to 9)
+    await expect(conesInput2).toHaveValue("8");
 
     // Blur in context 2 to apply deferred update
     await conesInput2.blur();
 
-    // After blur, the deferred SSE value (9) should apply since user didn't edit
+    // After blur, the unconfirmed edit is discarded and the deferred SSE value applies.
     await expect(conesInput2).toHaveValue("9", { timeout: 5000 });
 
     // Cleanup: clear values
@@ -149,5 +153,52 @@ test.describe("Score endurance real-time sync via SSE", () => {
 
     await context1.close();
     await context2.close();
+  });
+
+  test("discards an unconfirmed edit when the qualification filter removes its row", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
+    const page = await context.newPage();
+    for (const [field, value] of [["driver1_cones", 4], ["qualified", 1]]) {
+      const response = await page.request.put("/competition/api/v1/score/score/endurance", {
+        data: { year: YEAR, team_num: 32, field, value },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+
+    const sse = page.waitForResponse((res) => res.url().includes("/competition/api/v1/score/score/events"));
+    await page.goto("/score/endurance");
+    await waitForPageReady(page);
+    await sse;
+
+    const filter = page.locator("label.filter-checkbox").filter({ hasText: "내구 진출팀" }).locator("input");
+    await filter.check();
+    const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "중앙대학교" });
+    const conesInput = row.locator("input.num-input").nth(1);
+    await expect(conesInput).toHaveValue("4");
+    await conesInput.click();
+    await conesInput.fill("8");
+    await expect(conesInput.locator("xpath=..").locator("button.confirm-input-btn")).toBeVisible();
+
+    let response = await page.request.put("/competition/api/v1/score/score/endurance", {
+      data: { year: YEAR, team_num: 32, field: "qualified", value: 0 },
+    });
+    expect(response.ok()).toBeTruthy();
+    await expect(row).toHaveCount(0);
+
+    response = await page.request.put("/competition/api/v1/score/score/endurance", {
+      data: { year: YEAR, team_num: 32, field: "qualified", value: 1 },
+    });
+    expect(response.ok()).toBeTruthy();
+    await expect(row).toBeVisible();
+    await expect(row.locator("input.num-input").nth(1)).toHaveValue("4");
+    await expect(row.locator("button.confirm-input-btn")).toHaveCount(0);
+
+    for (const [field, value] of [["driver1_cones", null], ["qualified", 0]]) {
+      response = await page.request.put("/competition/api/v1/score/score/endurance", {
+        data: { year: YEAR, team_num: 32, field, value },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+    await context.close();
   });
 });

@@ -21,14 +21,15 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 125,
-  sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
+  sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
 // to apply its idempotent schema additions. Accept only the exact immediately
-// preceding contract here; createScoreApp then adds score_endurance.qualified
-// before the process starts serving requests. Any other schema still fails
-// closed, and the next validation must match the current contract.
+// preceding contracts here; createScoreApp then adds the qualified column or
+// rebuilds the endurance table with its 0/1 constraint before serving. Any
+// other schema still fails closed, and the next validation must match the
+// current contract.
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
   Object.freeze({
     objectCount: 125,
@@ -36,6 +37,11 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({
       score_endurance: Object.freeze(["qualified"]),
     }),
+  }),
+  Object.freeze({
+    objectCount: 125,
+    sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
+    allowedMissingColumns: Object.freeze({}),
   }),
 ]);
 
@@ -110,6 +116,15 @@ export function assertCompetitionSchema(db) {
     "SELECT type FROM sqlite_master WHERE name = 'competition_inactive_team'",
   ).get();
   if (inactiveTeamView?.type !== "view") incompatible.push("competition_inactive_team<view:missing>");
+
+  if (columns(db, "score_endurance").includes("qualified")) {
+    const invalidQualification = db.prepare(`
+      SELECT 1 FROM score_endurance
+      WHERE qualified IS NULL OR qualified NOT IN (0, 1)
+      LIMIT 1
+    `).get();
+    if (invalidQualification) incompatible.push("score_endurance<qualified-domain>");
+  }
 
   const scheduledForeignKeys = db.pragma("foreign_key_list('scheduled_notification')");
   if (!scheduledForeignKeys.some((foreignKey) => foreignKey.table === "session" && foreignKey.from === "session_id")) {

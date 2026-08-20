@@ -513,6 +513,30 @@ describe('PUT /api/score/endurance', () => {
     });
     assert.equal(invalid.status, 400);
 
+    for (const value of [null, '']) {
+      const empty = await client.put('/api/score/endurance', {
+        body: { year: 2026, team_num: 1, field: 'qualified', value },
+        cookie: adminCookie,
+      });
+      assert.equal(empty.status, 400);
+    }
+
+    assert.equal(
+      db.prepare('SELECT qualified FROM score_endurance WHERE year = 2026 AND team_num = 1').get().qualified,
+      1,
+    );
+
+    const warnings = db.prepare(`
+      SELECT detail FROM logs
+      WHERE level = 'warn' AND action = 'endurance.update' AND target = '#1'
+      ORDER BY id DESC LIMIT 3
+    `).all().map(({ detail }) => JSON.parse(detail));
+    assert.deepEqual(warnings.map(({ reason, field, requested }) => ({ reason, field, requested })), [
+      { reason: 'invalid_toggle_value', field: 'qualified', requested: '' },
+      { reason: 'invalid_toggle_value', field: 'qualified', requested: null },
+      { reason: 'invalid_toggle_value', field: 'qualified', requested: 2 },
+    ]);
+
     const audit = db.prepare(`
       SELECT detail FROM logs
       WHERE level = 'info' AND action = 'endurance.update' AND target = '#1'

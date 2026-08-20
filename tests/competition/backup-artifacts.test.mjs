@@ -160,6 +160,32 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function removeQualifiedCheckConstraint(dbPath) {
+  const writer = new Database(dbPath);
+  const tableSql = writer.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'score_endurance'",
+  ).get().sql;
+  const unconstrainedSql = tableSql.replace(" CHECK(qualified IN (0, 1))", "");
+  assert.notEqual(unconstrainedSql, tableSql);
+  const columns = writer.pragma("table_info('score_endurance')").map(({ name }) => name).join(", ");
+  const dependentObjects = writer.prepare(`
+    SELECT sql FROM sqlite_master
+    WHERE tbl_name = 'score_endurance' AND type IN ('index', 'trigger') AND sql IS NOT NULL
+    ORDER BY type, name
+  `).all().map(({ sql }) => sql);
+  writer.transaction(() => {
+    writer.exec("ALTER TABLE score_endurance RENAME TO score_endurance_with_qualified_check");
+    writer.exec(unconstrainedSql);
+    writer.exec(`
+      INSERT INTO score_endurance (${columns})
+      SELECT ${columns} FROM score_endurance_with_qualified_check;
+      DROP TABLE score_endurance_with_qualified_check;
+    `);
+    for (const sql of dependentObjects) writer.exec(sql);
+  })();
+  writer.close();
+}
+
 function addReferencedUpload(dbPath, uploads) {
   const created = createCompetitionApp({
     dbPath,
@@ -739,6 +765,94 @@ describe("Competition backup/restore artifact validation", () => {
     upgraded.close();
     const upgradedResult = validateDatabase(dbPath);
     assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
+  });
+
+  it("accepts the exact unconstrained qualification schema and adds the 0/1 check at runtime", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-qualified-check-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    const seeded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    seeded.teams.createTeam(CURRENT_YEAR, {
+      number: 1,
+      university: "Upgrade University",
+      name: "Upgrade Team",
+    });
+    seeded.db.prepare("INSERT INTO score_endurance (year, team_num, qualified) VALUES (?, 1, 1)")
+      .run(CURRENT_YEAR);
+    seeded.close();
+    removeQualifiedCheckConstraint(dbPath);
+
+    const intermediate = new Database(dbPath, { readonly: true });
+    assert.equal(
+      competitionSchemaContractDigest(captureCompetitionSchemaContract(intermediate)),
+      "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
+    );
+    intermediate.close();
+    const intermediateResult = validateDatabase(dbPath);
+    assert.equal(intermediateResult.status, 0, intermediateResult.stderr);
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    const tableSql = upgraded.db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'score_endurance'",
+    ).get().sql;
+    assert.match(tableSql, /qualified INTEGER NOT NULL DEFAULT 0 CHECK\(qualified IN \(0, 1\)\)/);
+    assert.equal(
+      upgraded.db.prepare("SELECT qualified FROM score_endurance WHERE year = ? AND team_num = 1")
+        .get(CURRENT_YEAR).qualified,
+      1,
+    );
+    assert.throws(
+      () => upgraded.db.prepare("UPDATE score_endurance SET qualified = 2 WHERE year = ? AND team_num = 1")
+        .run(CURRENT_YEAR),
+      /CHECK constraint failed/,
+    );
+    upgraded.close();
+
+    const upgradedResult = validateDatabase(dbPath);
+    assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
+  });
+
+  it("rejects an artifact with an out-of-domain endurance qualification value", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-qualified-domain-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+
+    const seeded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    seeded.teams.createTeam(CURRENT_YEAR, {
+      number: 1,
+      university: "Qualification University",
+      name: "Qualification Team",
+    });
+    seeded.close();
+
+    removeQualifiedCheckConstraint(dbPath);
+    const corrupt = new Database(dbPath);
+    corrupt.prepare("INSERT INTO score_endurance (year, team_num, qualified) VALUES (?, 1, 2)")
+      .run(CURRENT_YEAR);
+    corrupt.close();
+
+    const result = validateDatabase(dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /score_endurance<qualified-domain>/);
   });
 
   it("rejects a missing non-sentinel runtime column and removed roster-state schema", () => {
