@@ -79,7 +79,7 @@ test("registration public screens expose only the total wait instead of other ca
   const register = await readRegistrationSource("src/views/Register.vue");
   const markup = `${templateOf(lookup)}\n${templateOf(register)}`;
 
-  assert.match(templateOf(lookup), /class="result-total">\/ <span class="mono">\{\{ status\?\.waiting \?\? "-" \}\}<\/span>팀/);
+  assert.match(templateOf(lookup), /class="result-total">\/ \{\{ status\?\.waiting \?\? "-" \}\}팀/);
   assert.match(templateOf(register), /status\.waiting/);
   assert.doesNotMatch(markup, /현재 호출된 엔트리가 없습니다|호출된 엔트리|status\.called/);
 });
@@ -88,7 +88,7 @@ test("registration lookup shows the total beside the personal rank without a dup
   const lookup = await readRegistrationSource("src/views/Lookup.vue");
   const markup = templateOf(lookup);
 
-  assert.match(markup, /class="rank-block"[\s\S]*result\.position[\s\S]*class="result-total"/);
+  assert.match(markup, /class="result-row"[\s\S]*result\.position[\s\S]*class="result-total"/);
   assert.doesNotMatch(markup, /queue-total/);
   assert.doesNotMatch(lookup, /\.queue-total/);
 });

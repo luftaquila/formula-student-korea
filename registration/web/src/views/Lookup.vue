@@ -138,6 +138,10 @@ onUnmounted(() => events?.close());
             <div v-else class="team-badge placeholder">&nbsp;</div>
           </div>
           <button class="btn btn-primary btn-block" type="submit" :disabled="busy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" aria-hidden="true">
+              <circle cx="11" cy="11" r="8" />
+              <path d="m21 21-4.35-4.35" />
+            </svg>
             {{ busy ? "조회 중…" : "내 순번 조회" }}
           </button>
         </form>
@@ -148,10 +152,12 @@ onUnmounted(() => events?.close());
         <div class="card-body result-body">
           <p v-if="notFound" class="result-message">대기 중인 등록 내역이 없습니다.</p>
           <p v-else-if="error" class="result-message">{{ error }}</p>
-          <div v-else class="rank-block" :class="{ placeholder: !result }">
-            <strong class="mono">{{ result ? result.position : "-" }}</strong>
-            <span v-if="result">번째</span>
-            <span class="result-total">/ <span class="mono">{{ status?.waiting ?? "-" }}</span>팀</span>
+          <div v-else class="result-display">
+            <div class="result-row" :class="{ placeholder: !result }">
+              <strong class="result-rank">{{ result ? result.position : "-" }}</strong>
+              <span v-if="result" class="result-suffix">번째</span>
+              <span class="result-total">/ {{ status?.waiting ?? "-" }}팀</span>
+            </div>
           </div>
         </div>
       </section>
@@ -173,11 +179,13 @@ onUnmounted(() => events?.close());
 .team-badge.placeholder { background: transparent; border-color: transparent; visibility: hidden; }
 .btn-block { width: 100%; margin-top: 1rem; }
 .result-card { display: flex; flex-direction: column; }
-.result-body { display: flex; flex: 1; min-height: 9rem; flex-direction: column; justify-content: center; gap: 1rem; }
+.result-body { display: flex; flex: 1; min-height: 9rem; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; }
 .result-message { color: var(--accent-danger); font-weight: 600; text-align: center; }
-.rank-block { text-align: center; }
-.rank-block strong { font-size: 3.3rem; line-height: 1; color: var(--accent-primary); }
-.rank-block > span { margin-left: 0.3rem; font-size: 1.1rem; font-weight: 600; }
-.rank-block.placeholder strong { color: var(--text-tertiary); }
-.result-total { color: var(--text-secondary); font-weight: 500; }
+.result-display { display: flex; flex-direction: column; align-items: center; gap: 0.75rem; }
+.result-row { display: flex; align-items: baseline; gap: 0.3rem; }
+.result-name { font-size: 1.1rem; font-weight: 600; }
+.result-rank { color: var(--accent-primary); font-family: "JetBrains Mono", monospace; font-size: 2.5rem; font-variant-numeric: tabular-nums; line-height: 1; }
+.result-row.placeholder .result-rank { color: var(--text-tertiary); }
+.result-suffix { font-size: 1.1rem; font-weight: 600; }
+.result-total { color: var(--text-secondary); font-size: 1.1rem; font-weight: 500; }
 </style>

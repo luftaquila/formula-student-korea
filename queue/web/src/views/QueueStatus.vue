@@ -166,39 +166,37 @@ function clearState(message) {
           <h3>🔍 대기 순번 조회</h3>
         </div>
         <div class="card-body">
-          <div class="form-group">
-            <div class="input-row">
-              <div class="input-col">
-                <label class="form-label">엔트리</label>
-                <input
-                  v-model="entryNum"
-                  type="number"
-                  class="form-input entry-input"
-                  placeholder="번호"
-                  @input="updateTeamName"
-                />
-              </div>
-              <div class="input-col flex-1">
-                <label class="form-label">전화번호</label>
-                <input
-                  :value="phone"
-                  type="tel"
-                  class="form-input"
-                  placeholder="010-0000-0000"
-                  maxlength="13"
-                  @input="onPhoneInput"
-                />
-              </div>
+          <div class="input-row">
+            <div class="input-col">
+              <label class="form-label">엔트리</label>
+              <input
+                v-model="entryNum"
+                type="number"
+                class="form-input entry-input"
+                placeholder="번호"
+                @input="updateTeamName"
+              />
             </div>
-            <div class="team-display">
-              <div v-if="teamName" class="team-badge">{{ teamName }}</div>
-              <div v-else-if="entryNum && !entries[entryNum]" class="team-badge error">존재하지 않는 엔트리</div>
-              <div v-else class="team-badge placeholder">&nbsp;</div>
+            <div class="input-col flex-1">
+              <label class="form-label">전화번호</label>
+              <input
+                :value="phone"
+                type="tel"
+                class="form-input"
+                placeholder="010-0000-0000"
+                maxlength="13"
+                @input="onPhoneInput"
+              />
             </div>
+          </div>
+          <div class="team-display">
+            <div v-if="teamName" class="team-badge">{{ teamName }}</div>
+            <div v-else-if="entryNum && !entries[entryNum]" class="team-badge error">존재하지 않는 엔트리</div>
+            <div v-else class="team-badge placeholder">&nbsp;</div>
           </div>
 
           <button class="btn btn-primary btn-block" @click="query">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" aria-hidden="true">
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.35-4.35" />
             </svg>
@@ -216,13 +214,13 @@ function clearState(message) {
           <div class="result-display">
             <template v-if="queueEntries.length > 0">
               <div v-for="(e, i) in queueEntries" :key="i" class="result-row">
-                <span>{{ e.name }}</span>
-                <span class="result-rank">{{ e.rank }}</span>
-                <span>번</span>
+                <span class="result-name">{{ e.name }}</span>
+                <strong class="result-rank">{{ e.rank }}</strong>
+                <span class="result-suffix">번</span>
                 <span v-if="e.total !== null" class="result-total">/ {{ e.total }}팀</span>
               </div>
             </template>
-            <span v-else>-</span>
+            <div v-else class="result-row placeholder"><strong class="result-rank">-</strong></div>
           </div>
         </div>
       </div>
@@ -374,38 +372,53 @@ function clearState(message) {
 }
 
 .result-body {
-  flex: 1;
   display: flex;
+  flex: 1;
+  min-height: 9rem;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 0.75rem 1rem;
+  gap: 1rem;
 }
 
 .result-display {
   display: flex;
   flex-direction: column;
   align-items: center;
-  font-size: 1.25rem;
-  font-weight: 600;
-  gap: 0.25rem;
+  gap: 0.75rem;
 }
 
 .result-row {
   display: flex;
   align-items: baseline;
-  justify-content: center;
+  gap: 0.3rem;
+}
+
+.result-name {
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .result-rank {
-  font-family: "JetBrains Mono", monospace;
-  font-weight: 700;
   color: var(--accent-primary);
-  margin-left: 0.5rem;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 2.5rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.result-row.placeholder .result-rank {
+  color: var(--text-tertiary);
+}
+
+.result-suffix {
+  font-size: 1.1rem;
+  font-weight: 600;
 }
 
 .result-total {
-  margin-left: 0.4rem;
   color: var(--text-secondary);
+  font-size: 1.1rem;
   font-weight: 500;
 }
 
