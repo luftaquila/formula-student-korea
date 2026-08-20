@@ -21,7 +21,7 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 125,
-  sha256: "1336208794493a2d46d703cbaa76ecd68f71f1fe6e1081817aef02aaf29a2554",
+  sha256: "6a39762baa8d6e2142ec4b0864b31dff4d96d26f7f1a85e785a6b8cf3199e581",
 });
 
 export function competitionSchemaContractDigest(contract) {
@@ -35,6 +35,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
   record: ["name", "num", "univ", "team", "type", "result", "team_id"],
   score_manual: ["year", "team_num", "score_type", "team_id"],
+  score_endurance: ["year", "team_num", "qualified", "team_id"],
   session: ["id", "year"],
   submission: ["id", "session_id", "team_num", "storage_dir", "team_id"],
   submission_file: ["id", "submission_id", "stored_name"],

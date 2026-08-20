@@ -116,12 +116,14 @@ db.transaction(() => {
     fuel_extra REAL,
     electric_net_energy REAL,
     energy_dsq INTEGER NOT NULL DEFAULT 0,
+    qualified INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (year, team_num)
   )`);
   addColumn(db, "score_endurance", "fuel_consumed REAL");
   addColumn(db, "score_endurance", "fuel_extra REAL");
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "score_endurance", "qualified INTEGER NOT NULL DEFAULT 0");
 })();
 
 const ENDURANCE_SQL = {
@@ -141,6 +143,7 @@ const ENDURANCE_SQL = {
   fuel_extra: "UPDATE score_endurance SET fuel_extra = ? WHERE year = ? AND team_num = ?",
   electric_net_energy: "UPDATE score_endurance SET electric_net_energy = ? WHERE year = ? AND team_num = ?",
   energy_dsq: "UPDATE score_endurance SET energy_dsq = ? WHERE year = ? AND team_num = ?",
+  qualified: "UPDATE score_endurance SET qualified = ? WHERE year = ? AND team_num = ?",
 };
 
 // inter-service 실패 로그 폭주 방지: action+year별 최소 60초 간격 throttle
@@ -837,7 +840,7 @@ app.put("/api/score/endurance", (req, res) => {
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
     "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
-    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq",
+    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "qualified",
   ];
   if (!allowedFields.includes(field)) {
     return res.status(400).send("허용되지 않는 필드입니다.");
@@ -851,8 +854,8 @@ app.put("/api/score/endurance", (req, res) => {
   if (!textFields.has(field) && dbValue !== null && !Number.isFinite(dbValue)) {
     return res.status(400).send("유효하지 않은 값입니다.");
   }
-  if (field === "energy_dsq" && dbValue !== null && ![0, 1].includes(dbValue)) {
-    return res.status(400).send("에너지 실격 값은 0 또는 1이어야 합니다.");
+  if (["energy_dsq", "qualified"].includes(field) && dbValue !== null && ![0, 1].includes(dbValue)) {
+    return res.status(400).send("토글 값은 0 또는 1이어야 합니다.");
   }
   if (!textFields.has(field) && field !== "electric_net_energy" && dbValue !== null && dbValue < 0) {
     return res.status(400).send("값은 음수일 수 없습니다.");
@@ -861,19 +864,28 @@ app.put("/api/score/endurance", (req, res) => {
     action: "endurance.update", year: numYear, teamNum: numTeamNum, context: { field },
   })) return;
 
+  let beforeValue = null;
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(numYear, numTeamNum);
+      beforeValue = db.prepare("SELECT * FROM score_endurance WHERE year = ? AND team_num = ?")
+        .get(numYear, numTeamNum)?.[field] ?? null;
       db.prepare(ENDURANCE_SQL[field]).run(dbValue, numYear, numTeamNum);
     })();
   });
 
   if (!result.success) {
-    logger.warn(req, "endurance.update", { error: result.internalError || result.error, year: numYear, field }, `#${numTeamNum}`);
+    logger.warn(req, "endurance.update", {
+      error: result.internalError || result.error,
+      year: numYear,
+      field,
+      before: beforeValue,
+      requested: dbValue,
+    }, `#${numTeamNum}`);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "endurance.update", { year: numYear, field, value: dbValue }, `#${numTeamNum}`);
+  logger.log(req, "endurance.update", { year: numYear, field, before: beforeValue, after: dbValue }, `#${numTeamNum}`);
   broadcastEvent("endurance", { year: numYear, team_num: numTeamNum, field, value: dbValue });
 
   res.status(200).send();

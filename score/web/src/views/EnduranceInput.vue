@@ -1,10 +1,11 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
-import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, updateEndurance, updateSetting } from "../api";
+import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, fetchVehicleTypes, updateEndurance, updateSetting } from "../api";
 import { exportTable } from "../composables/exportTable";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import ConfirmableInput from "../components/ConfirmableInput.vue";
 import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { useSSE } from "../composables/useSSE";
@@ -28,6 +29,9 @@ const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
+const typeFilters = ref({});
+const typeColorMap = ref({});
+const showQualifiedOnly = ref(false);
 
 const entries = ref({});
 const endurance = ref({});
@@ -36,6 +40,8 @@ const settings = ref({});
 const energy = ref({ teams: {}, config: {}, references: {} });
 const focusedCell = ref(null); // { num, field }
 const deferredEnduranceUpdate = ref(null);
+const configEditing = ref(false);
+const configEditingValue = ref(null);
 let cellEdited = false;
 // score 스냅샷과 내구 입력 조회는 적용 세대를 따로 관리한다.
 // 부분 score 재조회가 더 최신이어도 진행 중이던 전체 조회의 내구 입력은 안전하게 적용한다.
@@ -44,8 +50,28 @@ let enduranceFetchSeq = 0;
 
 const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
 
+const vehicleTypes = computed(() => {
+  const types = new Set();
+  for (const entry of Object.values(entries.value)) {
+    if (entry.type) types.add(entry.type);
+  }
+  return [...types].sort();
+});
+
+watch(vehicleTypes, (types) => {
+  for (const type of types) {
+    if (!(type in typeFilters.value)) typeFilters.value[type] = true;
+  }
+});
+
 const entryList = computed(() => {
   let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
+  if (vehicleTypes.value.length > 0) {
+    list = list.filter((entry) => !entry.type || typeFilters.value[entry.type] !== false);
+  }
+  if (showQualifiedOnly.value) {
+    list = list.filter((entry) => !!getField(entry.num, "qualified"));
+  }
   if (searchQuery.value) {
     const q = searchQuery.value.toLowerCase();
     list = list.filter(e => String(e.num).includes(q) || (e.univ || "").toLowerCase().includes(q) || (e.team || "").toLowerCase().includes(q));
@@ -71,10 +97,11 @@ async function loadData() {
   const scoreSeq = ++scoreSnapshotSeq;
   const enduranceSeq = ++enduranceFetchSeq;
   try {
-    const [entryData, enduranceData, scoreData] = await Promise.all([
+    const [entryData, enduranceData, scoreData, vehicleTypeData] = await Promise.all([
       fetchEntries(year),
       fetchEndurance(year),
       fetchScore(year),
+      fetchVehicleTypes(year).catch(() => []),
     ]);
     if (selectedYear.value !== year) return;
     if (enduranceSeq === enduranceFetchSeq) endurance.value = enduranceData;
@@ -84,6 +111,7 @@ async function loadData() {
       penalties.value = scoreData.penalties || {};
       settings.value = scoreData.settings || {};
       energy.value = scoreData.energy || { teams: {}, config: {}, references: {} };
+      typeColorMap.value = Object.fromEntries(vehicleTypeData.map((type) => [type.name, type.color]));
     }
   } catch {
     if (selectedYear.value === year && (scoreSeq === scoreSnapshotSeq || enduranceSeq === enduranceFetchSeq)) {
@@ -94,6 +122,8 @@ async function loadData() {
 
 async function onYearChange() {
   clearTimeout(scoreRefreshTimer);
+  cancelConfigEdit();
+  handleCellBlur();
   loading.value = true;
   await loadData();
   loading.value = false;
@@ -194,8 +224,7 @@ function applyDeferredCell(prevCell) {
 
 function handleCellBlur() {
   const prev = focusedCell.value;
-  // 저장(@blur의 save*Field)이 먼저 끝난 뒤에 버퍼를 비운다. 여기서 비우면 이어지는
-  // 리렌더링이 다시 스토어 값을 쓰는데, 그때는 이미 저장된 값이라 문제되지 않는다.
+  // 확인 없이 포커스를 옮기면 편집 버퍼만 버리고 저장된 값을 다시 표시한다.
   editingValue.value = null;
   if (prev) applyDeferredCell(prev);
   focusedCell.value = null;
@@ -204,8 +233,7 @@ function handleCellBlur() {
 // 편집 중인 칸의 화면 값. Vue 3는 `value` prop만 특수 취급해서, 바인딩 결과가 그대로여도
 // 리렌더링마다 DOM에 다시 쓴다(runtime-core patchProps: `if ("value" in newProps)` 무조건 호출
 // → runtime-dom이 `el.value !== newValue`로 살아있는 DOM 값과 비교해 덮어씀). 그래서 경기 중
-// SSE로 다른 팀 기록이 들어오기만 해도 운영자가 타이핑 중이던 값이 스토어 값으로 되돌아갔고,
-// blur 시점엔 변경이 없어(`saveTimeField`의 `parsed === oldValue`) 저장 요청조차 나가지 않았다.
+// SSE로 다른 팀 기록이 들어오기만 해도 운영자가 타이핑 중이던 값이 스토어 값으로 되돌아갔다.
 // 실패도 에러도 아니라 입력이 조용히 사라졌다.
 //
 // focusedCell의 defer 가드로는 못 막는다. 그건 같은 칸의 업데이트만 미루는데, 리렌더링은
@@ -228,7 +256,23 @@ function handleCellInput(num, field, event) {
 function handleCellFocus(num, field, event) {
   focusedCell.value = { num, field };
   editingValue.value = event.target.value;
+  cellEdited = false;
   event.target.select();
+}
+
+function handleConfigFocus(event) {
+  configEditing.value = true;
+  configEditingValue.value = event.target.value;
+  event.target.select();
+}
+
+function handleConfigInput(event) {
+  if (configEditing.value) configEditingValue.value = event.target.value;
+}
+
+function cancelConfigEdit() {
+  configEditing.value = false;
+  configEditingValue.value = null;
 }
 
 // Safety net watcher
@@ -298,6 +342,10 @@ function getEnergySetting(key) {
   return settings.value["에너지"]?.[key] ?? null;
 }
 
+function getTypeColor(type) {
+  return typeColorMap.value[type] || "blue";
+}
+
 function getFuelUnit() {
   const factor = Number(getEnergySetting("fuel_factor"));
   if (factor === 2.95) return "kg";
@@ -314,23 +362,32 @@ function energyResultLabel(num) {
 }
 
 async function saveEnergySetting(key, rawValue) {
-  if (isReadOnly.value) return;
+  if (isReadOnly.value) return false;
   const value = rawValue === "" ? null : Number(rawValue);
   if (value !== null && (!Number.isFinite(value) || value <= 0)) {
     error("설정 값은 0보다 커야 합니다.");
-    return;
+    return false;
   }
   const oldValue = getEnergySetting(key);
-  if (oldValue === value) return;
+  if (oldValue === value) return true;
   if (!settings.value["에너지"]) settings.value["에너지"] = {};
   settings.value["에너지"][key] = value;
   try {
     await updateSetting(selectedYear.value, "에너지", key, value);
     scheduleScoreRefresh();
+    return true;
   } catch {
     settings.value["에너지"][key] = oldValue;
     error("에너지 설정 저장에 실패했습니다.");
+    return false;
   }
+}
+
+async function confirmEnergySetting(input) {
+  const saved = await saveEnergySetting("distance_km", configEditingValue.value ?? "");
+  if (!configEditing.value) return;
+  if (saved) input?.blur();
+  else input?.select();
 }
 
 function isDisabled(num) {
@@ -396,17 +453,20 @@ async function toggleStatus(num, status) {
 }
 
 // 시간 필드 저장
-async function saveTimeField(num, field, e) {
-  const rawValue = e.target.value;
+async function saveTimeField(num, field, input) {
+  const rawValue = editingValue.value ?? input?.value ?? "";
   const parsed = parseTimeInput(rawValue);
   if (parsed === undefined) {
-    e.target.value = formatResult(getField(num, field));
+    input?.select();
     error("시간 형식: M:SS.mmm");
     return;
   }
 
   const oldValue = getField(num, field);
-  if (parsed === oldValue) return;
+  if (parsed === oldValue) {
+    input?.blur();
+    return;
+  }
   cellEdited = true;
 
   if (!endurance.value[num]) endurance.value[num] = {};
@@ -415,23 +475,30 @@ async function saveTimeField(num, field, e) {
   try {
     await updateEndurance(selectedYear.value, num, field, parsed);
     scheduleScoreRefresh();
+    if (isEditing(num, field)) input?.blur();
   } catch {
     endurance.value[num][field] = oldValue;
+    cellEdited = false;
     error("저장에 실패했습니다.");
+    if (isEditing(num, field)) input?.select();
   }
 }
 
 // 숫자 필드 저장
-async function saveNumField(num, field, e, isInteger = false, allowNegative = false) {
-  const rawValue = e.target.value.trim();
+async function saveNumField(num, field, input, isInteger = false, allowNegative = false) {
+  const rawValue = String(editingValue.value ?? input?.value ?? "").trim();
   let newValue = rawValue === "" ? null : Number(rawValue);
   if (newValue !== null && (isNaN(newValue) || (!allowNegative && newValue < 0) || (isInteger && !Number.isInteger(newValue)))) {
-    e.target.value = getField(num, field) ?? "";
+    error(isInteger ? "0 이상의 정수를 입력하세요." : "올바른 숫자를 입력하세요.");
+    input?.select();
     return;
   }
 
   const oldValue = getField(num, field);
-  if (newValue === oldValue) return;
+  if (newValue === oldValue) {
+    input?.blur();
+    return;
+  }
   cellEdited = true;
 
   if (!endurance.value[num]) endurance.value[num] = {};
@@ -440,9 +507,12 @@ async function saveNumField(num, field, e, isInteger = false, allowNegative = fa
   try {
     await updateEndurance(selectedYear.value, num, field, newValue);
     scheduleScoreRefresh();
+    if (isEditing(num, field)) input?.blur();
   } catch {
     endurance.value[num][field] = oldValue;
+    cellEdited = false;
     error("저장에 실패했습니다.");
+    if (isEditing(num, field)) input?.select();
   }
 }
 
@@ -466,25 +536,19 @@ async function toggleEnergyDsq(num) {
   await saveDirectField(num, "energy_dsq", getField(num, "energy_dsq") ? 0 : 1);
 }
 
+async function toggleQualified(num, qualified) {
+  if (isReadOnly.value) return;
+  await saveDirectField(num, "qualified", qualified ? 1 : 0);
+}
+
 // 키보드 네비게이션 (Enter, 화살표)
 function handleKeyNav(e) {
   const target = e.target;
-  if (target.tagName !== "INPUT" || target.disabled) return;
+  if (target.tagName !== "INPUT" || !target.classList.contains("cell-input") || target.disabled) return;
 
   if (e.key === "Enter") {
     e.preventDefault();
-    // 시간 필드 유효성 검사
-    if (target.type !== "number" && target.value) {
-      if (parseTimeInput(target.value) === undefined) {
-        target.select();
-        error("시간 형식: M:SS.mmm");
-        return;
-      }
-    }
-    const inputs = getInputGrid(target);
-    const idx = inputs.flat().indexOf(target);
-    const next = inputs.flat()[idx + 1];
-    if (next) { next.focus(); next.select(); } else { target.blur(); }
+    // 저장은 확인 버튼으로만 수행한다. Enter는 현재 편집값을 유지한다.
     return;
   }
 
@@ -519,11 +583,11 @@ function handleKeyNav(e) {
 function getInputGrid(el) {
   const table = el.closest(".endurance-table");
   const rows = Array.from(table.querySelectorAll("tbody tr"));
-  return rows.map(tr => Array.from(tr.querySelectorAll("input:not([disabled])")));
+  return rows.map(tr => Array.from(tr.querySelectorAll("input.cell-input:not([disabled])")));
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수", "내구 진출"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -553,6 +617,7 @@ function exportData(format) {
       getField(num, "energy_dsq") ? "실격" : "",
       energyResultLabel(num),
       getEnergyResult(num)?.score ?? "",
+      getField(num, "qualified") ? "진출" : "",
     ];
   });
   exportTable({ sheetName: "내구 기록", fileBase: `내구기록_${selectedYear.value}`, headers, rows, format });
@@ -571,7 +636,22 @@ function exportData(format) {
         </div>
         <div class="filter-group energy-config-group">
           <label class="filter-label">내구 거리 (<span class="unit-symbol">km</span>)</label>
-          <input class="filter-input config-input" type="number" min="0" step="any" :value="getEnergySetting('distance_km') ?? ''" :disabled="isReadOnly" placeholder="예: 20" @blur="saveEnergySetting('distance_km', $event.target.value)" />
+          <ConfirmableInput
+            variant="filter"
+            input-class="config-input"
+            type="number"
+            min="0"
+            step="any"
+            :value="configEditing ? (configEditingValue ?? '') : (getEnergySetting('distance_km') ?? '')"
+            :editing="configEditing"
+            :disabled="isReadOnly"
+            placeholder="예: 20"
+            confirm-label="내구 거리 입력 확인"
+            @input="handleConfigInput"
+            @focus="handleConfigFocus"
+            @blur="cancelConfigEdit"
+            @confirm="confirmEnergySetting"
+          />
         </div>
         <div class="filter-group energy-config-group">
           <label class="filter-label">휘발유 기준</label>
@@ -584,6 +664,22 @@ function exportData(format) {
         <div class="filter-group">
           <label class="filter-label">검색</label>
           <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+        </div>
+        <div v-if="vehicleTypes.length > 1" class="filter-group type-filter-gap">
+          <label class="filter-label">유형</label>
+          <div class="type-filter-group">
+            <label v-for="type in vehicleTypes" :key="type" class="filter-checkbox">
+              <input v-model="typeFilters[type]" type="checkbox" />
+              <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
+            </label>
+          </div>
+        </div>
+        <div class="filter-group type-filter-gap">
+          <label class="filter-label">필터</label>
+          <label class="filter-checkbox">
+            <input v-model="showQualifiedOnly" type="checkbox" />
+            <span>진출팀만</span>
+          </label>
         </div>
         <div class="filter-group action-group">
           <label class="filter-label">&nbsp;</label>
@@ -623,6 +719,7 @@ function exportData(format) {
                 <th class="col-driver-group" colspan="5">드라이버 2</th>
                 <th class="col-status" rowspan="2">상태</th>
                 <th class="col-energy-group" colspan="7">에너지 효율</th>
+                <th class="col-qualified" rowspan="2">내구<br>진출</th>
               </tr>
               <tr>
                 <th class="col-field">기록</th>
@@ -662,19 +759,19 @@ function exportData(format) {
                   <span v-else class="cell-display">-</span>
                 </td>
                 <!-- Driver 1 -->
-                <td class="col-field"><input class="cell-input time-input" :value="displayValue(entry.num, 'driver1_time', formatResult(getField(entry.num, 'driver1_time')))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @input="handleCellInput(entry.num, 'driver1_time', $event)" @focus="handleCellFocus(entry.num, 'driver1_time', $event)" @blur="saveTimeField(entry.num, 'driver1_time', $event); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_start_delay', getField(entry.num, 'driver1_start_delay') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver1_start_delay', $event)" @focus="handleCellFocus(entry.num, 'driver1_start_delay', $event)" @blur="saveNumField(entry.num, 'driver1_start_delay', $event, true); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_cones', getField(entry.num, 'driver1_cones') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver1_cones', $event)" @focus="handleCellFocus(entry.num, 'driver1_cones', $event)" @blur="saveNumField(entry.num, 'driver1_cones', $event, true); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_oc', getField(entry.num, 'driver1_oc') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver1_oc', $event)" @focus="handleCellFocus(entry.num, 'driver1_oc', $event)" @blur="saveNumField(entry.num, 'driver1_oc', $event, true); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="any" :value="displayValue(entry.num, 'driver1_penalty', getField(entry.num, 'driver1_penalty') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver1_penalty', $event)" @focus="handleCellFocus(entry.num, 'driver1_penalty', $event)" @blur="saveNumField(entry.num, 'driver1_penalty', $event); handleCellBlur()" /></td>
+                <td class="col-field"><ConfirmableInput input-class="time-input" :value="displayValue(entry.num, 'driver1_time', formatResult(getField(entry.num, 'driver1_time')))" :editing="isEditing(entry.num, 'driver1_time')" :disabled="isDisabled(entry.num)" placeholder="0:00.000" confirm-label="드라이버 1 기록 입력 확인" @input="handleCellInput(entry.num, 'driver1_time', $event)" @focus="handleCellFocus(entry.num, 'driver1_time', $event)" @blur="handleCellBlur" @confirm="saveTimeField(entry.num, 'driver1_time', $event)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_start_delay', getField(entry.num, 'driver1_start_delay') ?? '')" :editing="isEditing(entry.num, 'driver1_start_delay')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 1 출발지연 입력 확인" @input="handleCellInput(entry.num, 'driver1_start_delay', $event)" @focus="handleCellFocus(entry.num, 'driver1_start_delay', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver1_start_delay', $event, true)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_cones', getField(entry.num, 'driver1_cones') ?? '')" :editing="isEditing(entry.num, 'driver1_cones')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 1 콘터치 입력 확인" @input="handleCellInput(entry.num, 'driver1_cones', $event)" @focus="handleCellFocus(entry.num, 'driver1_cones', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver1_cones', $event, true)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_oc', getField(entry.num, 'driver1_oc') ?? '')" :editing="isEditing(entry.num, 'driver1_oc')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 1 코스이탈 입력 확인" @input="handleCellInput(entry.num, 'driver1_oc', $event)" @focus="handleCellFocus(entry.num, 'driver1_oc', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver1_oc', $event, true)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="any" :value="displayValue(entry.num, 'driver1_penalty', getField(entry.num, 'driver1_penalty') ?? '')" :editing="isEditing(entry.num, 'driver1_penalty')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 1 페널티 입력 확인" @input="handleCellInput(entry.num, 'driver1_penalty', $event)" @focus="handleCellFocus(entry.num, 'driver1_penalty', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver1_penalty', $event)" /></td>
                 <!-- Driver change -->
-                <td class="col-change"><input class="cell-input time-input" :value="displayValue(entry.num, 'driver_change_time', formatResult(getField(entry.num, 'driver_change_time')))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @input="handleCellInput(entry.num, 'driver_change_time', $event)" @focus="handleCellFocus(entry.num, 'driver_change_time', $event)" @blur="saveTimeField(entry.num, 'driver_change_time', $event); handleCellBlur()" /></td>
+                <td class="col-change"><ConfirmableInput input-class="time-input" :value="displayValue(entry.num, 'driver_change_time', formatResult(getField(entry.num, 'driver_change_time')))" :editing="isEditing(entry.num, 'driver_change_time')" :disabled="isDisabled(entry.num)" placeholder="0:00.000" confirm-label="교체 초과시간 입력 확인" @input="handleCellInput(entry.num, 'driver_change_time', $event)" @focus="handleCellFocus(entry.num, 'driver_change_time', $event)" @blur="handleCellBlur" @confirm="saveTimeField(entry.num, 'driver_change_time', $event)" /></td>
                 <!-- Driver 2 -->
-                <td class="col-field"><input class="cell-input time-input" :value="displayValue(entry.num, 'driver2_time', formatResult(getField(entry.num, 'driver2_time')))" :disabled="isDisabled(entry.num)" placeholder="0:00.000" @input="handleCellInput(entry.num, 'driver2_time', $event)" @focus="handleCellFocus(entry.num, 'driver2_time', $event)" @blur="saveTimeField(entry.num, 'driver2_time', $event); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_start_delay', getField(entry.num, 'driver2_start_delay') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver2_start_delay', $event)" @focus="handleCellFocus(entry.num, 'driver2_start_delay', $event)" @blur="saveNumField(entry.num, 'driver2_start_delay', $event, true); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_cones', getField(entry.num, 'driver2_cones') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver2_cones', $event)" @focus="handleCellFocus(entry.num, 'driver2_cones', $event)" @blur="saveNumField(entry.num, 'driver2_cones', $event, true); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_oc', getField(entry.num, 'driver2_oc') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver2_oc', $event)" @focus="handleCellFocus(entry.num, 'driver2_oc', $event)" @blur="saveNumField(entry.num, 'driver2_oc', $event, true); handleCellBlur()" /></td>
-                <td class="col-field"><input class="cell-input num-input" type="number" min="0" step="any" :value="displayValue(entry.num, 'driver2_penalty', getField(entry.num, 'driver2_penalty') ?? '')" :disabled="isDisabled(entry.num)" placeholder="-" @input="handleCellInput(entry.num, 'driver2_penalty', $event)" @focus="handleCellFocus(entry.num, 'driver2_penalty', $event)" @blur="saveNumField(entry.num, 'driver2_penalty', $event); handleCellBlur()" /></td>
+                <td class="col-field"><ConfirmableInput input-class="time-input" :value="displayValue(entry.num, 'driver2_time', formatResult(getField(entry.num, 'driver2_time')))" :editing="isEditing(entry.num, 'driver2_time')" :disabled="isDisabled(entry.num)" placeholder="0:00.000" confirm-label="드라이버 2 기록 입력 확인" @input="handleCellInput(entry.num, 'driver2_time', $event)" @focus="handleCellFocus(entry.num, 'driver2_time', $event)" @blur="handleCellBlur" @confirm="saveTimeField(entry.num, 'driver2_time', $event)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_start_delay', getField(entry.num, 'driver2_start_delay') ?? '')" :editing="isEditing(entry.num, 'driver2_start_delay')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 2 출발지연 입력 확인" @input="handleCellInput(entry.num, 'driver2_start_delay', $event)" @focus="handleCellFocus(entry.num, 'driver2_start_delay', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver2_start_delay', $event, true)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_cones', getField(entry.num, 'driver2_cones') ?? '')" :editing="isEditing(entry.num, 'driver2_cones')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 2 콘터치 입력 확인" @input="handleCellInput(entry.num, 'driver2_cones', $event)" @focus="handleCellFocus(entry.num, 'driver2_cones', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver2_cones', $event, true)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_oc', getField(entry.num, 'driver2_oc') ?? '')" :editing="isEditing(entry.num, 'driver2_oc')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 2 코스이탈 입력 확인" @input="handleCellInput(entry.num, 'driver2_oc', $event)" @focus="handleCellFocus(entry.num, 'driver2_oc', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver2_oc', $event, true)" /></td>
+                <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="any" :value="displayValue(entry.num, 'driver2_penalty', getField(entry.num, 'driver2_penalty') ?? '')" :editing="isEditing(entry.num, 'driver2_penalty')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 2 페널티 입력 확인" @input="handleCellInput(entry.num, 'driver2_penalty', $event)" @focus="handleCellFocus(entry.num, 'driver2_penalty', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver2_penalty', $event)" /></td>
                 <td class="col-status">
                   <div class="status-group">
                     <button
@@ -687,18 +784,31 @@ function exportData(format) {
                     >{{ s }}</button>
                   </div>
                 </td>
-                <td class="col-energy"><input class="cell-input energy-input" data-field="fuel_consumed" type="number" min="0" step="any" :value="displayValue(entry.num, 'fuel_consumed', getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_consumed') ?? '') : '')" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" @input="handleCellInput(entry.num, 'fuel_consumed', $event)" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="saveNumField(entry.num, 'fuel_consumed', $event); handleCellBlur()" /></td>
-                <td class="col-energy"><input class="cell-input energy-input" data-field="fuel_extra" type="number" min="0" step="any" :value="displayValue(entry.num, 'fuel_extra', getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_extra') ?? '') : '')" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" @input="handleCellInput(entry.num, 'fuel_extra', $event)" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="saveNumField(entry.num, 'fuel_extra', $event); handleCellBlur()" /></td>
-                <td class="col-energy"><input class="cell-input energy-input" data-field="electric_net_energy" type="number" step="any" :value="displayValue(entry.num, 'electric_net_energy', getEnergyType(entry) === 'E' ? (getField(entry.num, 'electric_net_energy') ?? '') : '')" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'E'" :placeholder="getEnergyType(entry) === 'E' ? '-' : ''" @input="handleCellInput(entry.num, 'electric_net_energy', $event)" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="saveNumField(entry.num, 'electric_net_energy', $event, false, true); handleCellBlur()" /></td>
+                <td class="col-energy"><ConfirmableInput input-class="energy-input" field="fuel_consumed" type="number" min="0" step="any" :value="displayValue(entry.num, 'fuel_consumed', getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_consumed') ?? '') : '')" :editing="isEditing(entry.num, 'fuel_consumed')" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" confirm-label="연료 소비량 입력 확인" @input="handleCellInput(entry.num, 'fuel_consumed', $event)" @focus="handleCellFocus(entry.num, 'fuel_consumed', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'fuel_consumed', $event)" /></td>
+                <td class="col-energy"><ConfirmableInput input-class="energy-input" field="fuel_extra" type="number" min="0" step="any" :value="displayValue(entry.num, 'fuel_extra', getEnergyType(entry) === 'C' ? (getField(entry.num, 'fuel_extra') ?? '') : '')" :editing="isEditing(entry.num, 'fuel_extra')" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'C'" :placeholder="getEnergyType(entry) === 'C' ? '-' : ''" confirm-label="추가 주유량 입력 확인" @input="handleCellInput(entry.num, 'fuel_extra', $event)" @focus="handleCellFocus(entry.num, 'fuel_extra', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'fuel_extra', $event)" /></td>
+                <td class="col-energy"><ConfirmableInput input-class="energy-input" field="electric_net_energy" type="number" step="any" :value="displayValue(entry.num, 'electric_net_energy', getEnergyType(entry) === 'E' ? (getField(entry.num, 'electric_net_energy') ?? '') : '')" :editing="isEditing(entry.num, 'electric_net_energy')" :disabled="isDisabled(entry.num) || getEnergyType(entry) !== 'E'" :placeholder="getEnergyType(entry) === 'E' ? '-' : ''" confirm-label="순사용 전력량 입력 확인" @input="handleCellInput(entry.num, 'electric_net_energy', $event)" @focus="handleCellFocus(entry.num, 'electric_net_energy', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'electric_net_energy', $event, false, true)" /></td>
                 <td class="col-energy"><span class="energy-metric">{{ getEnergyResult(entry.num)?.co2Per100Km ?? '-' }}</span></td>
                 <td class="col-energy-official">
                   <button class="energy-dsq-btn" :class="{ active: !!getField(entry.num, 'energy_dsq') }" :disabled="isReadOnly" @click="toggleEnergyDsq(entry.num)">DSQ</button>
                 </td>
                 <td class="col-energy"><span class="energy-status" :class="'energy-status-' + (getEnergyResult(entry.num)?.status || 'PENDING').toLowerCase()" :title="getEnergyResult(entry.num)?.reason || ''">{{ energyResultLabel(entry.num) }}</span></td>
                 <td class="col-energy"><span class="energy-score" :title="getEnergyResult(entry.num)?.reason || ''">{{ getEnergyResult(entry.num)?.score ?? (getEnergyResult(entry.num)?.status === 'PENDING' ? '대기' : '-') }}</span></td>
+                <td class="col-qualified">
+                  <label class="qualification-switch">
+                    <input
+                      class="qualified-toggle"
+                      type="checkbox"
+                      :checked="!!getField(entry.num, 'qualified')"
+                      :disabled="isReadOnly"
+                      :aria-label="`${entry.num}번 내구 진출 여부`"
+                      @change="toggleQualified(entry.num, $event.target.checked)"
+                    />
+                    <span class="qualification-slider" aria-hidden="true"></span>
+                  </label>
+                </td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td colspan="24" class="empty-state">
+                <td colspan="25" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -773,6 +883,36 @@ function exportData(format) {
 .filter-input:focus {
   outline: none;
   border-color: var(--accent-primary);
+}
+
+.type-filter-gap {
+  margin-left: 1rem;
+}
+
+.type-filter-group {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  height: 2.125rem;
+}
+
+.filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.125rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  user-select: none;
+  cursor: pointer;
+}
+
+.filter-checkbox input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
 }
 
 .action-group {
@@ -852,7 +992,7 @@ function exportData(format) {
 /* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
 
 .endurance-table {
-  min-width: 1900px;
+  min-width: 1980px;
 }
 
 .endurance-table th {
@@ -897,7 +1037,8 @@ function exportData(format) {
 }
 
 .col-energy,
-.col-energy-official {
+.col-energy-official,
+.col-qualified {
   width: 1%;
   white-space: nowrap;
   text-align: center !important;
@@ -911,10 +1052,6 @@ function exportData(format) {
 
 .col-energy {
   background: rgba(16, 185, 129, 0.035);
-}
-
-.energy-input {
-  width: 4.5rem;
 }
 
 .energy-dsq-btn {
@@ -966,10 +1103,6 @@ function exportData(format) {
   color: var(--accent-danger);
 }
 
-.config-input {
-  width: 7rem;
-}
-
 .col-num {
   text-align: center !important;
   position: sticky;
@@ -1002,6 +1135,7 @@ function exportData(format) {
 }
 
 .col-status,
+.col-qualified,
 .col-summary,
 .col-change,
 .col-field {
@@ -1090,44 +1224,62 @@ function exportData(format) {
   color: white;
 }
 
-/* Input cells */
-.cell-input {
-  width: 5.5rem;
-  padding: 0.125rem 0.25rem;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--text-primary);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.875rem;
-  font-weight: 500;
-  text-align: center;
-  outline: none;
-  -moz-appearance: textfield;
+.qualification-switch {
+  display: inline-block;
+  position: relative;
+  width: 2.5rem;
+  height: 1.35rem;
 }
 
-.cell-input:focus {
-  border-color: var(--accent-primary);
-  background: var(--bg-input);
-}
-
-.cell-input:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.cell-input::placeholder {
-  color: var(--text-tertiary);
-}
-
-.cell-input::-webkit-outer-spin-button,
-.cell-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
+.qualified-toggle {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
   margin: 0;
+  opacity: 0;
+  cursor: pointer;
 }
 
-.num-input {
-  width: 3.5rem;
+.qualification-slider {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--border-color);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.qualification-slider::before {
+  content: "";
+  position: absolute;
+  top: 0.175rem;
+  left: 0.2rem;
+  width: 1rem;
+  height: 1rem;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.15s ease;
+}
+
+.qualified-toggle:checked + .qualification-slider {
+  background: var(--accent-success);
+}
+
+.qualified-toggle:checked + .qualification-slider::before {
+  transform: translateX(1.1rem);
+}
+
+.qualified-toggle:focus-visible + .qualification-slider {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+.qualified-toggle:disabled + .qualification-slider {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 @media (max-width: 640px) {

@@ -496,6 +496,36 @@ describe('PUT /api/score/endurance', () => {
     assert.equal(reason.status, 400);
   });
 
+  it('persists and validates the endurance qualification flag with audit context', async () => {
+    const qualified = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'qualified', value: 1 },
+      cookie: adminCookie,
+    });
+    assert.equal(qualified.status, 200);
+    assert.equal(
+      db.prepare('SELECT qualified FROM score_endurance WHERE year = 2026 AND team_num = 1').get().qualified,
+      1,
+    );
+
+    const invalid = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'qualified', value: 2 },
+      cookie: adminCookie,
+    });
+    assert.equal(invalid.status, 400);
+
+    const audit = db.prepare(`
+      SELECT detail FROM logs
+      WHERE level = 'info' AND action = 'endurance.update' AND target = '#1'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.deepEqual(JSON.parse(audit.detail), {
+      year: 2026,
+      field: 'qualified',
+      before: 0,
+      after: 1,
+    });
+  });
+
   it('rejects non-allowed field', async () => {
     const res = await client.put('/api/score/endurance', {
       body: { year: 2026, team_num: 1, field: 'hackerfield', value: 999 },
@@ -532,6 +562,7 @@ describe('GET /api/score/endurance (after writes)', () => {
     // Team 2 should exist (status was set then cleared)
     assert.ok(data['2']);
     assert.equal(data['1'].fuel_extra, null);
+    assert.equal(data['1'].qualified, 1);
     assert.equal('energy_dsq_reason' in data['1'], false);
   });
 });

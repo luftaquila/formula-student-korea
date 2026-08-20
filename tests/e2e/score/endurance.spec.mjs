@@ -5,15 +5,16 @@ import { storageStatePath, waitForPageReady, scoreTable, enduranceTable, ENDURAN
 const YEAR = currentCompetitionYear();
 
 async function fillAndSave(page, input, value) {
+  await input.click();
+  await input.fill(value);
+  const confirm = input.locator("xpath=..").locator("button.confirm-input-btn");
+  await expect(confirm).toBeVisible();
   const saved = page.waitForResponse(
     (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
   );
-  // 사용자가 실제로 하는 동작 그대로 둔다. 리렌더링이 타이핑 중인 값을 덮어쓰면 저장이
-  // 나가지 않고 여기서 타임아웃 나야 한다 — 그게 이 테스트가 잡아야 하는 회귀다.
-  await input.click();
-  await input.fill(value);
-  await input.blur();
+  await confirm.click();
   await saved;
+  await expect(confirm).toHaveCount(0);
 }
 
 async function clearFields(page, teamNum, fields) {
@@ -54,6 +55,89 @@ test.describe("Score endurance input", () => {
     await expect(enduranceTable(page).locator("th").filter({ hasText: "드라이버 1" })).toBeVisible();
     await expect(enduranceTable(page).locator("th").filter({ hasText: "드라이버 2" })).toBeVisible();
     await expect(enduranceTable(page).locator("th").filter({ hasText: "상태" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "내구진출" })).toBeVisible();
+  });
+
+  test("saves a cell only through its confirm button", async ({ page }) => {
+    await clearFields(page, 3, ["driver1_time"]);
+
+    const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "성균관대학교" });
+    const input = row.locator("input.time-input").first();
+    await expect(input).toHaveValue("");
+
+    await input.click();
+    await input.fill("7:00.000");
+    const confirm = input.locator("xpath=..").locator("button.confirm-input-btn");
+    await expect(confirm).toBeVisible();
+
+    await page.locator(".card-header h3").click();
+    await expect(confirm).toHaveCount(0);
+    await expect(input).toHaveValue("");
+
+    const unchangedResponse = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    const unchanged = await unchangedResponse.json();
+    expect(unchanged[3]?.driver1_time ?? null).toBeNull();
+
+    await fillAndSave(page, input, "7:00.000");
+    const savedResponse = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    const saved = await savedResponse.json();
+    expect(saved[3]?.driver1_time).toBe(420000);
+
+    await clearFields(page, 3, ["driver1_time"]);
+  });
+
+  test("filters endurance rows by vehicle type", async ({ page }) => {
+    const typeFilterGroup = page.locator(".type-filter-group");
+    await expect(typeFilterGroup).toBeVisible();
+
+    const evCheckbox = typeFilterGroup.locator("label.filter-checkbox").filter({ hasText: "EV" }).locator("input");
+    const cvCheckbox = typeFilterGroup.locator("label.filter-checkbox").filter({ hasText: "CV" }).locator("input");
+    await expect(evCheckbox).toBeChecked();
+    await expect(cvCheckbox).toBeChecked();
+
+    await cvCheckbox.uncheck();
+    const table = enduranceTable(page);
+    await expect(table.locator("tbody")).toContainText("서울대학교");
+    await expect(table.locator("tbody")).not.toContainText("성균관대학교");
+
+    await cvCheckbox.check();
+    await expect(table.locator("tbody")).toContainText("성균관대학교");
+  });
+
+  test("toggles endurance qualification and filters to qualified teams", async ({ page }) => {
+    for (const teamNum of [1, 2]) {
+      const response = await page.request.put("/competition/api/v1/score/score/endurance", {
+        data: { year: YEAR, team_num: teamNum, field: "qualified", value: 0 },
+      });
+      expect(response.ok()).toBeTruthy();
+    }
+
+    const table = enduranceTable(page);
+    const qualifiedRow = table.locator("tbody tr").filter({ hasText: "서울대학교" });
+    const otherRow = table.locator("tbody tr").filter({ hasText: "한양대학교" });
+    const qualification = qualifiedRow.locator("input.qualified-toggle");
+    await expect(qualification).not.toBeChecked();
+
+    const updated = page.waitForResponse(
+      (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
+    );
+    await qualification.check();
+    await updated;
+    await expect(qualification).toBeChecked();
+
+    const filter = page.locator("label.filter-checkbox").filter({ hasText: "진출팀만" }).locator("input");
+    await filter.check();
+    await expect(qualifiedRow).toBeVisible();
+    await expect(otherRow).toHaveCount(0);
+
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    const data = await response.json();
+    expect(data[1]?.qualified).toBe(1);
+
+    const cleanup = await page.request.put("/competition/api/v1/score/score/endurance", {
+      data: { year: YEAR, team_num: 1, field: "qualified", value: 0 },
+    });
+    expect(cleanup.ok()).toBeTruthy();
   });
 
   test("set DNS status, disable inputs, and exclude the team from scores", async ({ page }) => {
