@@ -112,6 +112,9 @@ export function createCompetitionApp(options = {}) {
     ...common,
     staticRoot: staticRoots.registration,
     teamStore: teams.store,
+    // One SENS client per process: Queue owns it, Registration borrows it, so the
+    // credentials are held once and the Email config endpoint is polled once.
+    smsClient: queue.smsClient,
     // POST /lookup is a credentialed read. The module validates its requested
     // historical year itself, while every state-changing POST/PATCH below is
     // guarded from the stored team/queue year by createModuleYearGuard.

@@ -469,7 +469,6 @@ describe("Competition modular monolith", () => {
     const { server, baseUrl } = await startServer(created.app);
     const client = createClient(baseUrl);
     const official = makeAuthCookie({ email: "official@test.invalid", name: "Official", role: "official" });
-    const chief = makeAuthCookie({ email: "chief@test.invalid", name: "Chief", role: "chief" });
     const previousYear = YEAR - 1;
     try {
       const replacement = created.teams.createTeam(YEAR, {
@@ -1168,6 +1167,43 @@ describe("Competition modular monolith", () => {
         SELECT count(*) AS count FROM logs
         WHERE action = 'schedule.session_open' AND level = 'info'
       `).get().count, 0);
+    } finally {
+      await created.close();
+    }
+  });
+
+  it("holds one SMS client for Queue and Registration", async () => {
+    const fixture = fixtureRoot();
+    fixtures.push(fixture);
+    const configRequests = [];
+    const created = createCompetitionApp({
+      dbPath: fixture.dbPath,
+      staticRoots: fixture.staticRoots,
+      uploadRoot: fixture.uploadRoot,
+      validateUser: TRUST_JWT,
+      enableNotificationScheduler: false,
+      fetchImpl: async (url) => {
+        configRequests.push(String(url));
+        return {
+          ok: true,
+          json: async () => ({
+            naver_cloud_access_key: "key",
+            naver_cloud_secret_key: "secret",
+            naver_cloud_sms_service_id: "service",
+            phone_number_sms_sender: "01000000000",
+          }),
+        };
+      },
+    });
+    try {
+      await created.start();
+      // Both modules report SMS as configured, but the credentials were fetched
+      // once: Registration borrows the client Queue owns.
+      assert.equal(configRequests.length, 1, `expected one sms-config fetch, saw ${configRequests.length}`);
+      assert.match(configRequests[0], /\/api\/internal\/sms-config$/);
+      assert.equal(await created.modules.queue.loadSmsConfig(), true);
+      assert.equal(await created.modules.registration.loadSmsConfig(), true);
+      assert.equal(configRequests.length, 2, "only the owner re-reads the configuration");
     } finally {
       await created.close();
     }

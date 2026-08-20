@@ -2201,6 +2201,8 @@ async function getEntries() {
   return options.teamStore.moduleEntries(currentYear());
 }
 
+// Competition 은 이 클라이언트를 Registration 에도 넘겨 한 프로세스가 SENS 자격
+// 증명 한 벌과 갱신 타이머 하나만 갖도록 한다(createRegistrationApp options.smsClient).
 const smsClient = createSmsClient({
   logger,
   smsRequest: options.smsRequest,
@@ -2266,5 +2268,5 @@ function sendSmsNotification(type, prev) {
    ============================================ */
 if (!options.skipSpaFallback) addSpaFallback(app);
 
-return { app, db, loadSmsConfig, closeSse, sourceEvent, timers: [rateLimitTimer, smsClient.timer] };
+return { app, db, loadSmsConfig, smsClient, closeSse, sourceEvent, timers: [rateLimitTimer, smsClient.timer] };
 }
