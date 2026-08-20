@@ -21,8 +21,29 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 125,
-  sha256: "1336208794493a2d46d703cbaa76ecd68f71f1fe6e1081817aef02aaf29a2554",
+  sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
 });
+
+// Deployment validates a read-only snapshot before the runtime gets a chance
+// to apply its idempotent schema additions. Accept only the exact immediately
+// preceding contracts here; createScoreApp then adds the qualified column or
+// rebuilds the endurance table with its 0/1 constraint before serving. Any
+// other schema still fails closed, and the next validation must match the
+// current contract.
+const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    objectCount: 125,
+    sha256: "1336208794493a2d46d703cbaa76ecd68f71f1fe6e1081817aef02aaf29a2554",
+    allowedMissingColumns: Object.freeze({
+      score_endurance: Object.freeze(["qualified"]),
+    }),
+  }),
+  Object.freeze({
+    objectCount: 125,
+    sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
+    allowedMissingColumns: Object.freeze({}),
+  }),
+]);
 
 export function competitionSchemaContractDigest(contract) {
   return crypto.createHash("sha256").update(JSON.stringify(contract)).digest("hex");
@@ -35,6 +56,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
   record: ["name", "num", "univ", "team", "type", "result", "team_id"],
   score_manual: ["year", "team_num", "score_type", "team_id"],
+  score_endurance: ["year", "team_num", "qualified", "team_id"],
   session: ["id", "year"],
   submission: ["id", "session_id", "team_num", "storage_dir", "team_id"],
   submission_file: ["id", "submission_id", "stored_name"],
@@ -57,15 +79,22 @@ export function assertCompetitionSchema(db) {
   const incompatible = [];
   const contract = captureCompetitionSchemaContract(db);
   const contractDigest = competitionSchemaContractDigest(contract);
-  if (contract.length !== COMPETITION_SCHEMA_CONTRACT.objectCount
-    || contractDigest !== COMPETITION_SCHEMA_CONTRACT.sha256) {
+  const currentContract = contract.length === COMPETITION_SCHEMA_CONTRACT.objectCount
+    && contractDigest === COMPETITION_SCHEMA_CONTRACT.sha256;
+  const upgradeContract = UPGRADABLE_SCHEMA_CONTRACTS.find(({ objectCount, sha256 }) => (
+    contract.length === objectCount && contractDigest === sha256
+  ));
+  if (!currentContract && !upgradeContract) {
     incompatible.push(
       `complete-schema<contract:${contract.length}:${contractDigest}>`,
     );
   }
   for (const [table, required] of Object.entries(REQUIRED_COLUMNS)) {
     const actual = columns(db, table);
-    if (!actual.length || required.some((column) => !actual.includes(column))) {
+    const allowedMissing = upgradeContract?.allowedMissingColumns[table] || [];
+    if (!actual.length || required.some((column) => (
+      !actual.includes(column) && !allowedMissing.includes(column)
+    ))) {
       incompatible.push(`${table}<table:${actual.length ? "definition" : "missing"}>`);
     }
   }
@@ -87,6 +116,15 @@ export function assertCompetitionSchema(db) {
     "SELECT type FROM sqlite_master WHERE name = 'competition_inactive_team'",
   ).get();
   if (inactiveTeamView?.type !== "view") incompatible.push("competition_inactive_team<view:missing>");
+
+  if (columns(db, "score_endurance").includes("qualified")) {
+    const invalidQualification = db.prepare(`
+      SELECT 1 FROM score_endurance
+      WHERE qualified IS NULL OR qualified NOT IN (0, 1)
+      LIMIT 1
+    `).get();
+    if (invalidQualification) incompatible.push("score_endurance<qualified-domain>");
+  }
 
   const scheduledForeignKeys = db.pragma("foreign_key_list('scheduled_notification')");
   if (!scheduledForeignKeys.some((foreignKey) => foreignKey.table === "session" && foreignKey.from === "session_id")) {

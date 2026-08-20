@@ -50,6 +50,73 @@ function scoreTeamPreflight(req, res, { action, year, teamNum, context = {} }) {
   return true;
 }
 
+const ENDURANCE_COLUMNS = Object.freeze([
+  "year", "team_num", "status", "driver1_time", "driver1_start_delay", "driver1_cones",
+  "driver1_oc", "driver1_penalty", "driver_change_time", "driver2_time",
+  "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
+  "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "team_id", "qualified",
+]);
+
+function createEnduranceTable(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS score_endurance (
+    year INTEGER NOT NULL,
+    team_num INTEGER NOT NULL,
+    status TEXT,
+    driver1_time INTEGER,
+    driver1_start_delay INTEGER DEFAULT 0,
+    driver1_cones INTEGER DEFAULT 0,
+    driver1_oc INTEGER DEFAULT 0,
+    driver1_penalty REAL DEFAULT 0,
+    driver_change_time INTEGER,
+    driver2_time INTEGER,
+    driver2_start_delay INTEGER DEFAULT 0,
+    driver2_cones INTEGER DEFAULT 0,
+    driver2_oc INTEGER DEFAULT 0,
+    driver2_penalty REAL DEFAULT 0,
+    fuel_consumed REAL,
+    fuel_extra REAL,
+    electric_net_energy REAL,
+    energy_dsq INTEGER NOT NULL DEFAULT 0,
+    team_id INTEGER,
+    qualified INTEGER NOT NULL DEFAULT 0 CHECK(qualified IN (0, 1)),
+    PRIMARY KEY (year, team_num)
+  )`);
+}
+
+function ensureEnduranceQualifiedConstraint(db) {
+  const tableSql = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'score_endurance'",
+  ).get()?.sql || "";
+  if (/\bqualified\b[^,]*\bCHECK\s*\(\s*qualified\s+IN\s*\(\s*0\s*,\s*1\s*\)\s*\)/i.test(tableSql)) return;
+
+  const actualColumns = db.pragma("table_info('score_endurance')").map(({ name }) => name);
+  if (!actualColumns.includes("qualified")) return;
+  if (actualColumns.length !== ENDURANCE_COLUMNS.length
+    || ENDURANCE_COLUMNS.some((name, index) => actualColumns[index] !== name)) {
+    throw new Error("score_endurance 스키마가 예상과 달라 qualified 제약을 안전하게 추가할 수 없습니다.");
+  }
+  const invalid = db.prepare(
+    "SELECT year, team_num, qualified FROM score_endurance WHERE qualified IS NULL OR qualified NOT IN (0, 1) LIMIT 1",
+  ).get();
+  if (invalid) {
+    throw new Error(`score_endurance qualified 값이 올바르지 않습니다: ${invalid.year}/#${invalid.team_num}`);
+  }
+
+  const dependentObjects = db.prepare(`
+    SELECT sql FROM sqlite_master
+    WHERE tbl_name = 'score_endurance' AND type IN ('index', 'trigger') AND sql IS NOT NULL
+    ORDER BY type, name
+  `).all().map(({ sql }) => sql);
+  db.exec("ALTER TABLE score_endurance RENAME TO score_endurance_without_qualified_check");
+  createEnduranceTable(db);
+  db.exec(`
+    INSERT INTO score_endurance (${ENDURANCE_COLUMNS.join(", ")})
+    SELECT ${ENDURANCE_COLUMNS.join(", ")} FROM score_endurance_without_qualified_check;
+    DROP TABLE score_endurance_without_qualified_check;
+  `);
+  for (const sql of dependentObjects) db.exec(sql);
+}
+
 db.transaction(() => {
   // 레거시 테이블 정리
   const legacyTables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('score_event', 'score_record')").all();
@@ -97,31 +164,13 @@ db.transaction(() => {
   )`);
 
   // 내구 기록 입력
-  db.exec(`CREATE TABLE IF NOT EXISTS score_endurance (
-    year INTEGER NOT NULL,
-    team_num INTEGER NOT NULL,
-    status TEXT,
-    driver1_time INTEGER,
-    driver1_start_delay INTEGER DEFAULT 0,
-    driver1_cones INTEGER DEFAULT 0,
-    driver1_oc INTEGER DEFAULT 0,
-    driver1_penalty REAL DEFAULT 0,
-    driver_change_time INTEGER,
-    driver2_time INTEGER,
-    driver2_start_delay INTEGER DEFAULT 0,
-    driver2_cones INTEGER DEFAULT 0,
-    driver2_oc INTEGER DEFAULT 0,
-    driver2_penalty REAL DEFAULT 0,
-    fuel_consumed REAL,
-    fuel_extra REAL,
-    electric_net_energy REAL,
-    energy_dsq INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (year, team_num)
-  )`);
+  createEnduranceTable(db);
   addColumn(db, "score_endurance", "fuel_consumed REAL");
   addColumn(db, "score_endurance", "fuel_extra REAL");
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
+  addColumn(db, "score_endurance", "qualified INTEGER NOT NULL DEFAULT 0 CHECK(qualified IN (0, 1))");
+  ensureEnduranceQualifiedConstraint(db);
 })();
 
 const ENDURANCE_SQL = {
@@ -141,6 +190,7 @@ const ENDURANCE_SQL = {
   fuel_extra: "UPDATE score_endurance SET fuel_extra = ? WHERE year = ? AND team_num = ?",
   electric_net_energy: "UPDATE score_endurance SET electric_net_energy = ? WHERE year = ? AND team_num = ?",
   energy_dsq: "UPDATE score_endurance SET energy_dsq = ? WHERE year = ? AND team_num = ?",
+  qualified: "UPDATE score_endurance SET qualified = ? WHERE year = ? AND team_num = ?",
 };
 
 // inter-service 실패 로그 폭주 방지: action+year별 최소 60초 간격 throttle
@@ -837,7 +887,7 @@ app.put("/api/score/endurance", (req, res) => {
   const allowedFields = [
     "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
     "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
-    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq",
+    "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "qualified",
   ];
   if (!allowedFields.includes(field)) {
     return res.status(400).send("허용되지 않는 필드입니다.");
@@ -851,8 +901,15 @@ app.put("/api/score/endurance", (req, res) => {
   if (!textFields.has(field) && dbValue !== null && !Number.isFinite(dbValue)) {
     return res.status(400).send("유효하지 않은 값입니다.");
   }
-  if (field === "energy_dsq" && dbValue !== null && ![0, 1].includes(dbValue)) {
-    return res.status(400).send("에너지 실격 값은 0 또는 1이어야 합니다.");
+  if (["energy_dsq", "qualified"].includes(field) && ![0, 1].includes(dbValue)) {
+    logger.warn(req, "endurance.update", {
+      error: "invalid_toggle_value",
+      reason: "invalid_toggle_value",
+      year: numYear,
+      field,
+      requested: value,
+    }, `#${numTeamNum}`);
+    return res.status(400).send("토글 값은 0 또는 1이어야 합니다.");
   }
   if (!textFields.has(field) && field !== "electric_net_energy" && dbValue !== null && dbValue < 0) {
     return res.status(400).send("값은 음수일 수 없습니다.");
@@ -861,19 +918,28 @@ app.put("/api/score/endurance", (req, res) => {
     action: "endurance.update", year: numYear, teamNum: numTeamNum, context: { field },
   })) return;
 
+  let beforeValue = null;
   const result = dbRun(() => {
     db.transaction(() => {
       db.prepare("INSERT OR IGNORE INTO score_endurance (year, team_num) VALUES (?, ?)").run(numYear, numTeamNum);
+      beforeValue = db.prepare("SELECT * FROM score_endurance WHERE year = ? AND team_num = ?")
+        .get(numYear, numTeamNum)?.[field] ?? null;
       db.prepare(ENDURANCE_SQL[field]).run(dbValue, numYear, numTeamNum);
     })();
   });
 
   if (!result.success) {
-    logger.warn(req, "endurance.update", { error: result.internalError || result.error, year: numYear, field }, `#${numTeamNum}`);
+    logger.warn(req, "endurance.update", {
+      error: result.internalError || result.error,
+      year: numYear,
+      field,
+      before: beforeValue,
+      requested: dbValue,
+    }, `#${numTeamNum}`);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "endurance.update", { year: numYear, field, value: dbValue }, `#${numTeamNum}`);
+  logger.log(req, "endurance.update", { year: numYear, field, before: beforeValue, after: dbValue }, `#${numTeamNum}`);
   broadcastEvent("endurance", { year: numYear, team_num: numTeamNum, field, value: dbValue });
 
   res.status(200).send();

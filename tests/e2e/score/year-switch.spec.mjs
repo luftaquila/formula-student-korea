@@ -102,6 +102,12 @@ test.describe("Score year switch and read-only mode", () => {
       await expect(statusBtns.nth(i)).toBeDisabled();
     }
 
+    const qualificationToggles = page.locator("input.qualified-toggle");
+    const qualificationCount = await qualificationToggles.count();
+    for (let i = 0; i < qualificationCount; i++) {
+      await expect(qualificationToggles.nth(i)).toBeDisabled();
+    }
+
     // Switch back
     await yearSelect.selectOption(String(YEAR));
     await waitForPageReady(page);
