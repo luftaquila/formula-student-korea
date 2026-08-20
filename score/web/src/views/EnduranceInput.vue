@@ -678,7 +678,7 @@ function exportData(format) {
           <label class="filter-label">필터</label>
           <label class="filter-checkbox">
             <input v-model="showQualifiedOnly" type="checkbox" />
-            <span>진출팀만</span>
+            <span>내구 진출팀</span>
           </label>
         </div>
         <div class="filter-group action-group">

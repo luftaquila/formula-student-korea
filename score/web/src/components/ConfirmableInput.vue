@@ -47,7 +47,11 @@ function confirm() {
       :aria-label="confirmLabel"
       @mousedown.prevent
       @click="confirm"
-    >확인</button>
+    >
+      <svg class="confirm-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true">
+        <polyline points="5 12 10 17 19 7" />
+      </svg>
+    </button>
   </div>
 </template>
 
@@ -134,21 +138,27 @@ function confirm() {
   position: absolute;
   left: calc(100% + 0.25rem);
   z-index: 6;
+  display: inline-flex;
+  width: 1.75rem;
   height: 1.75rem;
-  padding: 0 0.5rem;
-  border: 1px solid var(--accent-primary);
-  border-radius: 5px;
-  background: var(--accent-primary);
-  color: white;
-  font-size: 0.75rem;
-  font-weight: 700;
-  white-space: nowrap;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-success);
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
 }
 
 .confirm-input-btn:hover {
   filter: brightness(1.08);
+}
+
+.confirm-check-icon {
+  width: 1.25rem;
+  height: 1.25rem;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 @media (max-width: 640px) {

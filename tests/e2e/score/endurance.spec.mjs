@@ -9,6 +9,8 @@ async function fillAndSave(page, input, value) {
   await input.fill(value);
   const confirm = input.locator("xpath=..").locator("button.confirm-input-btn");
   await expect(confirm).toBeVisible();
+  await expect(confirm).toHaveText("");
+  await expect(confirm.locator("svg.confirm-check-icon")).toBeVisible();
   const saved = page.waitForResponse(
     (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
   );
@@ -125,7 +127,7 @@ test.describe("Score endurance input", () => {
     await updated;
     await expect(qualification).toBeChecked();
 
-    const filter = page.locator("label.filter-checkbox").filter({ hasText: "진출팀만" }).locator("input");
+    const filter = page.locator("label.filter-checkbox").filter({ hasText: "내구 진출팀" }).locator("input");
     await filter.check();
     await expect(qualifiedRow).toBeVisible();
     await expect(otherRow).toHaveCount(0);
