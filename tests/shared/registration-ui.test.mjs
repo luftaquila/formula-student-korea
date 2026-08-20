@@ -73,3 +73,12 @@ test("registration kiosk resets immediately without an interstitial guide or com
   assert.doesNotMatch(register, /resetTimer|countdownTimer|setInterval/);
   assert.match(register, /reset\(\);\s*success\(`/);
 });
+
+test("registration public screens expose only the total wait instead of other called teams", async () => {
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+  const register = await readRegistrationSource("src/views/Register.vue");
+  const markup = `${templateOf(lookup)}\n${templateOf(register)}`;
+
+  assert.match(markup, /전체 대기/);
+  assert.doesNotMatch(markup, /현재 호출된 엔트리가 없습니다|호출된 엔트리|status\.called/);
+});

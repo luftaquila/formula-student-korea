@@ -174,26 +174,11 @@ onUnmounted(() => events?.close());
       </section>
     </div>
 
-    <section class="card queues-card">
-      <div class="card-header status-header">
-        <h3>🛎️ 전체 대기열 현황</h3>
-        <div v-if="status" class="status-row">
-          <span class="badge" :class="status.open ? 'badge-success' : 'badge-danger'">
-            {{ status.open ? "접수 중" : "접수 마감" }}
-          </span>
-          <span class="badge badge-primary">{{ status.waiting }}팀 대기</span>
-        </div>
-      </div>
-      <div class="card-body">
-        <div v-if="status?.called?.length" class="called-list">
-          <span class="called-label">호출된 엔트리</span>
-          <div class="badge-row">
-            <span v-for="row in status.called" :key="row.teamId" class="badge badge-warning mono">
-              {{ row.number }}번
-            </span>
-          </div>
-        </div>
-        <div v-else class="empty-state">현재 호출된 엔트리가 없습니다.</div>
+    <section class="card queue-total-card">
+      <div class="card-body queue-total">
+        <span>전체 대기</span>
+        <strong class="mono">{{ status?.waiting ?? "-" }}</strong>
+        <span>팀</span>
       </div>
     </section>
 
@@ -207,7 +192,6 @@ onUnmounted(() => events?.close());
 <style scoped>
 .queue-status { display: flex; flex-direction: column; gap: 1.5rem; }
 .status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; }
-.status-header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .input-row { display: flex; gap: 0.75rem; }
 .input-col { display: flex; flex-direction: column; }
 .input-col.flex-1 { flex: 1; }
@@ -230,14 +214,11 @@ onUnmounted(() => events?.close());
 .result-details div { text-align: center; }
 .result-details dt { color: var(--text-secondary); font-size: 0.75rem; }
 .result-details dd { margin-top: 0.15rem; font-weight: 600; }
-.status-row,
-.badge-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
-.called-list { display: flex; align-items: center; gap: 1rem; }
-.called-label { flex: none; color: var(--text-secondary); font-size: 0.875rem; font-weight: 600; }
+.queue-total { display: flex; align-items: baseline; justify-content: center; gap: 0.5rem; }
+.queue-total span { color: var(--text-secondary); font-weight: 600; }
+.queue-total strong { color: var(--accent-primary); font-size: 2.5rem; line-height: 1; }
 .tips { color: var(--text-tertiary); font-size: 0.8125rem; text-align: center; }
 @media (max-width: 600px) {
-  .status-header,
-  .called-list { align-items: flex-start; flex-direction: column; }
   .input-row { flex-direction: column; }
   .entry-input { width: 100%; }
   .result-details { grid-template-columns: 1fr; }

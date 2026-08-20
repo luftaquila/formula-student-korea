@@ -241,7 +241,7 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/events` | public | `?year=` | SSE stream | Initial public status followed by year-only `registration` invalidations |
-| GET | `/status` | public | `?year=` | `{ year, open, waiting, called: [{ teamId, number, calledAt }] }` | Public queue summary and called entry numbers |
+| GET | `/status` | public | `?year=` | `{ year, open, waiting }` | Public queue summary without other teams' call state |
 | POST | `/lookup` | public | `{ year, num, phone }` | `{ teamId, number, university, name, status, position, waitingTotal, ... }` | Credentialed active-queue lookup; phone is normalized but never returned |
 
 ### Kiosk and operations

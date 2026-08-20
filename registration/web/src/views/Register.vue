@@ -154,12 +154,6 @@ onUnmounted(() => {
             <strong><span class="mono">{{ status.waiting }}</span>팀 대기 중</strong>
             <p>{{ status.open ? "엔트리와 연락처를 입력해 대기열에 등록하세요." : "지금은 등록 대기 접수를 받지 않습니다." }}</p>
           </div>
-          <div v-if="status?.called?.length" class="called-section">
-            <span class="section-label">호출된 엔트리</span>
-            <div class="called-grid">
-              <span v-for="row in status.called" :key="row.teamId" class="called-entry mono">{{ row.number }}</span>
-            </div>
-          </div>
         </div>
       </section>
 
@@ -258,9 +252,6 @@ onUnmounted(() => {
 .queue-state strong { font-size: 1.5rem; }
 .queue-state .mono { color: var(--accent-primary); font-size: 2.25rem; }
 .queue-state p { color: var(--text-secondary); }
-.section-label { display: block; margin-bottom: 0.75rem; color: var(--text-secondary); font-size: 0.875rem; font-weight: 600; }
-.called-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
-.called-entry { padding: 1rem; color: var(--accent-warning); text-align: center; background: rgba(245, 158, 11, 0.12); border: 2px solid var(--accent-warning); border-radius: 10px; font-size: 1.5rem; font-weight: 700; }
 .input-section { display: flex; flex-direction: column; gap: 1.5rem; }
 .input-group,
 .agreement-group { padding: 1.5rem; background: var(--bg-card); border-radius: 12px; box-shadow: var(--shadow-card); }
@@ -325,7 +316,6 @@ onUnmounted(() => {
 @media (max-width: 600px) {
   .input-row { flex-direction: column; }
   .entry-input { width: 100%; }
-  .called-grid { grid-template-columns: repeat(2, 1fr); }
   .submit-group { grid-template-columns: 1fr; }
   .reset-button { order: 2; }
 }

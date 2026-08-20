@@ -186,13 +186,7 @@ export function createRegistrationApp(options = {}) {
       FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
       WHERE t.year = ? AND q.status = 'waiting'
     `).get(year).count;
-    const called = db.prepare(`
-      SELECT t.id AS teamId, t.num AS number, q.called_at AS calledAt
-      FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-      WHERE t.year = ? AND q.status = 'called'
-      ORDER BY q.called_at, q.id
-    `).all(year);
-    return { year, open: settingsForYear(year).open, waiting, called };
+    return { year, open: settingsForYear(year).open, waiting };
   }
 
   const { broadcast, handler: sseHandler, close: closeSse } = createSSEManager();

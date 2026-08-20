@@ -162,7 +162,7 @@ describe("Registration queue", () => {
 
     let response = await f.client.get(`/api/status?year=${YEAR}`);
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { year: YEAR, open: false, waiting: 0, called: [] });
+    assert.deepEqual(await response.json(), { year: YEAR, open: false, waiting: 0 });
 
     response = await f.client.get(`/api/team/${team.number}?year=${YEAR}`, { cookie: cookies.official });
     assert.equal(response.status, 403);
@@ -183,6 +183,8 @@ describe("Registration queue", () => {
     assert.equal(created.position, 1);
     response = await f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official });
     await assertStatus(response, 200);
+    response = await f.client.get(`/api/status?year=${YEAR}`);
+    assert.deepEqual(await response.json(), { year: YEAR, open: true, waiting: 0 });
     response = await f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official });
     await assertStatus(response, 200);
 
