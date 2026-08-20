@@ -44,7 +44,11 @@ const queueEntries = computed(() => {
   if (queueName.value === "-") return [];
   const names = String(queueName.value).split(", ");
   const ranks = String(rank.value).split(", ");
-  return names.map((name, i) => ({ name, rank: ranks[i] }));
+  return names.map((name, i) => ({
+    name,
+    rank: ranks[i],
+    total: activeInspections.value.find((item) => item.name === name)?.length ?? null,
+  }));
 });
 
 // Watch for queue updates from SSE to refresh user's rank
@@ -215,6 +219,7 @@ function clearState(message) {
                 <span>{{ e.name }}</span>
                 <span class="result-rank">{{ e.rank }}</span>
                 <span>번</span>
+                <span v-if="e.total !== null" class="result-total">/ {{ e.total }}팀</span>
               </div>
             </template>
             <span v-else>-</span>
@@ -341,21 +346,25 @@ function clearState(message) {
 
 .team-badge {
   padding: 0.5rem 1rem;
-  background: var(--accent-primary);
-  color: white;
-  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 6px;
+  color: var(--accent-primary);
   font-size: 0.875rem;
   font-weight: 600;
   text-align: center;
 }
 
 .team-badge.error {
-  background: var(--accent-danger);
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--accent-danger);
   font-weight: 500;
 }
 
 .team-badge.placeholder {
   background: transparent;
+  border-color: transparent;
   visibility: hidden;
 }
 
@@ -392,6 +401,12 @@ function clearState(message) {
   font-weight: 700;
   color: var(--accent-primary);
   margin-left: 0.5rem;
+}
+
+.result-total {
+  margin-left: 0.4rem;
+  color: var(--text-secondary);
+  font-weight: 500;
 }
 
 .loading {

@@ -33,6 +33,7 @@ test.describe("Queue public status query success flow", () => {
       const resultRow = page.locator(".result-row");
       await expect(resultRow.first()).toBeVisible({ timeout: 5000 });
       await expect(resultRow.first().locator(".result-rank")).toBeVisible();
+      await expect(resultRow.first().locator(".result-total")).toContainText(/^\/ \d+팀$/);
     } finally {
       await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },
