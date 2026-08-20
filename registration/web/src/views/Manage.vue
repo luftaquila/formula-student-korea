@@ -169,26 +169,26 @@ onUnmounted(() => events?.close());
         <div class="card-body settings-body">
           <div class="setting-line">
             <strong>현장 대기 접수</strong>
-            <label class="switch">
+            <label class="toggle">
               <input
                 type="checkbox"
                 :checked="board.settings.open"
                 :disabled="settingsBusy"
                 @change="patchSetting({ open: $event.target.checked })"
               >
-              <span aria-hidden="true" />
+              <span class="toggle-slider" aria-hidden="true" />
             </label>
           </div>
           <div class="setting-line">
             <strong>문자 안내</strong>
-            <label class="switch">
+            <label class="toggle">
               <input
                 type="checkbox"
                 :checked="board.settings.sms"
                 :disabled="settingsBusy || (!board.settings.smsAvailable && !board.settings.sms)"
                 @change="patchSetting({ sms: $event.target.checked })"
               >
-              <span aria-hidden="true" />
+              <span class="toggle-slider" aria-hidden="true" />
             </label>
           </div>
           <div class="setting-line rank-setting">

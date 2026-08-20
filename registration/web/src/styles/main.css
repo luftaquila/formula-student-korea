@@ -42,50 +42,6 @@
   color: var(--text-secondary);
 }
 
-.switch {
-  position: relative;
-  width: 44px;
-  height: 24px;
-  flex: none;
-}
-
-.switch input {
-  position: absolute;
-  opacity: 0;
-}
-
-.switch span {
-  position: absolute;
-  inset: 0;
-  border-radius: 999px;
-  background: var(--border-color);
-  cursor: pointer;
-}
-
-.switch span::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: white;
-  transition: transform 0.15s ease;
-}
-
-.switch input:checked + span {
-  background: var(--accent-primary);
-}
-
-.switch input:checked + span::after {
-  transform: translateX(20px);
-}
-
-.switch input:disabled + span {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
 
 @media (max-width: 640px) {
   .data-table th,
