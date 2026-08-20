@@ -1,0 +1,162 @@
+/*
+ * 공개 "내 순번 조회" 화면이 공유하는 카드 스타일.
+ *
+ * 등록 대기열(registration/web Lookup.vue)과 검차 대기열(queue/web QueueStatus.vue)은
+ * 대기 팀에게 같은 화면이어야 한다: 같은 조회 카드, 같은 팀 라벨, 같은 실시간 순번
+ * 블록. 두 SPA 의 scoped style 에 같은 규칙을 복제하면 한쪽만 바뀌어 어긋나므로
+ * 여기서 한 번만 정의한다.
+ *
+ * 모든 규칙을 `.queue-status` 안으로 한정한다 — 같은 클래스명(.team-badge 등)을
+ * 다른 크기로 쓰는 키오스크·기록 화면에는 영향을 주지 않는다.
+ */
+
+.queue-status {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.queue-status .status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1.5rem;
+}
+
+/* 엔트리 번호와 전화번호는 좁은 화면에서도 한 줄을 유지한다. */
+.queue-status .input-row {
+  display: flex;
+  gap: 0.75rem;
+}
+
+.queue-status .input-col {
+  display: flex;
+  flex-direction: column;
+}
+
+.queue-status .input-col.flex-1 {
+  flex: 1;
+}
+
+.queue-status .entry-input {
+  width: 5rem;
+  text-align: center;
+}
+
+.queue-status .input-col.flex-1 .form-input {
+  text-align: center;
+}
+
+/* Hide number input spinners */
+.queue-status .entry-input::-webkit-outer-spin-button,
+.queue-status .entry-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.queue-status .entry-input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+.queue-status .team-display {
+  margin-top: 0.75rem;
+  min-height: 2.5rem;
+}
+
+/* 조회 버튼과 혼동되지 않도록 채운 버튼이 아니라 옅은 판독 라벨로 둔다. */
+.queue-status .team-badge {
+  padding: 0.5rem 1rem;
+  background: rgba(59, 130, 246, 0.12);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: 6px;
+  color: var(--accent-primary);
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: center;
+}
+
+.queue-status .team-badge.error {
+  background: rgba(239, 68, 68, 0.12);
+  border-color: rgba(239, 68, 68, 0.3);
+  color: var(--accent-danger);
+  font-weight: 500;
+}
+
+.queue-status .team-badge.placeholder {
+  background: transparent;
+  border-color: transparent;
+  visibility: hidden;
+}
+
+.queue-status .btn-block {
+  width: 100%;
+  margin-top: 1rem;
+}
+
+/* 결과 카드는 조회 카드 높이에 맞춰 늘어난다 — 버튼 아래 빈 공간이 생기지 않는다. */
+.queue-status .result-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.queue-status .result-body {
+  display: flex;
+  flex: 1;
+  min-height: 9rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.queue-status .result-message {
+  color: var(--accent-danger);
+  font-weight: 600;
+  text-align: center;
+}
+
+.queue-status .result-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.queue-status .result-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.3rem;
+}
+
+.queue-status .result-name {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.queue-status .result-rank {
+  color: var(--accent-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 2.5rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.queue-status .result-row.placeholder .result-rank {
+  color: var(--text-tertiary);
+}
+
+.queue-status .result-suffix {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+.queue-status .result-total {
+  color: var(--text-secondary);
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .queue-status .status-grid {
+    grid-template-columns: 1fr;
+  }
+}

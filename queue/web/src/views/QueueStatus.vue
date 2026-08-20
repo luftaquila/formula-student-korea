@@ -287,141 +287,8 @@ function clearState(message) {
 </template>
 
 <style scoped>
-.queue-status {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.5rem;
-}
-
-.btn-block {
-  width: 100%;
-  margin-top: 1rem;
-}
-
-.input-row {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.input-col {
-  display: flex;
-  flex-direction: column;
-}
-
-.input-col.flex-1 {
-  flex: 1;
-}
-
-.entry-input {
-  width: 5rem;
-  text-align: center;
-}
-
-.input-col.flex-1 .form-input {
-  text-align: center;
-}
-
-/* Hide number input spinners */
-.entry-input::-webkit-outer-spin-button,
-.entry-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.entry-input[type="number"] {
-  -moz-appearance: textfield;
-}
-
-.team-display {
-  margin-top: 0.75rem;
-  min-height: 2.5rem;
-}
-
-.team-badge {
-  padding: 0.5rem 1rem;
-  background: rgba(59, 130, 246, 0.12);
-  border: 1px solid rgba(59, 130, 246, 0.3);
-  border-radius: 6px;
-  color: var(--accent-primary);
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-align: center;
-}
-
-.team-badge.error {
-  background: rgba(239, 68, 68, 0.12);
-  border-color: rgba(239, 68, 68, 0.3);
-  color: var(--accent-danger);
-  font-weight: 500;
-}
-
-.team-badge.placeholder {
-  background: transparent;
-  border-color: transparent;
-  visibility: hidden;
-}
-
-.result-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.result-body {
-  display: flex;
-  flex: 1;
-  min-height: 9rem;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1rem;
-}
-
-.result-display {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.result-row {
-  display: flex;
-  align-items: baseline;
-  gap: 0.3rem;
-}
-
-.result-name {
-  font-size: 1.1rem;
-  font-weight: 600;
-}
-
-.result-rank {
-  color: var(--accent-primary);
-  font-family: "JetBrains Mono", monospace;
-  font-size: 2.5rem;
-  font-variant-numeric: tabular-nums;
-  line-height: 1;
-}
-
-.result-row.placeholder .result-rank {
-  color: var(--text-tertiary);
-}
-
-.result-suffix {
-  font-size: 1.1rem;
-  font-weight: 600;
-}
-
-.result-total {
-  color: var(--text-secondary);
-  font-size: 1.1rem;
-  font-weight: 500;
-}
-
+/* 조회 카드·팀 라벨·실시간 순번 규칙은 shared/styles/lookup-status.css 가 소유한다
+   (등록 대기열 화면과 공유). 이 블록은 이 화면에만 있는 부스 현황 스타일이다. */
 .loading {
   display: flex;
   flex-direction: column;
@@ -536,10 +403,6 @@ function clearState(message) {
 }
 
 @media (max-width: 640px) {
-  .status-grid {
-    grid-template-columns: 1fr;
-  }
-
   .booth-grid {
     grid-template-columns: repeat(2, 1fr);
   }

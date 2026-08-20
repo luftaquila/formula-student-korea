@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import "vue-sonner/style.css";
 import "@shared/styles/base.css";
 import "@shared/styles/layout.css";
+import "@shared/styles/lookup-status.css";
 import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
 import { isChief, showOfficials } from "@shared/officialsStore.js";
