@@ -18,7 +18,7 @@ function addStoredYear(years, value) {
   if (value != null) years.add(assertCurrentCompetitionYear(value));
 }
 
-function normalizedPath(req) {
+export function normalizedPath(req) {
   return (req.path.replace(/\/+$/, "") || "/").toLowerCase();
 }
 

@@ -2244,7 +2244,11 @@ function sendSmsNotification(type, prev) {
         ({ response, status }) => logger.log(null, "sms.send", {
           response, status, num: target.num, type,
         }),
-        (error) => logger.warn(null, error?.code === "SMS_TIMEOUT" ? "sms.timeout" : "sms.error", {
+        // SENS 가 응답한 4xx/5xx 는 계속 sms.send(warn) 로 남긴다 — 저장된 로그
+        // 조회와의 연속성을 위해서다. 소켓 오류만 sms.error, 타임아웃은 sms.timeout.
+        (error) => logger.warn(null, error?.code === "SMS_TIMEOUT"
+          ? "sms.timeout"
+          : (error?.status ? "sms.send" : "sms.error"), {
           error: error?.response || error?.message || String(error),
           status: error?.status,
           num: target.num,
