@@ -207,9 +207,9 @@ onUnmounted(() => {
 .kiosk-input::placeholder { color: var(--text-tertiary); font-weight: 400; }
 .entry-input { width: 120px; text-align: center; }
 .team-display { margin-top: 0.75rem; min-height: 2.5rem; }
-.team-badge { padding: 0.5rem 1rem; background: var(--accent-primary); color: white; border-radius: 8px; font-size: 0.875rem; font-weight: 600; text-align: center; }
-.team-badge.error { background: var(--accent-danger); font-weight: 500; }
-.team-badge.placeholder { background: transparent; visibility: hidden; }
+.team-badge { padding: 0.5rem 1rem; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; color: var(--accent-primary); font-size: 0.875rem; font-weight: 600; text-align: center; }
+.team-badge.error { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.3); color: var(--accent-danger); font-weight: 500; }
+.team-badge.placeholder { background: transparent; border-color: transparent; visibility: hidden; }
 .notice-card { align-self: start; width: 100%; text-align: center; }
 .notice-card .card-body { padding: 3rem 2rem; }
 .notice-card p { margin-top: 0.4rem; color: var(--text-secondary); }

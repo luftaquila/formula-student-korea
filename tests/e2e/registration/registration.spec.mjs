@@ -90,6 +90,13 @@ test.describe("Registration queue", () => {
       await publicSse;
       await expect(publicPage.locator("#lookup-phone")).toHaveValue("010");
       await publicPage.locator("#lookup-number").fill(String(ENTRY_NUMBER));
+      await expect(publicPage.locator(".query-card .team-badge")).toContainText("PNU Racing");
+      const queryCardBox = await publicPage.locator(".query-card").boundingBox();
+      const lookupButtonBox = await publicPage.locator(".query-card button[type=submit]").boundingBox();
+      expect(queryCardBox).not.toBeNull();
+      expect(lookupButtonBox).not.toBeNull();
+      expect(queryCardBox.y + queryCardBox.height - (lookupButtonBox.y + lookupButtonBox.height))
+        .toBeLessThanOrEqual(24);
       await publicPage.locator("#lookup-phone").fill(PHONE);
       const lookedUp = publicPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");

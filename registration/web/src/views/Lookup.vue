@@ -178,11 +178,12 @@ onUnmounted(() => events?.close());
 .entry-input { width: 5rem; text-align: center; }
 .input-col.flex-1 .form-input { text-align: center; }
 .team-display { margin-top: 0.75rem; min-height: 2.5rem; }
-.team-badge { padding: 0.5rem 1rem; background: var(--accent-primary); color: white; border-radius: 8px; font-size: 0.875rem; font-weight: 600; text-align: center; }
-.team-badge.error { background: var(--accent-danger); font-weight: 500; }
-.team-badge.placeholder { background: transparent; visibility: hidden; }
+.team-badge { padding: 0.5rem 1rem; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 6px; color: var(--accent-primary); font-size: 0.875rem; font-weight: 600; text-align: center; }
+.team-badge.error { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.3); color: var(--accent-danger); font-weight: 500; }
+.team-badge.placeholder { background: transparent; border-color: transparent; visibility: hidden; }
 .btn-block { width: 100%; margin-top: 1rem; }
-.result-body { display: flex; min-height: 15.5rem; flex-direction: column; justify-content: center; gap: 1rem; }
+.result-card { display: flex; flex-direction: column; }
+.result-body { display: flex; flex: 1; min-height: 9rem; flex-direction: column; justify-content: center; gap: 1rem; }
 .result-message { color: var(--accent-danger); font-weight: 600; text-align: center; }
 .result-placeholder { color: var(--text-tertiary); font-family: "JetBrains Mono", monospace; font-size: 3rem; text-align: center; }
 .rank-block { text-align: center; }

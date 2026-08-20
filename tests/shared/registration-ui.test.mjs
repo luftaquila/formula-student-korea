@@ -125,7 +125,7 @@ test("registration forms prefill 010 and keep the queue-style minimal result", a
   assert.match(templateOf(lookup), /result\.position/);
 });
 
-test("registration team labels match the existing Queue badge structure and style", async () => {
+test("registration team labels keep one badge structure that cannot be mistaken for a button", async () => {
   const [register, lookup] = await Promise.all([
     readRegistrationSource("src/views/Register.vue"),
     readRegistrationSource("src/views/Lookup.vue"),
@@ -138,8 +138,19 @@ test("registration team labels match the existing Queue badge structure and styl
     assert.match(markup, /class="team-badge error"/);
     assert.match(markup, /class="team-badge placeholder"/);
     assert.match(source, /\.team-display \{ margin-top: 0\.75rem; min-height: 2\.5rem; \}/);
-    assert.match(source, /\.team-badge \{[^}]*background: var\(--accent-primary\);[^}]*border-radius: 8px;[^}]*font-size: 0\.875rem;[^}]*font-weight: 600;[^}]*text-align: center;/);
+    assert.match(source, /\.team-badge \{[^}]*background: rgba\(59, 130, 246, 0\.12\);[^}]*border: 1px solid rgba\(59, 130, 246, 0\.3\);[^}]*border-radius: 6px;[^}]*color: var\(--accent-primary\);[^}]*font-size: 0\.875rem;[^}]*font-weight: 600;/);
+    assert.match(source, /\.team-badge\.error \{[^}]*background: rgba\(239, 68, 68, 0\.12\);[^}]*color: var\(--accent-danger\);/);
+    assert.doesNotMatch(source, /\.team-badge \{[^}]*background: var\(--accent-primary\)/);
+    assert.doesNotMatch(source, /\.team-badge \{[^}]*color: white/);
   }
+});
+
+test("registration lookup keeps the submit button flush with the query card", async () => {
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+
+  assert.match(lookup, /\.result-card \{ display: flex; flex-direction: column; \}/);
+  assert.match(lookup, /\.result-body \{[^}]*flex: 1;/);
+  assert.doesNotMatch(lookup, /\.result-body \{[^}]*min-height: 15\.5rem;/);
 });
 
 test("registration settings use concise labels and a numeric notification rank", async () => {
