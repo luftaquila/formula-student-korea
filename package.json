@@ -7,6 +7,7 @@
     "test:shared": "node --test tests/shared/*.test.mjs",
     "test:auth": "node --test tests/auth/*.test.mjs",
     "test:queue": "TZ=Asia/Seoul node --test tests/queue/*.test.mjs",
+    "test:registration": "TZ=Asia/Seoul node --test tests/registration/*.test.mjs",
     "test:inspection": "TZ=Asia/Seoul node --test tests/inspection/*.test.mjs",
     "test:traffic": "TZ=Asia/Seoul node --test tests/traffic/*.test.mjs",
     "test:score": "TZ=Asia/Seoul node --test tests/score/*.test.mjs",

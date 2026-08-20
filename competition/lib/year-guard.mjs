@@ -103,10 +103,36 @@ function addTrafficYears(req, years) {
   addExplicitYear(years, recordYear);
 }
 
+function addRegistrationYears(req, db, years) {
+  const path = normalizedPath(req);
+  if (path === "/api/queue") {
+    addStoredYear(
+      years,
+      db.prepare("SELECT year FROM competition_team WHERE id = ?").get(Number(req.body?.teamId))?.year,
+    );
+    return;
+  }
+  const registrationId = Number(path.match(/^\/api\/queue\/([^/]+)\/(?:call|done|cancel)$/)?.[1]);
+  if (Number.isInteger(registrationId)) {
+    addStoredYear(years, db.prepare(`
+      SELECT t.year
+      FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
+      WHERE q.id = ?
+    `).get(registrationId)?.year);
+    return;
+  }
+  if (path === "/api/settings") {
+    addExplicitYear(years, req.body?.year);
+    return;
+  }
+  years.add(currentCompetitionYear());
+}
+
 export function createModuleYearGuard({ module, db }) {
   return function requireCurrentCompetitionYear(req) {
     const years = new Set();
     if (module === "queue") years.add(currentCompetitionYear());
+    else if (module === "registration") addRegistrationYears(req, db, years);
     else if (module === "inspection") addInspectionYears(req, db, years);
     else if (module === "traffic") addTrafficYears(req, years);
     else if (module === "score") addExplicitYear(years, req.body?.year);

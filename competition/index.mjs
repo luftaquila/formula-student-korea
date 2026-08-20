@@ -7,6 +7,7 @@ import { createDatabase } from "../shared/db-setup.mjs";
 import { createCachedValidator, createRemoteUserValidator, ensureDataDir } from "../shared/express-setup.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
 import { createQueueApp } from "../queue/index.mjs";
+import { createRegistrationApp } from "../registration/index.mjs";
 import { createInspectionApp } from "../inspection/index.mjs";
 import { createTrafficApp } from "../traffic/index.mjs";
 import { createScoreApp } from "../score/index.mjs";
@@ -18,7 +19,7 @@ import { createTeamsModule } from "./modules/teams.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 9200;
-const UI_MODULES = Object.freeze(["entry", "queue", "inspection", "traffic", "score", "documents"]);
+const UI_MODULES = Object.freeze(["entry", "queue", "registration", "inspection", "traffic", "score", "documents"]);
 
 function defaultStaticRoots() {
   return Object.fromEntries(UI_MODULES.map((name) => [name, path.resolve(here, `../${name}/web/dist`)]));
@@ -78,7 +79,7 @@ export function createCompetitionApp(options = {}) {
     db,
     validateUser: sharedValidateUser,
     // sharedValidateUser already applies the process-wide Competition cache.
-    // Disable six nested module caches so a request to a less-used module
+    // Disable seven nested module caches so a request to a less-used module
     // cannot extend a stale role beyond the single configured TTL.
     validateUserCacheTtl: 0,
     skipSpaFallback: true,
@@ -105,6 +106,21 @@ export function createCompetitionApp(options = {}) {
     mutationGuard: guarded("queue"),
     smsRequest: options.smsRequest,
     smsConfig: options.smsConfig,
+    fetchImpl: options.fetchImpl,
+  });
+  const registration = createRegistrationApp({
+    ...common,
+    staticRoot: staticRoots.registration,
+    teamStore: teams.store,
+    // POST /lookup is a credentialed read. The module validates its requested
+    // historical year itself, while every state-changing POST/PATCH below is
+    // guarded from the stored team/queue year by createModuleYearGuard.
+    mutationGuard: (req) => req.path === "/api/lookup"
+      ? { module: "registration", years: [] }
+      : guarded("registration")(req),
+    smsRequest: options.smsRequest,
+    smsConfig: options.smsConfig,
+    fetchImpl: options.fetchImpl,
   });
   const inspection = createInspectionApp({
     ...common,
@@ -134,6 +150,7 @@ export function createCompetitionApp(options = {}) {
   dispatchTeamChange = (data) => {
     score.sourceEvent("entry", "entries", data);
     queue.sourceEvent("entries", data);
+    registration.sourceEvent("entries", data);
     inspection.sourceEvent("entries", data);
     traffic.sourceEvent("entries", data);
   };
@@ -149,7 +166,7 @@ export function createCompetitionApp(options = {}) {
   });
   installCanonicalTeamReferences(db);
 
-  const modules = { teams, queue, inspection, traffic, score, documents };
+  const modules = { teams, queue, registration, inspection, traffic, score, documents };
   const app = express();
   app.disable("x-powered-by");
 
@@ -174,7 +191,7 @@ export function createCompetitionApp(options = {}) {
     if (!/^\/(?:teams|vehicle-types|health|logs)(?:\/|$)/i.test(req.path)) return next();
     teams.app(req, res, next);
   });
-  for (const name of ["queue", "inspection", "traffic", "score", "documents"]) {
+  for (const name of ["queue", "registration", "inspection", "traffic", "score", "documents"]) {
     mountFlatModuleApi(app, `/competition/api/v1/${name}`, modules[name].app);
   }
 
@@ -186,7 +203,7 @@ export function createCompetitionApp(options = {}) {
   }
 
   mountUi(app, "/entry", staticRoots.entry, teams.app);
-  for (const name of ["queue", "inspection", "traffic", "score", "documents"]) {
+  for (const name of ["queue", "registration", "inspection", "traffic", "score", "documents"]) {
     mountUi(app, `/${name}`, staticRoots[name], modules[name].app);
   }
 
@@ -194,13 +211,17 @@ export function createCompetitionApp(options = {}) {
 
   const timers = [
     ...(queue.timers || []),
+    ...(registration.timers || []),
     ...(traffic.timers || []),
     ...(documents.timers || []),
   ];
   let drained = false;
   let closed = false;
   let closePromise = null;
-  const start = () => queue.loadSmsConfig({ retries: 10, delayMs: 3000 });
+  const start = () => Promise.all([
+    queue.loadSmsConfig({ retries: 10, delayMs: 3000 }),
+    registration.loadSmsConfig({ retries: 10, delayMs: 3000 }),
+  ]);
   const drain = () => {
     if (!drained) {
       drained = true;
@@ -217,7 +238,9 @@ export function createCompetitionApp(options = {}) {
     const closeDatabase = () => {
       if (!options.db && db.open) db.close();
     };
-    if (!documents.hasPendingNotificationTasks?.()) {
+    const hasPendingTasks = Object.values(modules).some((module) =>
+      module.hasPendingTasks?.() || module.hasPendingNotificationTasks?.());
+    if (!hasPendingTasks) {
       closeDatabase();
       closePromise = Promise.resolve();
     } else {

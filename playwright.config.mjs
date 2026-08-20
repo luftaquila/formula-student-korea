@@ -22,6 +22,7 @@ export default defineConfig({
     { name: "entry", testDir: "./tests/e2e/entry", dependencies: ["auth"], use: { browserName: "chromium" } },
     { name: "inspection", testDir: "./tests/e2e/inspection", dependencies: ["entry"], use: { browserName: "chromium" } },
     { name: "queue", testDir: "./tests/e2e/queue", dependencies: ["entry"], use: { browserName: "chromium" } },
+    { name: "registration", testDir: "./tests/e2e/registration", dependencies: ["entry"], use: { browserName: "chromium" } },
     { name: "traffic", testDir: "./tests/e2e/traffic", dependencies: ["entry"], use: { browserName: "chromium" } },
     { name: "score", testDir: "./tests/e2e/score", dependencies: ["inspection", "traffic"], use: { browserName: "chromium" } },
     { name: "documents", testDir: "./tests/e2e/documents", dependencies: ["entry"], use: { browserName: "chromium" } },

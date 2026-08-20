@@ -1,0 +1,201 @@
+.registration-app {
+  --layout-max-width: 1180px;
+}
+
+.registration-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 8px;
+  color: #e2e4e9;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.registration-tabs {
+  display: flex;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 0.55rem 1rem;
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.registration-tabs a {
+  padding: 0.45rem 0.8rem;
+  border-radius: 6px;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  text-decoration: none;
+}
+
+.registration-tabs a:hover,
+.registration-tabs a.active {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+}
+
+.registration-main {
+  width: 100%;
+}
+
+.page-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.page-heading h2 {
+  font-size: 1.45rem;
+  line-height: 1.35;
+}
+
+.page-heading p {
+  margin-top: 0.25rem;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.status-row,
+.button-row,
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.badge.success { color: #167633; background: rgba(39, 166, 68, 0.13); }
+.badge.warning { color: #a86100; background: rgba(245, 158, 11, 0.15); }
+.badge.danger { color: #b42318; background: rgba(239, 68, 68, 0.13); }
+.badge.primary { color: #1d5fbe; background: rgba(59, 130, 246, 0.13); }
+
+[data-theme="dark"] .badge.success { color: #79d891; }
+[data-theme="dark"] .badge.warning { color: #f8c76a; }
+[data-theme="dark"] .badge.danger { color: #ff928d; }
+[data-theme="dark"] .badge.primary { color: #87b8ff; }
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.45fr) minmax(180px, 1fr);
+  gap: 0.75rem;
+}
+
+.form-grid .full {
+  grid-column: 1 / -1;
+}
+
+.mono {
+  font-family: "JetBrains Mono", monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+.muted { color: var(--text-secondary); }
+.error-text { color: var(--accent-danger); font-size: 0.88rem; }
+
+.empty-state {
+  padding: 2.5rem 1rem;
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.data-table td:last-child,
+.data-table th:last-child {
+  text-align: right;
+}
+
+.data-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.data-table small {
+  color: var(--text-secondary);
+}
+
+.setting-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.setting-line:last-child { border-bottom: 0; }
+.setting-line strong { display: block; font-size: 0.9rem; }
+.setting-line small { color: var(--text-secondary); }
+
+.switch {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  flex: none;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+}
+
+.switch span {
+  position: absolute;
+  inset: 0;
+  border-radius: 999px;
+  background: var(--border-color);
+  cursor: pointer;
+}
+
+.switch span::after {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  top: 3px;
+  left: 3px;
+  border-radius: 50%;
+  background: white;
+  transition: transform 0.15s ease;
+}
+
+.switch input:checked + span { background: var(--accent-primary); }
+.switch input:checked + span::after { transform: translateX(20px); }
+.switch input:disabled + span { cursor: not-allowed; opacity: 0.55; }
+
+@media (max-width: 640px) {
+  .registration-tabs { justify-content: flex-start; overflow-x: auto; }
+  .page-heading { flex-direction: column; }
+  .form-grid { grid-template-columns: 1fr; }
+  .form-grid .full { grid-column: auto; }
+  .data-table th,
+  .data-table td { padding: 0.65rem 0.7rem; }
+}

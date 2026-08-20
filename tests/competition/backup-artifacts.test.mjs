@@ -160,6 +160,15 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function removeRegistrationSchema(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    DROP TABLE registration_queue;
+    DROP TABLE registration_settings;
+  `);
+  writer.close();
+}
+
 function removeQualifiedCheckConstraint(dbPath) {
   const writer = new Database(dbPath);
   const tableSql = writer.prepare(
@@ -732,12 +741,47 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
-  it("accepts only the exact predecessor schema and upgrades it at runtime without validator writes", () => {
+  it("accepts the exact pre-Registration schema and adds its tables at runtime without validator writes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-registration-schema-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    removeRegistrationSchema(dbPath);
+
+    const predecessorResult = validateDatabase(dbPath);
+    assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
+    const unchanged = new Database(dbPath, { readonly: true });
+    assert.equal(
+      unchanged.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'").get(),
+      undefined,
+    );
+    unchanged.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    assert.ok(upgraded.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'",
+    ).get());
+    assert.ok(upgraded.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_settings'",
+    ).get());
+    upgraded.close();
+    const upgradedResult = validateDatabase(dbPath);
+    assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
+  });
+
+  it("accepts only the exact older predecessor schema and upgrades it at runtime without validator writes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-schema-upgrade-validator-"));
     roots.push(root);
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    removeRegistrationSchema(dbPath);
 
     const predecessor = new Database(dbPath);
     predecessor.exec("ALTER TABLE score_endurance DROP COLUMN qualified");
@@ -749,6 +793,10 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(
       unchanged.pragma("table_info('score_endurance')").some(({ name }) => name === "qualified"),
       false,
+    );
+    assert.equal(
+      unchanged.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'").get(),
+      undefined,
     );
     unchanged.close();
 
@@ -762,6 +810,9 @@ describe("Competition backup/restore artifact validation", () => {
       upgraded.db.pragma("table_info('score_endurance')").some(({ name }) => name === "qualified"),
       true,
     );
+    assert.ok(upgraded.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'",
+    ).get());
     upgraded.close();
     const upgradedResult = validateDatabase(dbPath);
     assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
@@ -787,6 +838,7 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.db.prepare("INSERT INTO score_endurance (year, team_num, qualified) VALUES (?, 1, 1)")
       .run(CURRENT_YEAR);
     seeded.close();
+    removeRegistrationSchema(dbPath);
     removeQualifiedCheckConstraint(dbPath);
 
     const intermediate = new Database(dbPath, { readonly: true });

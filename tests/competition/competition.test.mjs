@@ -26,7 +26,7 @@ function validateArtifact(dbPath) {
 function fixtureRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-competition-test-"));
   const staticRoots = {};
-  for (const name of ["entry", "queue", "inspection", "traffic", "score", "documents"]) {
+  for (const name of ["entry", "queue", "registration", "inspection", "traffic", "score", "documents"]) {
     const directory = path.join(root, name);
     fs.mkdirSync(directory);
     fs.writeFileSync(path.join(directory, "index.html"), `<html>${name}</html>`);
@@ -350,6 +350,7 @@ describe("Competition modular monolith", () => {
 
       const endpoints = [
         [`${baseUrl}/competition/api/v1/queue/events`, null, "entries"],
+        [`${baseUrl}/competition/api/v1/registration/events?year=${YEAR}`, null, "registration"],
         [`${baseUrl}/competition/api/v1/inspection/sheet/events`, admin, "entries"],
         [`${baseUrl}/competition/api/v1/traffic/events`, admin, "entries"],
         [`${baseUrl}/competition/api/v1/score/score/public/${YEAR}/events`, null, "refresh"],
@@ -384,7 +385,7 @@ describe("Competition modular monolith", () => {
 
       for (let index = 0; index < streams.length; index++) {
         const event = await nextNamedEvent(streams[index], endpoints[index][2]);
-        if (event.event === "entries") assert.equal(event.data.year, YEAR);
+        if (["entries", "registration"].includes(event.event)) assert.equal(event.data.year, YEAR);
       }
       const refreshed = await client.get(`/competition/api/v1/score/score/public/${YEAR}`);
       assert.equal(refreshed.status, 200, await refreshed.clone().text());
@@ -468,6 +469,7 @@ describe("Competition modular monolith", () => {
     const { server, baseUrl } = await startServer(created.app);
     const client = createClient(baseUrl);
     const official = makeAuthCookie({ email: "official@test.invalid", name: "Official", role: "official" });
+    const chief = makeAuthCookie({ email: "chief@test.invalid", name: "Chief", role: "chief" });
     const previousYear = YEAR - 1;
     try {
       const replacement = created.teams.createTeam(YEAR, {
@@ -819,6 +821,7 @@ describe("Competition modular monolith", () => {
     const { server, baseUrl } = await startServer(created.app);
     const student = makeAuthCookie({ email: "student@test.invalid", name: "Student", role: "student" });
     const official = makeAuthCookie({ email: "official@test.invalid", name: "Official", role: "official" });
+    const chief = makeAuthCookie({ email: "chief@test.invalid", name: "Chief", role: "chief" });
     const admin = makeAuthCookie({ email: "admin@test.invalid", name: "Admin", role: "admin" });
     const get = (pathname, cookie) => fetch(`${baseUrl}${pathname}`, {
       redirect: "manual",
@@ -834,6 +837,11 @@ describe("Competition modular monolith", () => {
       assert.equal((await get("/score/", admin)).status, 200);
       assert.equal((await get("/documents/", student)).status, 200);
       assert.equal((await get("/queue/")).status, 200);
+      assert.equal((await get("/registration/")).status, 200);
+      assert.equal((await get("/registration/manage", student)).status, 302);
+      assert.equal((await get("/registration/manage", official)).status, 200);
+      assert.equal((await get("/registration/register", official)).status, 302);
+      assert.equal((await get("/registration/register", chief)).status, 200);
     } finally {
       await stopServer(server);
       created.close();

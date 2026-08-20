@@ -42,4 +42,15 @@ describe("CI workflow operational contracts", () => {
       assert.ok((workflow.match(/\$DOCKER_CONTEXT/g) || []).length >= 2);
     }
   });
+
+  it("treats Registration as Competition code in build, unit, and E2E plans", () => {
+    for (const workflow of [testWorkflow, buildWorkflow]) {
+      assert.match(workflow, /            registration:\n              - 'registration\/\*\*'/);
+      assert.match(workflow, /F_REGISTRATION: \$\{\{ steps\.filter\.outputs\.registration \}\}/);
+      assert.match(workflow, /"\$F_QUEUE" "\$F_REGISTRATION" "\$F_INSPECTION"/);
+    }
+    assert.match(testWorkflow, /registration\/package-lock\.json/);
+    assert.match(testWorkflow, /for dir in auth queue registration inspection/);
+    assert.match(testWorkflow, /- shard: registration\n            projects: --project=registration/);
+  });
 });

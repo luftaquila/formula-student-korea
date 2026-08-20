@@ -1,0 +1,375 @@
+import { afterEach, describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+
+import {
+  cleanup,
+  createClient,
+  makeAuthCookie,
+  setupTestEnv,
+  startServer,
+  stopServer,
+  tmpDbPath,
+  TRUST_JWT,
+} from "../helpers/test-utils.mjs";
+import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { createRegistrationApp } from "../../registration/index.mjs";
+import { createModuleYearGuard } from "../../competition/lib/year-guard.mjs";
+import { ensureCompetitionTeamSchema, TeamStore } from "../../competition/lib/team-store.mjs";
+
+setupTestEnv();
+const require = createRequire(import.meta.url);
+const Database = require("../../registration/node_modules/better-sqlite3");
+const YEAR = currentCompetitionYear();
+const cookies = Object.fromEntries(["student", "official", "chief", "admin"].map((role) => [
+  role,
+  makeAuthCookie({ email: `${role}@test.invalid`, name: role, role }),
+]));
+
+const activeFixtures = [];
+
+async function assertStatus(response, expected) {
+  if (response.status !== expected) {
+    assert.fail(`expected HTTP ${expected}, received ${response.status}: ${await response.text()}`);
+  }
+}
+
+function fakeSmsClient() {
+  const messages = [];
+  let available = true;
+  let failures = 0;
+  return {
+    messages,
+    setAvailable(value) { available = value; },
+    failNext(count = 1) { failures += count; },
+    isAvailable() { return available; },
+    async loadConfig() { return available; },
+    send(phone, content) {
+      messages.push({ phone, content });
+      if (failures > 0) {
+        failures -= 1;
+        return Promise.reject(Object.assign(new Error("simulated SENS failure"), { status: 503 }));
+      }
+      return Promise.resolve({ status: 202, response: "accepted" });
+    },
+  };
+}
+
+async function fixture() {
+  const dbPath = tmpDbPath();
+  const db = new Database(dbPath);
+  ensureCompetitionTeamSchema(db);
+  const teamStore = new TeamStore(db);
+  const smsClient = fakeSmsClient();
+  const guard = createModuleYearGuard({ module: "registration", db });
+  const registration = createRegistrationApp({
+    db,
+    teamStore,
+    smsClient,
+    validateUser: TRUST_JWT,
+    validateUserCacheTtl: 0,
+    skipSpaFallback: true,
+    mutationGuard: (req) => req.path === "/api/lookup"
+      ? { module: "registration", years: [] }
+      : guard(req),
+  });
+  const started = await startServer(registration.app);
+  const created = {
+    dbPath,
+    db,
+    teamStore,
+    smsClient,
+    registration,
+    server: started.server,
+    client: createClient(started.baseUrl),
+    baseUrl: started.baseUrl,
+    team(number, overrides = {}) {
+      return teamStore.createTeam(YEAR, {
+        number,
+        university: overrides.university || `University ${number}`,
+        name: overrides.name || `Team ${number}`,
+      });
+    },
+  };
+  activeFixtures.push(created);
+  return created;
+}
+
+async function openQueue(f) {
+  const response = await f.client.patch("/api/settings", {
+    cookie: cookies.chief,
+    body: { year: YEAR, open: true },
+  });
+  await assertStatus(response, 200);
+}
+
+async function register(f, team, phone = "01012345678") {
+  const response = await f.client.post("/api/queue", {
+    cookie: cookies.chief,
+    body: { teamId: team.id, phone },
+  });
+  await assertStatus(response, 201);
+  return response.json();
+}
+
+async function openSse(url) {
+  const controller = new AbortController();
+  const response = await fetch(url, { signal: controller.signal });
+  await assertStatus(response, 200);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  return {
+    async next(expected) {
+      for (;;) {
+        const boundary = buffer.indexOf("\n\n");
+        if (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const event = frame.match(/^event: (.+)$/m)?.[1];
+          if (event !== expected) continue;
+          const data = frame.match(/^data: (.+)$/m)?.[1];
+          return data ? JSON.parse(data) : null;
+        }
+        const chunk = await reader.read();
+        if (chunk.done) throw new Error(`SSE ended before ${expected}`);
+        buffer += decoder.decode(chunk.value, { stream: true });
+      }
+    },
+    async close() {
+      await reader.cancel();
+      controller.abort();
+    },
+  };
+}
+
+afterEach(async () => {
+  while (activeFixtures.length) {
+    const f = activeFixtures.pop();
+    f.registration.closeSse();
+    for (const timer of f.registration.timers) clearTimeout(timer);
+    await f.registration.drain();
+    await stopServer(f.server);
+    f.db.close();
+    cleanup(f.dbPath);
+  }
+});
+
+describe("Registration queue", () => {
+  it("enforces the public, official, chief, and admin flows", async () => {
+    const f = await fixture();
+    const team = f.team(11);
+
+    let response = await f.client.get(`/api/status?year=${YEAR}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { year: YEAR, open: false, waiting: 0, called: [] });
+
+    response = await f.client.get(`/api/team/${team.number}?year=${YEAR}`, { cookie: cookies.official });
+    assert.equal(response.status, 403);
+    response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.student });
+    assert.equal(response.status, 403);
+    response = await f.client.post("/api/queue", {
+      cookie: cookies.official,
+      body: { teamId: team.id, phone: "01012345678" },
+    });
+    assert.equal(response.status, 403);
+
+    await openQueue(f);
+    response = await f.client.get(`/api/team/${team.number}?year=${YEAR}`, { cookie: cookies.chief });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).id, team.id);
+
+    const created = await register(f, team);
+    assert.equal(created.position, 1);
+    response = await f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official });
+    await assertStatus(response, 200);
+    response = await f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official });
+    await assertStatus(response, 200);
+
+    response = await f.client.patch("/api/settings", {
+      cookie: cookies.official,
+      body: { year: YEAR, open: false },
+    });
+    assert.equal(response.status, 403);
+    response = await f.client.patch("/api/settings", {
+      cookie: cookies.admin,
+      body: { year: YEAR, open: false },
+    });
+    assert.equal(response.status, 200);
+  });
+
+  it("verifies public lookups with year, entry number, and phone without exposing phone data", async () => {
+    const f = await fixture();
+    const first = f.team(21);
+    const second = f.team(22);
+    await openQueue(f);
+    await register(f, first, "01011112222");
+    await register(f, second, "01033334444");
+
+    let response = await f.client.post("/api/lookup", {
+      body: { year: YEAR, num: first.number, phone: "010-1111-2222" },
+    });
+    await assertStatus(response, 200);
+    const result = await response.json();
+    assert.equal(result.teamId, first.id);
+    assert.equal(result.position, 1);
+    assert.equal(result.waitingTotal, 2);
+    assert.equal(Object.hasOwn(result, "phone"), false);
+
+    response = await f.client.post("/api/lookup", {
+      body: { year: YEAR, num: first.number, phone: "01099999999" },
+    });
+    assert.equal(response.status, 404);
+    assert.equal((await response.json()).code, "REGISTRATION_NOT_FOUND");
+
+    const warning = f.db.prepare(`
+      SELECT detail FROM logs
+      WHERE module = 'registration' AND action = 'registration.lookup' AND level = 'warn'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(JSON.parse(warning.detail).phone, "010****9999");
+    assert.equal(warning.detail.includes("01099999999"), false);
+  });
+
+  it("keeps stable team identity through renumbering and retains the phone in finished history", async () => {
+    const f = await fixture();
+    const team = f.team(31);
+    await openQueue(f);
+    const created = await register(f, team, "01055556666");
+
+    const changed = f.teamStore.updateTeam(team.id, { number: 131 });
+    assert.equal(changed.after.id, team.id);
+    let response = await f.client.post("/api/lookup", {
+      body: { year: YEAR, num: 131, phone: "01055556666" },
+    });
+    await assertStatus(response, 200);
+    assert.equal((await response.json()).teamId, team.id);
+
+    response = await f.client.post(`/api/queue/${created.id}/done`, { cookie: cookies.official });
+    await assertStatus(response, 200);
+    const finished = f.db.prepare(`
+      SELECT team_id, phone, status, finished_at FROM registration_queue WHERE id = ?
+    `).get(created.id);
+    assert.equal(finished.team_id, team.id);
+    assert.equal(finished.phone, "01055556666");
+    assert.equal(finished.status, "done");
+    assert.ok(finished.finished_at);
+  });
+
+  it("cancels active registration state on team deactivation while preserving history", async () => {
+    const f = await fixture();
+    const team = f.team(41);
+    await openQueue(f);
+    const created = await register(f, team, "01077778888");
+
+    const changed = f.teamStore.updateTeam(team.id, { active: false });
+    assert.deepEqual(changed.clearedTransientState, { registration_queue: 1 });
+    const retained = f.db.prepare(`
+      SELECT team_id, phone, status, finished_at FROM registration_queue WHERE id = ?
+    `).get(created.id);
+    assert.deepEqual({ ...retained, finished_at: !!retained.finished_at }, {
+      team_id: team.id,
+      phone: "01077778888",
+      status: "canceled",
+      finished_at: true,
+    });
+  });
+
+  it("allows historical reads and rejects every historical mutation using KST year rules", async () => {
+    const f = await fixture();
+    const oldYear = YEAR - 1;
+    const oldTeamId = Number(f.db.prepare(`
+      INSERT INTO competition_team (year, num, univ, name) VALUES (?, 51, 'Old U', 'Old Team')
+    `).run(oldYear).lastInsertRowid);
+    const oldRegistrationId = Number(f.db.prepare(`
+      INSERT INTO registration_queue (team_id, phone) VALUES (?, '01012121212')
+    `).run(oldTeamId).lastInsertRowid);
+
+    let response = await f.client.post("/api/lookup", {
+      body: { year: oldYear, num: 51, phone: "01012121212" },
+    });
+    await assertStatus(response, 200);
+
+    response = await f.client.post("/api/queue", {
+      cookie: cookies.chief,
+      body: { teamId: oldTeamId, phone: "01034343434" },
+    });
+    assert.equal(response.status, 409);
+    assert.equal((await response.json()).code, "YEAR_READ_ONLY");
+    response = await f.client.post(`/api/queue/${oldRegistrationId}/call`, { cookie: cookies.official });
+    assert.equal(response.status, 409);
+    response = await f.client.patch("/api/settings", {
+      cookie: cookies.chief,
+      body: { year: oldYear, open: true },
+    });
+    assert.equal(response.status, 409);
+  });
+
+  it("resolves concurrent transitions with one success and one auditable conflict", async () => {
+    const f = await fixture();
+    const team = f.team(61);
+    await openQueue(f);
+    const created = await register(f, team);
+
+    const responses = await Promise.all([
+      f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official }),
+      f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 409]);
+    assert.equal(f.db.prepare("SELECT status FROM registration_queue WHERE id = ?").get(created.id).status, "called");
+    const conflict = f.db.prepare(`
+      SELECT detail FROM logs
+      WHERE module = 'registration' AND action = 'registration.call' AND level = 'warn'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.ok(conflict);
+  });
+
+  it("retries failed advance SMS claims and sends a separate call message", async () => {
+    const f = await fixture();
+    const team = f.team(71);
+    await openQueue(f);
+    let response = await f.client.patch("/api/settings", {
+      cookie: cookies.chief,
+      body: { year: YEAR, sms: true, notifyRank: 1 },
+    });
+    await assertStatus(response, 200);
+
+    f.smsClient.failNext();
+    const created = await register(f, team, "01090909090");
+    await f.registration.drain();
+    assert.equal(f.db.prepare("SELECT notified FROM registration_queue WHERE id = ?").get(created.id).notified, 0);
+
+    response = await f.client.patch("/api/settings", {
+      cookie: cookies.chief,
+      body: { year: YEAR, notifyRank: 2 },
+    });
+    await assertStatus(response, 200);
+    await f.registration.drain();
+    assert.equal(f.db.prepare("SELECT notified FROM registration_queue WHERE id = ?").get(created.id).notified, 1);
+
+    response = await f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official });
+    await assertStatus(response, 200);
+    await f.registration.drain();
+    assert.equal(f.smsClient.messages.length, 3);
+    assert.match(f.smsClient.messages[0].content, /등록 대기 1번째/);
+    assert.match(f.smsClient.messages[2].content, /등록 차례/);
+    assert.equal(f.smsClient.messages[2].phone, "01090909090");
+  });
+
+  it("publishes year-scoped invalidations after a successful mutation", async () => {
+    const f = await fixture();
+    const team = f.team(81);
+    await openQueue(f);
+    const stream = await openSse(`${f.baseUrl}/api/events?year=${YEAR}`);
+    try {
+      const init = await stream.next("init");
+      assert.equal(init.year, YEAR);
+      const eventPromise = stream.next("registration");
+      await register(f, team);
+      assert.deepEqual(await eventPromise, { year: YEAR });
+    } finally {
+      await stream.close();
+    }
+  });
+});

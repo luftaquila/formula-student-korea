@@ -44,6 +44,7 @@ jobs:
           cache-dependency-path: |
             auth/package-lock.json
             queue/package-lock.json
+            registration/package-lock.json
             inspection/package-lock.json
             traffic/package-lock.json
             score/package-lock.json
@@ -55,7 +56,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          for dir in auth queue inspection traffic score documents competition course calendar email; do
+          for dir in auth queue registration inspection traffic score documents competition course calendar email; do
             cd $dir && npm ci && cd ..
           done
 
@@ -109,6 +110,8 @@ jobs:
               - 'entry/**'
             queue:
               - 'queue/**'
+            registration:
+              - 'registration/**'
             inspection:
               - 'inspection/**'
             traffic:
@@ -136,6 +139,7 @@ jobs:
           F_AUTH: ${{ steps.filter.outputs.auth }}
           F_ENTRY: ${{ steps.filter.outputs.entry }}
           F_QUEUE: ${{ steps.filter.outputs.queue }}
+          F_REGISTRATION: ${{ steps.filter.outputs.registration }}
           F_INSPECTION: ${{ steps.filter.outputs.inspection }}
           F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
           F_SCORE: ${{ steps.filter.outputs.score }}
@@ -146,7 +150,7 @@ jobs:
           F_CALENDAR: ${{ steps.filter.outputs.calendar }}
         run: |
           competition_changed="$F_COMPETITION"
-          for value in "$F_ENTRY" "$F_QUEUE" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
+          for value in "$F_ENTRY" "$F_QUEUE" "$F_REGISTRATION" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
             if [ "$value" = "true" ]; then competition_changed=true; fi
           done
           declare -A F=(
@@ -298,6 +302,11 @@ jobs:
               tests/e2e/queue/registration.spec.mjs
               tests/e2e/queue/settings.spec.mjs
               tests/e2e/queue/stats.spec.mjs
+            workers: 2
+            services: auth competition email
+            seeds: users vehicle-types entries
+          - shard: registration
+            projects: --project=registration
             workers: 2
             services: auth competition email
             seeds: users vehicle-types entries

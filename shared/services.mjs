@@ -1,6 +1,6 @@
 import { SERVICE_NAMES } from "./service-names.js";
 
-// 배포되는 프로세스의 주소만 둔다. Entry/Queue/Inspection/Traffic/Score/Documents는
+// 배포되는 프로세스의 주소만 둔다. Entry/Queue/Registration/Inspection/Traffic/Score/Documents는
 // Competition 안의 논리 모듈이며 독립 서비스 주소나 포트를 갖지 않는다.
 const SERVICE_PORTS = {
   auth: 9100,
@@ -41,6 +41,7 @@ export function logAggregationTargets() {
   const competitionModules = {
     entry: "",
     queue: "queue",
+    registration: "registration",
     inspection: "inspection",
     traffic: "traffic",
     score: "score",
