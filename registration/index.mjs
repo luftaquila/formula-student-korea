@@ -388,7 +388,17 @@ export function createRegistrationApp(options = {}) {
     track(task);
   }
 
-  function notifyUpcoming(year) {
+  function advanceTarget(year, rank) {
+    return db.prepare(`
+      SELECT q.id, q.team_id, q.phone, q.notified,
+             t.year, t.num, t.univ, t.name, t.active
+      FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
+      WHERE t.year = ? AND q.status = 'waiting'
+      ORDER BY q.id LIMIT 1 OFFSET ?
+    `).get(year, rank - 1);
+  }
+
+  function notifyUpcoming(year, previousTargetId) {
     try {
       const settings = settingsForYear(year);
       if (!settings.sms || settings.notifyRank <= 0) return;
@@ -397,53 +407,45 @@ export function createRegistrationApp(options = {}) {
         return;
       }
 
-      const upcoming = db.prepare(`
-        SELECT q.id, q.team_id, q.phone, q.notified,
-               t.year, t.num, t.univ, t.name, t.active
-        FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND q.status = 'waiting'
-        ORDER BY q.id LIMIT ?
-      `).all(year, settings.notifyRank);
+      const target = advanceTarget(year, settings.notifyRank);
+      if (!target || target.id === previousTargetId || target.notified === 1) return;
 
-      for (const [index, row] of upcoming.entries()) {
-        if (row.notified === 1) continue;
-        const claim = dbRun(() => db.prepare(`
-          UPDATE registration_queue
-          SET notified = 2, notify_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-          WHERE id = ? AND status = 'waiting'
-            AND (notified = 0 OR (
-              notified = 2 AND (
-                notify_claimed_at IS NULL
-                OR notify_claimed_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute')
-              )
-            ))
-        `).run(row.id));
-        if (!claim.success) {
-          logger.warn(null, "registration.sms_claim", {
-            error: claim.error, registrationId: row.id, teamId: row.team_id,
-          }, String(row.id));
-          continue;
-        }
-        if (claim.result.changes !== 1) continue;
-
-        const team = {
-          id: row.team_id,
-          year: row.year,
-          number: row.num,
-          university: row.univ,
-          name: row.name,
-          active: row.active === 1,
-        };
-        dispatchSms({
-          kind: "advance",
-          team,
-          registrationId: row.id,
-          phone: row.phone,
-          content: `${SMS_PREFIX(year)} 엔트리 ${row.num}번 등록 대기 ${index + 1}번째입니다. 등록 데스크 근처에서 대기하세요.`,
-          onSuccess: () => finishAdvanceNotification(row.id, team, true),
-          onFailure: () => finishAdvanceNotification(row.id, team, false),
-        });
+      const claim = dbRun(() => db.prepare(`
+        UPDATE registration_queue
+        SET notified = 2, notify_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE id = ? AND status = 'waiting'
+          AND (notified = 0 OR (
+            notified = 2 AND (
+              notify_claimed_at IS NULL
+              OR notify_claimed_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute')
+            )
+          ))
+      `).run(target.id));
+      if (!claim.success) {
+        logger.warn(null, "registration.sms_claim", {
+          error: claim.error, registrationId: target.id, teamId: target.team_id,
+        }, String(target.id));
+        return;
       }
+      if (claim.result.changes !== 1) return;
+
+      const team = {
+        id: target.team_id,
+        year: target.year,
+        number: target.num,
+        university: target.univ,
+        name: target.name,
+        active: target.active === 1,
+      };
+      dispatchSms({
+        kind: "advance",
+        team,
+        registrationId: target.id,
+        phone: target.phone,
+        content: `${SMS_PREFIX(year)} 엔트리 ${target.num}번 등록 대기 ${settings.notifyRank}번째입니다. 등록 데스크 근처에서 대기하세요.`,
+        onSuccess: () => finishAdvanceNotification(target.id, team, true),
+        onFailure: () => finishAdvanceNotification(target.id, team, false),
+      });
     } catch (error) {
       logger.warn(null, "registration.sms_prepare", {
         error: error?.message || String(error), year,
@@ -516,7 +518,6 @@ export function createRegistrationApp(options = {}) {
         phone: maskedPhone(phone),
         position,
       }, String(id));
-      notifyUpcoming(team.year);
       broadcastChange(team.year);
       return res.status(201).json({
         id,
@@ -553,6 +554,10 @@ export function createRegistrationApp(options = {}) {
         }, String(row.id));
         return res.status(409).json({ code: "REGISTRATION_ALREADY_PROCESSED", message: "이미 처리된 대기 내역입니다." });
       }
+
+      const previousAdvanceTargetId = row.status === "waiting"
+        ? advanceTarget(row.year, settingsForYear(row.year).notifyRank)?.id
+        : undefined;
 
       const placeholders = from.map(() => "?").join(",");
       const result = dbRun(() => db.prepare(`
@@ -603,7 +608,7 @@ export function createRegistrationApp(options = {}) {
           warnSmsUnavailable(row.year);
         }
       }
-      notifyUpcoming(row.year);
+      if (row.status === "waiting") notifyUpcoming(row.year, previousAdvanceTargetId);
       broadcastChange(row.year);
       return res.status(200).json({ id: row.id, status: to });
     } catch (error) {
@@ -662,8 +667,8 @@ export function createRegistrationApp(options = {}) {
       }
       if (Object.hasOwn(req.body || {}, "notifyRank")) {
         const rank = Number(req.body.notifyRank);
-        if (!Number.isInteger(rank) || rank < 0 || rank > 20) {
-          throw Object.assign(new Error("사전 안내 순번은 0~20 사이여야 합니다."), { status: 400 });
+        if (!Number.isInteger(rank) || rank < 1 || rank > 10) {
+          throw Object.assign(new Error("사전 안내 순번은 1~10 사이여야 합니다."), { status: 400 });
         }
         changes.notify_rank = rank;
       }
@@ -689,7 +694,6 @@ export function createRegistrationApp(options = {}) {
       }
       const after = settingsForYear(year);
       logger.log(req, "registration.settings_update", { year, before, after }, String(year));
-      notifyUpcoming(year);
       broadcastChange(year);
       return res.json(after);
     } catch (error) {

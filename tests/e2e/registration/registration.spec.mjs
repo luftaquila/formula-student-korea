@@ -77,8 +77,9 @@ test.describe("Registration queue", () => {
         response.url().endsWith(`${PREFIX}/queue`) && response.request().method() === "POST");
       await chiefPage.getByRole("button", { name: "대기 등록", exact: true }).click();
       expect((await registered).status()).toBe(201);
-      await expect(chiefPage.getByText("대기 등록 완료")).toBeVisible();
-      await expect(chiefPage.getByText(`엔트리 ${ENTRY_NUMBER}번`)).toBeVisible();
+      await expect(chiefPage.getByText(`엔트리 ${ENTRY_NUMBER}번을 1번째 대기로 등록했습니다.`)).toBeVisible();
+      await expect(chiefPage.locator("#register-number")).toHaveValue("");
+      await expect(chiefPage.locator("#register-phone")).toHaveValue("010");
 
       const publicSse = publicPage.waitForResponse((response) => response.url().includes(`${PREFIX}/events`));
       await publicPage.goto("/registration");

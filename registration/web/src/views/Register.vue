@@ -2,8 +2,10 @@
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { formatPhone } from "@shared/format-phone.js";
+import { useNotification } from "@shared/useNotification.js";
 import * as api from "../api.js";
 
+const { success } = useNotification();
 const year = ref(currentCompetitionYear());
 const status = ref(null);
 const number = ref("");
@@ -14,13 +16,9 @@ const teamError = ref("");
 const checking = ref(false);
 const error = ref("");
 const busy = ref(false);
-const done = ref(null);
-const countdown = ref(0);
 
 let lookupTimer = null;
 let lookupSequence = 0;
-let resetTimer = null;
-let countdownTimer = null;
 let events = null;
 
 async function loadStatus() {
@@ -70,8 +68,6 @@ function onPhoneInput(event) {
 }
 
 function reset() {
-  clearTimeout(resetTimer);
-  clearInterval(countdownTimer);
   clearTimeout(lookupTimer);
   lookupSequence += 1;
   number.value = "";
@@ -81,8 +77,6 @@ function reset() {
   teamError.value = "";
   checking.value = false;
   error.value = "";
-  done.value = null;
-  countdown.value = 0;
 }
 
 async function submit() {
@@ -109,11 +103,10 @@ async function submit() {
   busy.value = true;
   error.value = "";
   try {
-    done.value = await api.createRegistration({ teamId: team.value.id, phone: phone.value });
+    const created = await api.createRegistration({ teamId: team.value.id, phone: phone.value });
     await loadStatus();
-    countdown.value = 8;
-    countdownTimer = setInterval(() => { countdown.value = Math.max(0, countdown.value - 1); }, 1000);
-    resetTimer = setTimeout(reset, 8000);
+    reset();
+    success(`엔트리 ${created.number}번을 ${created.position}번째 대기로 등록했습니다.`);
   } catch (requestError) {
     error.value = api.errorMessage(requestError);
     await checkTeam(number.value);
@@ -127,7 +120,7 @@ function startEvents() {
   events = new EventSource(api.eventsUrl(year.value));
   const refresh = () => {
     loadStatus();
-    if (number.value && !done.value) checkTeam(number.value);
+    if (number.value) checkTeam(number.value);
   };
   events.addEventListener("init", refresh);
   events.addEventListener("registration", refresh);
@@ -145,24 +138,12 @@ onMounted(async () => {
 onUnmounted(() => {
   events?.close();
   clearTimeout(lookupTimer);
-  clearTimeout(resetTimer);
-  clearInterval(countdownTimer);
 });
 </script>
 
 <template>
   <div class="kiosk-register">
-    <section v-if="done" class="card success-card">
-      <div class="card-body stack">
-        <span class="badge badge-success">대기 등록 완료</span>
-        <div class="success-rank"><strong class="mono">{{ done.position }}</strong><span>번째</span></div>
-        <p>엔트리 {{ done.number }}번 · {{ done.name }}</p>
-        <p class="muted">순서가 가까워지거나 호출되면 문자로 안내합니다.</p>
-        <button class="btn btn-ghost" type="button" @click="reset">처음으로 ({{ countdown }})</button>
-      </div>
-    </section>
-
-    <div v-else class="kiosk-content">
+    <div class="kiosk-content">
       <section class="card queue-overview">
         <div class="card-header"><h3>🛎️ 등록 대기열</h3></div>
         <div class="card-body overview-body">
@@ -178,14 +159,6 @@ onUnmounted(() => {
             <div class="called-grid">
               <span v-for="row in status.called" :key="row.teamId" class="called-entry mono">{{ row.number }}</span>
             </div>
-          </div>
-          <div class="register-guide">
-            <strong>등록 안내</strong>
-            <ol>
-              <li>엔트리 번호로 참가 팀을 확인합니다.</li>
-              <li>문자를 받을 휴대전화번호를 입력합니다.</li>
-              <li>개인정보 수집·이용에 동의하고 등록합니다.</li>
-            </ol>
           </div>
         </div>
       </section>
@@ -288,9 +261,6 @@ onUnmounted(() => {
 .section-label { display: block; margin-bottom: 0.75rem; color: var(--text-secondary); font-size: 0.875rem; font-weight: 600; }
 .called-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
 .called-entry { padding: 1rem; color: var(--accent-warning); text-align: center; background: rgba(245, 158, 11, 0.12); border: 2px solid var(--accent-warning); border-radius: 10px; font-size: 1.5rem; font-weight: 700; }
-.register-guide { padding-top: 1.25rem; border-top: 1px solid var(--border-color); }
-.register-guide ol { margin: 0.75rem 0 0 1.25rem; color: var(--text-secondary); }
-.register-guide li + li { margin-top: 0.4rem; }
 .input-section { display: flex; flex-direction: column; gap: 1.5rem; }
 .input-group,
 .agreement-group { padding: 1.5rem; background: var(--bg-card); border-radius: 12px; box-shadow: var(--shadow-card); }
@@ -305,14 +275,10 @@ onUnmounted(() => {
 .team-result { min-height: 3.5rem; display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-top: 1rem; padding: 0.875rem 1.25rem; background: var(--bg-hover); border-radius: 10px; }
 .team-result div { display: flex; flex-direction: column; }
 .team-result small { color: var(--text-secondary); }
-.notice-card,
-.success-card { align-self: start; width: 100%; text-align: center; }
+.notice-card { align-self: start; width: 100%; text-align: center; }
 .notice-card .card-body { padding: 3rem 2rem; }
 .notice-card p { margin-top: 0.4rem; color: var(--text-secondary); }
 .notice-icon { display: block; margin-bottom: 0.75rem; font-size: 2rem; }
-.success-card .card-body { align-items: center; padding: 2rem; }
-.success-rank strong { color: var(--accent-primary); font-size: 4rem; line-height: 1; }
-.success-rank span { margin-left: 0.4rem; font-size: 1.2rem; font-weight: 600; }
 .consent-card {
   display: flex;
   align-items: flex-start;

@@ -64,3 +64,12 @@ test("registration user interfaces stay on the current competition year", async 
   assert.match(register, /currentCompetitionYear\(\)/);
   assert.doesNotMatch(`${lookup}\n${register}`, /fetchYears|대회 연도|year-select/);
 });
+
+test("registration kiosk resets immediately without an interstitial guide or completion page", async () => {
+  const register = await readRegistrationSource("src/views/Register.vue");
+  const markup = templateOf(register);
+
+  assert.doesNotMatch(markup, /등록 안내|대기 등록 완료|countdown|success-card/);
+  assert.doesNotMatch(register, /resetTimer|countdownTimer|setInterval/);
+  assert.match(register, /reset\(\);\s*success\(`/);
+});

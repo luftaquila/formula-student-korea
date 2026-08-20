@@ -325,9 +325,48 @@ describe("Registration queue", () => {
     assert.ok(conflict);
   });
 
-  it("retries failed advance SMS claims and sends a separate call message", async () => {
+  it("matches Queue SMS targeting while sending a separate call message", async () => {
     const f = await fixture();
-    const team = f.team(71);
+    const first = f.team(71);
+    const second = f.team(72);
+    const third = f.team(73);
+    const fourth = f.team(74);
+    await openQueue(f);
+    const response = await f.client.patch("/api/settings", {
+      cookie: cookies.chief,
+      body: { year: YEAR, sms: true, notifyRank: 2 },
+    });
+    await assertStatus(response, 200);
+
+    const firstRegistration = await register(f, first, "01011111111");
+    await register(f, second, "01022222222");
+    await register(f, third, "01033333333");
+    const fourthRegistration = await register(f, fourth, "01044444444");
+    await f.registration.drain();
+    assert.equal(f.smsClient.messages.length, 0, "joining the configured rank does not send before the queue advances");
+
+    const canceled = await f.client.post(`/api/queue/${fourthRegistration.id}/cancel`, { cookie: cookies.official });
+    await assertStatus(canceled, 200);
+    await f.registration.drain();
+    assert.equal(f.smsClient.messages.length, 0, "a change behind the configured rank does not send a message");
+
+    const called = await f.client.post(`/api/queue/${firstRegistration.id}/call`, { cookie: cookies.official });
+    await assertStatus(called, 200);
+    await f.registration.drain();
+
+    assert.equal(f.smsClient.messages.length, 2);
+    const callMessage = f.smsClient.messages.find((message) => message.content.includes("등록 차례"));
+    const advanceMessage = f.smsClient.messages.find((message) => message.content.includes("등록 대기 2번째"));
+    assert.equal(callMessage.phone, "01011111111");
+    assert.equal(advanceMessage.phone, "01033333333");
+    assert.equal(f.smsClient.messages.some((message) => message.phone === "01022222222"), false);
+  });
+
+  it("releases a failed exact-rank claim and restricts the rank to Queue limits", async () => {
+    const f = await fixture();
+    const first = f.team(75);
+    const second = f.team(76);
+    const third = f.team(77);
     await openQueue(f);
     let response = await f.client.patch("/api/settings", {
       cookie: cookies.chief,
@@ -335,10 +374,15 @@ describe("Registration queue", () => {
     });
     await assertStatus(response, 200);
 
+    const firstRegistration = await register(f, first, "01044444444");
+    const secondRegistration = await register(f, second, "01055555555");
+    await register(f, third, "01066666666");
     f.smsClient.failNext();
-    const created = await register(f, team, "01090909090");
+    response = await f.client.post(`/api/queue/${firstRegistration.id}/cancel`, { cookie: cookies.official });
+    await assertStatus(response, 200);
     await f.registration.drain();
-    assert.equal(f.db.prepare("SELECT notified FROM registration_queue WHERE id = ?").get(created.id).notified, 0);
+    assert.equal(f.db.prepare("SELECT notified FROM registration_queue WHERE id = ?").get(secondRegistration.id).notified, 0);
+    assert.equal(f.smsClient.messages.length, 1);
 
     response = await f.client.patch("/api/settings", {
       cookie: cookies.chief,
@@ -346,15 +390,15 @@ describe("Registration queue", () => {
     });
     await assertStatus(response, 200);
     await f.registration.drain();
-    assert.equal(f.db.prepare("SELECT notified FROM registration_queue WHERE id = ?").get(created.id).notified, 1);
+    assert.equal(f.smsClient.messages.length, 1, "changing the configured rank does not send a message");
 
-    response = await f.client.post(`/api/queue/${created.id}/call`, { cookie: cookies.official });
-    await assertStatus(response, 200);
-    await f.registration.drain();
-    assert.equal(f.smsClient.messages.length, 3);
-    assert.match(f.smsClient.messages[0].content, /등록 대기 1번째/);
-    assert.match(f.smsClient.messages[2].content, /등록 차례/);
-    assert.equal(f.smsClient.messages[2].phone, "01090909090");
+    for (const notifyRank of [0, 11]) {
+      response = await f.client.patch("/api/settings", {
+        cookie: cookies.chief,
+        body: { year: YEAR, notifyRank },
+      });
+      assert.equal(response.status, 400);
+    }
   });
 
   it("publishes year-scoped invalidations after a successful mutation", async () => {

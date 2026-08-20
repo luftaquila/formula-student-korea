@@ -237,7 +237,7 @@ onUnmounted(() => events?.close());
           <div class="setting-line rank-setting">
             <div>
               <strong>사전 안내 순번</strong>
-              <small>0이면 사전 안내를 보내지 않습니다.</small>
+              <small>해당 순번이 된 팀에 한 번 안내합니다.</small>
             </div>
             <select
               class="form-select rank-select"
@@ -245,7 +245,7 @@ onUnmounted(() => events?.close());
               :disabled="settingsBusy"
               @change="patchSetting({ notifyRank: Number($event.target.value) })"
             >
-              <option v-for="rank in 21" :key="rank - 1" :value="rank - 1">{{ rank - 1 }}번째</option>
+              <option v-for="rank in 10" :key="rank" :value="rank">{{ rank }}번째</option>
             </select>
           </div>
         </div>
