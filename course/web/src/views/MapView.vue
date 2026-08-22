@@ -33,8 +33,7 @@ import {
 } from "../lib/mission-session.mjs";
 import { useNotification } from "@shared/useNotification.js";
 import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
-import { computeCenterline } from "@lib/centerline.mjs";
-import { computeGuidedRoute } from "@lib/guided-route.mjs";
+import { resolveCourseRoute, ROUTE_MODE } from "@lib/route-mode.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
 import { isAdmin } from "@shared/officialsStore.js";
 import { useWhepStream } from "../composables/useWhepStream.js";
@@ -79,6 +78,7 @@ const editLocked = ref(loadPref("editLocked", true, (v) => v === "true")); // de
 const showCenterline = ref(loadPref("showCenterline", true, (v) => v === "true")); // course centerline graphic; default on; persisted
 const routeEditMode = ref(false); // unlocked map taps place reusable route markers
 const routeError = ref("");
+const routeMode = ref(ROUTE_MODE.AUTO); // which engine produced `centerline`
 // Per-course start cone + travel direction live on the server course row
 // (course.start_cone_id / course.reverse), shared by every operator and synced
 // over the 'courses' SSE broadcast — no longer a per-device localStorage pref.
@@ -1380,7 +1380,24 @@ const activeMemos = computed(() => {
 
 const activeRoute = computed(() => routeMap.value[activeCourseId.value] || { markers: [], steps: [] });
 const routeMarkerById = computed(() => new Map(activeRoute.value.markers.map((marker) => [marker.id, marker])));
-const hasGuidedRoute = computed(() => activeRoute.value.steps.length >= 2);
+// Two or more visits mean the markers, not the stored course row, decide the
+// start and the travel direction — whether they merely orient the loop or need
+// the marker router. `routeMode` records which of the two actually ran.
+const hasMarkerRoute = computed(() => activeRoute.value.steps.length >= 2);
+// An oriented route is still the automatic centerline; only saying "마커 경로"
+// there would suggest the marker router drew it.
+const ROUTE_MODE_LABEL = {
+  [ROUTE_MODE.AUTO]: "자동 중심선",
+  [ROUTE_MODE.ORIENTED]: "자동 중심선 · 마커 기준",
+  [ROUTE_MODE.GUIDED]: "마커 경로",
+};
+const routeModeLabel = computed(() => ROUTE_MODE_LABEL[routeMode.value] || ROUTE_MODE_LABEL[ROUTE_MODE.AUTO]);
+const ROUTE_MODE_SUFFIX = {
+  [ROUTE_MODE.AUTO]: "",
+  [ROUTE_MODE.ORIENTED]: " · 마커 기준",
+  [ROUTE_MODE.GUIDED]: " · 마커 경로",
+};
+const routeModeSuffix = computed(() => ROUTE_MODE_SUFFIX[routeMode.value] ?? "");
 
 async function fetchRoute(courseId) {
   if (!courseId) return;
@@ -1520,22 +1537,24 @@ function recomputeCenterline() {
   routeError.value = "";
   if (cones.length < 6) {
     centerline.value = null;
-  } else if (hasGuidedRoute.value) {
+    routeMode.value = ROUTE_MODE.AUTO;
+  } else {
+    // resolveCourseRoute picks the engine: markers that only orient one loop keep
+    // the established centerline path (start/reverse derived from them), markers
+    // that re-use pavement go to the router. Courses with no markers fall back to
+    // the stored course row, so nothing changes until markers are placed.
     try {
-      centerline.value = computeGuidedRoute(
-        cones,
-        activeRoute.value.markers,
-        activeRoute.value.steps,
-        { step: 1.0 },
-      );
+      const resolved = resolveCourseRoute(cones, activeRoute.value.markers, activeRoute.value.steps, {
+        step: 1.0,
+        fallback: courseDirOpts(activeCourseId.value, cones),
+      });
+      centerline.value = resolved.centerline;
+      routeMode.value = resolved.mode;
     } catch (err) {
       centerline.value = null;
+      routeMode.value = ROUTE_MODE.GUIDED;
       routeError.value = err?.message || String(err);
     }
-  } else {
-    // No complete marker route: preserve the established endurance/autocross
-    // centerline path, including start-cone and reverse semantics.
-    centerline.value = computeCenterline(cones, { step: 1.0, ...courseDirOpts(activeCourseId.value, cones) });
   }
   drawCenterline();
 }
@@ -1654,13 +1673,9 @@ function setStartCone() {
   const next = activeCourse.value?.start_cone_id === selectedConeId.value ? null : selectedConeId.value;
   saveCourseDirection(id, { start_cone_id: next });
 }
-// Flip the course's travel direction.
-function toggleReverse() {
-  const id = activeCourseId.value;
-  if (id == null) return;
-  saveCourseDirection(id, { reverse: !isReversed.value });
-}
-const isReversed = computed(() => !!activeCourse.value?.reverse);
+// Travel direction is no longer a separate toggle: the marker visit order is the
+// only way to set it. `course.reverse` stays readable for courses that predate
+// markers (applied through courseDirOpts) and is still written by the import path.
 
 /* ── Icon helpers ──────────────────────────────────── */
 // Per-side #N for each cone of the active course, precomputed once (O(n)) into a
@@ -5855,20 +5870,6 @@ onUnmounted(() => {
               class="map-fab-panel map-fab-tools"
             >
               <button
-                v-if="centerline?.ok && !hasGuidedRoute"
-                :class="['fab-icon-btn', 'fab-tool', { active: isReversed }]"
-                @click="toggleReverse"
-                aria-label="진행방향 전환"
-                :title="isReversed ? '진행방향: 역방향 (탭 → 정방향)' : '진행방향: 정방향 (탭 → 역방향)'"
-              >
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <polyline points="16 4 21 8 16 12" />
-                  <line x1="3" y1="8" x2="21" y2="8" />
-                  <polyline points="8 12 3 16 8 20" />
-                  <line x1="3" y1="16" x2="21" y2="16" />
-                </svg>
-              </button>
-              <button
                 :class="['fab-icon-btn', 'fab-tool', { active: routeEditMode }]"
                 :disabled="editLocked"
                 @click="toggleRouteEditMode"
@@ -6065,13 +6066,13 @@ onUnmounted(() => {
                 <!-- Cones panel for the selected course -->
                 <template v-if="activeCourse">
                   <header class="tab-header tab-header-sub">
-                    <h3>{{ activeCourse.name }}<span v-if="centerline?.ok" class="centerline-len"> ({{ Math.round(centerline.length) }} m{{ hasGuidedRoute ? ' · 마커 경로' : '' }})</span><span v-if="editLocked" class="lock-badge" title="편집 잠김">🔒</span></h3>
+                    <h3>{{ activeCourse.name }}<span v-if="centerline?.ok" class="centerline-len"> ({{ Math.round(centerline.length) }} m{{ routeModeSuffix }})</span><span v-if="editLocked" class="lock-badge" title="편집 잠김">🔒</span></h3>
                   </header>
 
                   <div class="inspector-group route-editor">
                     <div class="route-editor-heading">
                       <div class="group-title">주행 순서 마커</div>
-                      <span :class="['route-mode-badge', { guided: hasGuidedRoute }]">{{ hasGuidedRoute ? '마커 경로' : '자동 중심선' }}</span>
+                      <span :class="['route-mode-badge', { guided: routeMode === ROUTE_MODE.GUIDED, oriented: routeMode === ROUTE_MODE.ORIENTED }]">{{ routeModeLabel }}</span>
                     </div>
                     <p class="hint">마커가 2단계 이상이면 표시 순서대로 중심선을 만듭니다. 같은 마커를 반복 방문에 여러 번 사용할 수 있습니다.</p>
                     <p v-if="routeError" class="route-error">{{ routeError }}</p>
@@ -6145,7 +6146,7 @@ onUnmounted(() => {
                       <button class="btn btn-danger btn-lg-touch" @click="deleteCone(selectedConeId)">삭제</button>
                       <button class="btn btn-ghost btn-lg-touch" @click="selectedConeId = null">취소</button>
                     </div>
-                    <div v-if="!hasGuidedRoute" class="edit-buttons">
+                    <div v-if="!hasMarkerRoute" class="edit-buttons">
                       <button
                         :class="['btn', 'btn-lg-touch', isStartCone ? 'btn-primary' : 'btn-ghost']"
                         @click="setStartCone"
@@ -7433,6 +7434,7 @@ onUnmounted(() => {
   font-size: 0.68rem; font-weight: 700;
 }
 .route-mode-badge.guided { background: rgba(16, 185, 129, 0.18); color: #10b981; }
+.route-mode-badge.oriented { background: rgba(59, 130, 246, 0.18); color: #3b82f6; }
 .route-error {
   margin: 0; padding: 0.4rem 0.5rem; border-radius: 5px;
   background: rgba(239, 68, 68, 0.12); color: #ef4444;
@@ -8162,7 +8164,10 @@ onUnmounted(() => {
   /* Keep the top-right tools in a single horizontal row on mobile (they were
      stacked vertically before). Drop the centred active-tool overlay / rotation
      HUD below the tool row so they don't collide on narrow screens. */
-  .map-fab-tools { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; }
+  /* Overflow must run off the END of the row: with the panel's flex-end packing
+     the extra buttons pile up past the start edge, where horizontal scrolling
+     cannot reach them (a 375 px phone fits six 44 px buttons, no more). */
+  .map-fab-tools { flex-direction: row; flex-wrap: nowrap; overflow-x: auto; justify-content: flex-start; }
   .measure-overlay, .rotate-hud { top: 4.5rem; }
 
   .inspector-handle { display: none; }

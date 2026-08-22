@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import { computeGuidedRoute } from "../../course/lib/guided-route.mjs";
@@ -8,6 +7,7 @@ import { packTrackEntries } from "../../course/lib/pack-track.mjs";
 import { buildGuidedEnrichedJSON } from "../../course/lib/course-export.mjs";
 import { readFastLane } from "../../course/lib/ai-line.mjs";
 import { readKn5 } from "../../course/lib/kn5.mjs";
+import { measuredSkidpadFixture } from "./fixtures/measured-skidpad.mjs";
 
 const LAT0 = 35.292;
 const LNG0 = 126.574;
@@ -65,31 +65,6 @@ function skidpadFixture() {
     exit,
   ];
   return { cones, markers, steps };
-}
-
-function measuredSkidpadFixture() {
-  const fixture = JSON.parse(readFileSync(new URL("./fixtures/skidpad_measured_2026.json", import.meta.url), "utf8"));
-  const cones = fixture.cones.map(([side, x, y, z], index) => ({
-    id: index + 1,
-    ...ll(x, y),
-    alt: fixture.altitudeBase + z,
-    side,
-  }));
-  const markerXY = [
-    [0, -12.5, "진입"], [0, 0, "허리"],
-    [-9.1, 9, "좌상"], [-18, 0, "좌외"], [-9.1, -9, "좌하"],
-    [8.8, 9, "우상"], [18, 0, "우외"], [8.8, -9, "우하"],
-    [0, 11.5, "진출"],
-  ];
-  const markers = markerXY.map(([x, y, label], index) => ({ id: index + 1, ...ll(x, y), label }));
-  const [entry, waist, lt, lf, lb, rt, rf, rb, exit] = markers.map((marker) => marker.id);
-  const steps = [
-    entry, waist,
-    lt, lf, lb, waist, lt, lf, lb, waist,
-    rt, rf, rb, waist, rt, rf, rb, waist,
-    exit,
-  ];
-  return { cones, markers, steps, centers: [ll(-9.098, -0.413), ll(8.81, -0.008)] };
 }
 
 function maxTurnAngle(route) {

@@ -7,6 +7,7 @@ import { createSSEManager } from "../shared/sse.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
 import { setupMissionV2Schema } from "./lib/mission-v2.mjs";
+import { seedOrientationMarkers } from "./lib/route-mode.mjs";
 
 const parsedMissionTelemetryMaxRows = Number.parseInt(process.env.MISSION_TELEMETRY_MAX_ROWS || "500000", 10);
 const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRows) && parsedMissionTelemetryMaxRows > 0
@@ -277,6 +278,39 @@ runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
 // routes, command acknowledgements, and named route presets. The migration is
 // additive and backfills legacy coordinate arrays without deleting history.
 setupMissionV2Schema(db, logger);
+
+// 주행 마커가 코스의 유일한 방향 지정 수단이 되면서, 마커가 없는 기존 코스는 UI에서
+// 방향을 바꿀 수단을 잃는다. 그래서 저장된 start_cone_id/reverse를 그대로 재현하는
+// 마커 2개를 코스마다 심어 둔다. 두 번째 마커는 루프의 1/3 지점에 놓이므로
+// resolveCourseRoute의 "첫 구간은 짧은 호" 규칙이 원래 방향을 되돌려 준다.
+// 기하는 바뀌지 않는다 — 마커는 computeCenterline의 start/reverse 입력일 뿐이다.
+runMigrationOnce(db, "course.seed_route_markers_from_direction.v1", () => {
+  const courses = db.prepare("SELECT id, reverse, start_cone_id FROM course").all();
+  const insertMarker = db.prepare("INSERT INTO route_marker (course_id, lat, lng, label) VALUES (?, ?, ?, ?)");
+  const insertStep = db.prepare("INSERT INTO route_step (course_id, position, marker_id) VALUES (?, ?, ?)");
+  let seeded = 0, skipped = 0;
+  for (const course of courses) {
+    if (db.prepare("SELECT 1 FROM route_step WHERE course_id = ? LIMIT 1").get(course.id)) continue;
+    const cones = db.prepare("SELECT id, lat, lng, side, alt FROM cone WHERE course_id = ? ORDER BY id").all(course.id);
+    const startCone = course.start_cone_id != null
+      ? cones.find((cone) => cone.id === course.start_cone_id)
+      : null;
+    const positions = seedOrientationMarkers(cones, {
+      ...(startCone ? { start: { lat: startCone.lat, lng: startCone.lng } } : {}),
+      reverse: !!course.reverse,
+    });
+    // 루프로 닫히지 않는 코스(콘 부족, 미완성 배치)는 건드리지 않는다. 마커가 없으면
+    // 계속 저장된 start/reverse로 계산되므로 동작이 달라지지 않는다.
+    if (!positions) { skipped++; continue; }
+    positions.forEach((position, index) => {
+      const markerId = insertMarker.run(course.id, position.lat, position.lng, index === 0 ? "시작" : "방향").lastInsertRowid;
+      insertStep.run(course.id, index, markerId);
+    });
+    seeded++;
+  }
+  logger.log(null, "course.route.seed", { seeded, skipped, courses: courses.length }, null,
+    { email: "system", name: "system", role: "admin" });
+});
 
 // GPS 소스/기준국 설정. 로버가 쓸 NTRIP 소스(NGII vs 수신기 base station)를 서버에
 // 저장해 모든 클라이언트·로버 재연결 간에 공유한다. key-value 단순 저장:

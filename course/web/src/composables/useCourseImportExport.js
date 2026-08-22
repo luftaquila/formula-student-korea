@@ -1,10 +1,9 @@
 import { ref } from "vue";
 import { request } from "../api.js";
-import { computeCenterline } from "@lib/centerline.mjs";
 import { buildRoadEdges } from "@lib/road-edges.mjs";
 import { buildTrackModel } from "@lib/track-build.mjs";
-import { computeGuidedRoute } from "@lib/guided-route.mjs";
 import { buildGuidedTrackModel } from "@lib/guided-track-build.mjs";
+import { resolveCourseRoute, ROUTE_MODE } from "@lib/route-mode.mjs";
 import { packTrackEntries, safeTrackName } from "@lib/pack-track.mjs";
 import { buildEnrichedJSON, buildGuidedEnrichedJSON } from "@lib/course-export.mjs";
 import { renderTwoPanelPNG } from "../export/panel-canvas.js";
@@ -54,16 +53,23 @@ export function useCourseImportExport({ courses, conesMap, memosMap, routeMap, a
         try { routeConfig = await (await request(`/api/courses/${id}/route`)).json(); }
         catch { routeConfig = { markers: [], steps: [] }; }
       }
-      const guided = Array.isArray(routeConfig.steps) && routeConfig.steps.length >= 2;
+      // Same resolver as the on-map centerline, so the ZIP is always the path the
+      // operator was looking at: markers that only orient the loop still export
+      // through the circuit builder, markers that re-use pavement through the
+      // guided one.
       let cl, edges, track;
+      const resolved = resolveCourseRoute(cones, routeConfig.markers, routeConfig.steps, {
+        step: 1.0,
+        metric: true,
+        fallback: courseDirOpts(id, cones),
+      });
+      const guided = resolved.mode === ROUTE_MODE.GUIDED;
+      cl = resolved.centerline;
+      if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
       if (guided) {
-        cl = computeGuidedRoute(cones, routeConfig.markers, routeConfig.steps, { step: 1.0 });
         edges = null;
         track = buildGuidedTrackModel(cl, cones, { name: safeName });
       } else {
-        // same start/direction as the on-map centerline so the export matches
-        cl = computeCenterline(cones, { step: 1.0, metric: true, ...courseDirOpts(id, cones) });
-        if (!cl.ok) { notifyError(`중심선 생성 실패: ${cl.reason}`); return; }
         edges = buildRoadEdges(cl);   // AC track road: widened +1 m/side (except slalom)
         track = buildTrackModel(cl, edges, { name: safeName });
       }
