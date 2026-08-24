@@ -175,7 +175,12 @@ test.describe("Registration queue", () => {
 
       const receptionToggle = page.locator(".settings-panel input[type=checkbox]").first();
       await expect(receptionToggle).toBeChecked();
-      await receptionToggle.click();
+      const rejectedPatch = page.waitForResponse((response) =>
+        response.url().endsWith(`${PREFIX}/settings`)
+        && response.request().method() === "PATCH"
+        && response.status() === 400);
+      await receptionToggle.locator("..").click();
+      await rejectedPatch;
       await expect(page.getByText("설정을 저장하지 못했습니다.")).toBeVisible();
       await expect(receptionToggle).toBeChecked();
     } finally {
