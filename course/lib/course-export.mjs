@@ -76,3 +76,54 @@ export function buildEnrichedJSON({ name, cones, memos = [], cl, edges, track, g
     },
   };
 }
+
+// Enriched export for marker-guided courses. Marker ids are database-local, so
+// route_steps stores stable array indices just like start_cone_index does in the
+// basic course export. The top-level fields remain directly re-importable.
+export function buildGuidedEnrichedJSON({ name, cones, memos = [], route, track, generatedAt = null }) {
+  const markerIndex = new Map(route.metric.markers.map((marker, index) => [marker.id, index]));
+  return {
+    name,
+    cones,
+    memos: (memos || []).map((m) => ({
+      lat: m.lat, lng: m.lng, width: m.width, height: m.height,
+      rotation: m.rotation || 0, content: m.content || "",
+    })),
+    route_markers: route.metric.markers.map((marker) => ({ lat: marker.lat, lng: marker.lng, label: marker.label || "" })),
+    route_steps: route.metric.steps.map((id) => markerIndex.get(id)),
+    export: { tool: "cone2track", pipeline: "guided-js", schema: 1, generatedAt },
+    projection: {
+      lat0: route.metric.lat0, lng0: route.metric.lng0,
+      mlat: route.metric.mlat, mlng: route.metric.mlng,
+    },
+    centerline: {
+      closed: route.closed,
+      length_m: Math.round(route.length * 10) / 10,
+      step_m: route.metric.step,
+      count: route.points.length,
+      points: route.points.map((point, i) => ({
+        lat: point.lat, lng: point.lng,
+        x: route.metric.P[i][0], y: route.metric.P[i][1], z: point.z,
+        width: point.width,
+      })),
+    },
+    route: {
+      guided: true,
+      marker_count: route.metric.markers.length,
+      step_count: route.metric.steps.length,
+      unique_surface_edges: route.metric.usedEdgeIds.length,
+    },
+    elevation: {
+      present: route.metric.z.some((z) => Math.abs(z) > 1e-6),
+      relief_m: Math.round((Math.max(...route.metric.z) - Math.min(...route.metric.z)) * 1000) / 1000,
+    },
+    ai: track.aiData,
+    meta: {
+      medianWidth_m: track.meta.medianWidth,
+      minWidth_m: track.meta.minWidth,
+      run: track.meta.run,
+      start: { lat: route.points[0].lat, lng: route.points[0].lng, reverse: false },
+      finish: { lat: route.points.at(-1).lat, lng: route.points.at(-1).lng },
+    },
+  };
+}

@@ -382,6 +382,83 @@ describe('DELETE /api/cones/:id', () => {
 
 });
 
+// ─── Ordered route markers ─────────────────────────────────────────────
+describe('course ordered route markers', () => {
+  let firstId, secondId, otherCourseMarkerId;
+
+  it('starts empty and creates physical markers without implicit visits', async () => {
+    let res = await client.get('/api/courses/1/route', { cookie: adminCookie });
+    assert.deepEqual(await res.json(), { markers: [], steps: [] });
+
+    res = await client.post('/api/courses/1/route/markers', {
+      body: { lat: 35.292, lng: 126.574, label: '허리' }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    firstId = (await res.json()).id;
+    res = await client.post('/api/courses/1/route/markers', {
+      body: { lat: 35.293, lng: 126.575, label: '좌측' }, cookie: adminCookie,
+    });
+    secondId = (await res.json()).id;
+    const route = await (await client.get('/api/courses/1/route', { cookie: adminCookie })).json();
+    assert.equal(route.markers.length, 2);
+    assert.deepEqual(route.steps, []);
+  });
+
+  it('stores a visit sequence with repeated references to one marker', async () => {
+    const res = await client.put('/api/courses/1/route/steps', {
+      body: { steps: [firstId, secondId, firstId] }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.deepEqual((await res.json()).steps, [firstId, secondId, firstId]);
+  });
+
+  it('updates marker metadata and rejects another course marker in the route', async () => {
+    let res = await client.patch(`/api/route/markers/${secondId}`, {
+      body: { label: '좌측 원', lat: 35.2931 }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).label, '좌측 원');
+
+    res = await client.post('/api/courses/2/route/markers', {
+      body: { lat: 35.4, lng: 126.6, label: '다른 코스' }, cookie: adminCookie,
+    });
+    otherCourseMarkerId = (await res.json()).id;
+    res = await client.put('/api/courses/1/route/steps', {
+      body: { steps: [firstId, otherCourseMarkerId] }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+    const unchanged = await (await client.get('/api/courses/1/route', { cookie: adminCookie })).json();
+    assert.deepEqual(unchanged.steps, [firstId, secondId, firstId]);
+  });
+
+  it('exports markers by array index so repeated visits survive id reassignment', async () => {
+    const data = await (await client.get('/api/courses/1/export', { cookie: adminCookie })).json();
+    assert.deepEqual(data.route_steps, [0, 1, 0]);
+    assert.deepEqual(data.route_markers.map((m) => m.label), ['허리', '좌측 원']);
+  });
+
+  it('deleting a marker removes every visit and compacts the remaining order', async () => {
+    const res = await client.delete(`/api/route/markers/${firstId}`, { cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const route = await res.json();
+    assert.deepEqual(route.steps, [secondId]);
+    assert.deepEqual(route.markers.map((m) => m.id), [secondId]);
+  });
+
+  it('requires an existing course and valid marker input', async () => {
+    let res = await client.get('/api/courses/999/route', { cookie: adminCookie });
+    assert.equal(res.status, 404);
+    res = await client.post('/api/courses/1/route/markers', {
+      body: { lat: 999, lng: 126.5, label: 'bad' }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+    res = await client.put('/api/courses/1/route/steps', {
+      body: { steps: ['not-an-id'] }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+});
+
 // ─── Cascade Delete ─────────────────────────────────────────────────────
 describe('DELETE /api/courses/:id (cascade)', () => {
   it('deleting course cascades to cones', async () => {
@@ -397,6 +474,8 @@ describe('DELETE /api/courses/:id (cascade)', () => {
     // Cone should be gone (course 2 no longer exists)
     const conesRes = await client.get('/api/courses/2/cones', { cookie: adminCookie });
     assert.equal(conesRes.status, 404);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM route_marker WHERE course_id = 2').get().n, 0);
+    assert.equal(db.prepare('SELECT COUNT(*) AS n FROM route_step WHERE course_id = 2').get().n, 0);
   });
 
   it('returns 404 for non-existent course', async () => {
@@ -493,6 +572,28 @@ describe('POST /api/courses/import', () => {
     assert.equal(cones.length, 2);
     assert.equal(cones[0].alt, 55.5); // alt preserved through import
     assert.equal(cones[1].alt, null); // cone without alt → null
+  });
+
+  it('round-trips reusable route markers and repeated visit indices', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: {
+        name: 'guided-import',
+        cones: [],
+        route_markers: [
+          { lat: 35.1, lng: 126.1, label: '허리' },
+          { lat: 35.2, lng: 126.2, label: '원 외곽' },
+        ],
+        route_steps: [0, 1, 0, 1, 0],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    const course = await res.json();
+    const route = await (await client.get(`/api/courses/${course.id}/route`, { cookie: adminCookie })).json();
+    assert.equal(route.markers.length, 2);
+    assert.deepEqual(route.steps, [route.markers[0].id, route.markers[1].id, route.markers[0].id, route.markers[1].id, route.markers[0].id]);
+    const exported = await (await client.get(`/api/courses/${course.id}/export`, { cookie: adminCookie })).json();
+    assert.deepEqual(exported.route_steps, [0, 1, 0, 1, 0]);
   });
 
   it('rejects import with invalid altitude', async () => {

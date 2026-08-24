@@ -161,6 +161,64 @@ function makePreview(Le, Re, w = 355, h = 200) {
   return encodePNG(w, h, img);
 }
 
+// Branched/open guided courses are represented by a triangulated pavement
+// surface rather than one left/right ribbon. Rasterise those triangles directly
+// so entry/exit arms and junctions appear without inventing a closing polygon.
+function geometryXZ(geometry) {
+  const points = geometry.positions.map((p) => [p[0], p[2]]);
+  const triangles = [];
+  for (let i = 0; i < geometry.indices.length; i += 3) {
+    triangles.push([
+      points[geometry.indices[i]],
+      points[geometry.indices[i + 1]],
+      points[geometry.indices[i + 2]],
+    ]);
+  }
+  return { points, triangles };
+}
+
+function makeGeometryImages(geometry, margin = 20, maxSize = 1600) {
+  const { points, triangles } = geometryXZ(geometry);
+  const { minx, minz, maxx, maxz } = ringBounds(points);
+  const spanx = maxx - minx, spanz = maxz - minz;
+  let scale = 1;
+  if (Math.max(spanx, spanz) + 2 * margin > maxSize) scale = (maxSize - 2 * margin) / Math.max(spanx, spanz);
+  const xOff = margin / scale - minx, zOff = margin / scale - minz;
+  const W = spanx * scale + 2 * margin, H = spanz * scale + 2 * margin;
+  const Wpx = Math.max(1, Math.round(W)), Hpx = Math.max(1, Math.round(H));
+  const mapRgba = new Uint8Array(Wpx * Hpx * 4);
+  const toMap = ([x, z]) => [(x + xOff) * scale, (z + zOff) * scale];
+  for (const tri of triangles) fillPolygon(mapRgba, Wpx, Hpx, tri.map(toMap), [255, 255, 255, 255]);
+
+  const square = 512, sm = 12;
+  const squareScale = (square - 2 * sm) / (Math.max(spanx, spanz) || 1);
+  const sx = (square - spanx * squareScale) / 2, sz = (square - spanz * squareScale) / 2;
+  const outlineRgba = new Uint8Array(square * square * 4);
+  const toSquare = ([x, z]) => [(x - minx) * squareScale + sx, (z - minz) * squareScale + sz];
+  for (const tri of triangles) fillPolygon(outlineRgba, square, square, tri.map(toSquare), [255, 255, 255, 220]);
+
+  const pw = 355, ph = 200, pm = 14;
+  const previewScale = Math.min((pw - 2 * pm) / (spanx || 1), (ph - 2 * pm) / (spanz || 1));
+  const px = (pw - spanx * previewScale) / 2, pz = (ph - spanz * previewScale) / 2;
+  const previewRgba = new Uint8Array(pw * ph * 4);
+  for (let i = 0; i < pw * ph; i++) {
+    previewRgba[i * 4] = 40; previewRgba[i * 4 + 1] = 44; previewRgba[i * 4 + 2] = 48; previewRgba[i * 4 + 3] = 255;
+  }
+  const toPreview = ([x, z]) => [(x - minx) * previewScale + px, (z - minz) * previewScale + pz];
+  for (const tri of triangles) fillPolygon(previewRgba, pw, ph, tri.map(toPreview), [100, 104, 108, 255]);
+
+  const ini =
+    "[PARAMETERS]\n" +
+    `WIDTH=${W.toFixed(3)}\nHEIGHT=${H.toFixed(3)}\nMARGIN=${margin}\n` +
+    `SCALE_FACTOR=${gfmt(scale, 6)}\nMAX_SIZE=${maxSize}\n` +
+    `X_OFFSET=${xOff.toFixed(6)}\nZ_OFFSET=${zOff.toFixed(6)}\nDRAWING_SIZE=10\n`;
+  return {
+    map: encodePNG(Wpx, Hpx, mapRgba), ini,
+    outline: encodePNG(square, square, outlineRgba),
+    preview: encodePNG(pw, ph, previewRgba),
+  };
+}
+
 // Make a course name safe for file/folder paths: collapse whitespace runs to a
 // single '-'. The in-game display name (ui_track.json) keeps the original.
 export function safeTrackName(name) {
@@ -189,12 +247,15 @@ export function packTrackEntries(cl, edges, track, opts = {}) {
   const name = opts.name || track.meta?.name || "course";   // file/folder-safe base
   const uiName = opts.uiName || name;                        // in-game display name (may contain spaces)
   const E = track.edges || edges;
-  const Le = E.Le, Re = E.Re;
+  const Le = E?.Le, Re = E?.Re;
   const length = track.meta.length;
   const width = track.meta.medianWidth;
 
   const root = `content/tracks/${name}`;
-  const { png: mapPng, ini: mapIni } = makeMap(Le, Re);
+  const geometryImages = track.mapGeometry ? makeGeometryImages(track.mapGeometry) : null;
+  const legacyMap = geometryImages ? null : makeMap(Le, Re);
+  const mapPng = geometryImages?.map || legacyMap.png;
+  const mapIni = geometryImages?.ini || legacyMap.ini;
 
   const modelsIni = `[MODEL_0]\nFILE=${name}.kn5\nPOSITION=0,0,0\nROTATION=0,0,0\n`;
 
@@ -223,8 +284,8 @@ export function packTrackEntries(cl, edges, track, opts = {}) {
   entries[`${root}/ai/fast_lane.ai`] = track.ai;
   entries[`${root}/map.png`] = mapPng;
   entries[`${root}/ui/ui_track.json`] = JSON.stringify(ui, null, 2);
-  entries[`${root}/ui/outline.png`] = makeOutline(Le, Re);
-  entries[`${root}/ui/preview.png`] = makePreview(Le, Re);
+  entries[`${root}/ui/outline.png`] = geometryImages?.outline || makeOutline(Le, Re);
+  entries[`${root}/ui/preview.png`] = geometryImages?.preview || makePreview(Le, Re);
   return entries;
 }
 

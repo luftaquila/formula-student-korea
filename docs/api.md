@@ -497,10 +497,10 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | GET | `/api/courses` | chief | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
 | POST | `/api/courses` | chief | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
 | PATCH | `/api/courses/:id` | chief | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
-| PATCH | `/api/courses/:id/direction` | chief | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). `courses` SSE(type=direction) 브로드캐스트 |
-| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘·스냅샷 CASCADE 삭제). 활성 미션이 사용 중이면 감사 로그를 남기고 `409 { reason:"active_mission_course" }` |
-| GET | `/api/courses/:id/export` | chief | — | `{ name, cones: [{lat, lng, side}...] }` | 코스+콘 JSON 다운로드 |
-| POST | `/api/courses/import` | chief | `{ name, cones: [{lat, lng, side}...] }` | 201 `{ id, name, ... }` | JSON으로 코스+콘 일괄 생성 (트랜잭션) |
+| PATCH | `/api/courses/:id/direction` | chief | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). 주행 마커가 없는 코스의 폴백 값이며 UI는 시작 콘만 노출한다. `courses` SSE(type=direction) 브로드캐스트 |
+| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘·스냅샷·주행 마커 CASCADE 삭제). 활성 미션이 사용 중이면 감사 로그를 남기고 `409 { reason:"active_mission_course" }` |
+| GET | `/api/courses/:id/export` | chief | — | `{ name, cones, memos, route_markers, route_steps, ... }` | 코스 JSON 다운로드. `route_steps`는 DB id가 아닌 `route_markers` 배열 인덱스 |
+| POST | `/api/courses/import` | chief | `{ name, cones, memos?, route_markers?, route_steps? }` | 201 `{ id, name, ... }` | JSON으로 코스 일괄 생성 (트랜잭션, 주행 단계의 마커 인덱스를 새 id로 재매핑) |
 
 ### Course Snapshots (admin)
 
@@ -520,6 +520,32 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | DELETE | `/api/courses/:id/cones` | chief | — | 200 | 코스의 콘 전체 삭제 (bulk wipe) |
 | PATCH | `/api/cones/:id` | chief | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
 | DELETE | `/api/cones/:id` | chief | — | 200 | 콘 삭제 |
+
+### 주행 순서 마커
+
+주행 마커는 콘과 별도인 재사용 가능한 지도 앵커다. `steps`는 마커 id 배열이며 같은 id를 여러 번 포함할 수 있어 스키드패드의 `진입 → 좌 2회 → 우 2회 → 진출`처럼 물리 노면을 반복 통과하는 순서를 표현한다.
+
+주행 방향의 단일 지정 수단이다. `course.reverse` / `course.start_cone_id`는 마커가 없는 코스에만 적용되는 폴백으로 남고, 웹 UI에는 진행방향 전환 컨트롤이 없다.
+
+`course/lib/route-mode.mjs`의 `resolveCourseRoute`가 지도·ZIP 내보내기 양쪽에서 계산 방식을 결정한다 (동일 입력 → 동일 결과):
+
+| mode | 조건 | 계산 |
+|---|---|---|
+| `auto` | 해석 가능한 단계 2개 미만 | `computeCenterline` + 저장된 `start_cone_id`/`reverse` |
+| `oriented` | 단계가 한 루프를 한 방향으로 훑음(반복 방문 없음, 모든 마커가 노면 위, 되돌아가지 않음) | `computeCenterline`. 마커가 `start`와 `reverse`만 공급하므로 **기하는 마커 도입 전과 완전히 동일** |
+| `guided` | 그 외(반복 방문·분기·노면 밖 마커) | `computeGuidedRoute` |
+
+닫힌 루프에서 마커 2개는 어느 쪽으로 돌아도 도달하므로 첫 구간은 **짧은 호**로 해석한다. 먼 쪽을 강제하려면 반대편에 마커를 추가한다.
+
+마커 이전에 생성된 코스는 서비스 부팅 시 `course.seed_route_markers_from_direction.v1` 마이그레이션이 저장된 방향을 재현하는 마커 2개(루프 시작점과 1/3 지점)를 심는다. 루프로 닫히지 않는 코스는 건드리지 않아 `auto`로 남는다.
+
+| Method | Path | Role | Body | Response | 설명 |
+|---|---|---|---|---|---|
+| GET | `/api/courses/:id/route` | chief | — | `{ markers, steps }` | 물리 마커와 방문 순서 조회 |
+| POST | `/api/courses/:id/route/markers` | chief | `{ lat, lng, label? }` | 201 `{ id, course_id, ... }` | 물리 마커 추가(방문 단계는 자동 추가하지 않음, 코스당 최대 200개) |
+| PATCH | `/api/route/markers/:id` | chief | `{ lat?, lng?, label? }` | `{ id, course_id, ... }` | 마커 이동·이름 수정 |
+| DELETE | `/api/route/markers/:id` | chief | — | `{ markers, steps }` | 마커와 그 마커를 참조하는 모든 방문 삭제, position 재정렬 |
+| PUT | `/api/courses/:id/route/steps` | chief | `{ steps: [marker_id, ...] }` | `{ markers, steps }` | 방문 순서 전체 교체(반복 id 허용, 최대 500단계) |
 
 #### 메모 스티커 (지도 주석)
 
@@ -653,6 +679,7 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | `courses` | `{ type, course?, courseId?, courses }` | 코스 변경 (type: create/rename/direction/delete/import/start_reset) |
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 변경 (type: add/update/delete/clear/restore) |
 | `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 변경 (type: add/update/delete) |
+| `route` | `{ type, courseId, markers, steps }` | 주행 마커/방문 순서 변경 (type: marker_add/marker_update/marker_delete/steps) |
 | `rover` | `{ lat, lng, alt, source }` | 활성 소스 위치 수신 시 브로드캐스트 (source: rover\|receiver) |
 | `rover:status` | roverState + `{ active_mission_summary, mission_protocol, receiver, position_source, ntrip_source }` | GPS-rate bounded 상태. `active_mission_summary`는 ID/status/hold/hash/revision 등 권한 판단 필드만 포함하고 waypoint 배열은 포함하지 않음 |
 | `rover:mission` | `{ mission }` | command acknowledgement, checkpoint reconcile, waypoint 결과, 정지/완료 직후 v2 미션 전체 상태 |
