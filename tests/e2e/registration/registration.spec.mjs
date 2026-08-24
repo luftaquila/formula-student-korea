@@ -155,6 +155,31 @@ test.describe("Registration queue", () => {
     }
   });
 
+  test("rolls a setting toggle back when the PATCH is rejected", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+    const page = await context.newPage();
+    try {
+      await page.route(`**${PREFIX}/settings`, async (route) => {
+        if (route.request().method() !== "PATCH") return route.continue();
+        return route.fulfill({
+          status: 400,
+          contentType: "application/json",
+          body: JSON.stringify({ code: "TEST_REJECTION", message: "설정을 저장하지 못했습니다." }),
+        });
+      });
+      await page.goto("/registration/manage");
+      await waitForPageReady(page);
+
+      const receptionToggle = page.locator(".settings-panel input[type=checkbox]").first();
+      await expect(receptionToggle).toBeChecked();
+      await receptionToggle.click();
+      await expect(page.getByText("설정을 저장하지 못했습니다.")).toBeVisible();
+      await expect(receptionToggle).toBeChecked();
+    } finally {
+      await context.close();
+    }
+  });
+
   test("does not reveal a queue record when the public phone credential is wrong", async ({ request }) => {
     const teams = await request.get(`/competition/api/v1/teams?year=${YEAR}`);
     const team = (await teams.json()).find((item) => item.number === ENTRY_NUMBER);

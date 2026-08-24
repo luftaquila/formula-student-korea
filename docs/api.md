@@ -158,7 +158,7 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/active` | public | — | `[{ type, name, length, active, ... }]` | Active inspection types |
-| POST | `/state/:num` | public | `{ phone }` | `{ queue, rank }` | Check queue position (rate-limited, phone verification) |
+| POST | `/state/:num` | public | `{ phone }` | `{ queue, rank, queues: [{ type, name, rank, total }] }` | Check queue position (rate-limited, phone verification); structured rows use the stable inspection key |
 | GET | `/booths/all` | public | — | `{ type: [{ booth_num, active, occupied_by, entered_at }] }` | All booth statuses |
 | GET | `/booths/:type` | public | — | `[{ booth_num, active, occupied_by, entered_at }]` | Booth status for inspection type |
 
@@ -240,7 +240,7 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/events` | public | `?year=` | SSE stream | Initial public status followed by year-only `registration` invalidations |
+| GET | `/events` | public | `?year=` | SSE stream | `init` and `registration`: `{ year, open, waiting }`; `entries`: year-scoped canonical-roster invalidation |
 | GET | `/status` | public | `?year=` | `{ year, open, waiting }` | Public queue summary without other teams' call state |
 | POST | `/lookup` | public | `{ year, num, phone }` | `{ teamId, number, university, name, status, position, waitingTotal, ... }` | Credentialed active-queue lookup; phone is normalized but never returned |
 
@@ -255,7 +255,7 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 | GET | `/settings` | official | `?year=` | `{ year, open, sms, notifyRank, smsAvailable, ... }` | Read year-scoped reception and SMS settings |
 | PATCH | `/settings` | chief | `{ year, open?, sms?, notifyRank? }` | Settings | Atomically update current-year settings (`notifyRank`: 1–10) |
 
-Advance SMS delivery follows Queue behavior: when an active row is completed or canceled, the newly changed team at the exact configured rank receives one notification. Registration and settings changes do not send a message. A failed attempt releases its database claim without rolling back the queue mutation. The SMS provider configuration remains owned by the Email service.
+Advance SMS delivery follows Queue behavior: when an active row is completed or canceled, the newly changed team at the exact configured rank receives one notification. Registration, settings, and team-deactivation changes do not send a message. A failed attempt releases its database claim without rolling back the queue mutation. The SMS provider configuration remains owned by the Email service.
 
 ## Inspection module (Competition port 9200)
 

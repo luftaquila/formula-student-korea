@@ -24,7 +24,3 @@ export const updateSettings = (data) => json("/api/settings", { method: "PATCH",
 export function errorMessage(error) {
   return error?.data?.message || error?.message || "요청을 처리할 수 없습니다.";
 }
-
-export function eventsUrl(year) {
-  return `/competition/api/v1/registration/events?year=${encodeURIComponent(year)}`;
-}

@@ -25,7 +25,7 @@ Competition years are interpreted in `Asia/Seoul`. Reads may select any valid ye
 
 Teams are created individually or imported once into an empty current year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Registration/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current year.
 
-Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting or called row. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
+Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting row. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
 
 ## Runtime communication
 

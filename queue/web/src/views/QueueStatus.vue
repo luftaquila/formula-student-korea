@@ -37,19 +37,7 @@ const entryNum = ref("");
 const phone = ref("010");
 const teamName = ref("");
 
-const queueName = ref("-");
-const rank = ref("-");
-
-const queueEntries = computed(() => {
-  if (queueName.value === "-") return [];
-  const names = String(queueName.value).split(", ");
-  const ranks = String(rank.value).split(", ");
-  return names.map((name, i) => ({
-    name,
-    rank: ranks[i],
-    total: activeInspections.value.find((item) => item.name === name)?.length ?? null,
-  }));
-});
+const queueEntries = ref([]);
 
 // Watch for queue updates from SSE to refresh user's rank
 watch(lastQueueUpdate, async () => {
@@ -135,8 +123,7 @@ async function query() {
       return;
     }
 
-    queueName.value = result.queue;
-    rank.value = result.rank;
+    queueEntries.value = result.queues || [];
 
     sessionStorage.setItem("queue_entry", num);
     sessionStorage.setItem("queue_phone", phoneDigits);
@@ -149,8 +136,7 @@ function clearState(message) {
   if (message) {
     error(message);
   }
-  queueName.value = "-";
-  rank.value = "-";
+  queueEntries.value = [];
   phone.value = "010";
   sessionStorage.removeItem("queue_entry");
   sessionStorage.removeItem("queue_phone");
@@ -213,11 +199,11 @@ function clearState(message) {
         <div class="card-body result-body">
           <div class="result-display">
             <template v-if="queueEntries.length > 0">
-              <div v-for="(e, i) in queueEntries" :key="i" class="result-row">
+              <div v-for="e in queueEntries" :key="e.type" class="result-row">
                 <span class="result-name">{{ e.name }}</span>
                 <strong class="result-rank">{{ e.rank }}</strong>
                 <span class="result-suffix">번</span>
-                <span v-if="e.total !== null" class="result-total">/ {{ e.total }}팀</span>
+                <span class="result-total">/ {{ e.total }}팀</span>
               </div>
             </template>
             <div v-else class="result-row placeholder"><strong class="result-rank">-</strong></div>

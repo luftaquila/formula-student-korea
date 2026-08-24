@@ -14,7 +14,7 @@ import {
 } from "../helpers/test-utils.mjs";
 import { currentCompetitionYear } from "../../shared/competition-year.mjs";
 import { createRegistrationApp } from "../../registration/index.mjs";
-import { createModuleYearGuard, normalizedPath } from "../../competition/lib/year-guard.mjs";
+import { createModuleYearGuard } from "../../competition/lib/year-guard.mjs";
 import { ensureCompetitionTeamSchema, TeamStore } from "../../competition/lib/team-store.mjs";
 
 setupTestEnv();
@@ -38,14 +38,33 @@ function fakeSmsClient() {
   const messages = [];
   let available = true;
   let failures = 0;
+  let deferredSend = null;
   return {
     messages,
     setAvailable(value) { available = value; },
     failNext(count = 1) { failures += count; },
+    deferNext() {
+      let resolve;
+      let reject;
+      let markStarted;
+      const started = new Promise((done) => { markStarted = done; });
+      const result = new Promise((done, fail) => {
+        resolve = done;
+        reject = fail;
+      });
+      deferredSend = { markStarted, result };
+      return { started, resolve, reject };
+    },
     isAvailable() { return available; },
     async loadConfig() { return available; },
     send(phone, content) {
       messages.push({ phone, content });
+      if (deferredSend) {
+        const pending = deferredSend;
+        deferredSend = null;
+        pending.markStarted();
+        return pending.result;
+      }
       if (failures > 0) {
         failures -= 1;
         return Promise.reject(Object.assign(new Error("simulated SENS failure"), { status: 503 }));
@@ -69,9 +88,7 @@ async function fixture() {
     validateUser: TRUST_JWT,
     validateUserCacheTtl: 0,
     skipSpaFallback: true,
-    mutationGuard: (req) => normalizedPath(req) === "/api/lookup"
-      ? { module: "registration", years: [] }
-      : guard(req),
+    mutationGuard: guard,
   });
   const started = await startServer(registration.app);
   const created = {
@@ -79,6 +96,7 @@ async function fixture() {
     db,
     teamStore,
     smsClient,
+    guard,
     registration,
     server: started.server,
     client: createClient(started.baseUrl),
@@ -308,6 +326,20 @@ describe("Registration queue", () => {
     assert.equal(response.status, 409);
   });
 
+  it("classifies the credentialed POST lookup explicitly and fails closed for unknown mutations", async () => {
+    const f = await fixture();
+    for (const path of ["/api/lookup", "/api/lookup/", "/API/LOOKUP/"]) {
+      assert.deepEqual(f.guard({ path, body: { year: YEAR - 1 } }), {
+        module: "registration",
+        years: [],
+      });
+    }
+    assert.throws(
+      () => f.guard({ path: "/api/future-mutation", body: { year: YEAR } }),
+      (error) => error.code === "UNKNOWN_REGISTRATION_MUTATION" && error.status === 500,
+    );
+  });
+
   it("resolves concurrent transitions with one success and one auditable conflict", async () => {
     const f = await fixture();
     const team = f.team(61);
@@ -403,6 +435,45 @@ describe("Registration queue", () => {
     }
   });
 
+  it("does not let an older failed SMS release a replacement claim", async () => {
+    const f = await fixture();
+    const first = f.team(78);
+    const second = f.team(79);
+    await openQueue(f);
+    let response = await f.client.patch("/api/settings", {
+      cookie: cookies.chief,
+      body: { year: YEAR, sms: true, notifyRank: 1 },
+    });
+    await assertStatus(response, 200);
+
+    const firstRegistration = await register(f, first, "01077770001");
+    const secondRegistration = await register(f, second, "01077770002");
+    const pending = f.smsClient.deferNext();
+    response = await f.client.post(`/api/queue/${firstRegistration.id}/done`, { cookie: cookies.official });
+    await assertStatus(response, 200);
+    await pending.started;
+
+    const original = f.db.prepare(`
+      SELECT notified, notify_claimed_at FROM registration_queue WHERE id = ?
+    `).get(secondRegistration.id);
+    assert.equal(original.notified, 2);
+    assert.ok(original.notify_claimed_at);
+
+    const replacementToken = "2099-01-01T00:00:00.000Z";
+    f.db.prepare(`
+      UPDATE registration_queue SET notify_claimed_at = ? WHERE id = ?
+    `).run(replacementToken, secondRegistration.id);
+    pending.reject(Object.assign(new Error("first claim timed out"), { status: 503 }));
+    await f.registration.drain();
+
+    assert.deepEqual(f.db.prepare(`
+      SELECT notified, notify_claimed_at FROM registration_queue WHERE id = ?
+    `).get(secondRegistration.id), {
+      notified: 2,
+      notify_claimed_at: replacementToken,
+    });
+  });
+
   it("publishes a distinct entries invalidation so open clients re-query the roster", async () => {
     const f = await fixture();
     const stream = await openSse(`${f.baseUrl}/api/events?year=${YEAR}`);
@@ -433,7 +504,7 @@ describe("Registration queue", () => {
     }
   });
 
-  it("publishes year-scoped invalidations after a successful mutation", async () => {
+  it("publishes the year-scoped public status after a successful mutation", async () => {
     const f = await fixture();
     const team = f.team(81);
     await openQueue(f);
@@ -443,7 +514,7 @@ describe("Registration queue", () => {
       assert.equal(init.year, YEAR);
       const eventPromise = stream.next("registration");
       await register(f, team);
-      assert.deepEqual(await eventPromise, { year: YEAR });
+      assert.deepEqual(await eventPromise, { year: YEAR, open: true, waiting: 1 });
     } finally {
       await stream.close();
     }

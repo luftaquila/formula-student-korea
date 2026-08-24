@@ -426,6 +426,7 @@ function withInspectionLengths(rows, year = currentYear()) {
   // 삽입 순서가 달라도 모든 화면이 같은 순서를 본다.
   const order = Object.keys(inspections);
   return rows
+    .filter((row) => order.includes(row.type))
     .map((row) => ({ ...row, length: counts.get(row.type) || 0 }))
     .sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
 }
@@ -725,7 +726,7 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
     const entry = getCurrentEntry(num, year);
 
     if (!entry) {
-      return { queue: undefined, rank: -1 };
+      return { queue: undefined, rank: -1, queues: [] };
     }
 
     if (typeof req.body.phone !== "string") {
@@ -735,19 +736,22 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
       throw { status: 400, message: "전화번호가 일치하지 않습니다." };
     }
 
-    if (entry.inspection.includes(",")) {
-      const ranks = { queue: [], rank: [] };
-
-      for (let inspection of entry.inspection.split(",")) {
-        ranks.queue.push(inspections[inspection]);
-        ranks.rank.push(getQueueRank(inspection, num, year));
-      }
-
-      return { queue: ranks.queue.join(", "), rank: ranks.rank.join(", ") };
-    } else {
-      const rank = getQueueRank(entry.inspection, num, year);
-      return { queue: inspections[entry.inspection], rank: rank };
-    }
+    const queues = entry.inspections.map((type) => ({
+      type,
+      name: inspections[type],
+      rank: getQueueRank(type, num, year),
+      total: db.prepare(`
+        SELECT COUNT(*) AS count FROM inspection_queue
+        WHERE inspection = ? AND year = ?
+      `).get(type, year).count,
+    }));
+    return {
+      // 기존 소비자를 위한 표시 문자열은 유지하되, 화면은 안정 키와 같은 응답에서
+      // 계산된 합계를 담은 queues를 사용한다. 이름 변경·비활성화와 무관하게 짝이 맞는다.
+      queue: queues.length === 1 ? queues[0].name : queues.map((item) => item.name).join(", "),
+      rank: queues.length === 1 ? queues[0].rank : queues.map((item) => item.rank).join(", "),
+      queues,
+    };
   });
 
   if (!result.success) {

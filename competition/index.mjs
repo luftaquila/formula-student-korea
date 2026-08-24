@@ -12,7 +12,7 @@ import { createInspectionApp } from "../inspection/index.mjs";
 import { createTrafficApp } from "../traffic/index.mjs";
 import { createScoreApp } from "../score/index.mjs";
 import { createDocumentsApp } from "../documents/index.mjs";
-import { createModuleYearGuard, normalizedPath } from "./lib/year-guard.mjs";
+import { createModuleYearGuard } from "./lib/year-guard.mjs";
 import { installCanonicalTeamReferences } from "./lib/team-references.mjs";
 import { ensureCompetitionTeamSchema } from "./lib/team-store.mjs";
 import { createTeamsModule } from "./modules/teams.mjs";
@@ -115,15 +115,9 @@ export function createCompetitionApp(options = {}) {
     // One SENS client per process: Queue owns it, Registration borrows it, so the
     // credentials are held once and the Email config endpoint is polled once.
     smsClient: queue.smsClient,
-    // POST /lookup is a credentialed read. The module validates its requested
-    // historical year itself, while every state-changing POST/PATCH below is
-    // guarded from the stored team/queue year by createModuleYearGuard.
-    // Match the guard's own path normalization: Express routing is neither
-    // case-sensitive nor strict, so `/api/lookup/` and `/API/LOOKUP` reach the
-    // same handler and must take the same exemption.
-    mutationGuard: (req) => normalizedPath(req) === "/api/lookup"
-      ? { module: "registration", years: [] }
-      : guarded("registration")(req),
+    // Registration's guard classifies POST /lookup as a credentialed read and
+    // resolves every known mutation from its explicit or stored team year.
+    mutationGuard: guarded("registration"),
     smsRequest: options.smsRequest,
     smsConfig: options.smsConfig,
     fetchImpl: options.fetchImpl,

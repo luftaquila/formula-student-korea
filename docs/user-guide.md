@@ -543,14 +543,15 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 | `registration.done` | info/warn | 등록 완료 또는 충돌/실패 |
 | `registration.cancel` | info/warn | 등록 대기 취소 또는 충돌/실패 |
 | `registration.settings_update` | info/warn | 접수·문자·사전 안내 순번 설정 변경 또는 실패 |
-| `registration.status` | info/warn | 공개 접수 현황 조회 실패 |
-| `registration.lookup` | info/warn | 공개 순번 조회 실패 또는 요청 제한 |
+| `registration.status` | warn | 공개 접수 현황 조회 실패 |
+| `registration.lookup` | warn | 공개 순번 조회 실패 또는 요청 제한 |
 | `registration.queue_view` | warn | 운영 대기 목록 조회 실패 |
 | `registration.settings_view` | warn | 설정 조회 실패 |
 | `registration.sms_send` | info/warn | 사전 순번 안내 문자 발송 결과 |
 | `registration.sms_prepare` | warn | 사전 안내 대상 선정 실패 |
 | `registration.sms_claim` | warn | 사전 안내 발송 선점·해제 실패 |
 | `registration.sms_skip` | warn | SENS 설정이 없어 사전 안내를 건너뜀 |
+| `registration.sse_broadcast` | warn | 변경 후 공개 상태 스냅샷 생성 실패 |
 
 ### Inspection
 | 액션 | 레벨 | 설명 |

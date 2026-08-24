@@ -90,3 +90,12 @@ test("both lookup submit buttons are full-width primary buttons with the search 
     assert.doesNotMatch(source, /class="form-group"/);
   }
 });
+
+test("queue lookup pairs rank totals by stable inspection type", async () => {
+  const status = await read("queue/web/src/views/QueueStatus.vue");
+
+  assert.match(status, /queueEntries\.value = result\.queues \|\| \[\]/);
+  assert.match(status, /v-for="e in queueEntries" :key="e\.type"/);
+  assert.doesNotMatch(status, /split\(", "\)/);
+  assert.doesNotMatch(status, /item\.name === name/);
+});

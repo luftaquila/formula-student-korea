@@ -182,23 +182,48 @@ test("registration screens re-query the roster on the entries invalidation", asy
   for (const source of [register, lookup]) {
     // A kiosk or lookup page stays open all day: a canonical team change has to
     // refresh the roster, otherwise a new entry number stays "존재하지 않는 엔트리".
-    assert.match(source, /events\.addEventListener\("entries", loadTeams\)/);
-    // A failed roster fetch must not skip startEvents(); the entries event is the
-    // recovery path, so the mount can never leave the page without a stream.
+    assert.match(source, /watch\(entriesRevision, loadTeams\)/);
+    assert.match(source, /watch\(reconnected/);
+    // Initial HTTP failures must not block the shared SSE connection; entries and
+    // reconnect init are independent recovery paths.
     assert.match(source, /await Promise\.allSettled\(\[loadTeams\(\), loadStatus\(\)\]\)/);
   }
 });
 
-test("registration lookup retries a not-found lookup on invalidation with a throttle", async () => {
+test("registration lookup defers every throttled invalidation and preserves live results on transient failures", async () => {
   const lookup = await readRegistrationSource("src/views/Lookup.vue");
 
   // A participant who looked up before the desk registered them must not stay
   // pinned to "없습니다" — the stored credentials are retried on invalidation.
   assert.match(lookup, /lastQuery\.value = notFound\.value \? \{ num, phone \} : null/);
-  // A live result refreshes immediately; only the 404 retry is throttled, so a
-  // completed registration still clears the card on the very next invalidation.
-  assert.match(lookup, /if \(!force && !result\.value && now - lastRefreshAt < REFRESH_INTERVAL_MS\) return;/);
-  assert.doesNotMatch(lookup, /if \(result\.value\) lookup\(/);
+  assert.match(lookup, /createLookupRefreshScheduler\(\{/);
+  assert.match(lookup, /watch\(registrationRevision, \(\) => refreshLookup\(\)\)/);
+  assert.match(lookup, /if \(missing\) result\.value = null/);
+  assert.match(lookup, /error\.value = missing \? "" : api\.errorMessage\(requestError\)/);
+});
+
+test("registration lookup credentials last only for the current browser session", async () => {
+  const lookup = await readRegistrationSource("src/views/Lookup.vue");
+
+  assert.match(lookup, /sessionStorage\.setItem\(storageKey\(\)/);
+  assert.match(lookup, /sessionStorage\.getItem\(storageKey\(\)/);
+  assert.doesNotMatch(lookup, /localStorage/);
+});
+
+test("registration views use the shared reconnecting SSE connection", async () => {
+  const sources = await Promise.all([
+    readRegistrationSource("src/views/Lookup.vue"),
+    readRegistrationSource("src/views/Register.vue"),
+    readRegistrationSource("src/views/Manage.vue"),
+    readRegistrationSource("src/composables/useSSE.js"),
+  ]);
+
+  assert.match(sources.at(-1), /createServiceSSE\(/);
+  assert.match(sources.at(-1), /parseSSEData/);
+  for (const source of sources.slice(0, -1)) {
+    assert.match(source, /useRegistrationSSE\(\)/);
+    assert.doesNotMatch(source, /new EventSource/);
+  }
 });
 
 test("registration settings use concise labels and a numeric notification rank", async () => {
@@ -210,5 +235,8 @@ test("registration settings use concise labels and a numeric notification rank",
   assert.match(markup, /type="number"/);
   assert.match(markup, /min="1"/);
   assert.match(markup, /max="10"/);
-  assert.match(markup, /notifyRank: Number\(\$event\.target\.value\)/);
+  assert.match(markup, /v-model="settingsForm\.open"/);
+  assert.match(markup, /v-model="settingsForm\.sms"/);
+  assert.match(markup, /v-model\.number="settingsForm\.notifyRank"/);
+  assert.doesNotMatch(markup, /:checked="board\.settings\.(?:open|sms)"/);
 });

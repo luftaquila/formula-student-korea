@@ -284,6 +284,18 @@ describe('GET /api/active', () => {
     assert.deepEqual(data.map((row) => row.type), Object.keys(INSPECTIONS));
     assert.deepEqual(data.map((row) => row.name), Object.values(INSPECTIONS));
   });
+
+  it('does not expose inspection rows outside the canonical type list', async () => {
+    db.prepare("INSERT INTO inspection (type, name, active) VALUES ('retired-preview', '은퇴 검차', TRUE)").run();
+    try {
+      const res = await client.get('/api/active');
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.deepEqual(data.map((row) => row.type), Object.keys(INSPECTIONS));
+    } finally {
+      db.prepare("DELETE FROM inspection WHERE type = 'retired-preview'").run();
+    }
+  });
 });
 
 describe('GET /api/booths/all', () => {
@@ -327,6 +339,7 @@ describe('POST /api/state/:num', () => {
     // Not registered, so queue is undefined
     assert.equal(data.queue, undefined);
     assert.equal(data.rank, -1);
+    assert.deepEqual(data.queues, []);
   });
 
   it('rejects invalid phone format', async () => {
@@ -1662,6 +1675,30 @@ describe('POST /api/state/:num (with registered entry)', () => {
     const data = await res.json();
     assert.ok(data.queue);
     assert.ok(data.rank);
+    assert.equal(data.queues.length, 1);
+    assert.deepEqual(data.queues[0], {
+      type: 'battery',
+      name: INSPECTIONS.battery,
+      rank: data.rank,
+      total: data.queues[0].total,
+    });
+    assert.ok(data.queues[0].total >= 1);
+  });
+
+  it('keeps the stable type and total when its inspection display is inactive', async () => {
+    db.prepare("UPDATE inspection SET active = FALSE WHERE type = 'battery'").run();
+    try {
+      const res = await client.post('/api/state/1', {
+        body: { phone: '01012345678' },
+      });
+      assert.equal(res.status, 200);
+      const data = await res.json();
+      assert.equal(data.queues[0].type, 'battery');
+      assert.equal(data.queues[0].name, INSPECTIONS.battery);
+      assert.ok(data.queues[0].total >= 1);
+    } finally {
+      db.prepare("UPDATE inspection SET active = TRUE WHERE type = 'battery'").run();
+    }
   });
 
   it('rejects mismatched phone', async () => {
@@ -1694,6 +1731,9 @@ describe('POST /api/state/:num (with registered entry)', () => {
     // Should have comma-separated queue and rank
     assert.ok(data.queue.includes(','), 'queue should be comma-separated for multiple inspections');
     assert.ok(String(data.rank).includes(','), 'rank should be comma-separated');
+    assert.deepEqual(data.queues.map((item) => item.type), ['battery', 'report']);
+    assert.deepEqual(data.queues.map((item) => item.name), [INSPECTIONS.battery, INSPECTIONS.report]);
+    assert.ok(data.queues.every((item) => Number.isInteger(item.rank) && Number.isInteger(item.total)));
   });
 });
 

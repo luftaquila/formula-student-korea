@@ -105,39 +105,51 @@ function addTrafficYears(req, years) {
 
 function addRegistrationYears(req, db, years) {
   const path = normalizedPath(req);
+  if (path === "/api/lookup") return true;
   if (path === "/api/queue") {
     addStoredYear(
       years,
       db.prepare("SELECT year FROM competition_team WHERE id = ?").get(Number(req.body?.teamId))?.year,
     );
-    return;
+    return false;
   }
-  const registrationId = Number(path.match(/^\/api\/queue\/([^/]+)\/(?:done|cancel)$/)?.[1]);
-  if (Number.isInteger(registrationId)) {
-    addStoredYear(years, db.prepare(`
-      SELECT t.year
-      FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-      WHERE q.id = ?
-    `).get(registrationId)?.year);
-    return;
+  const transition = path.match(/^\/api\/queue\/([^/]+)\/(?:done|cancel)$/);
+  if (transition) {
+    const registrationId = Number(transition[1]);
+    if (Number.isInteger(registrationId)) {
+      addStoredYear(years, db.prepare(`
+        SELECT t.year
+        FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
+        WHERE q.id = ?
+      `).get(registrationId)?.year);
+    }
+    return false;
   }
+  // The retired call route is intentionally absent and must continue through to
+  // Express's 404 instead of being mistaken for a newly added mutation.
+  if (/^\/api\/queue\/[^/]+\/call$/.test(path)) return true;
   if (path === "/api/settings") {
     addExplicitYear(years, req.body?.year);
-    return;
+    return false;
   }
-  years.add(currentCompetitionYear());
+  throw Object.assign(new Error("등록 대기열 변경 경로의 연도를 확인할 수 없습니다."), {
+    status: 500,
+    code: "UNKNOWN_REGISTRATION_MUTATION",
+  });
 }
 
 export function createModuleYearGuard({ module, db }) {
   return function requireCurrentCompetitionYear(req) {
     const years = new Set();
+    let credentialedRead = false;
     if (module === "queue") years.add(currentCompetitionYear());
-    else if (module === "registration") addRegistrationYears(req, db, years);
+    else if (module === "registration") credentialedRead = addRegistrationYears(req, db, years);
     else if (module === "inspection") addInspectionYears(req, db, years);
     else if (module === "traffic") addTrafficYears(req, years);
     else if (module === "score") addExplicitYear(years, req.body?.year);
     else if (module === "documents") addDocumentYears(req, db, years);
     else years.add(currentCompetitionYear());
+    if (credentialedRead) return { module, years: [] };
     if (years.size === 0) years.add(currentCompetitionYear());
     for (const year of years) assertCurrentCompetitionYear(year);
     return { module, years: [...years].sort((a, b) => a - b) };

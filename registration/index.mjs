@@ -218,7 +218,19 @@ export function createRegistrationApp(options = {}) {
   const { broadcast, handler: sseHandler, close: closeSse } = createSSEManager();
 
   function broadcastChange(year) {
-    broadcast("registration", { year }, (meta) => meta.year === year);
+    let status;
+    try {
+      status = publicStatus(year);
+    } catch (error) {
+      // A committed mutation must not be reported as failed only because its
+      // follow-up public snapshot could not be computed. Clients still receive
+      // an invalidation and recover the full status on reconnect.
+      logger.warn(null, "registration.sse_broadcast", {
+        error: error?.message || String(error), year,
+      }, String(year));
+      status = { year };
+    }
+    broadcast("registration", status, (meta) => meta.year === year);
   }
 
   function parseEventYear(req, res, next) {
@@ -328,12 +340,12 @@ export function createRegistrationApp(options = {}) {
     }
   });
 
-  function finishAdvanceNotification(id, team, sent) {
+  function finishAdvanceNotification(id, team, sent, claimToken) {
     const result = dbRun(() => db.prepare(`
       UPDATE registration_queue
       SET notified = ?, notify_claimed_at = NULL
-      WHERE id = ? AND notified = 2
-    `).run(sent ? 1 : 0, id));
+      WHERE id = ? AND notified = 2 AND notify_claimed_at = ?
+    `).run(sent ? 1 : 0, id, claimToken));
     if (!result.success) {
       logger.warn(null, "registration.sms_claim", {
         error: result.error, registrationId: id, team: auditTeam(team), sent,
@@ -393,9 +405,10 @@ export function createRegistrationApp(options = {}) {
       const target = advanceTarget(year, settings.notifyRank);
       if (!target || target.id === previousTargetId || target.notified === 1) return;
 
+      const claimToken = new Date().toISOString();
       const claim = dbRun(() => db.prepare(`
         UPDATE registration_queue
-        SET notified = 2, notify_claimed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        SET notified = 2, notify_claimed_at = ?
         WHERE id = ? AND status = 'waiting'
           AND (notified = 0 OR (
             notified = 2 AND (
@@ -403,7 +416,7 @@ export function createRegistrationApp(options = {}) {
               OR notify_claimed_at < strftime('%Y-%m-%dT%H:%M:%fZ','now','-1 minute')
             )
           ))
-      `).run(target.id));
+      `).run(claimToken, target.id));
       if (!claim.success) {
         logger.warn(null, "registration.sms_claim", {
           error: claim.error, registrationId: target.id, teamId: target.team_id,
@@ -426,8 +439,8 @@ export function createRegistrationApp(options = {}) {
         registrationId: target.id,
         phone: target.phone,
         content: `${SMS_PREFIX(year)} 엔트리 ${target.num}번 등록 대기 ${settings.notifyRank}번째입니다. 등록 데스크 근처에서 대기하세요.`,
-        onSuccess: () => finishAdvanceNotification(target.id, team, true),
-        onFailure: () => finishAdvanceNotification(target.id, team, false),
+        onSuccess: () => finishAdvanceNotification(target.id, team, true, claimToken),
+        onFailure: () => finishAdvanceNotification(target.id, team, false, claimToken),
       });
     } catch (error) {
       logger.warn(null, "registration.sms_prepare", {

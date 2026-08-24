@@ -1,21 +1,23 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { displayPhone } from "@shared/format-phone.js";
 import { isChief } from "@shared/officialsStore.js";
 import { useNotification } from "@shared/useNotification.js";
 import * as api from "../api.js";
+import { useRegistrationSSE } from "../composables/useSSE.js";
 
 const router = useRouter();
 const { success, error: notifyError } = useNotification();
+const { registrationRevision, reconnected } = useRegistrationSSE();
 const year = currentCompetitionYear();
 const board = ref(null);
+const settingsForm = ref({ open: false, sms: false, notifyRank: 3 });
 const loading = ref(true);
 const loadError = ref("");
 const busyIds = ref(new Set());
 const settingsBusy = ref(false);
-let events = null;
 let refreshSequence = 0;
 
 const waiting = computed(() => board.value?.waiting || []);
@@ -74,6 +76,7 @@ async function patchSetting(change) {
     board.value = { ...board.value, settings };
     success("대기열 설정을 저장했습니다.");
   } catch (requestError) {
+    syncSettingsForm(board.value?.settings);
     notifyError(api.errorMessage(requestError));
     await refresh();
   } finally {
@@ -81,18 +84,22 @@ async function patchSetting(change) {
   }
 }
 
-function startEvents() {
-  events = new EventSource(api.eventsUrl(year));
-  events.addEventListener("init", refresh);
-  events.addEventListener("registration", refresh);
+function syncSettingsForm(settings) {
+  if (!settings) return;
+  settingsForm.value = {
+    open: settings.open,
+    sms: settings.sms,
+    notifyRank: settings.notifyRank,
+  };
 }
+
+watch(() => board.value?.settings, syncSettingsForm);
+watch(registrationRevision, refresh);
+watch(reconnected, refresh);
 
 onMounted(async () => {
   await refresh();
-  startEvents();
 });
-
-onUnmounted(() => events?.close());
 </script>
 
 <template>
@@ -171,10 +178,10 @@ onUnmounted(() => events?.close());
             <strong>현장 대기 접수</strong>
             <label class="toggle">
               <input
+                v-model="settingsForm.open"
                 type="checkbox"
-                :checked="board.settings.open"
                 :disabled="settingsBusy"
-                @change="patchSetting({ open: $event.target.checked })"
+                @change="patchSetting({ open: settingsForm.open })"
               >
               <span class="toggle-slider" aria-hidden="true" />
             </label>
@@ -183,10 +190,10 @@ onUnmounted(() => events?.close());
             <strong>문자 안내</strong>
             <label class="toggle">
               <input
+                v-model="settingsForm.sms"
                 type="checkbox"
-                :checked="board.settings.sms"
                 :disabled="settingsBusy || (!board.settings.smsAvailable && !board.settings.sms)"
-                @change="patchSetting({ sms: $event.target.checked })"
+                @change="patchSetting({ sms: settingsForm.sms })"
               >
               <span class="toggle-slider" aria-hidden="true" />
             </label>
@@ -195,6 +202,7 @@ onUnmounted(() => events?.close());
             <strong>사전 안내 순번</strong>
             <label class="rank-input">
               <input
+                v-model.number="settingsForm.notifyRank"
                 class="form-input mono"
                 type="number"
                 inputmode="numeric"
@@ -202,9 +210,8 @@ onUnmounted(() => events?.close());
                 max="10"
                 step="1"
                 aria-label="사전 안내 순번"
-                :value="board.settings.notifyRank"
                 :disabled="settingsBusy"
-                @change="patchSetting({ notifyRank: Number($event.target.value) })"
+                @change="patchSetting({ notifyRank: settingsForm.notifyRank })"
               >
               <span>번째</span>
             </label>

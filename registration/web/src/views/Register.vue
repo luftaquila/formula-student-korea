@@ -1,21 +1,20 @@
 <script setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { formatPhone } from "@shared/format-phone.js";
 import { useNotification } from "@shared/useNotification.js";
 import * as api from "../api.js";
+import { useRegistrationSSE } from "../composables/useSSE.js";
 
 const { success } = useNotification();
 const year = ref(currentCompetitionYear());
-const status = ref(null);
+const { status, entriesRevision, reconnected } = useRegistrationSSE();
 const teams = ref({});
 const number = ref("");
 const phone = ref("010");
 const agreed = ref(false);
 const error = ref("");
 const busy = ref(false);
-
-let events = null;
 
 const team = computed(() => teams.value[String(number.value).trim()] || null);
 
@@ -74,28 +73,13 @@ async function submit() {
   }
 }
 
-function startEvents() {
-  events?.close();
-  events = new EventSource(api.eventsUrl(year.value));
-  const refresh = () => {
-    loadStatus();
-  };
-  events.addEventListener("init", refresh);
-  events.addEventListener("registration", refresh);
-  // 키오스크는 종일 열려 있다. 엔트리가 추가·수정되면 로스터를 다시 받아야
-  // 새 번호가 "존재하지 않는 엔트리"로 남지 않는다.
-  events.addEventListener("entries", loadTeams);
-}
+watch(entriesRevision, loadTeams);
+watch(reconnected, loadTeams);
 
 onMounted(async () => {
-  // 로스터 조회가 실패해도 SSE 는 반드시 연다 — 그러지 않으면 접수 열림/마감과
-  // 엔트리 변경을 다시 받을 경로가 사라진다.
+  // 공용 SSE 연결은 mount와 함께 독립적으로 시작한다. 초기 HTTP 조회가 실패해도
+  // init/entries 이벤트와 재연결이 접수 상태와 로스터를 복구한다.
   await Promise.allSettled([loadTeams(), loadStatus()]);
-  startEvents();
-});
-
-onUnmounted(() => {
-  events?.close();
 });
 </script>
 
