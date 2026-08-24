@@ -8,6 +8,7 @@ request) until the receiver recovers.
 
 import collections
 import json
+import queue
 import time
 import types
 
@@ -237,6 +238,75 @@ def test_sse_handler_isolates_publisher_exception():
     # Must NOT raise.
     node._handle_sse_event(
         "manual-control", json.dumps({"throttle": 10.0, "steering": 0.0}))
+
+
+def test_mission_command_and_state_request_dispatch_to_dedicated_topics():
+    node = _make_sse_bridge()
+    node._pub_mission = _RecordingPub()
+    node._pub_mission_state_request = _RecordingPub()
+    command = {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'command_id': 'cmd-4',
+        'command_seq': 4,
+        'action': 'resume',
+        'waypoints': [{'id': 'wp-9', 'lat': 35.0, 'lng': 126.0}],
+    }
+
+    node._handle_sse_event('mission-command', json.dumps(command))
+    node._handle_sse_event('mission-state-request', '{}')
+
+    assert json.loads(node._pub_mission.published[0].data) == command
+    assert len(node._pub_mission_state_request.published) == 1
+
+
+def test_mission_report_adds_boot_identity_and_monotonic_sequence():
+    node = BridgeNode.__new__(BridgeNode)
+    queued = []
+    node._boot_id = 'boot-xyz'
+    node._mission_report_seq = 8
+    node._mission_identity = None
+    node._mission_report_queue = types.SimpleNamespace(put=lambda payload: queued.append(payload))
+    node._mission_report_wakeup = types.SimpleNamespace(set=lambda: None)
+    node.get_logger = lambda: types.SimpleNamespace(warn=lambda *_a, **_kw: None)
+    report = {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'event': 'held',
+    }
+
+    node._on_mission_report(_StrMsg(json.dumps(report)))
+    node._on_mission_report(_StrMsg(json.dumps(report)))
+
+    assert [payload['report_seq'] for payload in queued] == [9, 10]
+    assert all(payload['boot_id'] == 'boot-xyz' for payload in queued)
+    assert node._mission_identity['mission_id'] == 17
+
+
+def test_mission_report_worker_forwards_terminal_reset_to_navigator():
+    node = BridgeNode.__new__(BridgeNode)
+    node._running = True
+    node._mission_report_queue = queue.Queue()
+    node._mission_report_queue.put({'mission_id': 17})
+    node._mission_report_queue.put(None)
+    node._mission_report_wakeup = types.SimpleNamespace(clear=lambda: None, wait=lambda _delay: None)
+    node.get_parameter = lambda _name: types.SimpleNamespace(value='https://server.example')
+    node._get_headers = lambda: {}
+    reset = _RecordingPub()
+    node._pub_mission_reset = reset
+    node.get_logger = lambda: types.SimpleNamespace(warn=lambda *_a, **_kw: None)
+    response = types.SimpleNamespace(
+        status_code=200,
+        json=lambda: {'ok': True, 'reset_mission': True},
+        text='',
+    )
+    node._mission_report_session = types.SimpleNamespace(post=lambda *_a, **_kw: response)
+
+    node._mission_report_loop()
+
+    assert len(reset.published) == 1
 
 
 # ── Position reporting is async (no blocking POST on the ROS executor) ───────

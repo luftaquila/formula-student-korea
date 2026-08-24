@@ -74,6 +74,9 @@ from pilot.lib.wheel_calibration import solve_wheel_scales
 from pilot.lib.steering_calibration import (
     TRIM_BOUND_US, load_steering_trim, solve_steering_trim,
 )
+from pilot.lib.mission_checkpoint import (
+    clear_mission_checkpoint, load_mission_checkpoint, save_mission_checkpoint,
+)
 
 
 class State(Enum):
@@ -252,6 +255,8 @@ class NavigatorNode(Node):
         state_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._pub_state = self.create_publisher(String, '/rover/nav/state', state_qos)
+        self._pub_mission_report = self.create_publisher(
+            String, '/rover/mission/report', state_qos)
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_waypoint_reached = self.create_publisher(Int32, '/rover/nav/waypoint_reached', reliable_qos)
         self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
@@ -279,6 +284,9 @@ class NavigatorNode(Node):
         self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
         self.create_subscription(String, '/rover/odom', self._on_odom, 10)
         self.create_subscription(String, '/rover/cmd/execute_path', self._on_execute_path, reliable_qos)
+        self.create_subscription(String, '/rover/cmd/mission', self._on_mission_command, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/mission_state_request', self._on_mission_state_request, reliable_qos)
+        self.create_subscription(Empty, '/rover/cmd/mission_reset', self._on_mission_reset, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/pause', self._on_pause, reliable_qos)
@@ -303,6 +311,20 @@ class NavigatorNode(Node):
         self._segments = []            # planner output; len = 2 × len(waypoints) (+2 if return)
         self._cur_seg_idx = 0
         self._cur_wp_idx = 0           # last waypoint index whose dock segment we're tracking
+
+        # Protocol-v2 mission identity. Stable waypoint IDs make progress
+        # independent of browser-local array indexes and survive reboot.
+        self._mission_id = None
+        self._mission_plan_hash = None
+        self._mission_command_seq = 0
+        self._mission_last_command_id = None
+        self._mission_waypoint_ids = []
+        self._mission_all_waypoints = []
+        self._mission_completed_ids = set()
+        self._mission_finish_behavior = 'stop'
+        self._mission_start_position = None
+        self._mission_completion_pending = False
+        self._mission_checkpoint_error = None
 
         # Mission anchors.
         self._ref_lat = None           # ENU origin for the mission
@@ -441,10 +463,313 @@ class NavigatorNode(Node):
         # 것을 막는다(재발행은 bridge에서 멱등 — 전이일 때만 잠금 복구, 아니면 상태만 재설정).
         self._state_heartbeat = self.create_timer(1.0, lambda: self._publish_state(force=True))
 
+        self._restore_mission_checkpoint()
         self._publish_state()
         self.get_logger().info('Navigator node started')
 
     # ── helpers ──────────────────────────────────────────────────────────
+
+    _ACTIVE_MOTION_STATES = (
+        State.CALIBRATING, State.NAVIGATING, State.SETTLING, State.SPRAYING,
+    )
+
+    def _has_v2_mission(self):
+        return self._mission_id is not None and self._mission_plan_hash is not None
+
+    def _checkpoint_payload(self, motion_state='held'):
+        return {
+            'schema_version': 1,
+            'mission_id': int(self._mission_id),
+            'plan_hash': self._mission_plan_hash,
+            'command_seq': int(self._mission_command_seq),
+            'last_command_id': self._mission_last_command_id,
+            'finish_behavior': self._mission_finish_behavior,
+            'mission_start': self._mission_start_position,
+            'waypoints': list(self._mission_all_waypoints),
+            'completed_waypoint_ids': sorted(self._mission_completed_ids),
+            'active_waypoint_id': self._current_mission_waypoint_id(),
+            'motion_state': motion_state,
+        }
+
+    def _save_mission_checkpoint(self, motion_state='held'):
+        if not self._has_v2_mission():
+            return True
+        try:
+            save_mission_checkpoint(self._checkpoint_payload(motion_state))
+            self._mission_checkpoint_error = None
+            return True
+        except (OSError, TypeError, ValueError) as exc:
+            self._mission_checkpoint_error = str(exc)
+            self.get_logger().error(f'Mission checkpoint save failed: {exc}')
+            return False
+
+    def _restore_mission_checkpoint(self):
+        try:
+            checkpoint = load_mission_checkpoint()
+        except ValueError as exc:
+            self._mission_checkpoint_error = str(exc)
+            self.get_logger().error(f'Mission checkpoint rejected: {exc}')
+            return
+        if checkpoint is None:
+            return
+        self._mission_id = checkpoint['mission_id']
+        self._mission_plan_hash = checkpoint['plan_hash']
+        self._mission_command_seq = int(checkpoint.get('command_seq', 0))
+        self._mission_last_command_id = checkpoint.get('last_command_id')
+        self._mission_finish_behavior = checkpoint.get('finish_behavior', 'stop')
+        self._mission_start_position = checkpoint.get('mission_start')
+        self._mission_completion_pending = (
+            checkpoint.get('motion_state') == 'completion_pending')
+        self._mission_all_waypoints = list(checkpoint['waypoints'])
+        self._mission_completed_ids = set(checkpoint.get('completed_waypoint_ids', []))
+        pending = [
+            waypoint for waypoint in self._mission_all_waypoints
+            if waypoint['id'] not in self._mission_completed_ids
+        ]
+        self._mission_waypoint_ids = [waypoint['id'] for waypoint in pending]
+        self._waypoints = [
+            {'lat': float(waypoint['lat']), 'lng': float(waypoint['lng'])}
+            for waypoint in pending
+        ]
+        self._state = State.PAUSED
+        if self._mission_completion_pending:
+            self.get_logger().warn(
+                f'Restored completed mission {self._mission_id}; waiting for '
+                'server completion acknowledgement')
+        else:
+            self.get_logger().warn(
+                f'Restored mission {self._mission_id} with {len(pending)} pending '
+                'waypoints; waiting for explicit resume')
+
+    def _clear_v2_mission(self):
+        try:
+            clear_mission_checkpoint()
+        except OSError as exc:
+            self.get_logger().error(f'Mission checkpoint clear failed: {exc}')
+        self._mission_id = None
+        self._mission_plan_hash = None
+        self._mission_command_seq = 0
+        self._mission_last_command_id = None
+        self._mission_waypoint_ids = []
+        self._mission_all_waypoints = []
+        self._mission_completed_ids = set()
+        self._mission_finish_behavior = 'stop'
+        self._mission_start_position = None
+        self._mission_completion_pending = False
+
+    def _current_mission_waypoint_id(self):
+        if not self._mission_waypoint_ids:
+            return None
+        index = max(0, min(int(self._cur_wp_idx), len(self._mission_waypoint_ids) - 1))
+        return self._mission_waypoint_ids[index]
+
+    def _publish_mission_report(self, event, **fields):
+        if not self._has_v2_mission():
+            return
+        payload = {
+            'protocol_version': 2,
+            'mission_id': self._mission_id,
+            'plan_hash': self._mission_plan_hash,
+            'event': event,
+            **fields,
+        }
+        msg = String()
+        msg.data = json.dumps(payload, separators=(',', ':'), allow_nan=False)
+        self._pub_mission_report.publish(msg)
+
+    def _publish_command_result(self, command, accepted, reason=None):
+        self._publish_mission_report(
+            'command',
+            mission_id=command.get('mission_id'),
+            plan_hash=command.get('plan_hash'),
+            command_id=command.get('command_id'),
+            command_seq=command.get('command_seq'),
+            command_result='accepted' if accepted else 'rejected',
+            reason=reason,
+            motion_state='running' if self._state in self._ACTIVE_MOTION_STATES else 'held',
+            completed_waypoint_ids=sorted(self._mission_completed_ids),
+            start_position=self._mission_start_position,
+        )
+
+    def _on_mission_state_request(self, _msg):
+        if not self._has_v2_mission():
+            return
+        if self._mission_completion_pending:
+            self._publish_mission_report(
+                'mission_completed',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                start_position=self._mission_start_position,
+            )
+            return
+        self._publish_mission_report(
+            'state',
+            motion_state='running' if self._state in self._ACTIVE_MOTION_STATES else 'held',
+            reason='checkpoint_restored' if self._state == State.PAUSED else None,
+            completed_waypoint_ids=sorted(self._mission_completed_ids),
+            active_waypoint_id=self._current_mission_waypoint_id(),
+            start_position=self._mission_start_position,
+            last_command_id=self._mission_last_command_id,
+            command_seq=self._mission_command_seq,
+        )
+
+    def _on_mission_reset(self, _msg):
+        """Drop a checkpoint the authoritative server says is terminal.
+
+        This closes the crash window where the completion report reached the
+        server but the subsequent checkpoint unlink did not survive power loss.
+        It never releases a live emergency-stop latch.
+        """
+        if not self._has_v2_mission():
+            return
+        self._stop_motors()
+        self._clear_v2_mission()
+        if self._state != State.EMERGENCY_STOP:
+            self._set_state(State.IDLE)
+
+    def _on_mission_command(self, msg):
+        try:
+            command = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().error('Invalid mission command JSON')
+            return
+        if not isinstance(command, dict) or command.get('protocol_version') != 2:
+            self.get_logger().error('Unsupported mission command protocol')
+            return
+        mission_id = command.get('mission_id')
+        plan_hash = command.get('plan_hash')
+        command_id = command.get('command_id')
+        command_seq = command.get('command_seq')
+        action = command.get('action')
+        if (not isinstance(mission_id, int) or mission_id <= 0
+                or not isinstance(plan_hash, str) or len(plan_hash) != 64
+                or not isinstance(command_id, str) or not command_id
+                or not isinstance(command_seq, int) or command_seq <= 0
+                or action not in ('start', 'pause', 'resume', 'end')):
+            self.get_logger().error('Malformed mission command envelope')
+            return
+
+        # A duplicate delivery is idempotent: report the same accepted state and
+        # never restart calibration, spray, or progress.
+        if (self._has_v2_mission() and mission_id == self._mission_id
+                and command_seq == self._mission_command_seq
+                and command_id == self._mission_last_command_id):
+            self._publish_command_result(command, True)
+            return
+        if self._has_v2_mission() and command_seq <= self._mission_command_seq:
+            self._publish_command_result(command, False, 'stale_command')
+            return
+
+        if action == 'end':
+            if self._has_v2_mission() and mission_id != self._mission_id:
+                self._publish_command_result(command, False, 'mission_mismatch')
+                return
+            if not self._has_v2_mission():
+                # Publish the acknowledgement using the command identity, then
+                # remain cleanly idle.
+                self._mission_id = mission_id
+                self._mission_plan_hash = plan_hash
+            self._mission_command_seq = command_seq
+            self._mission_last_command_id = command_id
+            self._on_end_mission(None)
+            self._publish_command_result(command, True)
+            self._clear_v2_mission()
+            return
+
+        if self._has_v2_mission() and mission_id != self._mission_id:
+            self._publish_command_result(command, False, 'mission_mismatch')
+            return
+        if self._state == State.EMERGENCY_STOP:
+            if not self._has_v2_mission():
+                self._mission_id = mission_id
+                self._mission_plan_hash = plan_hash
+            self._publish_command_result(command, False, 'emergency_stop_latched')
+            return
+
+        if action == 'pause':
+            if not self._has_v2_mission():
+                return
+            self._on_pause(None)
+            if self._state != State.PAUSED:
+                self._publish_command_result(command, False, 'not_pausable')
+                return
+            self._mission_command_seq = command_seq
+            self._mission_last_command_id = command_id
+            if not self._save_mission_checkpoint('held'):
+                self._publish_command_result(command, False, 'checkpoint_write_failed')
+                return
+            self._publish_command_result(command, True)
+            return
+
+        if self._state not in (State.IDLE, State.ERROR, State.PAUSED):
+            if not self._has_v2_mission():
+                self._mission_id = mission_id
+                self._mission_plan_hash = plan_hash
+            self._publish_command_result(command, False, 'rover_not_held')
+            return
+
+        raw_waypoints = command.get('waypoints')
+        return_only = (
+            isinstance(raw_waypoints, list) and not raw_waypoints
+            and command.get('finish_behavior') == 'return_to_start'
+            and isinstance(command.get('mission_start') or self._mission_start_position, dict)
+        )
+        if not isinstance(raw_waypoints, list) or (not raw_waypoints and not return_only):
+            if not self._has_v2_mission():
+                self._mission_id = mission_id
+                self._mission_plan_hash = plan_hash
+            self._publish_command_result(command, False, 'empty_remaining_plan')
+            return
+        ids = []
+        for waypoint in raw_waypoints:
+            if not isinstance(waypoint, dict) or not isinstance(waypoint.get('id'), str):
+                if not self._has_v2_mission():
+                    self._mission_id = mission_id
+                    self._mission_plan_hash = plan_hash
+                self._publish_command_result(command, False, 'invalid_waypoint_identity')
+                return
+            ids.append(waypoint['id'])
+        if (len(set(ids)) != len(ids)
+                or self._validate_waypoints(raw_waypoints, allow_empty=return_only) is None):
+            if not self._has_v2_mission():
+                self._mission_id = mission_id
+                self._mission_plan_hash = plan_hash
+            self._publish_command_result(command, False, 'invalid_waypoints')
+            return
+
+        old_completed = []
+        if self._has_v2_mission():
+            old_completed = [
+                waypoint for waypoint in self._mission_all_waypoints
+                if waypoint['id'] in self._mission_completed_ids
+            ]
+        self._mission_id = mission_id
+        self._mission_plan_hash = plan_hash
+        self._mission_command_seq = command_seq
+        self._mission_last_command_id = command_id
+        self._mission_finish_behavior = command.get('finish_behavior', 'stop')
+        self._mission_start_position = command.get('mission_start') or self._mission_start_position
+        self._mission_completion_pending = False
+        if self._mission_start_position is None and self._gps_lat is not None and self._gps_lon is not None:
+            self._mission_start_position = {'lat': self._gps_lat, 'lng': self._gps_lon}
+        self._mission_waypoint_ids = ids
+        self._mission_all_waypoints = old_completed + [dict(waypoint) for waypoint in raw_waypoints]
+        self._waypoints = [
+            {'lat': float(waypoint['lat']), 'lng': float(waypoint['lng'])}
+            for waypoint in raw_waypoints
+        ]
+        if not self._save_mission_checkpoint('held'):
+            self._publish_command_result(command, False, 'checkpoint_write_failed')
+            return
+
+        execute = String()
+        execute.data = json.dumps(self._waypoints)
+        self._on_execute_path(execute, allow_empty=return_only)
+        if self._state != State.CALIBRATING:
+            self._save_mission_checkpoint('held')
+            self._publish_command_result(command, False, self._last_error_reason or 'start_rejected')
+            return
+        self._save_mission_checkpoint('running')
+        self._publish_command_result(command, True)
 
     def _has_required_fix(self):
         required = self.get_parameter('required_fix_status').value
@@ -493,8 +818,8 @@ class NavigatorNode(Node):
         omega = (self._odom_v_right - self._odom_v_left) / track
         return v, omega
 
-    def _validate_waypoints(self, waypoints):
-        if not isinstance(waypoints, list) or not waypoints:
+    def _validate_waypoints(self, waypoints, allow_empty=False):
+        if not isinstance(waypoints, list) or (not waypoints and not allow_empty):
             return None
         clean = []
         for wp in waypoints:
@@ -587,13 +912,13 @@ class NavigatorNode(Node):
 
     # ── command callbacks ────────────────────────────────────────────────
 
-    def _on_execute_path(self, msg):
+    def _on_execute_path(self, msg, allow_empty=False):
         try:
             waypoints = json.loads(msg.data)
         except json.JSONDecodeError:
             self.get_logger().error('Invalid waypoint JSON')
             return
-        waypoints = self._validate_waypoints(waypoints)
+        waypoints = self._validate_waypoints(waypoints, allow_empty=allow_empty)
         if waypoints is None:
             self.get_logger().error('Invalid waypoint payload')
             return
@@ -663,11 +988,26 @@ class NavigatorNode(Node):
         self._stop_motors()
         self._l1_tracker = None
         self._set_state(State.EMERGENCY_STOP)
+        if self._has_v2_mission():
+            self._save_mission_checkpoint('held')
+            self._publish_mission_report(
+                'interrupted', reason='emergency_stop',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                active_waypoint_id=self._current_mission_waypoint_id(),
+            )
 
     def _on_clear_emergency(self, _msg):
         if self._state == State.EMERGENCY_STOP:
             self.get_logger().info('Emergency-stop cleared by operator')
-            self._set_state(State.IDLE)
+            if self._has_v2_mission():
+                self._set_state(State.PAUSED)
+                self._save_mission_checkpoint('held')
+                self._publish_mission_report(
+                    'held', reason='emergency_stop_cleared',
+                    completed_waypoint_ids=sorted(self._mission_completed_ids),
+                )
+            else:
+                self._set_state(State.IDLE)
 
     def _on_end_mission(self, _msg):
         """Operator discarded the preserved mission — return to a clean IDLE.
@@ -696,11 +1036,12 @@ class NavigatorNode(Node):
         self.get_logger().info(f'Mission discarded by operator (from {self._state.value}) → IDLE')
         self._set_state(State.IDLE)
 
-    # Mission states from which a soft pause is meaningful — the rover is driving
-    # (or parked at a cone) under autonomy. CALIBRATING is excluded: it runs
-    # before the L1 tracker / segments exist, so there is nothing to resume into
-    # (a pause there should be an E-Stop instead).
-    _PAUSABLE_STATES = (State.NAVIGATING, State.SETTLING, State.SPRAYING)
+    # Mission states from which a soft pause is meaningful. CALIBRATING is
+    # included because protocol v2 stores the route before motion and resume
+    # rebuilds calibration and geometry from the rover's live pose.
+    _PAUSABLE_STATES = (
+        State.CALIBRATING, State.NAVIGATING, State.SETTLING, State.SPRAYING,
+    )
 
     def _on_pause(self, _msg):
         """Soft-pause the mission: hold position, keep the plan, allow manual.
@@ -724,6 +1065,13 @@ class NavigatorNode(Node):
         self._stop_motors()
         self.get_logger().info(f'Mission paused (from {self._state.value})')
         self._set_state(State.PAUSED)
+        if self._has_v2_mission():
+            self._save_mission_checkpoint('held')
+            self._publish_mission_report(
+                'held', reason='operator_or_obstacle_pause',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                active_waypoint_id=self._current_mission_waypoint_id(),
+            )
 
     def _on_resume(self, _msg):
         """Resume a paused mission, re-planning from the live chassis pose.
@@ -775,6 +1123,16 @@ class NavigatorNode(Node):
     def _on_spray_done(self, _msg):
         if self._state != State.SPRAYING:
             return
+        if self._has_v2_mission():
+            waypoint_id = self._current_mission_waypoint_id()
+            if waypoint_id is not None:
+                self._mission_completed_ids.add(waypoint_id)
+                self._save_mission_checkpoint('running')
+                self._publish_mission_report(
+                    'waypoint_completed', waypoint_id=waypoint_id,
+                    outcome='success',
+                    completed_waypoint_ids=sorted(self._mission_completed_ids),
+                )
         self._advance_to_next_waypoint()
 
     def _on_calibrate_wheels(self, _msg):
@@ -1164,7 +1522,16 @@ class NavigatorNode(Node):
             -(cos(psi_math) * ax - sin(psi_math) * ay),
             -(sin(psi_math) * ax + cos(psi_math) * ay),
         )
-        self._mission_start_antenna_xy = (0.0, 0.0)
+        if (self._has_v2_mission() and self._mission_start_position
+                and isinstance(self._mission_start_position.get('lat'), (int, float))
+                and isinstance(self._mission_start_position.get('lng'), (int, float))):
+            self._mission_start_antenna_xy = enu_from_gps(
+                self._mission_start_position['lat'],
+                self._mission_start_position['lng'],
+                self._ref_lat, self._ref_lon,
+            )
+        else:
+            self._mission_start_antenna_xy = (0.0, 0.0)
 
         # Plan path now that chassis pose is known.
         params = self._params_for_trackers()
@@ -1174,7 +1541,9 @@ class NavigatorNode(Node):
                 antenna_offset=(params['antenna_offset_x'], params['antenna_offset_y']),
                 waypoints_lat_lng=self._waypoints,
                 ref_lat_lon=(self._ref_lat, self._ref_lon),
-                return_to_start=self.get_parameter('return_to_start').value,
+                return_to_start=(self._mission_finish_behavior == 'return_to_start')
+                if self._has_v2_mission()
+                else self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
                 start_antenna_xy=self._mission_start_antenna_xy,
             )
@@ -1203,6 +1572,7 @@ class NavigatorNode(Node):
             return
         if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()
+            self._finish_v2_mission_if_active()
             self._set_state(State.IDLE)
             return
 
@@ -1234,6 +1604,15 @@ class NavigatorNode(Node):
             )
 
         if status == 'reached':
+            if seg.waypoint_index < 0:
+                # Synthetic return-to-start leg: arrive and finish without a
+                # dispense cycle or a fake waypoint index.
+                self._cur_seg_idx += 1
+                if self._cur_seg_idx >= len(self._segments):
+                    self._stop_motors()
+                    self._finish_v2_mission_if_active()
+                    self._set_state(State.IDLE)
+                return
             if self._cur_wp_idx != seg.waypoint_index:
                 self._settle_retries = 0
             self._cur_wp_idx = seg.waypoint_index
@@ -1371,7 +1750,9 @@ class NavigatorNode(Node):
                 antenna_offset=(params['antenna_offset_x'], params['antenna_offset_y']),
                 waypoints_lat_lng=remaining,
                 ref_lat_lon=(self._ref_lat, self._ref_lon),
-                return_to_start=self.get_parameter('return_to_start').value,
+                return_to_start=(self._mission_finish_behavior == 'return_to_start')
+                if self._has_v2_mission()
+                else self.get_parameter('return_to_start').value,
                 start_chassis_xy=self._mission_start_chassis_xy,
                 start_antenna_xy=self._mission_start_antenna_xy,
                 waypoint_index_offset=next_wp_idx,
@@ -1513,6 +1894,13 @@ class NavigatorNode(Node):
             self._settle_count = 0
 
     def _trigger_spray(self):
+        if self._has_v2_mission():
+            waypoint_id = self._current_mission_waypoint_id()
+            self._save_mission_checkpoint('running')
+            self._publish_mission_report(
+                'waypoint_active', waypoint_id=waypoint_id,
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+            )
         msg = Int32()
         msg.data = int(self._cur_wp_idx)
         self._pub_waypoint_reached.publish(msg)
@@ -1524,7 +1912,7 @@ class NavigatorNode(Node):
     def _handle_spraying(self):
         if time.monotonic() - self._spray_enter_time > self.get_parameter('spray_timeout').value:
             self.get_logger().warn(
-                f'Spray timeout at waypoint {self._cur_wp_idx + 1}, skipping'
+                f'Spray timeout at waypoint {self._cur_wp_idx + 1}'
             )
             result = String()
             result.data = json.dumps({
@@ -1535,6 +1923,17 @@ class NavigatorNode(Node):
             cancel = Int32()
             cancel.data = int(self._cur_wp_idx)
             self._pub_spray_cancel.publish(cancel)
+            if self._has_v2_mission():
+                waypoint_id = self._current_mission_waypoint_id()
+                self._stop_motors()
+                self._set_state(State.PAUSED)
+                self._save_mission_checkpoint('held')
+                self._publish_mission_report(
+                    'waypoint_failed', waypoint_id=waypoint_id,
+                    outcome='timeout',
+                    completed_waypoint_ids=sorted(self._mission_completed_ids),
+                )
+                return
             self._advance_to_next_waypoint()
             return
 
@@ -2079,9 +2478,27 @@ class NavigatorNode(Node):
         if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()
             self.get_logger().info('Mission complete')
+            self._finish_v2_mission_if_active()
             self._set_state(State.IDLE)
             return
         self._set_state(State.NAVIGATING)
+
+    def _finish_v2_mission_if_active(self):
+        if not self._has_v2_mission():
+            return
+        # Keep the terminal checkpoint until the server acknowledges the
+        # completion report.  Clearing it here creates a power-loss window in
+        # which both the report queue and the only durable proof of completion
+        # disappear.  The bridge publishes mission_reset after a terminal 2xx.
+        self._mission_completion_pending = True
+        if not self._save_mission_checkpoint('completion_pending'):
+            self.get_logger().error(
+                'Mission completion checkpoint failed; retaining in-memory state')
+        self._publish_mission_report(
+            'mission_completed',
+            completed_waypoint_ids=sorted(self._mission_completed_ids),
+            start_position=self._mission_start_position,
+        )
 
     # ── velocity / state plumbing ────────────────────────────────────────
 

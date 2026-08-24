@@ -805,6 +805,19 @@ describe("Competition backup/restore artifact validation", () => {
     }
   });
 
+  it("rejects a Course backup missing durable mission protocol state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-schema-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+    created.db.exec("DROP TABLE mission_command");
+    created.db.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /mission_command<table:missing>/);
+  });
+
   it("rejects support tables that have every required name but unusable columns", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-support-column-validator-"));
     roots.push(root);

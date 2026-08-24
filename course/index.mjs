@@ -6,6 +6,7 @@ import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/se
 import { createSSEManager } from "../shared/sse.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
+import { setupMissionV2Schema } from "./lib/mission-v2.mjs";
 
 const parsedMissionTelemetryMaxRows = Number.parseInt(process.env.MISSION_TELEMETRY_MAX_ROWS || "500000", 10);
 const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRows) && parsedMissionTelemetryMaxRows > 0
@@ -248,6 +249,11 @@ runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
   }
 });
 
+// Durable mission protocol v2: stable waypoint identities, editable remaining
+// routes, command acknowledgements, and named route presets. The migration is
+// additive and backfills legacy coordinate arrays without deleting history.
+setupMissionV2Schema(db, logger);
+
 // GPS 소스/기준국 설정. 로버가 쓸 NTRIP 소스(NGII vs 수신기 base station)를 서버에
 // 저장해 모든 클라이언트·로버 재연결 간에 공유한다. key-value 단순 저장:
 //   ntrip_source          "ngii" | "base" (기본 ngii)
@@ -317,6 +323,7 @@ function roleFn(req) {
     // browser can't spoof an obstacle to pause a running mission + raise a false
     // operator alarm.
     p === "/api/rover/obstacle" ||
+    p === "/api/rover/mission-report" ||
     // Base-station RTCM relay + survey result come from the GPS receiver only.
     // Internal-strict so a browser can't inject fake RTCM corrections into the
     // rover or forge a surveyed base coordinate.
@@ -1189,6 +1196,7 @@ registerRoverRoutes(app, {
   logger,
   broadcastEvent,
   getCourseById,
+  getCones,
   takeCourseSnapshot,
   validateCoordinate,
   validateAltitude,

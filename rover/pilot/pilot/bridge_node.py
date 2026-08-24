@@ -28,6 +28,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 import requests
 import rclpy
 from rclpy.node import Node
@@ -98,6 +99,11 @@ class BridgeNode(Node):
         # Publishers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
         self._pub_execute = self.create_publisher(String, '/rover/cmd/execute_path', reliable_qos)
+        self._pub_mission = self.create_publisher(String, '/rover/cmd/mission', reliable_qos)
+        self._pub_mission_state_request = self.create_publisher(
+            Empty, '/rover/cmd/mission_state_request', reliable_qos)
+        self._pub_mission_reset = self.create_publisher(
+            Empty, '/rover/cmd/mission_reset', reliable_qos)
         # Software-originated E-Stop goes to the dedicated sw_* topics so
         # the MCU bridge relays them to the MCU as 'E'/'C'. The bridge in
         # turn republishes /rover/cmd/{emergency_stop,clear_emergency} for
@@ -132,6 +138,7 @@ class BridgeNode(Node):
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
         self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
+        self.create_subscription(String, '/rover/mission/report', self._on_mission_report, reliable_qos)
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
@@ -147,6 +154,9 @@ class BridgeNode(Node):
         self._position_requested = False
         self._nav_state = 'IDLE'
         self._sse_connected = False
+        self._boot_id = str(uuid.uuid4())
+        self._mission_report_seq = 0
+        self._mission_identity = None
         self._fix_status = None
         # monotonic() of the last immediate fix_status telemetry push, for the
         # leading-edge rate limit (see _FIX_PUSH_MIN_INTERVAL_S).
@@ -189,6 +199,17 @@ class BridgeNode(Node):
         self._post_session = requests.Session()
         self._post_thread = threading.Thread(target=self._post_loop, daemon=True)
         self._post_thread.start()
+
+        # Mission reports are never placed on the bounded telemetry queue. The
+        # current item is retried until the server accepts or definitively
+        # rejects it; after a reboot the navigator's durable checkpoint emits a
+        # full state report and closes any gap left by volatile RAM.
+        self._mission_report_queue = queue.Queue()
+        self._mission_report_session = requests.Session()
+        self._mission_report_wakeup = threading.Event()
+        self._mission_report_thread = threading.Thread(
+            target=self._mission_report_loop, daemon=True)
+        self._mission_report_thread.start()
 
         # Start network threads after all shared queues/sessions exist.
         self._sse_thread = threading.Thread(target=self._sse_loop, daemon=True)
@@ -250,6 +271,73 @@ class BridgeNode(Node):
             return
         self._nav_state = msg.data
         self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
+
+    def _on_mission_report(self, msg):
+        """Queue a protocol-v2 mission report on the lossless retry worker."""
+        try:
+            payload = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().warn('Invalid mission report JSON')
+            return
+        if not isinstance(payload, dict) or payload.get('protocol_version') != 2:
+            self.get_logger().warn('Ignoring unsupported mission report')
+            return
+        self._mission_report_seq += 1
+        payload['boot_id'] = self._boot_id
+        payload['report_seq'] = self._mission_report_seq
+        self._mission_identity = {
+            'mission_id': payload.get('mission_id'),
+            'plan_hash': payload.get('plan_hash'),
+            'command_id': payload.get('command_id') or payload.get('last_command_id'),
+        }
+        self._mission_report_queue.put(payload)
+        self._mission_report_wakeup.set()
+
+    def _mission_report_loop(self):
+        while self._running:
+            try:
+                payload = self._mission_report_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if payload is None:
+                break
+            delay = 0.25
+            while self._running:
+                url = self.get_parameter('server_url').value
+                if not url:
+                    self._mission_report_wakeup.clear()
+                    self._mission_report_wakeup.wait(delay)
+                    delay = min(delay * 2, 5.0)
+                    continue
+                try:
+                    response = self._mission_report_session.post(
+                        f'{url}/api/rover/mission-report',
+                        json=payload,
+                        headers=self._get_headers(),
+                        timeout=5.0,
+                    )
+                    if 200 <= response.status_code < 300:
+                        try:
+                            response_body = response.json()
+                        except (ValueError, AttributeError):
+                            response_body = {}
+                        if isinstance(response_body, dict) and response_body.get('reset_mission'):
+                            self.get_logger().warn(
+                                'Server marked checkpoint mission terminal; clearing local checkpoint')
+                            self._pub_mission_reset.publish(Empty())
+                        break
+                    if 400 <= response.status_code < 500:
+                        self.get_logger().warn(
+                            f'mission report rejected ({response.status_code}): '
+                            f'{response.text[:200]}')
+                        break
+                    self.get_logger().warn(
+                        f'mission report server error ({response.status_code})')
+                except requests.RequestException as exc:
+                    self.get_logger().warn(f'mission report POST error: {exc}')
+                self._mission_report_wakeup.clear()
+                self._mission_report_wakeup.wait(delay)
+                delay = min(delay * 2, 5.0)
 
     def _on_fix_status(self, msg):
         """Track fix status; push telemetry on a change, leading-edge rate-limited.
@@ -440,6 +528,12 @@ class BridgeNode(Node):
             'fix_status': self._fix_status,
             'ntrip_connected': self._ntrip_connected,
         }
+        boot_id = getattr(self, '_boot_id', None)
+        if boot_id is not None:
+            payload['boot_id'] = boot_id
+        mission_identity = getattr(self, '_mission_identity', None)
+        if mission_identity is not None:
+            payload['mission'] = mission_identity
         if self._ntrip_detail is not None:
             payload['ntrip'] = self._ntrip_detail
         if self._battery is not None:
@@ -604,7 +698,7 @@ class BridgeNode(Node):
         headers['Cache-Control'] = 'no-cache'
 
         resp = requests.get(
-            f'{url}/api/rover/stream',
+            f'{url}/api/rover/stream?protocol_version=2&boot_id={self._boot_id}',
             headers=headers,
             stream=True,
             # connect timeout, read timeout. Server heartbeat is 10s, so a 25s
@@ -701,6 +795,18 @@ class BridgeNode(Node):
             msg = String()
             msg.data = json.dumps(waypoints)
             self._pub_execute.publish(msg)
+
+        elif event == 'mission-command':
+            self.get_logger().info(
+                f"Mission command received: {payload.get('action')} "
+                f"#{payload.get('command_seq')}")
+            msg = String()
+            msg.data = json.dumps(payload, separators=(',', ':'))
+            self._pub_mission.publish(msg)
+
+        elif event == 'mission-state-request':
+            self.get_logger().info('Mission checkpoint state requested by server')
+            self._pub_mission_state_request.publish(Empty())
 
         elif event == 'emergency-stop':
             self.get_logger().warn('Emergency stop received from server')
@@ -860,6 +966,7 @@ class BridgeNode(Node):
 
     def destroy_node(self):
         self._running = False
+        self._mission_report_wakeup.set()
         if self._sse_thread:
             self._sse_thread.join(timeout=5.0)
         if getattr(self, '_telemetry_thread', None):
@@ -871,6 +978,10 @@ class BridgeNode(Node):
             except queue.Full:
                 pass
             post_thread.join(timeout=5.0)
+        mission_report_thread = getattr(self, '_mission_report_thread', None)
+        if mission_report_thread is not None:
+            self._mission_report_queue.put(None)
+            mission_report_thread.join(timeout=5.0)
         super().destroy_node()
 
 

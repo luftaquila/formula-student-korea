@@ -77,9 +77,10 @@ class TestSingleWaypoint:
         assert isclose(tx, 2.0, abs_tol=1e-6)
         assert isclose(ty, 1.0, abs_tol=1e-6)
 
-    def test_skip_when_already_on_dock_pose(self):
+    def test_keeps_occurrence_when_already_on_dock_pose(self):
         # Chassis already at the dock pose (antenna already on target).
-        # Planner should emit nothing for that waypoint.
+        # Each route occurrence is intentional (including duplicates), so it
+        # must still emit a segment and trigger a spray.
         antenna_offset = (0.30, 0.0)
         # Dock pose for an east-facing approach to (5,0): chassis at
         # (5 - 0.30, 0) facing east.
@@ -91,7 +92,9 @@ class TestSingleWaypoint:
             ref_lat_lon=(REF_LAT, REF_LON),
             return_to_start=False,
         )
-        assert segments == []
+        assert len(segments) == 1
+        assert segments[0].waypoint_index == 0
+        assert segments[0].end_pose[:2] == pytest.approx(chassis_at_dock[:2])
 
 
 class TestMultiWaypoint:

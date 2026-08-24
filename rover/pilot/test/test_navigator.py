@@ -616,7 +616,7 @@ def test_persisted_offset_loaded_into_instance(nav, tmp_path, monkeypatch):
 # ── Soft pause / resume ────────────────────────────────────────────────────
 
 def test_pause_from_pausable_states_enters_paused(nav):
-    for s in (State.NAVIGATING, State.SETTLING, State.SPRAYING):
+    for s in (State.CALIBRATING, State.NAVIGATING, State.SETTLING, State.SPRAYING):
         nav._state = s
         nav._cur_wp_idx = 0
         nav._on_pause(None)
@@ -624,9 +624,9 @@ def test_pause_from_pausable_states_enters_paused(nav):
 
 
 def test_pause_ignored_outside_pausable_states(nav):
-    # CALIBRATING has no tracker/segments yet (nothing to resume into), and the
-    # idle/fault states have no mission to hold — pause must be a no-op there.
-    for s in (State.IDLE, State.CALIBRATING, State.ERROR,
+    # Idle/fault states have no active mission to hold. CALIBRATING is pausable
+    # because v2 resume can deterministically rebuild the plan from checkpoint.
+    for s in (State.IDLE, State.ERROR,
               State.EMERGENCY_STOP, State.CAL_ANTENNA, State.CAL_WHEELS):
         nav._state = s
         nav._on_pause(None)

@@ -281,6 +281,12 @@ Wheel scale calibration (CAL_WHEELS):
 - Persisted `(scale_l, scale_r)` is applied live by `mcu_bridge_node` as `v_wheel_corrected = v_wheel_raw × scale`.
 - Bounds: `scale ∈ [0.85, 1.15]`, GPS chord ≥ 5 m, ≥ 50 samples (1 s @ 50 Hz). OOB → reject and refuse to persist (caller falls back to current live scale).
 
+Mission recovery:
+
+- File: `/var/lib/pilot/mission_checkpoint.json` (host bind-mount).
+- The navigator atomically persists the protocol-v2 mission, stable waypoint occurrence IDs, completed occurrences, command sequence, and original start before motion and after progress changes.
+- A restored mission is always held until an explicit operator resume. Terminal state is removed only after the server acknowledges completion or instructs the rover to reset an already-terminal checkpoint.
+
 ## OTA & rollback
 
 ```bash
@@ -509,4 +515,3 @@ cd rover/pilot && python3 -m pytest test/ -q
 npm run test:course
 npm run test:shared
 ```
-
