@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  DEFAULT_ROUTE_OPTIMIZATION_EVALUATIONS,
   duplicateConeIds,
   filterCones,
   moveRouteItem,
@@ -25,6 +26,28 @@ test("optimizes from the live start while preserving occurrence identity", () =>
   assert.equal(result[0].cone_id, 1);
   assert.deepEqual(new Set(result.map((item) => item.key)), new Set(["a", "b", "c"]));
   assert.deepEqual(duplicateConeIds(result), [2]);
+});
+
+test("keeps large-route optimization inside a deterministic evaluation budget", () => {
+  const many = Array.from({ length: 2000 }, (_, index) => ({
+    cone_id: index + 1,
+    lat: 35 + (index % 100) * 0.00001,
+    lng: 126 + Math.floor(index / 100) * 0.00001,
+  }));
+  let evaluations = 0;
+  const maxEvaluations = 5000;
+  const result = optimizeConeRoute(many, { lat: 35, lng: 126 }, 12, {
+    maxEvaluations,
+    onEvaluation: (count) => { evaluations = count; },
+  });
+  assert.equal(result.length, many.length);
+  assert.deepEqual(new Set(result.map((item) => item.cone_id)), new Set(many.map((item) => item.cone_id)));
+  assert.ok(evaluations <= maxEvaluations);
+  let defaultEvaluations = 0;
+  optimizeConeRoute(many, { lat: 35, lng: 126 }, 12, {
+    onEvaluation: (count) => { defaultEvaluations = count; },
+  });
+  assert.ok(defaultEvaluations <= DEFAULT_ROUTE_OPTIMIZATION_EVALUATIONS);
 });
 
 test("moves an arbitrary occurrence directly to a requested position", () => {

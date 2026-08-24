@@ -32,7 +32,7 @@ import uuid
 import requests
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Empty, Float32, Int32, String
@@ -98,12 +98,30 @@ class BridgeNode(Node):
 
         # Publishers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        # Mission protocol messages are durable server intents, not telemetry.
+        # The bridge often wins the ROS discovery race during a full stack boot,
+        # so retain the latest command/request until the navigator joins. A
+        # correlated command report replaces the retained command with a
+        # tombstone below, preventing an already-finished start from replaying
+        # after a later navigator-only restart.
+        mission_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        mission_report_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self._pub_execute = self.create_publisher(String, '/rover/cmd/execute_path', reliable_qos)
-        self._pub_mission = self.create_publisher(String, '/rover/cmd/mission', reliable_qos)
+        self._pub_mission = self.create_publisher(String, '/rover/cmd/mission', mission_qos)
         self._pub_mission_state_request = self.create_publisher(
-            Empty, '/rover/cmd/mission_state_request', reliable_qos)
+            Empty, '/rover/cmd/mission_state_request', mission_qos)
         self._pub_mission_reset = self.create_publisher(
-            Empty, '/rover/cmd/mission_reset', reliable_qos)
+            String, '/rover/cmd/mission_reset', mission_qos)
+        self._pub_mission_safety_hold = self.create_publisher(
+            String, '/rover/cmd/mission_safety_hold', mission_qos)
         # Software-originated E-Stop goes to the dedicated sw_* topics so
         # the MCU bridge relays them to the MCU as 'E'/'C'. The bridge in
         # turn republishes /rover/cmd/{emergency_stop,clear_emergency} for
@@ -138,7 +156,13 @@ class BridgeNode(Node):
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
         self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
-        self.create_subscription(String, '/rover/mission/report', self._on_mission_report, reliable_qos)
+        # Navigator reports are transient-local as well: if DDS discovery lags
+        # the retained safety hold delivery, the bridge must still receive the
+        # resulting correlated acknowledgement instead of waiting solely on a
+        # later application-level retry.
+        self.create_subscription(
+            String, '/rover/mission/report', self._on_mission_report,
+            mission_report_qos)
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
@@ -157,6 +181,9 @@ class BridgeNode(Node):
         self._boot_id = str(uuid.uuid4())
         self._mission_report_seq = 0
         self._mission_identity = None
+        self._retained_mission_command_id = None
+        self._retained_mission_hold_id = None
+        self._retained_mission_hold_identity = None
         self._fix_status = None
         # monotonic() of the last immediate fix_status telemetry push, for the
         # leading-edge rate limit (see _FIX_PUSH_MIN_INTERVAL_S).
@@ -290,6 +317,40 @@ class BridgeNode(Node):
             'plan_hash': payload.get('plan_hash'),
             'command_id': payload.get('command_id') or payload.get('last_command_id'),
         }
+        retained_command_id = getattr(self, '_retained_mission_command_id', None)
+        if (retained_command_id is not None and payload.get('event') == 'command'
+                and payload.get('command_id') == retained_command_id):
+            # Retire the transient-local command only after the navigator has
+            # produced its correlated result. Late subscribers receive this
+            # inert envelope instead of replaying an acknowledged command.
+            retired = String()
+            retired.data = json.dumps({
+                'protocol_version': 2,
+                'retired_command_id': retained_command_id,
+            }, separators=(',', ':'))
+            self._pub_mission.publish(retired)
+            self._retained_mission_command_id = None
+        retained_hold_id = getattr(self, '_retained_mission_hold_id', None)
+        retained_hold_identity = getattr(
+            self, '_retained_mission_hold_identity', None)
+        if (retained_hold_id is not None
+                and payload.get('event') in ('held', 'interrupted')
+                and payload.get('hold_id') == retained_hold_id
+                and retained_hold_identity == (
+                    payload.get('mission_id'), payload.get('plan_hash'))
+                and payload.get('checkpoint_persisted') is True):
+            # Keep the hold retained until the navigator has physically stopped
+            # and echoed its correlation. The server also retries the SSE intent
+            # until this report reaches it, covering a bridge crash after this
+            # local retirement but before the HTTP acknowledgement.
+            retired = String()
+            retired.data = json.dumps({
+                'protocol_version': 2,
+                'retired_hold_id': retained_hold_id,
+            }, separators=(',', ':'))
+            self._pub_mission_safety_hold.publish(retired)
+            self._retained_mission_hold_id = None
+            self._retained_mission_hold_identity = None
         self._mission_report_queue.put(payload)
         self._mission_report_wakeup.set()
 
@@ -324,7 +385,13 @@ class BridgeNode(Node):
                         if isinstance(response_body, dict) and response_body.get('reset_mission'):
                             self.get_logger().warn(
                                 'Server marked checkpoint mission terminal; clearing local checkpoint')
-                            self._pub_mission_reset.publish(Empty())
+                            reset = String()
+                            reset.data = json.dumps({
+                                'protocol_version': 2,
+                                'mission_id': payload.get('mission_id'),
+                                'plan_hash': payload.get('plan_hash'),
+                            }, separators=(',', ':'))
+                            self._pub_mission_reset.publish(reset)
                         break
                     if 400 <= response.status_code < 500:
                         self.get_logger().warn(
@@ -646,6 +713,11 @@ class BridgeNode(Node):
             request_ids = list(self._pending_position_request_ids)
             self._pending_position_request_ids.clear()
         payload = dict(self._last_position)
+        # Position is an authorization input for protocol-v2 start/resume
+        # distance checks. Correlate it to the same bridge boot announced on
+        # SSE/telemetry so a cached sample from an older process cannot release
+        # a newer session's mission command.
+        payload['boot_id'] = self._boot_id
         if request_ids:
             payload['request_id'] = request_ids[0]
             payload['request_ids'] = request_ids
@@ -802,11 +874,32 @@ class BridgeNode(Node):
                 f"#{payload.get('command_seq')}")
             msg = String()
             msg.data = json.dumps(payload, separators=(',', ':'))
+            self._retained_mission_command_id = payload.get('command_id')
             self._pub_mission.publish(msg)
 
         elif event == 'mission-state-request':
             self.get_logger().info('Mission checkpoint state requested by server')
             self._pub_mission_state_request.publish(Empty())
+
+        elif event == 'mission-safety-hold':
+            mission_id = payload.get('mission_id')
+            plan_hash = payload.get('plan_hash')
+            hold_id = payload.get('hold_id')
+            if (payload.get('protocol_version') != 2
+                    or not isinstance(mission_id, int)
+                    or isinstance(mission_id, bool) or mission_id <= 0
+                    or not isinstance(plan_hash, str) or len(plan_hash) != 64
+                    or not isinstance(hold_id, str) or not hold_id):
+                self.get_logger().warn(
+                    f'mission-safety-hold: invalid payload {payload!r}')
+                return
+            self.get_logger().warn(
+                f'Mission safety hold received: {hold_id}')
+            msg = String()
+            msg.data = json.dumps(payload, separators=(',', ':'))
+            self._retained_mission_hold_id = hold_id
+            self._retained_mission_hold_identity = (mission_id, plan_hash)
+            self._pub_mission_safety_hold.publish(msg)
 
         elif event == 'emergency-stop':
             self.get_logger().warn('Emergency stop received from server')

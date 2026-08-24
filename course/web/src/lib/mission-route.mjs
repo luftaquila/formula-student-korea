@@ -28,40 +28,71 @@ export function filterCones(cones, { query = "", side = "all" } = {}) {
 
 // Open nearest-neighbour route with a bounded 2-opt cleanup. It preserves each
 // occurrence object (and therefore duplicate cone visits and stable waypoint IDs).
-export function optimizeConeRoute(items, start = null, maxPasses = 12) {
+// The distance/reversal work ceiling is deterministic so a very large course cannot
+// monopolize the browser main thread before the mission builder is even visible.
+export const DEFAULT_ROUTE_OPTIMIZATION_EVALUATIONS = 200000;
+
+export function optimizeConeRoute(items, start = null, maxPasses = 12, options = {}) {
   if (items.length < 2) return [...items];
+  const requestedBudget = Number.isInteger(options.maxEvaluations) && options.maxEvaluations > 0
+    ? options.maxEvaluations : DEFAULT_ROUTE_OPTIMIZATION_EVALUATIONS;
+  const evaluationBudget = Math.max(items.length, requestedBudget);
+  const nearestNeighborBudget = Math.max(items.length, Math.floor(evaluationBudget / 2));
+  const candidatesPerStep = Math.max(1, Math.floor(nearestNeighborBudget / items.length));
+  let evaluations = 0;
+  const measuredDistance = (a, b) => {
+    evaluations += 1;
+    if (typeof options.onEvaluation === "function") options.onEvaluation(evaluations);
+    return routeDistance(a, b);
+  };
   const remaining = [...items];
   const ordered = [];
   let cursor = start && Number.isFinite(start.lat) && Number.isFinite(start.lng)
     ? start : remaining[0];
   while (remaining.length > 0) {
     let best = 0;
-    let bestDistance = routeDistance(cursor, remaining[0]);
-    for (let index = 1; index < remaining.length; index += 1) {
-      const distance = routeDistance(cursor, remaining[index]);
+    let bestDistance = evaluations < nearestNeighborBudget
+      ? measuredDistance(cursor, remaining[0]) : Infinity;
+    const scanLength = Math.min(remaining.length, candidatesPerStep);
+    for (let index = 1; index < scanLength && evaluations < nearestNeighborBudget; index += 1) {
+      const distance = measuredDistance(cursor, remaining[index]);
       if (distance < bestDistance) {
         best = index;
         bestDistance = distance;
       }
     }
-    cursor = remaining.splice(best, 1)[0];
+    cursor = remaining[best];
+    // Swap removal avoids a second O(n²) cost from shifting the remaining array.
+    remaining[best] = remaining[remaining.length - 1];
+    remaining.pop();
     ordered.push(cursor);
   }
 
-  for (let pass = 0; pass < maxPasses; pass += 1) {
+  for (let pass = 0; pass < maxPasses && evaluations < evaluationBudget; pass += 1) {
     let improved = false;
-    for (let left = 0; left < ordered.length - 2; left += 1) {
+    for (let left = 0; left < ordered.length - 2 && evaluations < evaluationBudget; left += 1) {
       const beforeLeft = left === 0 ? start : ordered[left - 1];
       if (!beforeLeft) continue;
-      for (let right = left + 1; right < ordered.length - 1; right += 1) {
+      for (let right = left + 1; right < ordered.length - 1 && evaluations + 4 <= evaluationBudget; right += 1) {
         const afterRight = ordered[right + 1];
-        const oldDistance = routeDistance(beforeLeft, ordered[left])
-          + routeDistance(ordered[right], afterRight);
-        const newDistance = routeDistance(beforeLeft, ordered[right])
-          + routeDistance(ordered[left], afterRight);
+        const oldDistance = measuredDistance(beforeLeft, ordered[left])
+          + measuredDistance(ordered[right], afterRight);
+        const newDistance = measuredDistance(beforeLeft, ordered[right])
+          + measuredDistance(ordered[left], afterRight);
         if (newDistance + 1e-6 < oldDistance) {
-          const reversed = ordered.slice(left, right + 1).reverse();
-          ordered.splice(left, reversed.length, ...reversed);
+          const swaps = Math.floor((right - left + 1) / 2);
+          if (evaluations + swaps > evaluationBudget) {
+            evaluations = evaluationBudget;
+            if (typeof options.onEvaluation === "function") options.onEvaluation(evaluations);
+            break;
+          }
+          for (let offset = 0; offset < swaps; offset += 1) {
+            const a = left + offset;
+            const b = right - offset;
+            [ordered[a], ordered[b]] = [ordered[b], ordered[a]];
+            evaluations += 1;
+            if (typeof options.onEvaluation === "function") options.onEvaluation(evaluations);
+          }
           improved = true;
         }
       }

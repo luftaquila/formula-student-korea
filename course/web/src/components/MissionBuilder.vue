@@ -1,6 +1,12 @@
 <script setup>
 import { computed, ref, watch } from "vue";
 import { duplicateConeIds, filterCones, moveRouteItem, optimizeConeRoute } from "../lib/mission-route.mjs";
+import {
+  missionEmptyRouteMode,
+  MISSION_MAX_OCCURRENCES,
+  missionRouteSubmissionAllowed,
+  uncertainMissionOccurrenceIds,
+} from "../lib/mission-session.mjs";
 
 const props = defineProps({
   cones: { type: Array, default: () => [] },
@@ -8,7 +14,11 @@ const props = defineProps({
   presets: { type: Array, default: () => [] },
   currentPosition: { type: Object, default: null },
   initialFinishBehavior: { type: String, default: "stop" },
+  missionStart: { type: Object, default: null },
   editing: { type: Boolean, default: false },
+  busy: { type: Boolean, default: false },
+  presetBusy: { type: Boolean, default: false },
+  completedCount: { type: Number, default: 0 },
 });
 const emit = defineEmits(["close", "apply", "run", "save-preset", "delete-preset"]);
 
@@ -38,6 +48,20 @@ watch(() => props.initialFinishBehavior, (value) => {
 const filteredCones = computed(() => filterCones(props.cones, { query: query.value, side: side.value }));
 const selectedIds = computed(() => new Set(route.value.map((item) => item.cone_id)));
 const duplicateIds = computed(() => new Set(duplicateConeIds(route.value)));
+const uncertainIds = computed(() => new Set(uncertainMissionOccurrenceIds(route.value)));
+const routeSubmissionOptions = computed(() => ({
+  editing: props.editing,
+  routeLength: route.value.length,
+  finishBehavior: finishBehavior.value,
+  initialItems: props.initialItems,
+  missionStart: props.missionStart,
+}));
+const emptyRouteMode = computed(() => missionEmptyRouteMode(routeSubmissionOptions.value));
+const availableOccurrences = computed(() => Math.max(0,
+  MISSION_MAX_OCCURRENCES - Math.max(0, Number(props.completedCount) || 0)));
+const canSubmit = computed(() => route.value.length <= availableOccurrences.value
+  && missionRouteSubmissionAllowed(routeSubmissionOptions.value));
+const routeAtLimit = computed(() => route.value.length >= availableOccurrences.value);
 
 function fromCone(cone) {
   return routeItem({
@@ -50,17 +74,20 @@ function toggleCone(cone) {
   if (selectedIds.value.has(cone.id)) {
     route.value = route.value.filter((item) => item.cone_id !== cone.id);
   } else {
+    if (routeAtLimit.value) return;
     route.value = [...route.value, fromCone(cone)];
   }
 }
 
 function addFiltered() {
   const existing = selectedIds.value;
-  route.value = [...route.value, ...filteredCones.value.filter((cone) => !existing.has(cone.id)).map(fromCone)];
+  const capacity = Math.max(0, availableOccurrences.value - route.value.length);
+  route.value = [...route.value, ...filteredCones.value
+    .filter((cone) => !existing.has(cone.id)).slice(0, capacity).map(fromCone)];
 }
 
 function selectAll() {
-  route.value = props.cones.map(fromCone);
+  route.value = props.cones.slice(0, availableOccurrences.value).map(fromCone);
 }
 
 function move(from, to) {
@@ -74,8 +101,12 @@ function moveFromInput(index, event) {
 }
 
 function duplicate(index) {
+  if (routeAtLimit.value) return;
   if (!window.confirm("같은 콘을 한 번 더 방문하고 분사합니다. 반복 방문을 추가할까요?")) return;
-  const copy = routeItem({ ...route.value[index], id: undefined, waypoint_id: null, client_key: undefined });
+  const copy = routeItem({
+    ...route.value[index], id: undefined, waypoint_id: null,
+    client_key: undefined, outcome: undefined,
+  });
   const next = [...route.value];
   next.splice(index + 1, 0, copy);
   route.value = next;
@@ -93,13 +124,18 @@ function payload() {
   return {
     items: route.value.map((item) => ({ ...item })),
     finishBehavior: finishBehavior.value,
+    emptyRouteMode: emptyRouteMode.value,
   };
 }
 
 function savePreset() {
   const name = presetName.value.trim();
-  if (!name || route.value.length === 0) return;
+  if (props.presetBusy || !name || route.value.length === 0 || !canSubmit.value) return;
   emit("save-preset", { ...payload(), name });
+}
+
+function close() {
+  if (!props.busy) emit("close");
 }
 
 let draggedIndex = null;
@@ -111,28 +147,30 @@ function drop(index) {
 </script>
 
 <template>
-  <div class="mission-builder-backdrop" @click.self="emit('close')">
-    <section class="mission-builder" role="dialog" aria-modal="true" aria-label="미션 경로 편집">
+  <div class="mission-builder-backdrop" @click.self="close">
+    <section class="mission-builder" role="dialog" aria-modal="true" aria-label="미션 경로 편집" :aria-busy="busy">
       <header>
         <div>
           <h2>{{ editing ? '남은 미션 경로 편집' : '새 미션 경로' }}</h2>
           <p v-if="editing">완료한 콘은 유지됩니다. 여기서는 아직 방문하지 않은 경로만 바꿉니다.</p>
           <p v-else>원하는 콘만 고르고, 방문 순서를 자유롭게 정하세요.</p>
         </div>
-        <button class="close" aria-label="닫기" @click="emit('close')">×</button>
+        <button class="close" aria-label="닫기" :disabled="busy" @click="close">×</button>
       </header>
 
       <div class="preset-row">
-        <select v-model="presetId" @change="loadPreset">
+        <select v-model="presetId" :disabled="presetBusy" @change="loadPreset">
           <option value="">프리셋 불러오기</option>
           <option v-for="preset in presets" :key="preset.id" :value="preset.id">
             {{ preset.name }} ({{ preset.items.length }}){{ preset.stale ? ' — 삭제된 콘 포함' : '' }}
           </option>
         </select>
-        <input v-model="presetName" maxlength="100" placeholder="프리셋 이름" @keyup.enter="savePreset" />
-        <button @click="savePreset" :disabled="!presetName.trim() || route.length === 0">저장</button>
+        <input v-model="presetName" :disabled="presetBusy" maxlength="100" placeholder="프리셋 이름" @keyup.enter="savePreset" />
+        <button @click="savePreset" :disabled="presetBusy || !presetName.trim() || route.length === 0 || !canSubmit">
+          {{ presetBusy ? '저장 중…' : '저장' }}
+        </button>
         <button
-          class="danger-text" :disabled="!presetId"
+          class="danger-text" :disabled="presetBusy || !presetId"
           @click="emit('delete-preset', Number(presetId)); presetId = ''"
         >삭제</button>
       </div>
@@ -150,13 +188,13 @@ function drop(index) {
             </select>
           </div>
           <div class="bulk-actions">
-            <button @click="addFiltered">검색 결과 추가</button>
+            <button @click="addFiltered" :disabled="routeAtLimit">검색 결과 추가</button>
             <button @click="selectAll">전체로 교체</button>
             <button @click="route = []">전부 비우기</button>
           </div>
           <div class="cone-list">
             <label v-for="(cone, index) in filteredCones" :key="cone.id" class="cone-row">
-              <input type="checkbox" :checked="selectedIds.has(cone.id)" @change="toggleCone(cone)" />
+              <input type="checkbox" :checked="selectedIds.has(cone.id)" :disabled="!selectedIds.has(cone.id) && routeAtLimit" @change="toggleCone(cone)" />
               <span class="cone-index">#{{ cones.indexOf(cone) + 1 }}</span>
               <span class="side" :class="cone.side">{{ cone.side }}</span>
               <span class="cone-id">ID {{ cone.id }}</span>
@@ -166,6 +204,9 @@ function drop(index) {
 
         <section class="route-editor">
           <div class="section-title">주행 순서 <span>{{ route.length }}회 방문</span></div>
+          <div v-if="routeAtLimit" class="duplicate-warning">
+            완료 항목을 포함해 미션당 최대 {{ MISSION_MAX_OCCURRENCES.toLocaleString() }}회 방문할 수 있습니다.
+          </div>
           <div class="bulk-actions">
             <button @click="route = optimizeConeRoute(route, currentPosition)">현재 위치부터 자동 정렬</button>
             <button @click="route = [...route].reverse()">역순</button>
@@ -173,7 +214,19 @@ function drop(index) {
           <div v-if="duplicateIds.size" class="duplicate-warning">
             반복 방문 콘 {{ duplicateIds.size }}종 — 각 항목에서 한 번씩 분사합니다.
           </div>
-          <div v-if="route.length === 0" class="empty">왼쪽 목록에서 방문할 콘을 추가하세요.</div>
+          <div v-if="uncertainIds.size" class="uncertain-warning">
+            분사 결과를 확인할 수 없는 방문이 {{ uncertainIds.size }}개 있습니다.
+            재분사하지 않으려면 해당 항목을 제거하고, 명시적으로 다시 분사하려면 제거 후 같은 콘을 새 방문으로 추가하세요.
+          </div>
+          <div v-if="route.length === 0 && emptyRouteMode === 'return_only'" class="empty-route-notice">
+            콘을 방문하지 않고 현재 위치에서 최초 미션 시작점으로 복귀합니다.
+          </div>
+          <div v-else-if="route.length === 0 && emptyRouteMode === 'resolve_uncertain'" class="empty-route-notice uncertain-warning">
+            분사 결과가 불확실한 마지막 방문을 다시 분사하지 않고 명시적으로 완료 처리합니다.
+          </div>
+          <div v-else-if="route.length === 0" class="empty">
+            일반 미션은 남은 콘이 하나 이상 필요합니다. 콘을 추가하거나 시작점 복귀를 명시적으로 선택하세요.
+          </div>
           <div class="route-list">
             <div
               v-for="(item, index) in route" :key="item.client_key"
@@ -185,9 +238,10 @@ function drop(index) {
               <span class="side" :class="item.side">{{ item.side }}</span>
               <span class="route-name">콘 ID {{ item.cone_id }}</span>
               <span v-if="duplicateIds.has(item.cone_id)" class="repeat">반복</span>
+              <span v-if="uncertainIds.has(item.waypoint_id || item.id)" class="uncertain">결과 확인 필요</span>
               <button title="위로" :disabled="index === 0" @click="move(index, index - 1)">↑</button>
               <button title="아래로" :disabled="index === route.length - 1" @click="move(index, index + 1)">↓</button>
-              <button title="반복 방문 추가" @click="duplicate(index)">＋</button>
+              <button title="반복 방문 추가" :disabled="routeAtLimit" @click="duplicate(index)">＋</button>
               <button title="제거" @click="route.splice(index, 1)">×</button>
             </div>
           </div>
@@ -202,9 +256,9 @@ function drop(index) {
           </select>
         </label>
         <div class="footer-actions">
-          <button @click="emit('close')">취소</button>
-          <button :disabled="route.length === 0" @click="emit('apply', payload())">경로 적용</button>
-          <button class="primary" :disabled="route.length === 0" @click="emit('run', payload())">
+          <button :disabled="busy" @click="close">취소</button>
+          <button :disabled="busy || !canSubmit" @click="emit('apply', payload())">경로 적용</button>
+          <button class="primary" :disabled="busy || !canSubmit" @click="emit('run', payload())">
             {{ editing ? '적용 후 이어하기' : '점검 후 실행' }}
           </button>
         </div>
@@ -232,7 +286,9 @@ button { cursor: pointer; } button:disabled { cursor: not-allowed; opacity: .45;
 .cone-row { cursor: pointer; }.cone-index, .cone-id { color: var(--text-secondary, #94a3b8); font: .75rem monospace; }.cone-id { margin-left: auto; }
 .side { border-radius: 999px; padding: .12rem .42rem; font-size: .7rem; text-transform: uppercase; background: #475569; }.side.left { background: #b45309; }.side.right { background: #0891b2; }.side.center { background: #64748b; }
 .drag { cursor: grab; color: #94a3b8; }.position { width: 56px; }.route-name { flex: 1; font: .78rem monospace; }.repeat { color: #fbbf24; font-size: .7rem; }.route-row button { min-width: 34px; padding: .2rem; }
-.duplicate-warning { color: #fbbf24; background: rgba(245,158,11,.12); padding: .5rem; border-radius: 7px; font-size: .8rem; margin-bottom: .4rem; }.empty { color: #94a3b8; padding: 2rem; text-align: center; }
+.duplicate-warning, .uncertain-warning { color: #fbbf24; background: rgba(245,158,11,.12); padding: .5rem; border-radius: 7px; font-size: .8rem; margin-bottom: .4rem; }.uncertain-warning { color: #fecaca; background: rgba(220,38,38,.16); }.uncertain { color: #fecaca; font-size: .7rem; }.empty { color: #94a3b8; padding: 2rem; text-align: center; }
+.empty-route-notice { color: #bfdbfe; background: rgba(37,99,235,.14); padding: .7rem; border-radius: 7px; font-size: .82rem; margin-bottom: .4rem; }
+.empty-route-notice.uncertain-warning { color: #fecaca; background: rgba(220,38,38,.16); }
 footer { border-top: 1px solid var(--border, #334155); border-bottom: 0; flex-wrap: wrap; }.footer-actions { display: flex; gap: .5rem; }
 @media (max-width: 760px) { .mission-builder-backdrop { padding: 0; }.mission-builder { height: 100vh; border-radius: 0; }.preset-row { grid-template-columns: 1fr 1fr; }.builder-grid { grid-template-columns: 1fr; overflow: auto; }.cone-picker { border-right: 0; border-bottom: 1px solid var(--border, #334155); min-height: 280px; }.route-editor { min-height: 380px; }.cone-list, .route-list { max-height: 330px; } footer { position: sticky; bottom: 0; background: var(--surface, #111827); }.footer-actions { width: 100%; }.footer-actions button { flex: 1; } }
 </style>

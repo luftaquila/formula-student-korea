@@ -751,4 +751,3 @@ def test_software_latch_flag_does_not_trigger_hardware_sync(bridge):
     bridge._handle_telemetry('T 2 0 0 0.0 0.0 25.0 0x1')
     assert len(bridge._pub_emergency_stop.published) == 0
     assert len(bridge._pub_clear_emergency.published) == 0
-
