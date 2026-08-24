@@ -37,15 +37,7 @@ const entryNum = ref("");
 const phone = ref("010");
 const teamName = ref("");
 
-const queueName = ref("-");
-const rank = ref("-");
-
-const queueEntries = computed(() => {
-  if (queueName.value === "-") return [];
-  const names = String(queueName.value).split(", ");
-  const ranks = String(rank.value).split(", ");
-  return names.map((name, i) => ({ name, rank: ranks[i] }));
-});
+const queueEntries = ref([]);
 
 // Watch for queue updates from SSE to refresh user's rank
 watch(lastQueueUpdate, async () => {
@@ -131,8 +123,7 @@ async function query() {
       return;
     }
 
-    queueName.value = result.queue;
-    rank.value = result.rank;
+    queueEntries.value = result.queues || [];
 
     sessionStorage.setItem("queue_entry", num);
     sessionStorage.setItem("queue_phone", phoneDigits);
@@ -145,8 +136,7 @@ function clearState(message) {
   if (message) {
     error(message);
   }
-  queueName.value = "-";
-  rank.value = "-";
+  queueEntries.value = [];
   phone.value = "010";
   sessionStorage.removeItem("queue_entry");
   sessionStorage.removeItem("queue_phone");
@@ -162,39 +152,37 @@ function clearState(message) {
           <h3>🔍 대기 순번 조회</h3>
         </div>
         <div class="card-body">
-          <div class="form-group">
-            <div class="input-row">
-              <div class="input-col">
-                <label class="form-label">엔트리</label>
-                <input
-                  v-model="entryNum"
-                  type="number"
-                  class="form-input entry-input"
-                  placeholder="번호"
-                  @input="updateTeamName"
-                />
-              </div>
-              <div class="input-col flex-1">
-                <label class="form-label">전화번호</label>
-                <input
-                  :value="phone"
-                  type="tel"
-                  class="form-input"
-                  placeholder="010-0000-0000"
-                  maxlength="13"
-                  @input="onPhoneInput"
-                />
-              </div>
+          <div class="input-row">
+            <div class="input-col">
+              <label class="form-label">엔트리</label>
+              <input
+                v-model="entryNum"
+                type="number"
+                class="form-input entry-input"
+                placeholder="번호"
+                @input="updateTeamName"
+              />
             </div>
-            <div class="team-display">
-              <div v-if="teamName" class="team-badge">{{ teamName }}</div>
-              <div v-else-if="entryNum && !entries[entryNum]" class="team-badge error">존재하지 않는 엔트리</div>
-              <div v-else class="team-badge placeholder">&nbsp;</div>
+            <div class="input-col flex-1">
+              <label class="form-label">전화번호</label>
+              <input
+                :value="phone"
+                type="tel"
+                class="form-input"
+                placeholder="010-0000-0000"
+                maxlength="13"
+                @input="onPhoneInput"
+              />
             </div>
+          </div>
+          <div class="team-display">
+            <div v-if="teamName" class="team-badge">{{ teamName }}</div>
+            <div v-else-if="entryNum && !entries[entryNum]" class="team-badge error">존재하지 않는 엔트리</div>
+            <div v-else class="team-badge placeholder">&nbsp;</div>
           </div>
 
           <button class="btn btn-primary btn-block" @click="query">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" aria-hidden="true">
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.35-4.35" />
             </svg>
@@ -211,13 +199,14 @@ function clearState(message) {
         <div class="card-body result-body">
           <div class="result-display">
             <template v-if="queueEntries.length > 0">
-              <div v-for="(e, i) in queueEntries" :key="i" class="result-row">
-                <span>{{ e.name }}</span>
-                <span class="result-rank">{{ e.rank }}</span>
-                <span>번</span>
+              <div v-for="e in queueEntries" :key="e.type" class="result-row">
+                <span class="result-name">{{ e.name }}</span>
+                <strong class="result-rank">{{ e.rank }}</strong>
+                <span class="result-suffix">번</span>
+                <span class="result-total">/ {{ e.total }}팀</span>
               </div>
             </template>
-            <span v-else>-</span>
+            <div v-else class="result-row placeholder"><strong class="result-rank">-</strong></div>
           </div>
         </div>
       </div>
@@ -284,116 +273,8 @@ function clearState(message) {
 </template>
 
 <style scoped>
-.queue-status {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.status-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-  gap: 1.5rem;
-}
-
-.btn-block {
-  width: 100%;
-  margin-top: 1rem;
-}
-
-.input-row {
-  display: flex;
-  gap: 0.75rem;
-}
-
-.input-col {
-  display: flex;
-  flex-direction: column;
-}
-
-.input-col.flex-1 {
-  flex: 1;
-}
-
-.entry-input {
-  width: 5rem;
-  text-align: center;
-}
-
-.input-col.flex-1 .form-input {
-  text-align: center;
-}
-
-/* Hide number input spinners */
-.entry-input::-webkit-outer-spin-button,
-.entry-input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.entry-input[type="number"] {
-  -moz-appearance: textfield;
-}
-
-.team-display {
-  margin-top: 0.75rem;
-  min-height: 2.5rem;
-}
-
-.team-badge {
-  padding: 0.5rem 1rem;
-  background: var(--accent-primary);
-  color: white;
-  border-radius: 8px;
-  font-size: 0.875rem;
-  font-weight: 600;
-  text-align: center;
-}
-
-.team-badge.error {
-  background: var(--accent-danger);
-  font-weight: 500;
-}
-
-.team-badge.placeholder {
-  background: transparent;
-  visibility: hidden;
-}
-
-.result-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.result-body {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0.75rem 1rem;
-}
-
-.result-display {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  font-size: 1.25rem;
-  font-weight: 600;
-  gap: 0.25rem;
-}
-
-.result-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: center;
-}
-
-.result-rank {
-  font-family: "JetBrains Mono", monospace;
-  font-weight: 700;
-  color: var(--accent-primary);
-  margin-left: 0.5rem;
-}
-
+/* 조회 카드·팀 라벨·실시간 순번 규칙은 shared/styles/lookup-status.css 가 소유한다
+   (등록 대기열 화면과 공유). 이 블록은 이 화면에만 있는 부스 현황 스타일이다. */
 .loading {
   display: flex;
   flex-direction: column;
@@ -420,7 +301,6 @@ function clearState(message) {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
-  margin-top: 1.25rem;
 }
 
 .booth-type-header {
@@ -509,10 +389,6 @@ function clearState(message) {
 }
 
 @media (max-width: 640px) {
-  .status-grid {
-    grid-template-columns: 1fr;
-  }
-
   .booth-grid {
     grid-template-columns: repeat(2, 1fr);
   }

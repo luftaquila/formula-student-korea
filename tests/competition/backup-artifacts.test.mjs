@@ -186,6 +186,47 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function restoreRetiredCalledStatus(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    DROP TABLE registration_queue;
+    CREATE TABLE registration_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      team_id INTEGER NOT NULL REFERENCES competition_team(id),
+      phone TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'waiting'
+        CHECK(status IN ('waiting','called','done','canceled')),
+      notified INTEGER NOT NULL DEFAULT 0 CHECK(notified IN (0,1,2)),
+      notify_claimed_at TEXT,
+      registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      called_at TEXT,
+      finished_at TEXT
+    );
+    CREATE INDEX idx_registration_queue_status ON registration_queue(status, id);
+    CREATE INDEX idx_registration_queue_team ON registration_queue(team_id, status, id);
+    CREATE INDEX idx_registration_queue_finished
+      ON registration_queue(finished_at) WHERE finished_at IS NOT NULL;
+    CREATE UNIQUE INDEX idx_registration_queue_active_team
+      ON registration_queue(team_id) WHERE status IN ('waiting','called');
+  `);
+  const teamId = writer.prepare("SELECT id FROM competition_team ORDER BY id LIMIT 1").get()?.id;
+  writer.prepare(`
+    INSERT INTO registration_queue (team_id, phone, status, called_at)
+    VALUES (?, '01012345678', 'called', '2026-08-20T00:00:00.000Z')
+  `).run(teamId);
+  writer.close();
+  return teamId;
+}
+
+function removeRegistrationSchema(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    DROP TABLE registration_queue;
+    DROP TABLE registration_settings;
+  `);
+  writer.close();
+}
+
 function removeQualifiedCheckConstraint(dbPath) {
   const writer = new Database(dbPath);
   const tableSql = writer.prepare(
@@ -753,6 +794,51 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(malformed.stderr, /형식이 올바르지 않습니다/);
   });
 
+  it("upgrades a registration queue that still carries the retired called status", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-called-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    const boot = () => createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+
+    let created = boot();
+    created.teams.createTeam(currentCompetitionYear(), { number: 41, university: "Upgrade University", name: "Upgrade Team" });
+    created.close();
+    restoreRetiredCalledStatus(dbPath);
+
+    // A deployment snapshot taken before the upgrade must still validate: the
+    // shipped contract is listed as upgradable, and the runtime rebuilds on boot.
+    assert.equal(validateDatabase(dbPath).status, 0);
+
+    created = boot();
+    try {
+      const columns = created.db.prepare("PRAGMA table_info(registration_queue)").all().map(({ name }) => name);
+      assert.equal(columns.includes("called_at"), false);
+      const row = created.db.prepare("SELECT id, status FROM registration_queue").get();
+      assert.deepEqual(row, { id: 1, status: "waiting" }, "a called row becomes waiting again");
+      const activeIndex = created.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE name = 'idx_registration_queue_active_team'",
+      ).get().sql;
+      assert.match(activeIndex, /WHERE status = 'waiting'/);
+    } finally {
+      created.close();
+    }
+
+    // The rebuild has to leave the exact DDL a fresh database produces, otherwise
+    // the next deployment validation would reject the upgraded database.
+    const reader = new Database(dbPath, { readonly: true });
+    const upgraded = captureCompetitionSchemaContract(reader);
+    reader.close();
+    assert.equal(upgraded.length, COMPETITION_SCHEMA_CONTRACT.objectCount);
+    assert.equal(competitionSchemaContractDigest(upgraded), COMPETITION_SCHEMA_CONTRACT.sha256);
+    assert.equal(validateDatabase(dbPath).status, 0);
+  });
+
   it("accepts a full Competition database and rejects a schema-shaped subset", () => {
     const fullRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-full-db-validator-"));
     roots.push(fullRoot);
@@ -778,12 +864,47 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
-  it("accepts only the exact predecessor schema and upgrades it at runtime without validator writes", () => {
+  it("accepts the exact pre-Registration schema and adds its tables at runtime without validator writes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-registration-schema-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    removeRegistrationSchema(dbPath);
+
+    const predecessorResult = validateDatabase(dbPath);
+    assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
+    const unchanged = new Database(dbPath, { readonly: true });
+    assert.equal(
+      unchanged.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'").get(),
+      undefined,
+    );
+    unchanged.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    assert.ok(upgraded.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'",
+    ).get());
+    assert.ok(upgraded.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_settings'",
+    ).get());
+    upgraded.close();
+    const upgradedResult = validateDatabase(dbPath);
+    assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
+  });
+
+  it("accepts only the exact older predecessor schema and upgrades it at runtime without validator writes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-schema-upgrade-validator-"));
     roots.push(root);
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    removeRegistrationSchema(dbPath);
 
     const predecessor = new Database(dbPath);
     predecessor.exec("ALTER TABLE score_endurance DROP COLUMN qualified");
@@ -795,6 +916,10 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(
       unchanged.pragma("table_info('score_endurance')").some(({ name }) => name === "qualified"),
       false,
+    );
+    assert.equal(
+      unchanged.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'").get(),
+      undefined,
     );
     unchanged.close();
 
@@ -808,6 +933,9 @@ describe("Competition backup/restore artifact validation", () => {
       upgraded.db.pragma("table_info('score_endurance')").some(({ name }) => name === "qualified"),
       true,
     );
+    assert.ok(upgraded.db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'registration_queue'",
+    ).get());
     upgraded.close();
     const upgradedResult = validateDatabase(dbPath);
     assert.equal(upgradedResult.status, 0, upgradedResult.stderr);
@@ -833,6 +961,7 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.db.prepare("INSERT INTO score_endurance (year, team_num, qualified) VALUES (?, 1, 1)")
       .run(CURRENT_YEAR);
     seeded.close();
+    removeRegistrationSchema(dbPath);
     removeQualifiedCheckConstraint(dbPath);
 
     const intermediate = new Database(dbPath, { readonly: true });

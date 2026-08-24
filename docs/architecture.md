@@ -8,14 +8,14 @@ Competition-critical domains run as modules in one `competition` process, one de
 |---|---|---|
 | `landing` | Landing page and reverse proxy | 9000 |
 | `auth` | Google OAuth, users, roles, and aggregated logs | 9100 |
-| `competition` | Teams, Queue, Inspection, Traffic, Score, Documents, and six SPAs | 9200 |
+| `competition` | Teams, Queue, Registration, Inspection, Traffic, Score, Documents, and seven SPAs | 9200 |
 | `energymeter` | Energy meter viewer | 9800 |
 | `email` | Email/SMS provider integration | 9900 |
 | `course` | Course, rover, RTK GPS, camera, and teleoperation | 10000 |
 | `calendar` | Competition schedules | 11000 |
 | `files` | FileBrowser storage with Auth forward-auth | 8080 |
 
-Entry, Queue, Inspection, Traffic, Score, and Documents are not deployable legacy profiles. They have no runtime service URLs, HTTP fan-out, lifecycle outboxes, reconciliation, or copied team lists.
+Entry, Queue, Registration, Inspection, Traffic, Score, and Documents are not deployable legacy profiles. They have no runtime service URLs, HTTP fan-out, lifecycle outboxes, reconciliation, or copied team lists.
 
 ## Teams and years
 
@@ -23,13 +23,15 @@ Entry, Queue, Inspection, Traffic, Score, and Documents are not deployable legac
 
 Competition years are interpreted in `Asia/Seoul`. Reads may select any valid year. Every Competition mutation is allowed only for the current KST year and otherwise fails with `409 YEAR_READ_ONLY`. There is no draft/finalize state, roster version, snapshot, replacement version, or soft-delete inference.
 
-Teams are created individually or imported once into an empty current year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current year.
+Teams are created individually or imported once into an empty current year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Registration/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current year.
+
+Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting row. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
 
 ## Runtime communication
 
-The stable UI locations are `/entry`, `/queue`, `/inspection`, `/traffic`, `/score`, and `/documents`. The only Competition API namespace is `/competition/api/v1`: Teams and vehicle types are flat resources, while the other domains use `/competition/api/v1/{module}/...`. Nested `/{module}/api/...`, standalone module APIs, and internal team lifecycle routes are absent and return `404`.
+The stable UI locations are `/entry`, `/queue`, `/registration`, `/inspection`, `/traffic`, `/score`, and `/documents`. The only Competition API namespace is `/competition/api/v1`: Teams and vehicle types are flat resources, while the other domains use `/competition/api/v1/{module}/...`. Nested `/{module}/api/...`, standalone module APIs, and internal team lifecycle routes are absent and return `404`.
 
-Modules share one SQLite connection and one authentication validator. Successful Team and vehicle-type mutations emit only a year-scoped `entries` invalidation signal, without roster payloads, copied rosters, or direct live-state propagation. Score invalidates its derived caches; Queue, Inspection, and Traffic forward the signal over module-local SSE, and their SPAs re-query canonical team data for that year.
+Modules share one SQLite connection and one authentication validator. Successful Team and vehicle-type mutations emit only a year-scoped `entries` invalidation signal, without roster payloads, copied rosters, or direct live-state propagation. Score invalidates its derived caches; Queue, Registration, Inspection, and Traffic forward the signal over module-local SSE, and their SPAs re-query canonical team data for that year.
 
 Traffic submits the stable `competition_team.id`; the server resolves that ID against the current active team at save time and persists only the canonical number and labels, rejecting stale, historical, inactive, or missing identities.
 

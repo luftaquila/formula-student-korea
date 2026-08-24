@@ -49,11 +49,12 @@ describe('logAggregationTargets', () => {
     const targets = logAggregationTargets();
     assert.deepEqual(Object.keys(targets).sort(), [
       'calendar', 'course', 'documents', 'email', 'entry',
-      'inspection', 'queue', 'score', 'traffic',
+      'inspection', 'queue', 'registration', 'score', 'traffic',
     ]);
     assert.equal(targets.auth, undefined, 'auth queries its own DB locally');
     assert.equal(targets.entry, 'http://competition:9200/competition/api/v1/logs');
     assert.equal(targets.queue, 'http://competition:9200/competition/api/v1/queue/logs');
+    assert.equal(targets.registration, 'http://competition:9200/competition/api/v1/registration/logs');
     assert.equal(targets.course, 'http://course:10000/api/logs');
   });
 
@@ -76,7 +77,7 @@ describe('logAggregationTargets', () => {
   });
 
   it('has no standalone Competition module service addresses', () => {
-    for (const name of ['entry', 'queue', 'inspection', 'traffic', 'score', 'documents']) {
+    for (const name of ['entry', 'queue', 'registration', 'inspection', 'traffic', 'score', 'documents']) {
       assert.throws(() => serviceUrl(name), new RegExp(`Unknown service: ${name}`));
     }
   });

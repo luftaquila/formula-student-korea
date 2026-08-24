@@ -1,30 +1,28 @@
-import https from "https";
-import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
-import { serviceUrl } from "../shared/services.mjs";
 import { competitionYearBounds, currentCompetitionYear } from "../shared/competition-year.mjs";
 import { ensureInactiveTeamView } from "../shared/team-status.mjs";
+import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
 
+// 키 순서가 곧 모든 화면의 검차 표시 순서다(withInspectionLengths 에서 이 순서로 정렬).
 export const INSPECTIONS = {
-  battery: "배터리",
-  electric: "전기",
   chassis: "섀시",
+  battery: "축전지",
+  electric: "전기",
   tilting: "틸팅",
-  braking: "제동",
-  noise: "소음",
   rain: "우천",
+  noise: "소음",
+  braking: "제동",
   report: "보고서",
 };
 
 export function createQueueApp(options = {}) {
 
 const inspections = INSPECTIONS;
-const smsRequest = options.smsRequest || https.request;
 const QUEUE_LOG_MAX_ROWS = 100000;
 const BOOTH_LOG_MAX_ROWS = 100000;
 
@@ -242,6 +240,9 @@ db.transaction(() => {
   // 검차 종류 메타 및 부스 기본 데이터 생성
   for (const [k, v] of Object.entries(inspections)) {
     db.prepare(`INSERT OR IGNORE INTO inspection (type, name) VALUES (?, ?)`).run(k, v);
+    // 이름은 INSPECTIONS 가 유일한 출처다. 라우트가 name 을 수정하지 않으므로
+    // 상수 변경(배터리 -> 축전지)이 기존 DB에도 반영되도록 매 부팅에 맞춘다.
+    db.prepare(`UPDATE inspection SET name = ? WHERE type = ? AND name != ?`).run(v, k, v);
 
     // 부스 기본 설정: 검차 종류당 1개 부스
     db.prepare(`INSERT OR IGNORE INTO booth_config (inspection, count) VALUES (?, 1)`).run(k);
@@ -421,7 +422,13 @@ function withInspectionLengths(rows, year = currentYear()) {
   for (const r of db.prepare("SELECT inspection, COUNT(*) AS count FROM inspection_queue WHERE year = ? GROUP BY inspection").all(year)) {
     counts.set(r.inspection, r.count);
   }
-  return rows.map((row) => ({ ...row, length: counts.get(row.type) || 0 }));
+  // rowid(= 최초 삽입 순서)가 아니라 INSPECTIONS 키 순서로 노출한다. 기존 DB의
+  // 삽입 순서가 달라도 모든 화면이 같은 순서를 본다.
+  const order = Object.keys(inspections);
+  return rows
+    .filter((row) => order.includes(row.type))
+    .map((row) => ({ ...row, length: counts.get(row.type) || 0 }))
+    .sort((a, b) => order.indexOf(a.type) - order.indexOf(b.type));
 }
 
 function getActiveInspections(year = currentYear()) {
@@ -483,7 +490,7 @@ function addCurrentInspection(num, phone, type, year) {
     (nonReportTypes.length === 1 && nonReportTypes[0] === "battery" && type === "chassis") ||
     (nonReportTypes.length === 1 && nonReportTypes[0] === "chassis" && type === "battery")
   ) {
-    // 보고서만 등록 또는 배터리+섀시 동시 등록 허용
+    // 보고서만 등록 또는 축전지+섀시 동시 등록 허용
     setCurrentInspections(num, phone, [...currentTypes, type], year);
     return;
   }
@@ -719,7 +726,7 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
     const entry = getCurrentEntry(num, year);
 
     if (!entry) {
-      return { queue: undefined, rank: -1 };
+      return { queue: undefined, rank: -1, queues: [] };
     }
 
     if (typeof req.body.phone !== "string") {
@@ -729,19 +736,22 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
       throw { status: 400, message: "전화번호가 일치하지 않습니다." };
     }
 
-    if (entry.inspection.includes(",")) {
-      const ranks = { queue: [], rank: [] };
-
-      for (let inspection of entry.inspection.split(",")) {
-        ranks.queue.push(inspections[inspection]);
-        ranks.rank.push(getQueueRank(inspection, num, year));
-      }
-
-      return { queue: ranks.queue.join(", "), rank: ranks.rank.join(", ") };
-    } else {
-      const rank = getQueueRank(entry.inspection, num, year);
-      return { queue: inspections[entry.inspection], rank: rank };
-    }
+    const queues = entry.inspections.map((type) => ({
+      type,
+      name: inspections[type],
+      rank: getQueueRank(type, num, year),
+      total: db.prepare(`
+        SELECT COUNT(*) AS count FROM inspection_queue
+        WHERE inspection = ? AND year = ?
+      `).get(type, year).count,
+    }));
+    return {
+      // 기존 소비자를 위한 표시 문자열은 유지하되, 화면은 안정 키와 같은 응답에서
+      // 계산된 합계를 담은 queues를 사용한다. 이름 변경·비활성화와 무관하게 짝이 맞는다.
+      queue: queues.length === 1 ? queues[0].name : queues.map((item) => item.name).join(", "),
+      rank: queues.length === 1 ? queues[0].rank : queues.map((item) => item.rank).join(", "),
+      queues,
+    };
   });
 
   if (!result.success) {
@@ -2104,7 +2114,7 @@ app.get("/api/admin/settings/sms", (req, res) => {
 // PATCH /api/admin/settings/sms - SMS 설정 변경
 app.patch("/api/admin/settings/sms", (req, res) => {
   if (req.body.value === true) {
-    if (!smsConfig) {
+    if (!smsClient.isAvailable()) {
       logger.warn(req, "settings.sms", {
         error: "sms_configuration_unavailable",
         reason: "sms_configuration_unavailable",
@@ -2195,69 +2205,19 @@ async function getEntries() {
   return options.teamStore.moduleEntries(currentYear());
 }
 
-let smsConfig = options.smsConfig || null;
+// Competition 은 이 클라이언트를 Registration 에도 넘겨 한 프로세스가 SENS 자격
+// 증명 한 벌과 갱신 타이머 하나만 갖도록 한다(createRegistrationApp options.smsClient).
+const smsClient = createSmsClient({
+  logger,
+  smsRequest: options.smsRequest,
+  smsConfig: options.smsConfig,
+  fetchImpl: options.fetchImpl,
+});
+const loadSmsConfig = smsClient.loadConfig;
 
-// On a co-restart the email service is usually not up yet, so a connection
-// failure here is a transient startup race — the 5-min refresh recovers it.
-// Retry the startup window (retries > 0) before logging, so a normal restart
-// doesn't leave a "fetch failed" warning every time. An HTTP error response
-// (email up but the endpoint is failing) is a real problem and warns at once.
-async function loadSmsConfig({ retries = 0, delayMs = 3000 } = {}) {
-  const emailServer = serviceUrl("email");
-  // 예전 조건에 있던 EMAIL_SERVER 검사는 뺐다. 이 diff에서 "설정 없음 = 아무것도 안 함"이
-  // 버그를 숨긴 게 아니라 실제 정보였던 유일한 자리다 — email 없이 뜨는 스택에서는 그게
-  // "SMS 설정 조회 대상 없음"을 뜻했다. FSK는 email이 항상 있으므로 무해하지만, 그런
-  // 스택에서는 5분마다 http://email:9900을 재시도하며 sms.config_fetch를 계속 남기게 된다.
-  // INTERNAL_SECRET은 프로덕션 부팅 시 강제된다(express-setup) — dev/test에서만 비어 있다.
-  if (process.env.INTERNAL_SECRET) {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        const headers = { "X-Internal-Service": process.env.INTERNAL_SECRET };
-        const res = await fetch(`${emailServer}/api/internal/sms-config`, { headers, signal: AbortSignal.timeout(5000) });
-        if (res.ok) {
-          const data = await res.json();
-          if (data.naver_cloud_access_key && data.naver_cloud_secret_key && data.naver_cloud_sms_service_id && data.phone_number_sms_sender) {
-            smsConfig = data;
-          } else {
-            // 200인데 설정이 불완전 = 소스(email)에서 설정이 지워진 확정 상태 — 낡은
-            // 설정으로 발송하지 않도록 무효화한다. (HTTP 오류·연결 실패는 transient라
-            // 기존 smsConfig를 유지한다 — auth 재검증의 404-vs-5xx 구분과 같은 원칙.)
-            smsConfig = null;
-          }
-          return;
-        }
-        logger.warn(null, "sms.config_fetch", { status: res.status });
-        break; // HTTP error — retrying won't help
-      } catch (e) {
-        // Connection failure: email not reachable yet. Retry quietly, then warn
-        // once the startup grace window is exhausted (a genuine outage).
-        if (attempt < retries) {
-          await new Promise((r) => setTimeout(r, delayMs));
-          continue;
-        }
-        logger.warn(null, "sms.config_fetch", { error: e.message });
-      }
-      break;
-    }
-  }
-  // 주의: 어떤 실패 경로에서도 settings의 sms 값은 건드리지 않는다. 예전에는 여기서
-  // sms=FALSE를 영속화해서, email 부팅 레이스 한 번에 관리자가 켠 SMS가 조용히 꺼진 채
-  // 복구되지 않았다. 설정은 관리자만 바꾼다 — 설정 조회 실패는 발송 시점에 skip으로만
-  // 나타난다(sendSmsNotification).
-}
-
-// Refresh SMS config every 5 minutes to pick up admin changes
-const smsConfigRefreshTimer = setInterval(loadSmsConfig, 5 * 60 * 1000);
-smsConfigRefreshTimer.unref();
-
-// SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게
-let lastSmsSkipWarn = 0;
-function warnSmsSkipThrottled(detail) {
-  const now = Date.now();
-  if (now - lastSmsSkipWarn < 60000) return;
-  lastSmsSkipWarn = now;
-  logger.warn(null, "sms.skip", detail);
-}
+// SMS 켜져 있는데 설정을 못 쓰는 상태의 skip 경고(60초 스로틀) — 발송마다 쌓이지 않게.
+// Registration 의 registration.sms_skip 과 같은 규칙을 공유한다.
+const warnSmsSkipThrottled = createThrottledSkipWarning(logger, "sms.skip");
 
 function sendSmsNotification(type, prev) {
   let target;
@@ -2271,89 +2231,31 @@ function sendSmsNotification(type, prev) {
     target = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {
-      if (!smsConfig) {
+      if (!smsClient.isAvailable()) {
         warnSmsSkipThrottled({
           reason: "SMS 설정을 사용할 수 없습니다(email 서비스 미응답 또는 설정 미완성)",
           num: target.num, type,
         });
         return;
       }
-
-      const payload = {
-        hostname: "sens.apigw.ntruss.com",
-        port: 443,
-        path: `/sms/v2/services/${smsConfig.naver_cloud_sms_service_id}/messages`,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json; charset=utf-8",
-          "x-ncp-apigw-timestamp": String(Date.now()),
-          "x-ncp-iam-access-key": smsConfig.naver_cloud_access_key,
-          "x-ncp-apigw-signature-v2": "",
-        },
-      };
-
-      const secret = crypto
-        .createHmac("sha256", smsConfig.naver_cloud_secret_key)
-        .update(
-          `${payload.method} ${payload.path}\n${payload.headers["x-ncp-apigw-timestamp"]}\n${smsConfig.naver_cloud_access_key}`,
-        )
-        .digest("base64");
-
-      payload.headers["x-ncp-apigw-signature-v2"] = secret;
-
-      const sms = smsRequest(payload, (res) => {
-        let responseSettled = false;
-        const finishResponse = (log) => {
-          if (responseSettled) return;
-          responseSettled = true;
-          log();
-        };
-        let data = "";
-        res.on("data", (chunk) => (data += chunk));
-        res.on("end", () => {
-          finishResponse(() => {
-            if (res.statusCode >= 200 && res.statusCode < 300) {
-              logger.log(null, "sms.send", { response: data, num: target.num, type });
-            } else {
-              logger.warn(null, "sms.send", { error: data, status: res.statusCode, num: target.num, type });
-            }
-          });
-        });
-        res.on("aborted", () => {
-          finishResponse(() => logger.warn(
-            null, "sms.error", { error: "response aborted", num: target.num, type },
-          ));
-        });
-        res.on("error", (e) => {
-          finishResponse(() => logger.warn(
-            null, "sms.error", { error: e.message, num: target.num, type },
-          ));
-        });
-        res.on("close", () => finishResponse(() => logger.warn(
-          null, "sms.error", { error: "response closed before completion", num: target.num, type },
-        )));
-      });
-
-      sms.setTimeout(5000, () => {
-        try {
-          logger.warn(null, "sms.timeout", { num: target.num, type });
-          sms.destroy();
-        } catch (error) {
-          throw error;
-        }
-      });
-      sms.on("error", (e) => {
-        logger.warn(null, "sms.error", { error: e.message, num: target.num, type });
-      });
-      sms.write(
-        JSON.stringify({
-          type: "SMS",
-          from: smsConfig.phone_number_sms_sender,
-          content: `[FSK ${currentCompetitionYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
-          messages: [{ to: target.phone }],
+      smsClient.send(
+        target.phone,
+        `[FSK ${currentCompetitionYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
+      ).then(
+        ({ response, status }) => logger.log(null, "sms.send", {
+          response, status, num: target.num, type,
+        }),
+        // SENS 가 응답한 4xx/5xx 는 계속 sms.send(warn) 로 남긴다 — 저장된 로그
+        // 조회와의 연속성을 위해서다. 소켓 오류만 sms.error, 타임아웃은 sms.timeout.
+        (error) => logger.warn(null, error?.code === "SMS_TIMEOUT"
+          ? "sms.timeout"
+          : (error?.status ? "sms.send" : "sms.error"), {
+          error: error?.response || error?.message || String(error),
+          status: error?.status,
+          num: target.num,
+          type,
         }),
       );
-      sms.end();
     }
   } catch (e) {
     logger.warn(null, "sms.error", { error: String(e), num: target?.num, type });
@@ -2365,5 +2267,5 @@ function sendSmsNotification(type, prev) {
    ============================================ */
 if (!options.skipSpaFallback) addSpaFallback(app);
 
-return { app, db, loadSmsConfig, closeSse, sourceEvent, timers: [rateLimitTimer, smsConfigRefreshTimer] };
+return { app, db, loadSmsConfig, smsClient, closeSse, sourceEvent, timers: [rateLimitTimer, smsClient.timer] };
 }

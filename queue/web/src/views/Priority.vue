@@ -401,6 +401,8 @@ function goBack() {
                   <input
                     type="number"
                     class="priority-input"
+                    :data-inspection="inspection.type"
+                    :aria-label="`${entry.num}번 ${inspection.name} 우선순위`"
                     :class="{
                       active: getPriority(entry.num, inspection.type) !== null,
                       reinspection: isReinspection(entry.num, inspection.type),

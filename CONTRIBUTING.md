@@ -14,8 +14,8 @@ cd {service}/web && npm run dev|build
 
 # Backend dev — supporting services export create*App(options)
 cd {service} && node index.mjs
-# Competition is the deployed owner of teams, queue, inspection, traffic,
-# score, and documents. Their factories are composed in-process and used by tests;
+# Competition is the deployed owner of teams, queue, registration, inspection,
+# traffic, score, and documents. Their factories are composed in-process and used by tests;
 # they are not standalone deployment or rollback profiles.
 
 # Docker (Makefile wraps podman compose, auto-prunes)
@@ -45,7 +45,7 @@ Caddy strips `X-Internal-Service` and `Authuser` from external requests. Support
 
 All non-auth services validate through Auth and fail closed: only HTTP 200 confirms a user. There is no runtime switch that disables this. Tests inject `TRUST_JWT` through the application factory. Environment variables such as `<NAME>_SERVER` override supporting-service integrations; they cannot split the deployed Competition runtime.
 
-Inside Competition, Score consumes module query ports and receives Inspection/Traffic invalidations through an in-process event bridge; it does not loop back through HTTP/SSE. Teams are the sole shared roster source. There is no finalize boundary, standalone Competition-module runtime, lifecycle compatibility API, or reverse migration. Auth aggregates the six logical module logs through their flat versioned Competition endpoints.
+Inside Competition, Score consumes module query ports and receives Inspection/Traffic invalidations through an in-process event bridge; it does not loop back through HTTP/SSE. Teams are the sole shared roster source. There is no finalize boundary, standalone Competition-module runtime, lifecycle compatibility API, or reverse migration. Auth aggregates the seven logical module logs through their flat versioned Competition endpoints.
 
 **FileBrowser** (`/files/`, chief+): uses separate `X-Forward-Auth-Key` header. DB reset requires container recreate: `podman rm -f fsk-filebrowser && podman compose --profile production up -d filebrowser`.
 

@@ -54,6 +54,8 @@ jobs:
               - 'entry/**'
             queue:
               - 'queue/**'
+            registration:
+              - 'registration/**'
             inspection:
               - 'inspection/**'
             traffic:
@@ -83,6 +85,7 @@ jobs:
           F_AUTH: ${{ steps.filter.outputs.auth }}
           F_ENTRY: ${{ steps.filter.outputs.entry }}
           F_QUEUE: ${{ steps.filter.outputs.queue }}
+          F_REGISTRATION: ${{ steps.filter.outputs.registration }}
           F_INSPECTION: ${{ steps.filter.outputs.inspection }}
           F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
           F_SCORE: ${{ steps.filter.outputs.score }}
@@ -119,7 +122,7 @@ jobs:
             add_service "caddy"
           else
             competition_changed="$F_COMPETITION"
-            for value in "$F_ENTRY" "$F_QUEUE" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
+            for value in "$F_ENTRY" "$F_QUEUE" "$F_REGISTRATION" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
               if [ "$value" = "true" ]; then competition_changed=true; fi
             done
             declare -A FILTERS=(

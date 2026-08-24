@@ -6,23 +6,25 @@ RUN npm ci
 
 COPY entry/web/package*.json entry/web/
 COPY queue/web/package*.json queue/web/
+COPY registration/web/package*.json registration/web/
 COPY inspection/web/package*.json inspection/web/
 COPY traffic/web/package*.json traffic/web/
 COPY score/web/package*.json score/web/
 COPY documents/web/package*.json documents/web/
-RUN set -e; for service in entry queue inspection traffic score documents; do npm --prefix "$service/web" ci --ignore-scripts; done
-RUN set -e; for service in entry queue inspection traffic score documents; do node "$service/web/node_modules/esbuild/install.js"; done
+RUN set -e; for service in entry queue registration inspection traffic score documents; do npm --prefix "$service/web" ci --ignore-scripts; done
+RUN set -e; for service in entry queue registration inspection traffic score documents; do node "$service/web/node_modules/esbuild/install.js"; done
 
 COPY shared shared/
 COPY inspection/lib inspection/lib/
 COPY traffic/lib traffic/lib/
 COPY entry/web entry/web/
 COPY queue/web queue/web/
+COPY registration/web registration/web/
 COPY inspection/web inspection/web/
 COPY traffic/web traffic/web/
 COPY score/web score/web/
 COPY documents/web documents/web/
-RUN set -e; for service in entry queue inspection traffic score documents; do npm --prefix "$service/web" run build; done
+RUN set -e; for service in entry queue registration inspection traffic score documents; do npm --prefix "$service/web" run build; done
 
 FROM node:22-alpine
 RUN apk add --no-cache su-exec
@@ -35,6 +37,7 @@ COPY competition/modules competition/modules/
 COPY competition/scripts competition/scripts/
 COPY queue/index.mjs queue/index.mjs
 COPY queue/lib queue/lib/
+COPY registration/index.mjs registration/index.mjs
 COPY inspection/index.mjs inspection/index.mjs
 COPY inspection/lib inspection/lib/
 COPY traffic/index.mjs traffic/index.mjs
@@ -46,6 +49,7 @@ COPY documents/lib documents/lib/
 COPY shared shared/
 COPY --from=builder /build/entry/web/dist entry/web/dist/
 COPY --from=builder /build/queue/web/dist queue/web/dist/
+COPY --from=builder /build/registration/web/dist registration/web/dist/
 COPY --from=builder /build/inspection/web/dist inspection/web/dist/
 COPY --from=builder /build/traffic/web/dist traffic/web/dist/
 COPY --from=builder /build/score/web/dist score/web/dist/

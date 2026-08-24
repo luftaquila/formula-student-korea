@@ -84,6 +84,15 @@ function deleteTransientRows(db, table, team, numberColumn = "team_num") {
 
 export function clearCanonicalTeamTransientState(db, team) {
   const changes = {};
+  if (tableExists(db, "registration_queue") && columns(db, "registration_queue").has("team_id")) {
+    const count = db.prepare(`
+      UPDATE registration_queue
+      SET status = 'canceled',
+          finished_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE team_id = ? AND status = 'waiting'
+    `).run(team.id).changes;
+    if (count) changes.registration_queue = count;
+  }
   for (const table of ["inspection_queue", "current_inspection", "team_priority", "cancel_penalty"]) {
     const count = deleteTransientRows(db, table, team, "num");
     if (count) changes[table] = count;
@@ -371,6 +380,15 @@ export function assertCanonicalTeamReferences(db) {
         AND (vehicle_type.id IS NULL OR vehicle_type.year != team.year)
     `).get().count;
     if (count) violations.push({ table: "competition_team.vehicle_type_id", count });
+  }
+  if (tableExists(db, "registration_queue") && columns(db, "registration_queue").has("team_id")) {
+    const count = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM registration_queue source_row
+      LEFT JOIN competition_team team ON team.id = source_row.team_id
+      WHERE team.id IS NULL
+    `).get().count;
+    if (count) violations.push({ table: "registration_queue", count });
   }
   const yearNumberTables = [
     ["current_inspection", "num"], ["inspection_queue", "num"],

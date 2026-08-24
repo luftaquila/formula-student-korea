@@ -116,9 +116,11 @@ test.describe("Entry team management", () => {
     const searchInput = page.locator(".search-input");
     const table = page.locator(".entry-table");
 
-    // Search by university name
+    // Search by university name. "adds a new entry" retains a deactivated
+    // 테스트대학교-9xxxx row for audit, and its number can contain the digits
+    // searched below, so count only the seeded rows.
     await searchInput.fill("서울");
-    const filteredRows = table.locator("tbody tr");
+    const filteredRows = table.locator("tbody tr").filter({ hasNotText: "테스트대학교" });
     await expect(filteredRows).toHaveCount(1);
     await expect(filteredRows.first()).toContainText("서울대학교");
 

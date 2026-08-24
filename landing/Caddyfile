@@ -76,6 +76,14 @@
 		reverse_proxy competition:9200
 	}
 
+	# Registration queue UI
+	redir /registration /registration/
+	handle /registration/* {
+		request_header -X-Internal-Service
+		request_header -Authuser
+		reverse_proxy competition:9200
+	}
+
 	# Inspection UI
 	redir /inspection /inspection/
 	handle /inspection/* {

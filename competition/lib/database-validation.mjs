@@ -20,20 +20,35 @@ export function captureCompetitionSchemaContract(db) {
 }
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
-  objectCount: 125,
-  sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
+  objectCount: 131,
+  sha256: "66e3d7c77e67e20986753a75d1aba69a614bb34130dcc4e31c1275011bbac8ad",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
 // to apply its idempotent schema additions. Accept only the exact immediately
-// preceding contracts here; createScoreApp then adds the qualified column or
-// rebuilds the endurance table with its 0/1 constraint before serving. Any
-// other schema still fails closed, and the next validation must match the
-// current contract.
+// preceding contracts here; createRegistrationApp adds its two tables, while
+// createScoreApp adds the qualified column or rebuilds the endurance table with
+// its 0/1 constraint before serving. Any other schema still fails closed, and
+// the next validation must match the current contract.
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    // registration_queue still carrying the retired 'called' status and its
+    // called_at column; createRegistrationApp rebuilds the table before serving.
+    objectCount: 131,
+    sha256: "6f97860d38a0b4f04adda2f2d0e92d65feb029386540c12e24e38ab9be5c1ce8",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
+  Object.freeze({
+    objectCount: 125,
+    sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
+    allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
   Object.freeze({
     objectCount: 125,
     sha256: "1336208794493a2d46d703cbaa76ecd68f71f1fe6e1081817aef02aaf29a2554",
+    allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
     allowedMissingColumns: Object.freeze({
       score_endurance: Object.freeze(["qualified"]),
     }),
@@ -41,6 +56,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
   Object.freeze({
     objectCount: 125,
     sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
+    allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
     allowedMissingColumns: Object.freeze({}),
   }),
 ]);
@@ -52,6 +68,8 @@ export function competitionSchemaContractDigest(contract) {
 const REQUIRED_COLUMNS = Object.freeze({
   competition_team: ["id", "year", "num", "univ", "name", "vehicle_type_id", "active", "created_at", "updated_at"],
   competition_vehicle_type: ["id", "year", "display_name", "color", "sort_order"],
+  registration_queue: ["id", "team_id", "phone", "status", "notified", "notify_claimed_at", "registered_at", "finished_at"],
+  registration_settings: ["year", "open", "sms", "notify_rank", "updated_at"],
   inspection: ["type", "name", "active"],
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
   record: ["name", "num", "univ", "team", "type", "result", "team_id"],
@@ -91,6 +109,8 @@ export function assertCompetitionSchema(db) {
   }
   for (const [table, required] of Object.entries(REQUIRED_COLUMNS)) {
     const actual = columns(db, table);
+    const allowedMissingTables = upgradeContract?.allowedMissingTables || [];
+    if (!actual.length && allowedMissingTables.includes(table)) continue;
     const allowedMissing = upgradeContract?.allowedMissingColumns[table] || [];
     if (!actual.length || required.some((column) => (
       !actual.includes(column) && !allowedMissing.includes(column)

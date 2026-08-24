@@ -59,7 +59,7 @@ test.describe("Queue priority management", () => {
 
     // Find the first priority input in the row for entry 1
     const row = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
-    const priorityInput = row.locator(".priority-input").first();
+    const priorityInput = row.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`);
     await expect(priorityInput).toBeVisible();
 
     // Set priority to 1
@@ -85,7 +85,7 @@ test.describe("Queue priority management", () => {
 
     // Find the priority input for entry 2 in the battery column
     const row = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
-    const priorityInput = row.locator(".priority-input").first();
+    const priorityInput = row.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`);
     await expect(priorityInput).toBeVisible();
 
     // The input should show current priority
@@ -142,10 +142,10 @@ test.describe("Queue priority management", () => {
 
     // Verify priorities are set
     const row1 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
-    await expect(row1.locator(".priority-input").first()).toHaveValue("1");
+    await expect(row1.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`)).toHaveValue("1");
 
     const row2 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
-    await expect(row2.locator(".priority-input").first()).toHaveValue("2");
+    await expect(row2.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`)).toHaveValue("2");
 
     // Accept the confirmation dialog
     page.on("dialog", (dialog) => dialog.accept());
@@ -162,10 +162,10 @@ test.describe("Queue priority management", () => {
     await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
 
     const row1After = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
-    await expect(row1After.locator(".priority-input").first()).toHaveValue("");
+    await expect(row1After.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`)).toHaveValue("");
 
     const row2After = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
-    await expect(row2After.locator(".priority-input").first()).toHaveValue("");
+    await expect(row2After.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`)).toHaveValue("");
   });
 
   test("reset inspection history via button", async ({ page }) => {

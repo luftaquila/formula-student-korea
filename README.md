@@ -20,7 +20,7 @@ Read the [user guide](docs/user-guide.md) to operate the system.
 |---------|-------------|------|
 | landing | Landing page & Caddy reverse proxy | 9000 |
 | auth | Authentication & user management | 9100 |
-| competition | Modular monolith: teams, queue, inspection, traffic, score, documents | 9200 |
+| competition | Modular monolith: teams, queue, registration, inspection, traffic, score, documents | 9200 |
 | energymeter | Energy meter data viewer | 9800 |
 | email | Email/SMS management & Brevo integration | 9900 |
 | course | Course cone management with RTK GPS rover + WebRTC camera / WebXR VR teleop | 10000 |

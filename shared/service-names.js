@@ -10,6 +10,7 @@ export const SERVICE_NAMES = Object.freeze([
   "auth",
   "entry",
   "queue",
+  "registration",
   "inspection",
   "traffic",
   "score",

@@ -16,6 +16,12 @@ function dockerContextFilter(workflow) {
   return workflow.match(/            docker-context:\n((?:              - .+\n)+)/)?.[1] || "";
 }
 
+function e2eShards(workflow) {
+  const matrix = workflow.match(/        include:\n([\s\S]+?)\n    steps:/)?.[1] || "";
+  return [...matrix.matchAll(/          - shard: ([^\n]+)\n([\s\S]*?)(?=          - shard:|$)/g)]
+    .map(([, shard, body]) => ({ shard, body }));
+}
+
 describe("CI workflow operational contracts", () => {
   it("runs unit tests in Seoul time and preserves the UTC/KST year boundary", () => {
     assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n    env:\n      TZ: Asia\/Seoul\n/);
@@ -40,6 +46,31 @@ describe("CI workflow operational contracts", () => {
     for (const workflow of [testWorkflow, buildWorkflow]) {
       assert.match(dockerContextFilter(workflow), /- '\.dockerignore'/);
       assert.ok((workflow.match(/\$DOCKER_CONTEXT/g) || []).length >= 2);
+    }
+  });
+
+  it("treats Registration as Competition code in build, unit, and E2E plans", () => {
+    for (const workflow of [testWorkflow, buildWorkflow]) {
+      assert.match(workflow, /            registration:\n              - 'registration\/\*\*'/);
+      assert.match(workflow, /F_REGISTRATION: \$\{\{ steps\.filter\.outputs\.registration \}\}/);
+      assert.match(workflow, /"\$F_QUEUE" "\$F_REGISTRATION" "\$F_INSPECTION"/);
+    }
+    assert.match(testWorkflow, /registration\/package-lock\.json/);
+    assert.match(testWorkflow, /for dir in auth queue registration inspection/);
+    assert.match(testWorkflow, /- shard: registration\n            projects: --project=registration/);
+  });
+
+  it("starts Email in every E2E shard that seeds users", () => {
+    const userShards = e2eShards(testWorkflow)
+      .filter(({ body }) => /^            seeds: .*\busers\b/m.test(body));
+
+    assert.ok(userShards.length > 0);
+    for (const { shard, body } of userShards) {
+      assert.match(
+        body,
+        /^            services: .*\bemail\b/m,
+        `${shard} seeds Auth users, whose creation sends an Email notification`,
+      );
     }
   });
 });
