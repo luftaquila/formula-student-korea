@@ -8,8 +8,12 @@ import {
   groupRouteMapVisits,
   missionConeDisplayName,
   missionConeShortName,
+  missionRouteDirectionArrow,
+  missionRouteMapSegments,
+  missionRouteProgressColor,
   moveRouteItem,
   optimizeConeRoute,
+  renderMissionMapBearing,
 } from "../../course/web/src/lib/mission-route.mjs";
 import { buildSideRanks } from "../../course/lib/cone-index.mjs";
 
@@ -45,6 +49,44 @@ test("groups repeated map visits without hiding a moved cone snapshot", () => {
   assert.deepEqual(groupRouteMapVisits(visits).map((group) => group.map(({ index }) => index)), [
     [0, 2], [1], [3],
   ]);
+});
+
+test("colors map segments from mission start to finish and keeps their visit indices", () => {
+  const route = [
+    { cone_id: 1, lat: 35, lng: 126 },
+    { cone_id: 99, lat: null, lng: 126.5 },
+    { cone_id: 2, lat: 35, lng: 126.001 },
+    { cone_id: 3, lat: 35.001, lng: 126.001 },
+    { cone_id: 4, lat: 35.001, lng: 126 },
+    { cone_id: 5, lat: 35, lng: 126 },
+  ];
+  const segments = missionRouteMapSegments(route);
+  assert.deepEqual(segments.map(({ fromIndex, toIndex }) => [fromIndex, toIndex]), [
+    [0, 2], [2, 3], [3, 4], [4, 5],
+  ]);
+  assert.equal(segments[0].color, "rgb(34,197,94)");
+  assert.equal(segments.at(-1).color, "rgb(239,68,68)");
+  assert.equal(missionRouteProgressColor(1, 3), "rgb(242,147,15)");
+});
+
+test("builds geographic route arrows that point toward the next visit", () => {
+  const eastbound = missionRouteDirectionArrow(
+    { lat: 35, lng: 126 },
+    { lat: 35, lng: 126.0001 },
+  );
+  assert.equal(eastbound.length, 3);
+  assert.ok(eastbound[1].lng > eastbound[0].lng);
+  assert.ok(eastbound[1].lng > eastbound[2].lng);
+  assert.ok(eastbound[0].lat > eastbound[2].lat);
+  assert.deepEqual(missionRouteDirectionArrow(
+    { lat: 35, lng: 126 },
+    { lat: 35, lng: 126 },
+  ), []);
+});
+
+test("renders the inherited main-map bearing without the exact 180-degree tile bug", () => {
+  assert.equal(renderMissionMapBearing(180), 179.9);
+  assert.equal(renderMissionMapBearing(270), 270);
 });
 
 test("optimizes from the live start while preserving occurrence identity", () => {

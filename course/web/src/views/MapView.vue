@@ -804,6 +804,20 @@ function savePref(key, value) {
 watch(activeTab, (v) => savePref("activeTab", v));
 watch(historyView, (v) => savePref("historyView", v));
 
+// The modal owns another rotated satellite map. Suspend painting the covered
+// main map while it is open, then refresh its viewport once after teardown.
+// State/SSE updates still land on the same main map instance throughout.
+watch(showMissionBuilder, (open) => {
+  if (!map) return;
+  if (open) {
+    map.stop();
+    return;
+  }
+  nextTick(() => {
+    if (map) map.invalidateSize({ pan: false, animate: false });
+  });
+});
+
 // Cone draggability is gated on the courses tab — rebuild markers when
 // crossing that boundary. Skip missions transitions; isMissionsView owns those.
 watch(activeTab, (next, prev) => {
@@ -1610,7 +1624,11 @@ function startArrow(pts) {
     L.circle([a.lat, a.lng], { radius: SW, color: EDGE, weight: 2, fillColor: C, fillOpacity: 1, interactive: false }),
   ];
 }
-watch(showCenterline, (v) => { savePref("showCenterline", v); drawCenterline(); });
+watch(showCenterline, (v) => {
+  savePref("showCenterline", v);
+  drawCenterline();
+  rebuildRouteMarkers();
+});
 watch(activeCones, scheduleCenterline);
 watch(activeRoute, () => {
   scheduleCenterline();
@@ -1898,6 +1916,10 @@ function clearRouteMarkers() {
 function rebuildRouteMarkers() {
   clearRouteMarkers();
   if (!map || activeTab.value !== "courses" || !activeCourseId.value) return;
+  // Route markers are part of the active course graphic. Keep them out of the
+  // map when that course is hidden, and hide them with the centerline unless
+  // the operator explicitly entered route-marker edit mode.
+  if (!visibility.value[activeCourseId.value] || (!showCenterline.value && !routeEditMode.value)) return;
   const visits = new Map();
   activeRoute.value.steps.forEach((id, index) => {
     const ranks = visits.get(id) || [];
@@ -1916,8 +1938,8 @@ function rebuildRouteMarkers() {
       icon: L.divIcon({
         className: "route-marker-host",
         html: `<div class="route-marker-pin${ranks.length ? " has-visits" : ""}"><span>${text}</span></div>`,
-        iconSize: [34, 34],
-        iconAnchor: [17, 17],
+        iconSize: [30, 30],
+        iconAnchor: [15, 15],
       }),
     });
     if (interactive) {
@@ -2406,7 +2428,10 @@ function setupSelectionBox() {
 /* ── Course CRUD ──────────────────────────────────── */
 function toggleVisibility(courseId) {
   visibility.value[courseId] = !visibility.value[courseId];
-  if (map) rebuildAllMarkers();
+  if (map) {
+    rebuildAllMarkers();
+    if (courseId === activeCourseId.value) rebuildRouteMarkers();
+  }
 }
 
 function selectCourse(courseId) { activeCourseId.value = courseId; }
@@ -5301,6 +5326,7 @@ onUnmounted(() => {
         :completed-count="activeMission ? activeMission.waypoints.filter((waypoint) => waypoint.state === 'completed').length : 0"
         :busy="missionBuilderBusy"
         :preset-busy="missionPresetBusy"
+        :map-bearing="mapBearing"
         @close="showMissionBuilder = false"
         @apply="applyMissionBuilder"
         @run="runMissionBuilder"
@@ -5805,7 +5831,7 @@ onUnmounted(() => {
           <div class="rail-spacer"></div>
 
           <!-- Map (center) -->
-          <div class="map-wrap">
+          <div :class="['map-wrap', { 'map-suspended': showMissionBuilder }]">
             <div id="map" class="map"></div>
             <!-- Map rotation — bottom-left, available on every tab. Each press
                  turns the whole map (tiles + cones + paths) 90° counter-clockwise. -->
@@ -7122,6 +7148,7 @@ onUnmounted(() => {
 
 .map-wrap { flex: 1; position: relative; min-width: 0; min-height: 0; }
 .map { width: 100%; height: 100%; z-index: 0; }
+.map-wrap.map-suspended .map { visibility: hidden; }
 
 .map-overlay {
   position: absolute; top: 1rem; left: 50%; transform: translateX(-50%);
@@ -8243,13 +8270,12 @@ onUnmounted(() => {
 .route-marker-pin {
   width: 30px; height: 30px; box-sizing: border-box;
   display: flex; align-items: center; justify-content: center;
-  border: 2px solid #fff; border-radius: 50% 50% 50% 4px;
-  transform: rotate(-45deg); background: #64748b; color: #fff;
+  border: 2px solid #fff; border-radius: 50%;
+  background: #64748b; color: #fff;
   box-shadow: 0 1px 5px rgba(0, 0, 0, 0.55);
   font: 700 9px/1 "JetBrains Mono", ui-monospace, monospace;
 }
 .route-marker-pin.has-visits { background: #10b981; }
-.route-marker-pin > span { transform: rotate(45deg); }
 .selection-box {
   position: absolute;
   border: 2px dashed #38bdf8;
