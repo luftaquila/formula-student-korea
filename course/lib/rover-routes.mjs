@@ -5,7 +5,11 @@
 // 소유한다. 모듈별 register 패턴으로 라우트와 상태를 명시적으로 연결한다.
 import crypto from "crypto";
 import { haversine } from "./geo.mjs";
-import { createMissionV2Store, MISSION_PROTOCOL_VERSION } from "./mission-v2.mjs";
+import {
+  createMissionV2Store,
+  MISSION_MAX_OCCURRENCES,
+  MISSION_PROTOCOL_VERSION,
+} from "./mission-v2.mjs";
 
 const ROVER_MAX_WAYPOINT_DIST_M = Number(process.env.ROVER_MAX_WAYPOINT_DIST_M) || 200;
 const ROVER_MAX_SEGMENT_DIST_M = Number(process.env.ROVER_MAX_SEGMENT_DIST_M) || 50;
@@ -71,6 +75,10 @@ let lastRoverPosition = null; // { lat, lng, at: epoch ms }
 // resume time can't bounce a just-resumed mission back to paused.
 let roverLastResumeAt = 0;
 const ROVER_PAUSE_RECONCILE_GRACE_MS = 5000;
+// E-stop telemetry is a high-frequency observation, not a mutation. The hold
+// creation itself is already audited, so retain at most one extra observation
+// per durable hold/boot instead of writing the same row every telemetry frame.
+let lastEstopObservedHoldKey = null;
 
 // Nav states in which the rover OWNS the velocity stream (actively executing a
 // mission). Mirrors navigator_node's State enum and the web ACTIVE_NAV_STATES.
@@ -423,7 +431,9 @@ function broadcastRoverStatus() {
   broadcastEvent("rover:status", {
     ...roverState,
     mission_progress: missionProgress,
-    active_mission: db.open ? missionV2.activeMission() : null,
+    // Keep GPS-rate status bounded. The full occurrence (up to 10,000
+    // waypoints) is sent only by rover:mission mutations and GET recovery.
+    active_mission_summary: db.open ? missionV2.activeMissionSummary() : null,
     mission_protocol: {
       required: MISSION_PROTOCOL_VERSION,
       connected: roverProtocolVersion,
@@ -436,6 +446,10 @@ function broadcastRoverStatus() {
     // receiver base station but the receiver isn't connected (rover gets no RTK).
     ntrip_source: ntripSourceCache,
   });
+}
+
+function broadcastMissionMutation(mission) {
+  broadcastEvent("rover:mission", { mission: mission || null });
 }
 
 function markRoverDisconnected(reason) {
@@ -482,7 +496,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     // an uncaught exception after shutdown.
     const activeV2 = db.open ? missionV2.activeMission() : null;
     if (activeV2 && ["starting", "running", "pausing", "resuming"].includes(activeV2.status)) {
-      missionV2.markInterrupted(activeV2.id, "telemetry_stale", roverBootId);
+      const interrupted = missionV2.markInterrupted(activeV2.id, "telemetry_stale", roverBootId);
       logger.warn(null, "mission.v2.interrupted", {
         mission_id: activeV2.id,
         before: activeV2.status,
@@ -490,6 +504,7 @@ const deviceLivenessWatchdog = setInterval(() => {
         reason: "telemetry_stale",
         boot_id: roverBootId,
       }, "rover");
+      broadcastMissionMutation(interrupted);
     }
     roverProtocolVersion = 0;
     logger.warn(null, "rover.stream.stale", { silent_ms: now - roverState.last_seen }, "rover");
@@ -558,18 +573,17 @@ function rejectNoRover(req, res, action, extra = {}) {
 
 // GET /api/rover/stream - 로버 SSE 연결 (로버가 호출)
 app.get("/api/rover/stream", (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.write(`event: connected\ndata: ${JSON.stringify({ required_mission_protocol: MISSION_PROTOCOL_VERSION })}\n\n`);
-
   // The GPS receiver (fsk-rover-gps) self-identifies with ?device=gps and takes its
   // OWN slot; anything else is the rover (default keeps legacy pilots working). The
   // receiver never drives, so its path has no mission lifecycle — it only owns the
   // receiverClient slot + connection state and re-applies any base-station config.
   if (req.query.device === "gps") {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(`event: connected\ndata: ${JSON.stringify({ required_mission_protocol: MISSION_PROTOCOL_VERSION })}\n\n`);
     if (receiverClient && receiverClient !== res) {
       logger.warn(req, "receiver.stream.replaced", null, "receiver");
       markReceiverDisconnected("replaced");
@@ -614,14 +628,41 @@ app.get("/api/rover/stream", (req, res) => {
   const announcedBootId = typeof req.query.boot_id === "string" ? req.query.boot_id.slice(0, 128) : null;
   const previousBootId = roverBootId;
   let bootReconcileHold = null;
-  roverProtocolVersion = Number.isInteger(announcedProtocol) ? announcedProtocol : 0;
+  const nextProtocolVersion = Number.isInteger(announcedProtocol) ? announcedProtocol : 0;
+  if (nextProtocolVersion === MISSION_PROTOCOL_VERSION) {
+    const bootClaim = missionV2.claimRoverBootSession(announcedBootId);
+    if (!bootClaim.accepted) {
+      logger.warn(req, "rover.stream.boot_rejected", {
+        error: bootClaim.reason,
+        reported_boot_id: announcedBootId,
+        generation: bootClaim.generation ?? null,
+        current_generation: bootClaim.current_generation ?? null,
+      }, "rover");
+      return res.status(409).send(bootClaim.reason === "stale_boot_session"
+        ? "이미 교체된 이전 로버 부팅 세션은 다시 접속할 수 없습니다."
+        : "올바른 boot_id가 필요합니다.");
+    }
+    logger.log(req, "rover.stream.boot_claimed", {
+      boot_id: announcedBootId,
+      generation: bootClaim.generation,
+      replay: bootClaim.replay,
+    }, "rover");
+  }
+
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.write(`event: connected\ndata: ${JSON.stringify({ required_mission_protocol: MISSION_PROTOCOL_VERSION })}\n\n`);
+
+  roverProtocolVersion = nextProtocolVersion;
   roverBootId = announcedBootId;
   if (roverProtocolVersion === MISSION_PROTOCOL_VERSION && roverBootId) {
     if (previousBootId !== roverBootId) roverLastReportSeq = -1;
     const beforeBootReconcile = missionV2.activeMission();
     const afterBootReconcile = missionV2.reconcileRoverBoot(roverBootId);
-    if (afterBootReconcile?.status === "interrupted"
-        && afterBootReconcile.hold_reason === "rover_rebooted") {
+    if (afterBootReconcile?.active_hold_id) {
       bootReconcileHold = afterBootReconcile;
     }
     if (beforeBootReconcile && afterBootReconcile
@@ -640,6 +681,7 @@ app.get("/api/rover/stream", (req, res) => {
           active_command_id: afterBootReconcile.active_command_id,
         },
       }, afterBootReconcile.course_name);
+      broadcastMissionMutation(afterBootReconcile);
     }
   } else {
     logger.warn(req, "rover.protocol.incompatible", {
@@ -695,9 +737,11 @@ app.get("/api/rover/stream", (req, res) => {
     // Cross-topic ordering is harmless: the server refuses a running state report
     // while hold_reason=rover_rebooted until an explicit resume command.
     if (bootReconcileHold) {
-      const delivered = sendRoverEvent("pause-mission", {
+      const delivered = sendRoverEvent("mission-safety-hold", {
         protocol_version: MISSION_PROTOCOL_VERSION,
         mission_id: bootReconcileHold.id,
+        plan_hash: bootReconcileHold.plan_hash,
+        hold_id: bootReconcileHold.active_hold_id,
         reason: "rover_rebooted",
       });
       if (!delivered) {
@@ -710,7 +754,7 @@ app.get("/api/rover/stream", (req, res) => {
     }
     sendRoverEvent("mission-state-request", { protocol_version: MISSION_PROTOCOL_VERSION });
     for (const command of missionV2.pendingCommands()) {
-      if (command.action !== "end" && command.rover_boot_id && command.rover_boot_id !== roverBootId) continue;
+      if (command.rover_boot_id && command.rover_boot_id !== roverBootId) continue;
       let payload = null;
       try { payload = JSON.parse(command.payload_json); } catch { /* logged when command was created */ }
       if (payload) sendRoverEvent("mission-command", payload);
@@ -748,6 +792,7 @@ app.get("/api/rover/stream", (req, res) => {
           reason: "sse_disconnect",
           boot_id: roverBootId,
         }, "rover");
+        broadcastMissionMutation(interrupted);
       }
       roverProtocolVersion = 0;
       broadcastRoverStatus();
@@ -759,6 +804,21 @@ app.get("/api/rover/stream", (req, res) => {
 app.post("/api/rover/position", (req, res) => {
   const device = req.query.device === "gps" ? "gps" : "rover";
   const { lat, lng, alt, request_id, request_ids } = req.body || {};
+
+  if (device === "rover") {
+    const reportedBootId = req.body?.boot_id;
+    if ((reportedBootId !== undefined
+          && (!roverClient || typeof reportedBootId !== "string" || reportedBootId !== roverBootId))
+        || (roverProtocolVersion === MISSION_PROTOCOL_VERSION
+          && (!roverClient || typeof reportedBootId !== "string" || reportedBootId !== roverBootId))) {
+      logger.warn(req, "rover.position.stale_boot", {
+        error: "stale_boot",
+        reported_boot_id: reportedBootId || null,
+        connected_boot_id: roverBootId,
+      }, "rover");
+      return res.status(409).send("현재 연결된 로버 부팅 세션의 위치가 아닙니다.");
+    }
+  }
 
   // Cone-capture explicit failure: the device couldn't hold a stable RTK fix, so
   // resolve the pending request as FAILED (no coordinates) — the operator sees the
@@ -856,6 +916,19 @@ app.post("/api/rover/telemetry", (req, res) => {
     return res.json({ ok: true });
   }
 
+  const reportedBootId = req.body?.boot_id;
+  if ((reportedBootId !== undefined
+        && (!roverClient || typeof reportedBootId !== "string" || reportedBootId !== roverBootId))
+      || (roverProtocolVersion === MISSION_PROTOCOL_VERSION
+        && (!roverClient || typeof reportedBootId !== "string" || reportedBootId !== roverBootId))) {
+    logger.warn(req, "rover.telemetry.stale_boot", {
+      error: "stale_boot",
+      reported_boot_id: reportedBootId || null,
+      connected_boot_id: roverBootId,
+    }, "rover");
+    return res.status(409).send("현재 연결된 로버 부팅 세션의 텔레메트리가 아닙니다.");
+  }
+
   roverState.last_seen = now;
   const prevNav = roverState.nav_state;
   if (typeof nav_state === "string") roverState.nav_state = nav_state;
@@ -895,6 +968,37 @@ app.post("/api/rover/telemetry", (req, res) => {
   if (gpsMetrics) roverState.gps = gpsMetrics;
   const ntripDetail = sanitizeNtripDetail(ntrip);
   if (ntripDetail) roverState.ntrip = ntripDetail;
+
+  if (roverProtocolVersion === MISSION_PROTOCOL_VERSION && nav_state === "EMERGENCY_STOP") {
+    // Telemetry can stay at GPS rate throughout an E-stop. The bounded summary
+    // is mutation-maintained, so this safety gate must not materialize up to
+    // 10,000 durable waypoint rows on every identical frame.
+    const activeV2 = missionV2.activeMissionSummary();
+    if (activeV2 && activeV2.active_hold_id) {
+      const observedHoldKey = `${activeV2.id}:${activeV2.active_hold_id}:${roverBootId || ""}`;
+      if (lastEstopObservedHoldKey !== observedHoldKey) {
+        lastEstopObservedHoldKey = observedHoldKey;
+        logger.warn(req, "mission.v2.estop_observed", {
+          mission_id: activeV2.id,
+          reason: "reboot_hold_preserved",
+          active_hold_id: activeV2.active_hold_id,
+          boot_id: roverBootId,
+        }, activeV2.course_name);
+      }
+    } else if (activeV2 && !activeV2.motion_confirmed_held) {
+      const interrupted = missionV2.markInterrupted(
+        activeV2.id, "emergency_stop", roverBootId, { confirmed: true },
+      );
+      logger.warn(req, "mission.v2.interrupted", {
+        mission_id: activeV2.id,
+        before: activeV2.status,
+        after: interrupted?.status,
+        reason: "emergency_stop_confirmed",
+        boot_id: roverBootId,
+      }, activeV2.course_name);
+      broadcastMissionMutation(interrupted);
+    }
+  }
 
   // Mission auto-resumed from an INTERRUPTED state: a rover that dropped mid-
   // mission and is reporting an active nav state again has clearly resumed
@@ -1015,9 +1119,35 @@ function missionApiError(req, res, action, error, subject = "rover") {
   logger.warn(req, action, {
     error: error?.message || String(error),
     reason: error?.reason || null,
+    ...(typeof req.body?.expected_plan_hash === "string"
+      ? { expected_plan_hash: req.body.expected_plan_hash } : {}),
+    ...(typeof req.body?.expected_occurrence_revision === "string"
+      ? { expected_occurrence_revision: req.body.expected_occurrence_revision } : {}),
+    ...(typeof req.body?.expected_preset_revision === "string"
+      ? { expected_preset_revision: req.body.expected_preset_revision } : {}),
     ...(error?.current_plan_hash ? { current_plan_hash: error.current_plan_hash } : {}),
+    ...(error?.current_occurrence_revision ? { current_occurrence_revision: error.current_occurrence_revision } : {}),
+    ...(error?.current_preset_revision ? { current_preset_revision: error.current_preset_revision } : {}),
+    ...(error?.current_cone ? { current_cone: error.current_cone } : {}),
+    ...(Number.isInteger(error?.position) ? { position: error.position } : {}),
+    ...(Number.isInteger(error?.cone_id) ? { cone_id: error.cone_id } : {}),
   }, subject);
-  return res.status(status).send(error?.message || "미션 처리에 실패했습니다.");
+  const message = error?.message || "미션 처리에 실패했습니다.";
+  if (typeof error?.reason === "string" && error.reason) {
+    return res.status(status).json({
+      message,
+      reason: error.reason,
+      ...(error.current_plan_hash ? { current_plan_hash: error.current_plan_hash } : {}),
+      ...(error.current_occurrence_revision
+        ? { current_occurrence_revision: error.current_occurrence_revision } : {}),
+      ...(error.current_preset_revision
+        ? { current_preset_revision: error.current_preset_revision } : {}),
+      ...(error.current_cone ? { current_cone: error.current_cone } : {}),
+      ...(Number.isInteger(error.position) ? { position: error.position } : {}),
+      ...(Number.isInteger(error.cone_id) ? { cone_id: error.cone_id } : {}),
+    });
+  }
+  return res.status(status).send(message);
 }
 
 function v2Actor(req) {
@@ -1074,7 +1204,7 @@ app.post("/api/rover/mission-presets", (req, res) => {
       course_id: saved.after.course_id,
       finish_behavior: saved.after.finish_behavior,
       waypoint_count: saved.after.items.length,
-      after: { name: saved.after.name },
+      after: { name: saved.after.name, preset_revision: saved.after.preset_revision },
     }, saved.after.name);
     res.status(201).json(saved.after);
   } catch (error) {
@@ -1092,13 +1222,19 @@ app.put("/api/rover/mission-presets/:id", (req, res) => {
       name: req.body?.name,
       finishBehavior: req.body?.finish_behavior,
       items: req.body?.items,
+      expectedPresetRevision: req.body?.expected_preset_revision,
       actor: v2Actor(req),
     });
     logger.log(req, "mission.preset.update", {
       preset_id: id,
       course_id: saved.after.course_id,
       before: { name: saved.before?.name, finish_behavior: saved.before?.finish_behavior, waypoint_count: saved.before?.items?.length },
-      after: { name: saved.after.name, finish_behavior: saved.after.finish_behavior, waypoint_count: saved.after.items.length },
+      after: {
+        name: saved.after.name,
+        finish_behavior: saved.after.finish_behavior,
+        waypoint_count: saved.after.items.length,
+        preset_revision: saved.after.preset_revision,
+      },
     }, saved.after.name);
     res.json(saved.after);
   } catch (error) {
@@ -1110,7 +1246,7 @@ app.delete("/api/rover/mission-presets/:id", (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 프리셋 id입니다.");
   try {
-    const before = missionV2.deletePreset(id);
+    const before = missionV2.deletePreset(id, req.body?.expected_preset_revision);
     logger.log(req, "mission.preset.delete", {
       preset_id: id,
       course_id: before.course_id,
@@ -1136,12 +1272,19 @@ app.post("/api/missions", (req, res) => {
     let items = req.body?.items;
     const presetId = req.body?.preset_id == null ? null : Number(req.body.preset_id);
     let finishBehavior = req.body?.finish_behavior || "stop";
-    if ((!Array.isArray(items) || items.length === 0) && Number.isInteger(presetId)) {
+    if (Number.isInteger(presetId)) {
       const preset = missionV2.listPresets(courseId).find((row) => row.id === presetId);
       if (!preset) throw Object.assign(new Error("프리셋을 찾을 수 없습니다."), { status: 404 });
       if (preset.stale) throw Object.assign(new Error("삭제된 콘이 포함된 프리셋은 먼저 수정해야 합니다."), { status: 409, reason: "stale_preset" });
-      items = preset.items.map((item) => ({ cone_id: item.cone_id }));
       finishBehavior = req.body?.finish_behavior || preset.finish_behavior;
+      if (!Array.isArray(items) || items.length === 0) {
+        // A preset-only request cannot prove which live cone geometry the
+        // operator reviewed. Require the same value snapshot as an ad-hoc route
+        // instead of silently resolving IDs after preflight.
+        throw Object.assign(new Error("사전 점검한 콘 좌표 스냅샷이 필요합니다."), {
+          status: 409, reason: "cone_snapshot_required",
+        });
+      }
     }
     const mission = missionV2.createMission({
       courseId,
@@ -1164,6 +1307,7 @@ app.post("/api/missions", (req, res) => {
       finish_behavior: mission.finish_behavior,
       waypoint_count: mission.waypoints.length,
     }, mission.course_name);
+    broadcastMissionMutation(mission);
     broadcastRoverStatus();
     res.status(201).json(mission);
   } catch (error) {
@@ -1179,15 +1323,28 @@ app.put("/api/missions/:id/remaining", (req, res) => {
     const after = missionV2.editRemaining({
       missionId,
       expectedPlanHash: req.body?.expected_plan_hash,
+      expectedOccurrenceRevision: req.body?.expected_occurrence_revision,
       finishBehavior: req.body?.finish_behavior,
       items: req.body?.items,
       actor: v2Actor(req),
     });
     logger.log(req, "mission.v2.remaining.update", {
       mission_id: missionId,
-      before: { plan_hash: before.plan_hash, pending: before.waypoints.filter((w) => w.state === "pending").length, finish_behavior: before.finish_behavior },
-      after: { plan_hash: after.plan_hash, pending: after.waypoints.filter((w) => w.state === "pending").length, finish_behavior: after.finish_behavior },
+      before: {
+        plan_hash: before.plan_hash,
+        occurrence_revision: before.occurrence_revision,
+        pending: before.waypoints.filter((w) => w.state === "pending").length,
+        finish_behavior: before.finish_behavior,
+      },
+      after: {
+        plan_hash: after.plan_hash,
+        occurrence_revision: after.occurrence_revision,
+        pending: after.waypoints.filter((w) => w.state === "pending").length,
+        finish_behavior: after.finish_behavior,
+        empty_plan_mode: after.empty_plan_mode,
+      },
     }, after.course_name);
+    broadcastMissionMutation(after);
     broadcastRoverStatus();
     res.json(after);
   } catch (error) {
@@ -1218,6 +1375,27 @@ function issueMissionCommand(action) {
       const mission = missionV2.missionPublic(missionId);
       if (!mission) throw Object.assign(new Error("미션을 찾을 수 없습니다."), { status: 404 });
       if (action === "start" || action === "resume") {
+        if (typeof req.body?.expected_plan_hash !== "string"
+            || req.body.expected_plan_hash !== mission.plan_hash) {
+          throw Object.assign(new Error("미션 경로가 변경되었습니다. 최신 미션으로 다시 시도하세요."), {
+            status: 409,
+            reason: "plan_hash_mismatch",
+            current_plan_hash: mission.plan_hash,
+          });
+        }
+        // A same-action retry while a command is pending carries the revision
+        // captured before the transition; issueCommand validates it against the
+        // durable envelope. Fresh commands must match the current occurrence
+        // before distance checks or any persistence.
+        if (!mission.active_command_id
+            && (typeof req.body?.expected_occurrence_revision !== "string"
+              || req.body.expected_occurrence_revision !== mission.occurrence_revision)) {
+          throw Object.assign(new Error("미션 진행 상태가 변경되었습니다. 최신 미션을 다시 불러오세요."), {
+            status: 409,
+            reason: "occurrence_revision_mismatch",
+            current_occurrence_revision: mission.occurrence_revision,
+          });
+        }
         const pending = mission.waypoints.filter((wp) => wp.state === "pending" || wp.state === "active");
         const freshRoverPosition = lastRoverPosition
           && Date.now() - lastRoverPosition.at < ROVER_POSITION_STALE_MS
@@ -1238,17 +1416,27 @@ function issueMissionCommand(action) {
       const issued = missionV2.issueCommand({
         missionId,
         action,
+        expectedPlanHash: req.body?.expected_plan_hash,
+        expectedOccurrenceRevision: req.body?.expected_occurrence_revision,
         actor: v2Actor(req),
         force: req.body?.force === true,
         targetBootId: roverBootId,
       });
       let delivered = false;
-      if (roverClient && roverProtocolVersion === MISSION_PROTOCOL_VERSION) {
+      const deliveryAttempted = !!roverClient
+        && roverProtocolVersion === MISSION_PROTOCOL_VERSION;
+      if (deliveryAttempted) {
         let payload = null;
         try { payload = JSON.parse(issued.command.payload_json); } catch { /* impossible for freshly issued command */ }
         if (payload) delivered = sendRoverEvent("mission-command", payload);
       }
-      if (roverClient && !delivered) {
+      let effectiveMission = issued.mission;
+      if (deliveryAttempted && !delivered) {
+        effectiveMission = missionV2.markCommandDeliveryFailed(
+          missionId, issued.command.id, roverBootId,
+        ) || issued.mission;
+      }
+      if (deliveryAttempted && !delivered) {
         logger.warn(req, `mission.v2.${action}.delivery`, {
           error: "sse_write_failed",
           mission_id: missionId,
@@ -1261,19 +1449,20 @@ function issueMissionCommand(action) {
         mission_id: missionId,
         command_id: issued.command.id,
         command_seq: issued.command.command_seq,
-        plan_hash: issued.mission.plan_hash,
+        plan_hash: effectiveMission.plan_hash,
         delivered,
         replay: issued.replay,
         before: mission.status,
-        after: issued.mission.status,
-      }, issued.mission.course_name);
+        after: effectiveMission.status,
+      }, effectiveMission.course_name);
+      broadcastMissionMutation(effectiveMission);
       broadcastRoverStatus();
       res.status(202).json({
         command_id: issued.command.id,
         command_seq: issued.command.command_seq,
         delivered,
         replay: issued.replay,
-        mission: issued.mission,
+        mission: effectiveMission,
       });
     } catch (error) {
       missionApiError(req, res, `mission.v2.${action}`, error);
@@ -1299,7 +1488,25 @@ app.post("/api/rover/mission-report", (req, res) => {
   if (!Number.isInteger(body.report_seq) || body.report_seq < 0) {
     return res.status(400).send("올바르지 않은 report_seq입니다.");
   }
-  if (body.report_seq <= roverLastReportSeq) return res.json({ ok: true, duplicate: true });
+  if (body.report_seq <= roverLastReportSeq) {
+    const duplicateMission = missionV2.missionPublic(Number(body.mission_id));
+    const terminalDuplicate = duplicateMission
+      && duplicateMission.plan_hash === body.plan_hash
+      && ["completed", "cancelled"].includes(duplicateMission.status);
+    if (terminalDuplicate) {
+      logger.log(req, "mission.report.duplicate_terminal_reset", {
+        mission_id: duplicateMission.id,
+        boot_id: body.boot_id,
+        report_seq: body.report_seq,
+        event: body.event,
+      }, duplicateMission.course_name);
+    }
+    return res.json({
+      ok: true,
+      duplicate: true,
+      ...(terminalDuplicate ? { reset_mission: true, mission: duplicateMission } : {}),
+    });
+  }
   try {
     const before = missionV2.missionPublic(Number(body.mission_id));
     if (before && ["completed", "cancelled"].includes(before.status) && body.event !== "command") {
@@ -1326,14 +1533,35 @@ app.post("/api/rover/mission-report", (req, res) => {
       before: before?.status || null,
       after: mission.status,
     }, mission.course_name);
-    broadcastEvent("rover:mission", { mission });
+    broadcastMissionMutation(mission);
     broadcastRoverStatus();
+    if (mission.active_hold_id) {
+      sendRoverEvent("mission-safety-hold", {
+        protocol_version: MISSION_PROTOCOL_VERSION,
+        mission_id: mission.id,
+        plan_hash: mission.plan_hash,
+        hold_id: mission.active_hold_id,
+        reason: mission.hold_reason || "rover_rebooted",
+      });
+    }
     res.json({
       ok: true,
       reset_mission: ["completed", "cancelled"].includes(mission.status),
       mission,
     });
   } catch (error) {
+    if (["hold_id_mismatch", "checkpoint_not_persisted", "safety_hold_pending"].includes(error?.reason)) {
+      const mission = missionV2.missionPublic(Number(body.mission_id));
+      if (mission?.active_hold_id) {
+        sendRoverEvent("mission-safety-hold", {
+          protocol_version: MISSION_PROTOCOL_VERSION,
+          mission_id: mission.id,
+          plan_hash: mission.plan_hash,
+          hold_id: mission.active_hold_id,
+          reason: mission.hold_reason || "rover_rebooted",
+        });
+      }
+    }
     missionApiError(req, res, "mission.report", error);
   }
 });
@@ -1891,7 +2119,7 @@ function rejectLegacyMissionApi(req, res, action) {
 app.post("/api/rover/execute", (req, res) => {
   if (rejectLegacyMissionApi(req, res, "rover.execute")) return;
   const { waypoints, force } = req.body;
-  if (!Array.isArray(waypoints) || waypoints.length === 0 || waypoints.length > 10000) {
+  if (!Array.isArray(waypoints) || waypoints.length === 0 || waypoints.length > MISSION_MAX_OCCURRENCES) {
     return res.status(400).send("올바르지 않은 waypoint 데이터입니다.");
   }
   if (force === true) {
@@ -1980,17 +2208,6 @@ app.post("/api/rover/stop", (req, res) => {
   // 다음 텔레메트리가 보정한다.
   roverState.stop_requested = true;
   roverState.nav_state = "EMERGENCY_STOP";
-  const activeV2 = missionV2.activeMission();
-  if (activeV2) {
-    missionV2.markInterrupted(activeV2.id, "emergency_stop_requested", roverBootId);
-    logger.warn(req, "mission.v2.interrupted", {
-      mission_id: activeV2.id,
-      before: activeV2.status,
-      after: "interrupted",
-      reason: "emergency_stop_requested",
-      boot_id: roverBootId,
-    }, activeV2.course_name);
-  }
   broadcastRoverStatus();
   logger.log(req, "rover.stop", null, "rover");
   res.json({ stopped: true });
@@ -2457,9 +2674,11 @@ app.post("/api/rover/control", (req, res) => {
 
   const t = Math.max(-100, Math.min(100, throttle));
   const s = Math.max(-100, Math.min(100, steering));
-  const activeMission = missionV2.activeMission();
+  // Joystick input arrives at up to 20 Hz. Manual-authority gating needs only
+  // the mutation-maintained bounded summary, never the full occurrence plan.
+  const activeMission = missionV2.activeMissionSummary();
   if ((t !== 0 || s !== 0) && activeMission
-      && !["ready", "paused", "interrupted"].includes(activeMission.status)) {
+      && !activeMission.motion_confirmed_held) {
     logger.warn(req, "rover.control", {
       error: "autonomous_mission_not_held",
       mission_id: activeMission.id,

@@ -75,7 +75,10 @@ from pilot.lib.steering_calibration import (
     TRIM_BOUND_US, load_steering_trim, solve_steering_trim,
 )
 from pilot.lib.mission_checkpoint import (
-    clear_mission_checkpoint, load_mission_checkpoint, save_mission_checkpoint,
+    clear_mission_checkpoint, clear_mission_checkpoint_fault,
+    load_mission_checkpoint, load_mission_checkpoint_fault,
+    mission_checkpoint_identity, save_mission_checkpoint,
+    save_mission_checkpoint_fault,
 )
 
 
@@ -255,9 +258,19 @@ class NavigatorNode(Node):
         state_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                                durability=DurabilityPolicy.TRANSIENT_LOCAL)
         self._pub_state = self.create_publisher(String, '/rover/nav/state', state_qos)
+        mission_report_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self._pub_mission_report = self.create_publisher(
-            String, '/rover/mission/report', state_qos)
+            String, '/rover/mission/report', mission_report_qos)
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        mission_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self._pub_waypoint_reached = self.create_publisher(Int32, '/rover/nav/waypoint_reached', reliable_qos)
         self._pub_spray_result = self.create_publisher(String, '/rover/spray/result', reliable_qos)
         self._pub_spray_cancel = self.create_publisher(Int32, '/rover/spray/cancel', reliable_qos)
@@ -284,9 +297,12 @@ class NavigatorNode(Node):
         self.create_subscription(String, '/rover/gps/metrics', self._on_gps_metrics, 10)
         self.create_subscription(String, '/rover/odom', self._on_odom, 10)
         self.create_subscription(String, '/rover/cmd/execute_path', self._on_execute_path, reliable_qos)
-        self.create_subscription(String, '/rover/cmd/mission', self._on_mission_command, reliable_qos)
-        self.create_subscription(Empty, '/rover/cmd/mission_state_request', self._on_mission_state_request, reliable_qos)
-        self.create_subscription(Empty, '/rover/cmd/mission_reset', self._on_mission_reset, reliable_qos)
+        self.create_subscription(String, '/rover/cmd/mission', self._on_mission_command, mission_qos)
+        self.create_subscription(Empty, '/rover/cmd/mission_state_request', self._on_mission_state_request, mission_qos)
+        self.create_subscription(String, '/rover/cmd/mission_reset', self._on_mission_reset, mission_qos)
+        self.create_subscription(
+            String, '/rover/cmd/mission_safety_hold',
+            self._on_mission_safety_hold, mission_qos)
         self.create_subscription(Empty, '/rover/cmd/emergency_stop', self._on_emergency_stop, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/clear_emergency', self._on_clear_emergency, reliable_qos)
         self.create_subscription(Empty, '/rover/cmd/pause', self._on_pause, reliable_qos)
@@ -318,13 +334,22 @@ class NavigatorNode(Node):
         self._mission_plan_hash = None
         self._mission_command_seq = 0
         self._mission_last_command_id = None
+        self._mission_last_command_result = None
+        self._mission_last_command_reason = None
         self._mission_waypoint_ids = []
         self._mission_all_waypoints = []
         self._mission_completed_ids = set()
         self._mission_finish_behavior = 'stop'
         self._mission_start_position = None
         self._mission_completion_pending = False
+        # Once the dispense trigger is published, a crash cannot distinguish
+        # "pump completed" from "pump never ran". Persist that uncertainty and
+        # require the operator to remove the occurrence (or replace it with a
+        # new occurrence for an explicit retry) before resume.
+        self._mission_dispense_uncertain_id = None
+        self._mission_checkpoint_motion_state = 'held'
         self._mission_checkpoint_error = None
+        self._mission_checkpoint_fault = None
 
         # Mission anchors.
         self._ref_lat = None           # ENU origin for the mission
@@ -476,27 +501,37 @@ class NavigatorNode(Node):
     def _has_v2_mission(self):
         return self._mission_id is not None and self._mission_plan_hash is not None
 
-    def _checkpoint_payload(self, motion_state='held'):
+    def _checkpoint_payload(self, motion_state=None):
+        motion_state = motion_state or self._mission_checkpoint_motion_state
+        active_waypoint_id = (
+            self._mission_dispense_uncertain_id
+            if motion_state == 'dispense_uncertain'
+            else self._current_mission_waypoint_id()
+        )
         return {
             'schema_version': 1,
             'mission_id': int(self._mission_id),
             'plan_hash': self._mission_plan_hash,
             'command_seq': int(self._mission_command_seq),
             'last_command_id': self._mission_last_command_id,
+            'last_command_result': self._mission_last_command_result,
+            'last_command_reason': self._mission_last_command_reason,
             'finish_behavior': self._mission_finish_behavior,
             'mission_start': self._mission_start_position,
             'waypoints': list(self._mission_all_waypoints),
             'completed_waypoint_ids': sorted(self._mission_completed_ids),
-            'active_waypoint_id': self._current_mission_waypoint_id(),
+            'active_waypoint_id': active_waypoint_id,
             'motion_state': motion_state,
         }
 
-    def _save_mission_checkpoint(self, motion_state='held'):
+    def _save_mission_checkpoint(self, motion_state=None):
         if not self._has_v2_mission():
             return True
+        target_motion_state = motion_state or self._mission_checkpoint_motion_state
         try:
-            save_mission_checkpoint(self._checkpoint_payload(motion_state))
+            save_mission_checkpoint(self._checkpoint_payload(target_motion_state))
             self._mission_checkpoint_error = None
+            self._mission_checkpoint_motion_state = target_motion_state
             return True
         except (OSError, TypeError, ValueError) as exc:
             self._mission_checkpoint_error = str(exc)
@@ -505,9 +540,37 @@ class NavigatorNode(Node):
 
     def _restore_mission_checkpoint(self):
         try:
+            stored_fault = load_mission_checkpoint_fault()
+        except ValueError as exc:
+            # A corrupt fault record is itself a fail-closed storage fault. It
+            # cannot be treated as absence because that would release motion.
+            stored_fault = {'reason': str(exc), 'mission_id': None,
+                            'plan_hash': None}
+        if stored_fault is not None:
+            self._mission_checkpoint_fault = stored_fault
+            self._mission_checkpoint_error = stored_fault.get('reason')
+            self.get_logger().error(
+                'Mission checkpoint storage fault is latched; explicit '
+                'correlated end/reset is required')
+            return
+        try:
             checkpoint = load_mission_checkpoint()
         except ValueError as exc:
             self._mission_checkpoint_error = str(exc)
+            mission_id, plan_hash = mission_checkpoint_identity()
+            self._mission_checkpoint_fault = {
+                'reason': str(exc),
+                'mission_id': mission_id,
+                'plan_hash': plan_hash,
+            }
+            try:
+                save_mission_checkpoint_fault(
+                    str(exc), mission_id=mission_id, plan_hash=plan_hash)
+            except (OSError, TypeError, ValueError) as fault_exc:
+                # The in-memory latch still blocks this process; the invalid
+                # checkpoint remains in place so the next boot re-latches too.
+                self.get_logger().error(
+                    f'Mission checkpoint fault latch save failed: {fault_exc}')
             self.get_logger().error(f'Mission checkpoint rejected: {exc}')
             return
         if checkpoint is None:
@@ -516,10 +579,18 @@ class NavigatorNode(Node):
         self._mission_plan_hash = checkpoint['plan_hash']
         self._mission_command_seq = int(checkpoint.get('command_seq', 0))
         self._mission_last_command_id = checkpoint.get('last_command_id')
+        self._mission_last_command_result = checkpoint.get('last_command_result')
+        self._mission_last_command_reason = checkpoint.get('last_command_reason')
         self._mission_finish_behavior = checkpoint.get('finish_behavior', 'stop')
         self._mission_start_position = checkpoint.get('mission_start')
+        self._mission_checkpoint_motion_state = checkpoint.get('motion_state', 'held')
         self._mission_completion_pending = (
-            checkpoint.get('motion_state') == 'completion_pending')
+            self._mission_checkpoint_motion_state == 'completion_pending')
+        self._mission_dispense_uncertain_id = (
+            checkpoint.get('active_waypoint_id')
+            if self._mission_checkpoint_motion_state == 'dispense_uncertain'
+            else None
+        )
         self._mission_all_waypoints = list(checkpoint['waypoints'])
         self._mission_completed_ids = set(checkpoint.get('completed_waypoint_ids', []))
         pending = [
@@ -536,6 +607,11 @@ class NavigatorNode(Node):
             self.get_logger().warn(
                 f'Restored completed mission {self._mission_id}; waiting for '
                 'server completion acknowledgement')
+        elif self._mission_dispense_uncertain_id is not None:
+            self.get_logger().warn(
+                f'Restored mission {self._mission_id} with uncertain dispense '
+                f'outcome at {self._mission_dispense_uncertain_id}; operator '
+                'resolution required before resume')
         else:
             self.get_logger().warn(
                 f'Restored mission {self._mission_id} with {len(pending)} pending '
@@ -544,18 +620,27 @@ class NavigatorNode(Node):
     def _clear_v2_mission(self):
         try:
             clear_mission_checkpoint()
+            clear_mission_checkpoint_fault()
         except OSError as exc:
             self.get_logger().error(f'Mission checkpoint clear failed: {exc}')
+            return False
         self._mission_id = None
         self._mission_plan_hash = None
         self._mission_command_seq = 0
         self._mission_last_command_id = None
+        self._mission_last_command_result = None
+        self._mission_last_command_reason = None
         self._mission_waypoint_ids = []
         self._mission_all_waypoints = []
         self._mission_completed_ids = set()
         self._mission_finish_behavior = 'stop'
         self._mission_start_position = None
         self._mission_completion_pending = False
+        self._mission_dispense_uncertain_id = None
+        self._mission_checkpoint_motion_state = 'held'
+        self._mission_checkpoint_fault = None
+        self._mission_checkpoint_error = None
+        return True
 
     def _current_mission_waypoint_id(self):
         if not self._mission_waypoint_ids:
@@ -591,6 +676,60 @@ class NavigatorNode(Node):
             start_position=self._mission_start_position,
         )
 
+    def _set_last_command_outcome(self, command, accepted, reason=None):
+        """Remember the immutable result replayed for an exact redelivery."""
+        if not self._has_v2_mission():
+            self._mission_id = command.get('mission_id')
+            self._mission_plan_hash = command.get('plan_hash')
+        self._mission_command_seq = int(command.get('command_seq'))
+        self._mission_last_command_id = command.get('command_id')
+        self._mission_last_command_result = 'accepted' if accepted else 'rejected'
+        self._mission_last_command_reason = reason
+
+    def _persist_and_publish_command_result(self, command, accepted, reason=None,
+                                            motion_state=None):
+        """Durably fix a command outcome before exposing it to the server.
+
+        An accepted command whose outcome cannot be checkpointed is converted
+        to a rejection and motion is held. Rejected commands remain rejected
+        in memory even when the disk is unavailable; the last durable record is
+        then either the prior outcome or an explicit unknown staged command,
+        both of which fail closed after reboot.
+        """
+        self._set_last_command_outcome(command, accepted, reason)
+        if self._save_mission_checkpoint(motion_state):
+            self._publish_command_result(command, accepted, reason)
+            return accepted
+
+        if accepted:
+            self._stop_motors()
+            if self._state != State.EMERGENCY_STOP:
+                self._set_state(State.PAUSED)
+            accepted = False
+            reason = 'checkpoint_write_failed'
+            self._set_last_command_outcome(command, False, reason)
+            safe_motion_state = (
+                'completion_pending' if self._mission_completion_pending
+                else 'dispense_uncertain' if self._mission_dispense_uncertain_id is not None
+                else 'held'
+            )
+            # A transient first failure must not leave an "unknown" staged
+            # command if the filesystem is writable on the retry.
+            self._save_mission_checkpoint(safe_motion_state)
+        else:
+            self._save_mission_checkpoint(
+                motion_state or self._mission_checkpoint_motion_state)
+        self._publish_command_result(command, accepted, reason)
+        return False
+
+    def _held_checkpoint_state(self):
+        """Return the strongest durable fence that must survive a stop."""
+        if self._mission_completion_pending:
+            return 'completion_pending'
+        if self._mission_dispense_uncertain_id is not None:
+            return 'dispense_uncertain'
+        return 'held'
+
     def _on_mission_state_request(self, _msg):
         if not self._has_v2_mission():
             return
@@ -599,6 +738,14 @@ class NavigatorNode(Node):
                 'mission_completed',
                 completed_waypoint_ids=sorted(self._mission_completed_ids),
                 start_position=self._mission_start_position,
+            )
+            return
+        if self._mission_dispense_uncertain_id is not None:
+            self._publish_mission_report(
+                'waypoint_failed',
+                waypoint_id=self._mission_dispense_uncertain_id,
+                outcome='dispense_outcome_uncertain',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
             )
             return
         self._publish_mission_report(
@@ -610,21 +757,119 @@ class NavigatorNode(Node):
             start_position=self._mission_start_position,
             last_command_id=self._mission_last_command_id,
             command_seq=self._mission_command_seq,
+            last_command_result=self._mission_last_command_result,
+            last_command_reason=self._mission_last_command_reason,
         )
 
-    def _on_mission_reset(self, _msg):
+    def _on_mission_reset(self, msg):
         """Drop a checkpoint the authoritative server says is terminal.
 
         This closes the crash window where the completion report reached the
         server but the subsequent checkpoint unlink did not survive power loss.
         It never releases a live emergency-stop latch.
         """
-        if not self._has_v2_mission():
+        try:
+            reset = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().warn('Ignoring malformed mission reset')
+            return
+        if not isinstance(reset, dict) or reset.get('protocol_version') != 2:
+            self.get_logger().warn('Ignoring malformed mission reset envelope')
+            return
+        if self._mission_checkpoint_fault is not None:
+            fault_mission_id = self._mission_checkpoint_fault.get('mission_id')
+            fault_plan_hash = self._mission_checkpoint_fault.get('plan_hash')
+            if (fault_mission_id is None or fault_plan_hash is None
+                    or reset.get('mission_id') != fault_mission_id
+                    or reset.get('plan_hash') != fault_plan_hash):
+                self.get_logger().warn(
+                    'Ignoring reset that cannot be correlated to the checkpoint fault')
+                return
+            self._stop_motors()
+            cleared = self._clear_v2_mission()
+            if cleared and self._state != State.EMERGENCY_STOP:
+                self._set_state(State.IDLE)
+            return
+        if (not self._has_v2_mission()
+                or reset.get('mission_id') != self._mission_id
+                or reset.get('plan_hash') != self._mission_plan_hash):
+            self.get_logger().warn(
+                f'Ignoring stale mission reset for {reset.get("mission_id") if isinstance(reset, dict) else None}')
             return
         self._stop_motors()
-        self._clear_v2_mission()
-        if self._state != State.EMERGENCY_STOP:
+        cleared = self._clear_v2_mission()
+        if cleared and self._state != State.EMERGENCY_STOP:
             self._set_state(State.IDLE)
+
+    def _on_mission_safety_hold(self, msg):
+        """Apply and acknowledge the server's correlated reboot safety hold.
+
+        The bridge retains this intent for navigator startup ordering, while
+        the server repeats it until a report echoing ``hold_id`` arrives. The
+        checkpoint keeps the rover held across a subsequent full power loss.
+        """
+        try:
+            hold = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().warn('Ignoring malformed mission safety hold')
+            return
+        if isinstance(hold, dict) and hold.get('retired_hold_id'):
+            return
+        mission_id = hold.get('mission_id') if isinstance(hold, dict) else None
+        plan_hash = hold.get('plan_hash') if isinstance(hold, dict) else None
+        hold_id = hold.get('hold_id') if isinstance(hold, dict) else None
+        if (not isinstance(hold, dict) or hold.get('protocol_version') != 2
+                or not isinstance(mission_id, int) or isinstance(mission_id, bool)
+                or mission_id <= 0
+                or not isinstance(plan_hash, str) or len(plan_hash) != 64
+                or not isinstance(hold_id, str) or not hold_id):
+            self.get_logger().warn('Ignoring malformed mission safety hold envelope')
+            return
+        if (not self._has_v2_mission() or mission_id != self._mission_id
+                or plan_hash != self._mission_plan_hash):
+            self.get_logger().warn(
+                f'Ignoring stale mission safety hold for {mission_id}')
+            return
+
+        was_dispensing = self._state == State.SPRAYING
+        if was_dispensing and self._cur_wp_idx >= 0:
+            cancel = Int32()
+            cancel.data = int(self._cur_wp_idx)
+            self._pub_spray_cancel.publish(cancel)
+        self._stop_motors()
+        if (self._state != State.EMERGENCY_STOP
+                and not self._mission_completion_pending):
+            self._set_state(State.PAUSED)
+
+        checkpoint_state = self._held_checkpoint_state()
+        checkpoint_persisted = self._save_mission_checkpoint(checkpoint_state)
+        report_event = (
+            'interrupted' if self._state == State.EMERGENCY_STOP else 'held')
+        report_fields = {
+            'hold_id': hold_id,
+            'reason': hold.get('reason') or 'server_reboot_safety_hold',
+            'motion_state': checkpoint_state,
+            'checkpoint_persisted': checkpoint_persisted,
+            'completed_waypoint_ids': sorted(self._mission_completed_ids),
+            'active_waypoint_id': self._current_mission_waypoint_id(),
+        }
+        if checkpoint_state == 'dispense_uncertain':
+            # The hold ACK is the only report guaranteed to pass the server's
+            # active-hold gate. A state-request reply can arrive first on its
+            # separate DDS topic and be rejected as safety_hold_pending, so carry
+            # the strongest local fence in this correlated, persisted ACK too.
+            report_fields.update({
+                'reason': 'dispense_outcome_uncertain',
+                'outcome': 'dispense_outcome_uncertain',
+                'active_waypoint_id': self._mission_dispense_uncertain_id,
+            })
+        self._publish_mission_report(report_event, **report_fields)
+        if self._mission_completion_pending:
+            self._publish_mission_report(
+                'mission_completed',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                start_position=self._mission_start_position,
+            )
 
     def _on_mission_command(self, msg):
         try:
@@ -648,18 +893,70 @@ class NavigatorNode(Node):
             self.get_logger().error('Malformed mission command envelope')
             return
 
-        # A duplicate delivery is idempotent: report the same accepted state and
-        # never restart calibration, spray, or progress.
+        # Exact redelivery always replays the already-fixed durable outcome.
+        # This must run before the completion fence: completion may have been
+        # reached after accepting this very command, which cannot turn the same
+        # identity into a rejection.
         if (self._has_v2_mission() and mission_id == self._mission_id
                 and command_seq == self._mission_command_seq
                 and command_id == self._mission_last_command_id):
-            self._publish_command_result(command, True)
+            if self._mission_last_command_result == 'accepted':
+                self._publish_command_result(command, True, self._mission_last_command_reason)
+            elif self._mission_last_command_result == 'rejected':
+                self._publish_command_result(
+                    command, False,
+                    self._mission_last_command_reason,
+                )
+            else:
+                self._persist_and_publish_command_result(
+                    command, False, 'command_result_unknown',
+                    self._mission_checkpoint_motion_state)
+            if self._mission_completion_pending:
+                self._publish_mission_report(
+                    'mission_completed',
+                    completed_waypoint_ids=sorted(self._mission_completed_ids),
+                    start_position=self._mission_start_position,
+                )
             return
+
+        # A locally completed mission is a terminal fence until the server sends
+        # its correlated reset (or the operator explicitly ends it). Never let a
+        # replayed pause/resume overwrite the only durable completion proof.
+        if self._mission_completion_pending and action != 'end':
+            self._publish_command_result(command, False, 'mission_already_completed')
+            self._publish_mission_report(
+                'mission_completed',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                start_position=self._mission_start_position,
+            )
+            return
+
         if self._has_v2_mission() and command_seq <= self._mission_command_seq:
             self._publish_command_result(command, False, 'stale_command')
             return
 
         if action == 'end':
+            if self._mission_checkpoint_fault is not None:
+                # The best-effort identity from an invalid checkpoint is useful
+                # for a matching automatic reset, but is not trusted enough to
+                # reject the explicit operator recovery command. The command's
+                # own ID/sequence provide the acknowledgement correlation.
+                self._stop_motors()
+                cleared = self._clear_v2_mission()
+                # _clear_v2_mission intentionally drops all identity, so use
+                # the recovery command's identity only long enough to publish
+                # its correlated outcome. A failed unlink must never be
+                # acknowledged as recovered.
+                self._mission_id = mission_id
+                self._mission_plan_hash = plan_hash
+                self._publish_command_result(
+                    command, cleared,
+                    None if cleared else 'checkpoint_clear_failed')
+                self._mission_id = None
+                self._mission_plan_hash = None
+                if cleared and self._state != State.EMERGENCY_STOP:
+                    self._set_state(State.IDLE)
+                return
             if self._has_v2_mission() and mission_id != self._mission_id:
                 self._publish_command_result(command, False, 'mission_mismatch')
                 return
@@ -668,74 +965,127 @@ class NavigatorNode(Node):
                 # remain cleanly idle.
                 self._mission_id = mission_id
                 self._mission_plan_hash = plan_hash
-            self._mission_command_seq = command_seq
-            self._mission_last_command_id = command_id
+            self._set_last_command_outcome(command, True)
             self._on_end_mission(None)
             self._publish_command_result(command, True)
             self._clear_v2_mission()
+            return
+
+        if self._mission_checkpoint_fault is not None and action in ('start', 'resume'):
+            # Publish a correlated fail-closed result without attempting to
+            # overwrite or validate the damaged checkpoint.
+            previous_id, previous_hash = self._mission_id, self._mission_plan_hash
+            self._mission_id, self._mission_plan_hash = mission_id, plan_hash
+            self._publish_command_result(command, False, 'mission_storage_fault')
+            self._mission_id, self._mission_plan_hash = previous_id, previous_hash
             return
 
         if self._has_v2_mission() and mission_id != self._mission_id:
             self._publish_command_result(command, False, 'mission_mismatch')
             return
         if self._state == State.EMERGENCY_STOP:
-            if not self._has_v2_mission():
-                self._mission_id = mission_id
-                self._mission_plan_hash = plan_hash
-            self._publish_command_result(command, False, 'emergency_stop_latched')
+            self._persist_and_publish_command_result(
+                command, False, 'emergency_stop_latched', 'held')
             return
 
         if action == 'pause':
             if not self._has_v2_mission():
+                self._persist_and_publish_command_result(
+                    command, False, 'no_active_mission', 'held')
+                return
+            if self._mission_dispense_uncertain_id is not None:
+                # The outcome may be uncertain, but pause is still a safety
+                # command: cancel an in-flight actuator cycle and positively
+                # hold motion. Preserve the uncertainty fence while accepting
+                # the pause so the operator can resolve the occurrence.
+                if self._state in self._PAUSABLE_STATES:
+                    self._on_pause(None)
+                if self._state == State.PAUSED:
+                    self._persist_and_publish_command_result(
+                        command, True, None, 'dispense_uncertain')
+                else:
+                    self._persist_and_publish_command_result(
+                        command, False, 'not_pausable',
+                        'dispense_uncertain')
                 return
             self._on_pause(None)
             if self._state != State.PAUSED:
-                self._publish_command_result(command, False, 'not_pausable')
+                self._persist_and_publish_command_result(
+                    command, False, 'not_pausable',
+                    self._mission_checkpoint_motion_state)
                 return
-            self._mission_command_seq = command_seq
-            self._mission_last_command_id = command_id
-            if not self._save_mission_checkpoint('held'):
-                self._publish_command_result(command, False, 'checkpoint_write_failed')
-                return
-            self._publish_command_result(command, True)
+            self._persist_and_publish_command_result(command, True, None, 'held')
             return
 
         if self._state not in (State.IDLE, State.ERROR, State.PAUSED):
-            if not self._has_v2_mission():
-                self._mission_id = mission_id
-                self._mission_plan_hash = plan_hash
-            self._publish_command_result(command, False, 'rover_not_held')
+            self._persist_and_publish_command_result(
+                command, False, 'rover_not_held',
+                self._mission_checkpoint_motion_state)
             return
 
         raw_waypoints = command.get('waypoints')
+        ids = []
+        if isinstance(raw_waypoints, list):
+            for waypoint in raw_waypoints:
+                if not isinstance(waypoint, dict) or not isinstance(waypoint.get('id'), str):
+                    self._persist_and_publish_command_result(
+                        command, False, 'invalid_waypoint_identity',
+                        self._mission_checkpoint_motion_state)
+                    return
+                ids.append(waypoint['id'])
+
+        uncertain_id = self._mission_dispense_uncertain_id
+        uncertainty_resolved = uncertain_id is not None and uncertain_id not in ids
+        if uncertain_id is not None and not uncertainty_resolved:
+            self._persist_and_publish_command_result(
+                command, False, 'dispense_outcome_uncertain',
+                'dispense_uncertain')
+            self._publish_mission_report(
+                'waypoint_failed', waypoint_id=uncertain_id,
+                outcome='dispense_outcome_uncertain',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+            )
+            return
+
         return_only = (
             isinstance(raw_waypoints, list) and not raw_waypoints
             and command.get('finish_behavior') == 'return_to_start'
             and isinstance(command.get('mission_start') or self._mission_start_position, dict)
         )
-        if not isinstance(raw_waypoints, list) or (not raw_waypoints and not return_only):
-            if not self._has_v2_mission():
-                self._mission_id = mission_id
-                self._mission_plan_hash = plan_hash
-            self._publish_command_result(command, False, 'empty_remaining_plan')
+        completion_only = (
+            isinstance(raw_waypoints, list) and not raw_waypoints
+            and action == 'resume'
+            and command.get('finish_behavior') == 'stop'
+        )
+        if (not isinstance(raw_waypoints, list)
+                or (not raw_waypoints and not return_only and not completion_only)):
+            self._persist_and_publish_command_result(
+                command, False, 'empty_remaining_plan',
+                self._mission_checkpoint_motion_state)
             return
-        ids = []
-        for waypoint in raw_waypoints:
-            if not isinstance(waypoint, dict) or not isinstance(waypoint.get('id'), str):
-                if not self._has_v2_mission():
-                    self._mission_id = mission_id
-                    self._mission_plan_hash = plan_hash
-                self._publish_command_result(command, False, 'invalid_waypoint_identity')
-                return
-            ids.append(waypoint['id'])
         if (len(set(ids)) != len(ids)
-                or self._validate_waypoints(raw_waypoints, allow_empty=return_only) is None):
-            if not self._has_v2_mission():
-                self._mission_id = mission_id
-                self._mission_plan_hash = plan_hash
-            self._publish_command_result(command, False, 'invalid_waypoints')
+                or self._validate_waypoints(
+                    raw_waypoints, allow_empty=(return_only or completion_only)) is None):
+            self._persist_and_publish_command_result(
+                command, False, 'invalid_waypoints',
+                self._mission_checkpoint_motion_state)
             return
 
+        previous_plan_state = {
+            'mission_id': self._mission_id,
+            'plan_hash': self._mission_plan_hash,
+            'command_seq': self._mission_command_seq,
+            'command_id': self._mission_last_command_id,
+            'command_result': self._mission_last_command_result,
+            'command_reason': self._mission_last_command_reason,
+            'finish_behavior': self._mission_finish_behavior,
+            'start_position': self._mission_start_position,
+            'completion_pending': self._mission_completion_pending,
+            'waypoint_ids': list(self._mission_waypoint_ids),
+            'all_waypoints': list(self._mission_all_waypoints),
+            'waypoints': list(self._waypoints),
+            'checkpoint_motion_state': self._mission_checkpoint_motion_state,
+        }
         old_completed = []
         if self._has_v2_mission():
             old_completed = [
@@ -746,9 +1096,11 @@ class NavigatorNode(Node):
         self._mission_plan_hash = plan_hash
         self._mission_command_seq = command_seq
         self._mission_last_command_id = command_id
+        self._mission_last_command_result = None
+        self._mission_last_command_reason = None
         self._mission_finish_behavior = command.get('finish_behavior', 'stop')
         self._mission_start_position = command.get('mission_start') or self._mission_start_position
-        self._mission_completion_pending = False
+        self._mission_completion_pending = completion_only
         if self._mission_start_position is None and self._gps_lat is not None and self._gps_lon is not None:
             self._mission_start_position = {'lat': self._gps_lat, 'lng': self._gps_lon}
         self._mission_waypoint_ids = ids
@@ -757,19 +1109,53 @@ class NavigatorNode(Node):
             {'lat': float(waypoint['lat']), 'lng': float(waypoint['lng'])}
             for waypoint in raw_waypoints
         ]
-        if not self._save_mission_checkpoint('held'):
+        stage_motion_state = 'completion_pending' if completion_only else 'held'
+        if not self._save_mission_checkpoint(stage_motion_state):
+            self._mission_id = previous_plan_state['mission_id']
+            self._mission_plan_hash = previous_plan_state['plan_hash']
+            self._mission_command_seq = previous_plan_state['command_seq']
+            self._mission_last_command_id = previous_plan_state['command_id']
+            self._mission_last_command_result = previous_plan_state['command_result']
+            self._mission_last_command_reason = previous_plan_state['command_reason']
+            self._mission_finish_behavior = previous_plan_state['finish_behavior']
+            self._mission_start_position = previous_plan_state['start_position']
+            self._mission_completion_pending = previous_plan_state['completion_pending']
+            self._mission_waypoint_ids = previous_plan_state['waypoint_ids']
+            self._mission_all_waypoints = previous_plan_state['all_waypoints']
+            self._waypoints = previous_plan_state['waypoints']
+            self._mission_checkpoint_motion_state = previous_plan_state[
+                'checkpoint_motion_state']
+            self._set_last_command_outcome(command, False, 'checkpoint_write_failed')
+            safe_motion_state = (
+                'dispense_uncertain' if self._mission_dispense_uncertain_id is not None
+                else self._mission_checkpoint_motion_state
+            )
+            self._save_mission_checkpoint(safe_motion_state)
             self._publish_command_result(command, False, 'checkpoint_write_failed')
+            return
+        if uncertainty_resolved:
+            self._mission_dispense_uncertain_id = None
+
+        if completion_only:
+            if not self._persist_and_publish_command_result(
+                    command, True, None, 'completion_pending'):
+                return
+            self._publish_mission_report(
+                'mission_completed',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                start_position=self._mission_start_position,
+            )
+            self._set_state(State.IDLE)
             return
 
         execute = String()
         execute.data = json.dumps(self._waypoints)
         self._on_execute_path(execute, allow_empty=return_only)
         if self._state != State.CALIBRATING:
-            self._save_mission_checkpoint('held')
-            self._publish_command_result(command, False, self._last_error_reason or 'start_rejected')
+            self._persist_and_publish_command_result(
+                command, False, self._last_error_reason or 'start_rejected', 'held')
             return
-        self._save_mission_checkpoint('running')
-        self._publish_command_result(command, True)
+        self._persist_and_publish_command_result(command, True, None, 'running')
 
     def _has_required_fix(self):
         required = self.get_parameter('required_fix_status').value
@@ -913,6 +1299,11 @@ class NavigatorNode(Node):
     # ── command callbacks ────────────────────────────────────────────────
 
     def _on_execute_path(self, msg, allow_empty=False):
+        if self._mission_checkpoint_fault is not None:
+            self._stop_motors()
+            self.get_logger().error(
+                'execute_path rejected: mission checkpoint storage fault is latched')
+            return
         try:
             waypoints = json.loads(msg.data)
         except json.JSONDecodeError:
@@ -989,9 +1380,20 @@ class NavigatorNode(Node):
         self._l1_tracker = None
         self._set_state(State.EMERGENCY_STOP)
         if self._has_v2_mission():
-            self._save_mission_checkpoint('held')
+            checkpoint_state = self._held_checkpoint_state()
+            self._save_mission_checkpoint(checkpoint_state)
+            if self._mission_completion_pending:
+                self._publish_mission_report(
+                    'mission_completed',
+                    completed_waypoint_ids=sorted(self._mission_completed_ids),
+                    start_position=self._mission_start_position,
+                )
+                return
             self._publish_mission_report(
-                'interrupted', reason='emergency_stop',
+                'interrupted',
+                reason=('dispense_outcome_uncertain'
+                        if self._mission_dispense_uncertain_id is not None
+                        else 'emergency_stop'),
                 completed_waypoint_ids=sorted(self._mission_completed_ids),
                 active_waypoint_id=self._current_mission_waypoint_id(),
             )
@@ -1001,9 +1403,20 @@ class NavigatorNode(Node):
             self.get_logger().info('Emergency-stop cleared by operator')
             if self._has_v2_mission():
                 self._set_state(State.PAUSED)
-                self._save_mission_checkpoint('held')
+                checkpoint_state = self._held_checkpoint_state()
+                self._save_mission_checkpoint(checkpoint_state)
+                if self._mission_completion_pending:
+                    self._publish_mission_report(
+                        'mission_completed',
+                        completed_waypoint_ids=sorted(self._mission_completed_ids),
+                        start_position=self._mission_start_position,
+                    )
+                    return
                 self._publish_mission_report(
-                    'held', reason='emergency_stop_cleared',
+                    'held',
+                    reason=('dispense_outcome_uncertain'
+                            if self._mission_dispense_uncertain_id is not None
+                            else 'emergency_stop_cleared'),
                     completed_waypoint_ids=sorted(self._mission_completed_ids),
                 )
             else:
@@ -1050,7 +1463,8 @@ class NavigatorNode(Node):
         the rover manually (e.g. around an obstacle) while paused. The L1
         tracker is preserved; resume re-acquires from the current pose.
         """
-        if self._state not in self._PAUSABLE_STATES:
+        error_hold = self._state == State.ERROR and self._has_v2_mission()
+        if self._state not in self._PAUSABLE_STATES and not error_hold:
             self.get_logger().warn(
                 f'pause ignored: state={self._state.value} (not a pausable mission state)'
             )
@@ -1058,17 +1472,28 @@ class NavigatorNode(Node):
         # Abort an in-flight dispense WITHOUT entering EMERGENCY_STOP — publish a
         # targeted cancel so spray_node drops the cycle and we don't emit a stale
         # 'success'. (emergency_stop would latch the MCU and block manual.)
-        if self._state == State.SPRAYING and self._cur_wp_idx >= 0:
+        was_dispensing = self._state == State.SPRAYING
+        if was_dispensing and self._cur_wp_idx >= 0:
             cancel = Int32()
             cancel.data = int(self._cur_wp_idx)
             self._pub_spray_cancel.publish(cancel)
         self._stop_motors()
+        if error_hold:
+            # GPS recovery normally restores _pre_error_state automatically.
+            # An operator pause revokes that authority: PAUSED must remain held
+            # until a later correlated resume command, regardless of RTK recovery.
+            self._pre_error_state = None
+            self._fix_recovered_at = None
         self.get_logger().info(f'Mission paused (from {self._state.value})')
         self._set_state(State.PAUSED)
         if self._has_v2_mission():
-            self._save_mission_checkpoint('held')
+            checkpoint_state = self._held_checkpoint_state()
+            self._save_mission_checkpoint(checkpoint_state)
             self._publish_mission_report(
-                'held', reason='operator_or_obstacle_pause',
+                'held',
+                reason=('dispense_outcome_uncertain'
+                        if checkpoint_state == 'dispense_uncertain'
+                        else 'operator_or_obstacle_pause'),
                 completed_waypoint_ids=sorted(self._mission_completed_ids),
                 active_waypoint_id=self._current_mission_waypoint_id(),
             )
@@ -1085,6 +1510,21 @@ class NavigatorNode(Node):
         stale dock corridor (which would trip the dock reverse-recovery latch).
         """
         if self._state != State.PAUSED:
+            return
+        if self._mission_completion_pending:
+            self._publish_mission_report(
+                'mission_completed',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+                start_position=self._mission_start_position,
+            )
+            return
+        if self._mission_dispense_uncertain_id is not None:
+            self._publish_mission_report(
+                'waypoint_failed',
+                waypoint_id=self._mission_dispense_uncertain_id,
+                outcome='dispense_outcome_uncertain',
+                completed_waypoint_ids=sorted(self._mission_completed_ids),
+            )
             return
         # (_set_state(NAVIGATING) below re-arms the obstacle edge.)
         now = time.monotonic()
@@ -1127,12 +1567,38 @@ class NavigatorNode(Node):
             waypoint_id = self._current_mission_waypoint_id()
             if waypoint_id is not None:
                 self._mission_completed_ids.add(waypoint_id)
-                self._save_mission_checkpoint('running')
+                self._mission_dispense_uncertain_id = None
+                terminal_after_dispense = self._cur_seg_idx + 1 >= len(self._segments)
+                self._mission_completion_pending = terminal_after_dispense
+                next_checkpoint_state = (
+                    'completion_pending' if terminal_after_dispense else 'running')
+                persisted = self._save_mission_checkpoint(next_checkpoint_state)
                 self._publish_mission_report(
                     'waypoint_completed', waypoint_id=waypoint_id,
                     outcome='success',
                     completed_waypoint_ids=sorted(self._mission_completed_ids),
                 )
+                if not persisted:
+                    # The physical side effect is known complete in this process,
+                    # but advancing would create progress that exists only in RAM.
+                    # Hold and let the server acknowledgement heal the stale
+                    # pre-dispense checkpoint; a reboot before that acknowledgement
+                    # correctly restores the outcome as uncertain.
+                    self._stop_motors()
+                    self._set_state(State.PAUSED)
+                    if terminal_after_dispense:
+                        self._publish_mission_report(
+                            'mission_completed',
+                            completed_waypoint_ids=sorted(self._mission_completed_ids),
+                            start_position=self._mission_start_position,
+                        )
+                    else:
+                        self._publish_mission_report(
+                            'held', reason='checkpoint_write_failed',
+                            completed_waypoint_ids=sorted(self._mission_completed_ids),
+                            active_waypoint_id=None,
+                        )
+                    return
         self._advance_to_next_waypoint()
 
     def _on_calibrate_wheels(self, _msg):
@@ -1572,8 +2038,8 @@ class NavigatorNode(Node):
             return
         if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()
-            self._finish_v2_mission_if_active()
-            self._set_state(State.IDLE)
+            finished = self._finish_v2_mission_if_active()
+            self._set_state(State.IDLE if finished else State.PAUSED)
             return
 
         seg = self._segments[self._cur_seg_idx]
@@ -1610,8 +2076,8 @@ class NavigatorNode(Node):
                 self._cur_seg_idx += 1
                 if self._cur_seg_idx >= len(self._segments):
                     self._stop_motors()
-                    self._finish_v2_mission_if_active()
-                    self._set_state(State.IDLE)
+                    finished = self._finish_v2_mission_if_active()
+                    self._set_state(State.IDLE if finished else State.PAUSED)
                 return
             if self._cur_wp_idx != seg.waypoint_index:
                 self._settle_retries = 0
@@ -1776,8 +2242,9 @@ class NavigatorNode(Node):
             # hasn't pinned a target there, only a "go home" intent.
             self._stop_motors()
             self.get_logger().info('Returned to start, mission complete')
-            self._set_state(State.IDLE)
             self._cur_seg_idx = len(self._segments)
+            finished = self._finish_v2_mission_if_active()
+            self._set_state(State.IDLE if finished else State.PAUSED)
             return
 
         # The settle gate is on RAW GPS antenna position, not the
@@ -1896,7 +2363,19 @@ class NavigatorNode(Node):
     def _trigger_spray(self):
         if self._has_v2_mission():
             waypoint_id = self._current_mission_waypoint_id()
-            self._save_mission_checkpoint('running')
+            self._mission_dispense_uncertain_id = waypoint_id
+            if not self._save_mission_checkpoint('dispense_uncertain'):
+                # No actuator command has been published yet, so this occurrence
+                # remains safely pending and may be retried after storage recovers.
+                self._mission_dispense_uncertain_id = None
+                self._stop_motors()
+                self._set_state(State.PAUSED)
+                self._publish_mission_report(
+                    'waypoint_failed', waypoint_id=waypoint_id,
+                    outcome='checkpoint_write_failed',
+                    completed_waypoint_ids=sorted(self._mission_completed_ids),
+                )
+                return
             self._publish_mission_report(
                 'waypoint_active', waypoint_id=waypoint_id,
                 completed_waypoint_ids=sorted(self._mission_completed_ids),
@@ -1927,10 +2406,10 @@ class NavigatorNode(Node):
                 waypoint_id = self._current_mission_waypoint_id()
                 self._stop_motors()
                 self._set_state(State.PAUSED)
-                self._save_mission_checkpoint('held')
+                self._save_mission_checkpoint('dispense_uncertain')
                 self._publish_mission_report(
                     'waypoint_failed', waypoint_id=waypoint_id,
-                    outcome='timeout',
+                    outcome='dispense_outcome_uncertain',
                     completed_waypoint_ids=sorted(self._mission_completed_ids),
                 )
                 return
@@ -2478,20 +2957,21 @@ class NavigatorNode(Node):
         if self._cur_seg_idx >= len(self._segments):
             self._stop_motors()
             self.get_logger().info('Mission complete')
-            self._finish_v2_mission_if_active()
-            self._set_state(State.IDLE)
+            finished = self._finish_v2_mission_if_active()
+            self._set_state(State.IDLE if finished else State.PAUSED)
             return
         self._set_state(State.NAVIGATING)
 
     def _finish_v2_mission_if_active(self):
         if not self._has_v2_mission():
-            return
+            return True
         # Keep the terminal checkpoint until the server acknowledges the
         # completion report.  Clearing it here creates a power-loss window in
         # which both the report queue and the only durable proof of completion
         # disappear.  The bridge publishes mission_reset after a terminal 2xx.
         self._mission_completion_pending = True
-        if not self._save_mission_checkpoint('completion_pending'):
+        persisted = self._save_mission_checkpoint('completion_pending')
+        if not persisted:
             self.get_logger().error(
                 'Mission completion checkpoint failed; retaining in-memory state')
         self._publish_mission_report(
@@ -2499,6 +2979,7 @@ class NavigatorNode(Node):
             completed_waypoint_ids=sorted(self._mission_completed_ids),
             start_position=self._mission_start_position,
         )
+        return persisted
 
     # ── velocity / state plumbing ────────────────────────────────────────
 

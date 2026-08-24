@@ -867,13 +867,33 @@ app.delete("/api/courses/:id", (req, res) => {
   const course = getCourseById(id);
   if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
 
+  const activeMission = db.prepare(`SELECT id,lifecycle_state,plan_hash FROM mission
+    WHERE course_id=? AND lifecycle_state IN
+    ('ready','starting','running','pausing','paused','interrupted','resuming')
+    ORDER BY id DESC LIMIT 1`).get(id);
+  if (activeMission) {
+    logger.warn(req, "course.delete", {
+      error: "active_mission_course",
+      reason: "active_mission_course",
+      course_id: id,
+      mission_id: activeMission.id,
+      mission_state: activeMission.lifecycle_state,
+      plan_hash: activeMission.plan_hash,
+    }, course.name);
+    return res.status(409).json({
+      message: "진행 중인 미션이 사용하는 코스는 삭제할 수 없습니다.",
+      reason: "active_mission_course",
+      mission_id: activeMission.id,
+    });
+  }
+
   const result = dbRun(() => db.prepare("DELETE FROM course WHERE id = ?").run(id));
   if (!result.success) {
     logger.warn(req, "course.delete", { error: result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "course.delete", null, course.name);
+  logger.log(req, "course.delete", { course_id: id }, course.name);
   broadcastEvent("courses", { type: "delete", courseId: id, courses: getCourses() });
   res.status(200).send();
 });
