@@ -26,6 +26,35 @@ export function filterCones(cones, { query = "", side = "all" } = {}) {
   });
 }
 
+const MISSION_SIDE_LABELS = Object.freeze({ left: "왼쪽", center: "중앙", right: "오른쪽" });
+const MISSION_SIDE_SHORT_LABELS = Object.freeze({ left: "L", center: "C", right: "R" });
+
+export function missionConeDisplayName(cone, sideRanks) {
+  if (!cone) return "알 수 없는 콘";
+  const rank = sideRanks.get(cone.id ?? cone.cone_id);
+  return `${MISSION_SIDE_LABELS[cone.side] || cone.side} ${rank ? `#${rank}` : "콘"}`;
+}
+
+export function missionConeShortName(cone, sideRanks) {
+  if (!cone) return "?";
+  return `${MISSION_SIDE_SHORT_LABELS[cone.side] || "?"}-${sideRanks.get(cone.id ?? cone.cone_id) || "?"}`;
+}
+
+// Repeated visits at the same physical cone share one map marker. A cone that
+// moved between a stable snapshot and a newly-added occurrence remains split at
+// its two reviewed coordinates instead of being silently drawn at the first one.
+export function groupRouteMapVisits(items) {
+  const groups = new Map();
+  items.forEach((item, index) => {
+    if (!Number.isFinite(item?.lat) || !Number.isFinite(item?.lng)) return;
+    const key = `${item.cone_id}\u0000${item.lat}\u0000${item.lng}`;
+    const visits = groups.get(key) || [];
+    visits.push({ item, index });
+    groups.set(key, visits);
+  });
+  return [...groups.values()];
+}
+
 // Open nearest-neighbour route with a bounded 2-opt cleanup. It preserves each
 // occurrence object (and therefore duplicate cone visits and stable waypoint IDs).
 // The distance/reversal work ceiling is deterministic so a very large course cannot
