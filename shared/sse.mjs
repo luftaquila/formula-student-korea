@@ -1,10 +1,22 @@
-export function createSSEManager(maxClients = 200) {
+export function createSSEManager(maxClients = 200, { logger = null } = {}) {
   // 각 클라이언트는 { res, meta }. meta에는 연결 시점의 { ip, ...(metaFn 결과) }가 담긴다.
   // role 같은 값을 metaFn으로 넣으면 broadcast의 filterFn으로 대상을 좁힐 수 있다.
   const clients = new Set();
   let closed = false;
   // per-IP 연결 수(선택적 상한용).
   const ipCounts = new Map();
+
+  // 용량 거부(503/429)·init 스냅샷 실패는 운영자가 봐야 하는 이벤트지만, DoS·깨진
+  // initDataFn 아래에서는 초당 수백 번 발생할 수 있어 같은 사유는 60초에 1회만 남긴다.
+  const lastWarnAt = new Map();
+  function warnThrottled(req, action, reason, detail) {
+    if (!logger) return;
+    const now = Date.now();
+    const key = `${action}:${reason}`;
+    if (now - (lastWarnAt.get(key) || 0) < 60_000) return;
+    lastWarnAt.set(key, now);
+    logger.warn(req, action, { reason, ...detail });
+  }
 
   // 백프레셔: 커널 송신 버퍼가 이 이상 밀린(느린/half-open) 클라이언트는 끊는다.
   // SSE 클라이언트는 자동 재연결 + init 스냅샷으로 복구하므로 끊는 것이 안전하다.
@@ -96,10 +108,14 @@ export function createSSEManager(maxClients = 200) {
         return res.status(503).send("서버가 종료 중입니다. 잠시 후 다시 시도해주세요.");
       }
       if (clients.size >= maxClients) {
+        // 상한 도달 = 실제 사용자가 서비스 전체에서 거절당하는 중.
+        warnThrottled(req, "sse.rejected", "max_clients", { clients: clients.size });
         return res.status(503).send("연결이 너무 많습니다. 잠시 후 다시 시도해주세요.");
       }
       const ip = clientIp(req);
       if (maxPerIp > 0 && (ipCounts.get(ip) || 0) >= maxPerIp) {
+        // per-IP 상한 = DoS 완화 장치가 발동한 것.
+        warnThrottled(req, "sse.rejected", "max_per_ip", { count: ipCounts.get(ip) || 0 });
         return res.status(429).send("동시 연결이 너무 많습니다.");
       }
 
@@ -113,7 +129,9 @@ export function createSSEManager(maxClients = 200) {
       let initData = {};
       try {
         initData = initDataFn ? initDataFn(req) : {};
-      } catch {
+      } catch (e) {
+        // 깨진 initDataFn은 모든 새 연결을 빈 스냅샷으로 조용히 강등시킨다 — 반드시 보여야 한다.
+        warnThrottled(req, "sse.init_failed", "init_data", { error: e.message || String(e) });
         initData = {};
       }
       try {

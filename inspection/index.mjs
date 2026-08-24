@@ -285,7 +285,7 @@ function validateStoredCalculationGraph(year) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager();
+const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
 
 function broadcastEvent(event, data) {
   broadcastSSEEvent(event, data);
@@ -410,7 +410,7 @@ app.post("/api/sheet/template", (req, res) => {
   })());
 
   if (!result.success) {
-    logger.warn(req, "template.create", { error: result.error, year }, name);
+    logger.warn(req, "template.create", { error: result.internalError || result.error, year }, name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.create", { year, level }, name);
@@ -507,7 +507,7 @@ app.put("/api/sheet/template/:id", (req, res) => {
     return res.status(result.status).send(result.error);
   }
   if (!result.result.changes) {
-    logger.warn(req, "template.update", { changes: 0 }, node.name);
+    logger.warn(req, "template.update", { error: "항목을 찾을 수 없습니다 (동시 삭제 추정)", id, year: node.year }, node.name);
     return res.status(404).send("항목을 찾을 수 없습니다.");
   }
   logger.log(req, "template.update", {
@@ -521,7 +521,7 @@ app.put("/api/sheet/template/:id", (req, res) => {
 app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
   const node = templateNodePreflight(req, res, {
-    action: "template.delete", id, columns: "year, name",
+    action: "template.delete", id, columns: "year, level, name",
   });
   if (!node) return;
   if (node.year !== currentCompetitionYear()) {
@@ -539,7 +539,7 @@ app.delete("/api/sheet/template/:id", (req, res) => {
     logger.warn(req, "template.delete", { error: result.internalError || result.error }, node.name);
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "template.delete", { year: node.year }, node.name);
+  logger.log(req, "template.delete", { year: node.year, level: node.level, id }, node.name);
   res.status(200).send();
 });
 
@@ -654,7 +654,7 @@ app.post("/api/sheet/template/copy", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.copy", { error: result.error, from_year, to_year });
+    logger.warn(req, "template.copy", { error: result.internalError || result.error, from_year, to_year });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.copy", { from_year, to_year });
@@ -671,8 +671,8 @@ app.post("/api/sheet/template/import", (req, res) => {
       "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
-    db.transaction(() => {
-      db.prepare("DELETE FROM sheet_template WHERE year = ? AND level = 'category'").run(year);
+    return db.transaction(() => {
+      const replaced = db.prepare("DELETE FROM sheet_template WHERE year = ? AND level = 'category'").run(year).changes;
       for (let ci = 0; ci < template.length; ci++) {
         const cat = template[ci];
         // 다른 필드와 마찬가지로 잘못된 값은 기본값으로 흘려보낸다 — 가져오기 전체를 실패시키지 않는다.
@@ -712,14 +712,15 @@ app.post("/api/sheet/template/import", (req, res) => {
       } catch (e) {
         throw { status: 400, message: e.message };
       }
+      return { replaced };
     })();
   });
 
   if (!result.success) {
-    logger.warn(req, "template.import", { error: result.error, year });
+    logger.warn(req, "template.import", { error: result.internalError || result.error, year });
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "template.import", { year });
+  logger.log(req, "template.import", { year, replaced_categories: result.result.replaced, imported_categories: template.length });
   res.status(201).send();
 });
 

@@ -113,6 +113,50 @@ describe('createDbRun', () => {
     assert.equal(res.success, false);
     assert.equal(res.status, 500);
   });
+
+  // ─── internalError: 로거 전용 원인 필드 ───────────────────────────────
+  // 클라이언트에는 새니타이즈된 error만 내보내고, 핸들러는 internalError로
+  // 실제 원인(SQLITE_BUSY 등)을 감사 로그에 남길 수 있어야 한다.
+
+  it('500 branch exposes the original message as internalError for coded errors', () => {
+    const res = dbRun(() => {
+      const e = new Error('database is locked');
+      e.code = 'SQLITE_BUSY';
+      throw e;
+    });
+    assert.equal(res.success, false);
+    assert.equal(res.status, 500);
+    assert.equal(res.error, '서버 오류가 발생했습니다.');
+    assert.equal(res.internalError, 'database is locked');
+  });
+
+  it('500 branch falls back to e.message as internalError when there is no code', () => {
+    const res = dbRun(() => {
+      throw new Error('something broke');
+    });
+    assert.equal(res.status, 500);
+    assert.equal(res.internalError, 'something broke');
+  });
+
+  it('constraint branches retain the original error for logging', () => {
+    const res = dbRun(() => {
+      const e = new Error('UNIQUE violation');
+      e.code = 'SQLITE_CONSTRAINT_UNIQUE';
+      throw e;
+    });
+    assert.equal(res.success, false);
+    assert.equal(res.internalError, 'UNIQUE violation');
+  });
+
+  it('app-thrown {status, message} errors retain their message for logging', () => {
+    const res = dbRun(() => {
+      throw { status: 404, message: '없는 항목입니다.' };
+    });
+    assert.equal(res.success, false);
+    assert.equal(res.status, 404);
+    assert.equal(res.error, '없는 항목입니다.');
+    assert.equal(res.internalError, '없는 항목입니다.');
+  });
 });
 
 // ─── isSecureConnection ─────────────────────────────────────────────────
@@ -158,6 +202,7 @@ describe('formatCookieOpts', () => {
 // ─── Cookie parsing & Auth middleware (via createApp) ───────────────────
 describe('createApp auth middleware', () => {
   let server, client, baseUrl;
+  const securityWarnings = [];
 
   // Track validateUser calls
   let validateUserResult = { valid: true, role: null };
@@ -170,7 +215,14 @@ describe('createApp auth middleware', () => {
     // validateUserCacheTtl: 0 — 이 스위트는 요청 사이에 validateUserResult를 바꿔가며
     // 미들웨어 시맨틱을 검증하므로 캐시가 끼면 직전 테스트의 유효 결과가 새어 들어온다.
     // 캐시 자체는 아래 'validateUser cache' 스위트가 전담한다.
-    const app = createApp({ express, validateUser, validateUserCacheTtl: 0 }, (req) => {
+    const app = createApp({
+      express,
+      validateUser,
+      validateUserCacheTtl: 0,
+      logger: {
+        warn: (req, action, detail, target) => securityWarnings.push({ action, detail, target }),
+      },
+    }, (req) => {
       if (req.path === '/public') return null;
       if (req.path === '/admin' || req.path === '/api/admin') return 'admin';
       if (req.path === '/official' || req.path === '/api/official') return 'official';
@@ -297,6 +349,11 @@ describe('createApp auth middleware', () => {
       headers: { 'X-Internal-Service': 'wrong-secret' },
     });
     assert.equal(res.status, 403);
+    assert.deepEqual(securityWarnings.at(-1), {
+      action: 'auth.internal_secret_rejected',
+      detail: { reason: 'secret_mismatch', method: 'GET', path: '/admin' },
+      target: '/admin',
+    });
   });
 
   // Auth: validateUser returning invalid
@@ -598,9 +655,18 @@ describe('createSecretChecker', () => {
 // ─── CSRF (Sec-Fetch-Site) 심층방어 ─────────────────────────────────────
 describe('createApp CSRF middleware', () => {
   let server, baseUrl;
+  let securityNow = 1_000;
+  const securityWarnings = [];
 
   before(async () => {
-    const app = createApp({ express, validateUser: async () => ({ valid: true, role: 'admin' }) }, () => null);
+    const app = createApp({
+      express,
+      validateUser: async () => ({ valid: true, role: 'admin' }),
+      securityWarnNow: () => securityNow,
+      logger: {
+        warn: (req, action, detail, target) => securityWarnings.push({ action, detail, target }),
+      },
+    }, () => null);
     app.post('/api/write', (req, res) => res.json({ ok: true }));
     app.get('/api/read', (req, res) => res.json({ ok: true }));
     const started = await startServer(app);
@@ -612,13 +678,29 @@ describe('createApp CSRF middleware', () => {
     if (server) await stopServer(server);
   });
 
-  it('blocks cross-site write requests', async () => {
-    const res = await fetch(`${baseUrl}/api/write`, {
+  it('blocks cross-site writes and throttles their structured warnings', async () => {
+    const blockedWrite = () => fetch(`${baseUrl}/api/write`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site' },
       body: '{}',
     });
-    assert.equal(res.status, 403);
+    assert.equal((await blockedWrite()).status, 403);
+    assert.equal((await blockedWrite()).status, 403);
+    assert.equal(securityWarnings.length, 1, 'repeated attack traffic must not create one log per request');
+    securityNow += 60_000;
+    assert.equal((await blockedWrite()).status, 403);
+    assert.deepEqual(securityWarnings, [
+      {
+        action: 'auth.csrf_rejected',
+        detail: { reason: 'cross_site_write', method: 'POST', path: '/api/write' },
+        target: '/api/write',
+      },
+      {
+        action: 'auth.csrf_rejected',
+        detail: { reason: 'cross_site_write', method: 'POST', path: '/api/write', suppressed: 1 },
+        target: '/api/write',
+      },
+    ]);
   });
 
   it('allows same-origin and header-less write requests', async () => {

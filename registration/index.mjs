@@ -173,7 +173,11 @@ export function createRegistrationApp(options = {}) {
     entry.count += 1;
     rateLimitMap.set(ip, entry);
     if (entry.count > 60) {
-      logger.warn(req, "registration.lookup", { reason: "rate_limit", count: entry.count, ip }, "public");
+      // 제한된 요청마다 SQLite에 쓰면 공격 트래픽을 로그 쓰기로 증폭한다. 창당 최초
+      // 차단만 남겨도 차단 발동과 출발 IP를 감사할 수 있다.
+      if (entry.count === 61) {
+        logger.warn(req, "registration.lookup", { reason: "rate_limit", count: entry.count, ip }, "public");
+      }
       return res.status(429).json({ code: "RATE_LIMITED", message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." });
     }
     next();
@@ -215,7 +219,7 @@ export function createRegistrationApp(options = {}) {
     return { year, open: settingsForYear(year).open, waiting };
   }
 
-  const { broadcast, handler: sseHandler, close: closeSse } = createSSEManager();
+  const { broadcast, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
 
   function broadcastChange(year) {
     let status;
@@ -348,7 +352,7 @@ export function createRegistrationApp(options = {}) {
     `).run(sent ? 1 : 0, id, claimToken));
     if (!result.success) {
       logger.warn(null, "registration.sms_claim", {
-        error: result.error, registrationId: id, team: auditTeam(team), sent,
+        error: result.internalError || result.error, registrationId: id, team: auditTeam(team), sent,
       }, String(id));
     }
   }
@@ -419,7 +423,7 @@ export function createRegistrationApp(options = {}) {
       `).run(claimToken, target.id));
       if (!claim.success) {
         logger.warn(null, "registration.sms_claim", {
-          error: claim.error, registrationId: target.id, teamId: target.team_id,
+          error: claim.internalError || claim.error, registrationId: target.id, teamId: target.team_id,
         }, String(target.id));
         return;
       }
@@ -571,7 +575,7 @@ export function createRegistrationApp(options = {}) {
       `).run(to, row.id, ...from));
       if (!result.success) {
         logger.warn(req, action, {
-          error: result.error, registrationId: row.id, teamId: row.team_id, before: row.status, requested: to,
+          error: result.internalError || result.error, registrationId: row.id, teamId: row.team_id, before: row.status, requested: to,
         }, String(row.id));
         return res.status(result.status).json({ code: "REGISTRATION_TRANSITION_FAILED", message: result.error });
       }
@@ -676,7 +680,7 @@ export function createRegistrationApp(options = {}) {
         `).run(...columns.map((column) => changes[column]), year);
       })());
       if (!result.success) {
-        logger.warn(req, "registration.settings_update", { error: result.error, year, before, requested: req.body }, String(year));
+        logger.warn(req, "registration.settings_update", { error: result.internalError || result.error, year, before, requested: req.body }, String(year));
         return res.status(result.status).json({ code: "REGISTRATION_SETTINGS_FAILED", message: result.error });
       }
       const after = settingsForYear(year);

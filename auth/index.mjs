@@ -162,7 +162,7 @@ async function notifyNewUser(emails) {
   try {
     const list = Array.isArray(emails) ? emails : [emails];
     const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
-    await fetch(`${EMAIL_SERVER}/api/internal/send`, {
+    const r = await fetch(`${EMAIL_SERVER}/api/internal/send`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -178,6 +178,8 @@ async function notifyNewUser(emails) {
       }),
       signal: AbortSignal.timeout(5000),
     });
+    // 네트워크 예외만 잡으면 email 서비스의 4xx/5xx 거절이 무기록으로 유실된다.
+    if (!r.ok) logger.warn(null, "email.notify", { error: `email service ${r.status}`, emails });
   } catch (e) {
     logger.warn(null, "email.notify", { error: e.message, emails });
   }
@@ -185,7 +187,7 @@ async function notifyNewUser(emails) {
 
 // validateUserCacheTtl: 0 — auth의 검증기는 로컬 인덱스 SELECT라 캐시가 무익하고,
 // auth 자신의 사용자 관리 UI는 역할 변경이 즉시 반영되어야 한다.
-const app = createApp({ express, validateUser, validateUserCacheTtl: 0 }, (req) => {
+const app = createApp({ express, logger, validateUser, validateUserCacheTtl: 0 }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/forward-auth") return null;
   if (req.path === "/api/session") return null;
@@ -283,7 +285,8 @@ function checkLoginRate(req, res) {
   entry.count++;
   loginLimiter.set(ip, entry);
   if (entry.count > 20) {
-    logger.warn(req, "auth.rate_limit", { count: entry.count, ip });
+    // 무차별 대입 중 매 요청 warn을 남기면 초당 수십 행으로 뷰어가 침수된다 — 윈도우당 첫 위반만 기록.
+    if (entry.count === 21) logger.warn(req, "auth.rate_limit", { count: entry.count, ip });
     res.redirect("/?login_error=rate_limit");
     return false;
   }
@@ -474,13 +477,13 @@ app.get("/api/callback", async (req, res) => {
     // Update name from Google profile (best-effort: a sync failure must not block login)
     if (name && name !== user.name) {
       const r = dbRun(() => db.prepare("UPDATE users SET name = ? WHERE id = ?").run(name, user.id));
-      if (!r.success) logger.warn(req, "user.name_sync", { error: r.error }, email, { email, name, role: user.role });
+      if (!r.success) logger.warn(req, "user.name_sync", { error: r.internalError || r.error }, email, { email, name, role: user.role });
     }
 
     // 최초 로그인 시 created_at 기록
     if (!user.created_at) {
       const r = dbRun(() => db.prepare("UPDATE users SET created_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(user.id));
-      if (!r.success) logger.warn(req, "user.created_at_init", { error: r.error }, email, { email, name, role: user.role });
+      if (!r.success) logger.warn(req, "user.created_at_init", { error: r.internalError || r.error }, email, { email, name, role: user.role });
     }
 
     // Set JWT cookie
@@ -552,8 +555,13 @@ app.get("/api/apply/me", (req, res) => {
 app.post("/api/apply", (req, res) => {
   const applicant = getApplicant(req);
   if (!applicant) return res.status(401).send("인증이 필요합니다.");
-  if (!isApplicationsOpen()) return res.status(403).send("현재 신청이 마감되었습니다.");
+  // 아래 duplicate 409와 같은 DB 기반 비즈니스 거절 — 셋 다 warn으로 관측 가능해야 한다.
+  if (!isApplicationsOpen()) {
+    logger.warn(req, "applicant.apply", { error: "closed" }, applicant.email, { email: applicant.email, name: applicant.name });
+    return res.status(403).send("현재 신청이 마감되었습니다.");
+  }
   if (db.prepare("SELECT 1 FROM users WHERE email = ?").get(applicant.email)) {
+    logger.warn(req, "applicant.apply", { error: "already registered" }, applicant.email, { email: applicant.email, name: applicant.name });
     return res.status(409).send("이미 등록된 계정입니다.");
   }
 
@@ -573,7 +581,7 @@ app.post("/api/apply", (req, res) => {
       logger.warn(req, "applicant.apply", { error: "duplicate" }, applicant.email);
       return res.status(409).send("이미 신청서를 제출했습니다.");
     }
-    logger.warn(req, "applicant.apply", { error: result.error }, applicant.email);
+    logger.warn(req, "applicant.apply", { error: result.internalError || result.error }, applicant.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -601,7 +609,7 @@ app.patch("/api/apply", (req, res) => {
   ).run(realname, phone, affiliation, applicant.email));
 
   if (!result.success) {
-    logger.warn(req, "applicant.apply_edit", { error: result.error }, applicant.email);
+    logger.warn(req, "applicant.apply_edit", { error: result.internalError || result.error }, applicant.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -630,7 +638,7 @@ app.patch("/api/applications/config", (req, res) => {
     "INSERT INTO settings (key, value) VALUES ('applications_open', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run(open ? "1" : "0"));
   if (!result.success) {
-    logger.warn(req, "applications.config", { error: result.error });
+    logger.warn(req, "applications.config", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "applications.config", { open });
@@ -670,7 +678,7 @@ app.post("/api/applications/approve", (req, res) => {
   })());
 
   if (!txResult.success) {
-    logger.warn(req, "applications.approve", { error: txResult.error });
+    logger.warn(req, "applications.approve", { error: txResult.internalError || txResult.error });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -697,7 +705,7 @@ app.delete("/api/applications", (req, res) => {
   })());
 
   if (!txResult.success) {
-    logger.warn(req, "applications.delete", { error: txResult.error, ids: numIds });
+    logger.warn(req, "applications.delete", { error: txResult.internalError || txResult.error, ids: numIds });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -742,7 +750,7 @@ app.post("/api/users", (req, res) => {
       logger.warn(req, "user.create", { error: "duplicate" }, email.trim().toLowerCase());
       return res.status(400).send("이미 등록된 이메일입니다.");
     }
-    logger.warn(req, "user.create", { error: result.error }, email.trim().toLowerCase());
+    logger.warn(req, "user.create", { error: result.internalError || result.error }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
 
@@ -785,11 +793,12 @@ app.post("/api/users/bulk", (req, res) => {
 
   const txResult = dbRun(() => run());
   if (!txResult.success) {
-    logger.warn(req, "user.create_bulk", { error: txResult.error });
+    logger.warn(req, "user.bulk_create", { error: txResult.internalError || txResult.error });
     return res.status(txResult.status).send(txResult.error);
   }
 
-  logger.log(req, "user.create_bulk", { added, skipped });
+  // 클라이언트로만 반환되고 버려지던 행별 거절 사유를 로그에도 남긴다(형식 오류·역할 보정).
+  logger.log(req, "user.bulk_create", { added, skipped, errors: errors.map((e) => ({ email: e.row?.email, reason: e.reason })) });
   if (added.length > 0) notifyNewUser(added);
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
@@ -808,7 +817,7 @@ app.patch("/api/users/bulk", (req, res) => {
   if (ADMIN_EMAIL && !active) {
     const protectedUser = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
     if (protectedUser && numIds.includes(protectedUser.id)) {
-      logger.warn(req, "user.bulk_toggle", { reason: "protected_admin", id: protectedUser.id });
+      logger.warn(req, "user.bulk_toggle", { reason: "protected_admin", id: protectedUser.id }, ADMIN_EMAIL);
       return res.status(400).send("기본 관리자는 비활성화할 수 없습니다.");
     }
   }
@@ -831,7 +840,7 @@ app.patch("/api/users/bulk", (req, res) => {
 
   const txResult = dbRun(() => run());
   if (!txResult.success) {
-    logger.warn(req, "user.bulk_toggle", { error: txResult.error });
+    logger.warn(req, "user.bulk_toggle", { error: txResult.internalError || txResult.error });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -852,7 +861,7 @@ app.delete("/api/users/bulk", (req, res) => {
   if (ADMIN_EMAIL) {
     const protectedUser = db.prepare(`SELECT id FROM users WHERE email = ?`).get(ADMIN_EMAIL);
     if (protectedUser && numIds.includes(protectedUser.id)) {
-      logger.warn(req, "user.bulk_delete", { reason: "protected_admin", id: protectedUser.id });
+      logger.warn(req, "user.bulk_delete", { reason: "protected_admin", id: protectedUser.id }, ADMIN_EMAIL);
       return res.status(400).send("기본 관리자는 삭제할 수 없습니다.");
     }
   }
@@ -875,7 +884,7 @@ app.delete("/api/users/bulk", (req, res) => {
     return { changes: delResult.changes, emails };
   })());
   if (!txResult.success) {
-    logger.warn(req, "user.bulk_delete", denyReason ? { error: txResult.error, reason: denyReason, ids: numIds } : { error: txResult.error });
+    logger.warn(req, "user.bulk_delete", denyReason ? { error: txResult.internalError || txResult.error, reason: denyReason, ids: numIds } : { error: txResult.internalError || txResult.error });
     return res.status(txResult.status).send(txResult.error);
   }
 
@@ -935,7 +944,7 @@ app.patch("/api/users/:id", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "user.update", denyReason ? { error: result.error, reason: denyReason, role } : { error: result.error }, user.email);
+    logger.warn(req, "user.update", denyReason ? { error: result.internalError || result.error, reason: denyReason, role } : { error: result.internalError || result.error }, user.email);
     return res.status(result.status).send(result.error);
   }
 
@@ -978,7 +987,7 @@ app.delete("/api/users/:id", (req, res) => {
     return db.prepare("DELETE FROM users WHERE id = ?").run(id);
   })());
   if (!result.success) {
-    logger.warn(req, "user.delete", { error: result.error }, user.email);
+    logger.warn(req, "user.delete", { error: result.internalError || result.error }, user.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "user.delete", { role: user.role, name: user.name }, user.email);
@@ -1018,7 +1027,7 @@ app.post("/api/ops-contacts", (req, res) => {
     return db.prepare("INSERT OR IGNORE INTO ops_display (user_id, sort_order) VALUES (?, ?)").run(user_id, nextOrder);
   })());
   if (!result.success) {
-    logger.warn(req, "ops_contact.create", { error: result.error }, user.email);
+    logger.warn(req, "ops_contact.create", { error: result.internalError || result.error }, user.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.create", { name: user.name, role: user.role }, user.email);
@@ -1053,7 +1062,7 @@ app.post("/api/ops-contacts/reorder", (req, res) => {
     })();
   });
   if (!result.success) {
-    logger.warn(req, "ops_contact.reorder", { error: result.error, count: userIds.length });
+    logger.warn(req, "ops_contact.reorder", { error: result.internalError || result.error, count: userIds.length });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.reorder", { count: userIds.length });
@@ -1074,7 +1083,7 @@ app.patch("/api/ops-contacts/:userId", (req, res) => {
 
   const result = dbRun(() => db.prepare("UPDATE ops_display SET description = ? WHERE user_id = ?").run(normalizedDescription, userId));
   if (!result.success) {
-    logger.warn(req, "ops_contact.update", { error: result.error }, row.email);
+    logger.warn(req, "ops_contact.update", { error: result.internalError || result.error }, row.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.update", { name: row.name, description: normalizedDescription }, row.email);
@@ -1088,7 +1097,7 @@ app.delete("/api/ops-contacts/:userId", (req, res) => {
   if (!row) return res.status(404).send("표시 목록에 없는 사용자입니다.");
   const result = dbRun(() => db.prepare("DELETE FROM ops_display WHERE user_id = ?").run(userId));
   if (!result.success) {
-    logger.warn(req, "ops_contact.delete", { error: result.error }, row.email);
+    logger.warn(req, "ops_contact.delete", { error: result.internalError || result.error }, row.email);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "ops_contact.delete", { name: row.name }, row.email);

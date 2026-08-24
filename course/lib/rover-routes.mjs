@@ -48,6 +48,10 @@ export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcast
     return _broadcastRaw(event, data, filterFn);
   };
 
+  // 백그라운드(요청 컨텍스트 없는) 로깅용 시스템 액터. 부팅 1회성 이벤트는 별도의
+  // name: "boot" 액터를 그대로 쓴다(아래 orphan recovery 참고) — 통합하지 않는다.
+  const SYS = { email: "system", name: "system", role: "admin" };
+
 /* ============================================
    API 라우트: /api/rover
    ============================================ */
@@ -130,7 +134,6 @@ if (orphanRecoveryResult.changes > 0) {
 }
 
 function startMission(waypoints, actor, courseId) {
-  const SYS = { email: "system", name: "system", role: "admin" };
   // 이전 미션 종료 + 새 미션 삽입을 한 트랜잭션으로 원자화한다. 삽입이 실패해도(디스크 풀,
   // 존재하지 않는 course_id의 FK 위반 등) 이전 미션이 조용히 닫히거나 currentMissionId가
   // 닫힌 미션을 가리키는 상태 오염을 막는다. 실패 시 로깅 후 false 반환(호출부가 500 처리).
@@ -140,10 +143,10 @@ function startMission(waypoints, actor, courseId) {
     return insertMission.run(courseId || null, Date.now(), JSON.stringify(waypoints), actor || null);
   })());
   if (!r.success) {
-    logger.warn(null, "mission.start", { error: r.error, course_id: courseId }, "rover", SYS);
+    logger.warn(null, "mission.start", { error: r.internalError || r.error, course_id: courseId, actor }, "rover", SYS);
     return false;
   }
-  if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior }, "rover");
+  if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior, actor }, "rover", SYS);
   currentMissionId = Number(r.result.lastInsertRowid);
   // A fresh mission starts with a clean slate — never inherit a previous run's
   // obstacle alert, and scope the resume grace window to THIS mission so a
@@ -165,8 +168,7 @@ function endMission(status) {
   try {
     finishMission.run(Date.now(), status, Date.now(), currentMissionId);
   } catch (e) {
-    logger.warn(null, "mission.end", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.end", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover", SYS);
   }
   currentMissionId = null;
   // The mission is over — any obstacle hold is moot; clear the operator alert.
@@ -196,8 +198,7 @@ function persistProgress() {
   } catch (e) {
     // 포지션·텔레메트리 이벤트마다 로버가 호출하는 고빈도 경로다. DB 오류가 로버 POST를
     // 500으로 터뜨리지 않도록 삼키고 구조화 로그만 남긴다(로깅 정책 준수).
-    logger.warn(null, "mission.persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover", SYS);
   }
 }
 
@@ -208,8 +209,7 @@ function updateMissionStatus(status, ts = Date.now()) {
   try {
     setMissionStatus.run(status, ts, currentMissionId);
   } catch (e) {
-    logger.warn(null, "mission.status", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.status", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover", SYS);
   }
 }
 
@@ -265,8 +265,7 @@ function recordTelemetrySample() {
       roverState.gps && typeof roverState.gps.v_acc === "number" ? roverState.gps.v_acc : null,
     );
   } catch (e) {
-    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover",
-      { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover", SYS);
   }
 }
 const roverState = {
@@ -488,7 +487,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     markRoverDisconnected("stale");
     if (currentMissionId != null) {
       interruptMission();
-      logger.warn(null, "mission.interrupted", { mission_id: currentMissionId, reason: "telemetry_stale" }, "rover");
+      logger.warn(null, "mission.interrupted", { mission_id: currentMissionId, reason: "telemetry_stale" }, "rover", SYS);
     }
     // Test/app shutdown may close SQLite just before a half-open SSE socket's
     // deferred close/stale callback runs.  There is no mission left to reconcile
@@ -503,11 +502,11 @@ const deviceLivenessWatchdog = setInterval(() => {
         after: "interrupted",
         reason: "telemetry_stale",
         boot_id: roverBootId,
-      }, "rover");
+      }, "rover", SYS);
       broadcastMissionMutation(interrupted);
     }
     roverProtocolVersion = 0;
-    logger.warn(null, "rover.stream.stale", { silent_ms: now - roverState.last_seen }, "rover");
+    logger.warn(null, "rover.stream.stale", { silent_ms: now - roverState.last_seen }, "rover", SYS);
     broadcastRoverStatus();
   }
   if (receiverState.connected && now - receiverState.last_seen > DEVICE_STALE_MS) {
@@ -516,7 +515,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     if (receiverState.base.state === "surveying") {
       receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
     }
-    logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver");
+    logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver", SYS);
     broadcastRoverStatus();
   }
   // Camera control is a one-way (server→perception) channel, so a dead peer is only
@@ -531,7 +530,7 @@ const deviceLivenessWatchdog = setInterval(() => {
     } catch {
       try { cameraControlClient.end(); } catch {}
       cameraControlClient = null;
-      logger.warn(null, "rover.camera.control_stale", null, "rover");
+      logger.warn(null, "rover.camera.control_stale", null, "rover", SYS);
     }
   }
 }, DEVICE_WATCHDOG_TICK_MS);
@@ -594,6 +593,10 @@ app.get("/api/rover/stream", (req, res) => {
     receiverState.last_seen = Date.now();
     receiverState.last_disconnect_reason = null;
     receiverState.last_disconnect_at = 0;
+    // 수신기 커맨드 채널의 attach/clean detach 감사 — 카메라 control_connected/closed와
+    // 같은 이유다: replaced/stale만 로깅하면 정상 연결·해제 이력이 로그에 없어 "기기가
+    // 붙어 있긴 했나"를 triage할 수 없다. 재연결 처닝이 warn 필터를 채우지 않도록 info.
+    logger.log(req, "receiver.stream.connected", null, "receiver");
     // A fresh connection can't be continuing a prior in-flight survey (the survey
     // worker lived in the previous session) — abort a stale "surveying" state.
     if (receiverState.base.state === "surveying") {
@@ -613,6 +616,7 @@ app.get("/api/rover/stream", (req, res) => {
       if (receiverClient === res) {
         receiverClient = null;
         markReceiverDisconnected("sse_closed");
+        logger.log(req, "receiver.stream.closed", null, "receiver");
         // A survey can't continue without the device — abort it so the UI doesn't
         // stay stuck on "surveying" (device telemetry no longer resets base.state).
         if (receiverState.base.state === "surveying") {
@@ -713,6 +717,10 @@ app.get("/api/rover/stream", (req, res) => {
   roverState.last_disconnect_at = 0;
   // The rover boots the pump off; keep the UI toggle in sync on (re)connect.
   roverState.pump_on = false;
+  // 로버 커맨드 채널의 attach/clean detach 감사 — 카메라 control_connected/closed와
+  // 같은 이유다: replaced/stale만 로깅하면 정상 연결·해제 이력이 로그에 없어 "로버가
+  // 붙어 있긴 했나"를 triage할 수 없다. 재연결 처닝이 warn 필터를 채우지 않도록 info.
+  logger.log(req, "rover.stream.connected", null, "rover");
   broadcastRoverStatus();
 
   // Re-apply the operator's nav-light choice so it survives a pilot restart.
@@ -773,6 +781,7 @@ app.get("/api/rover/stream", (req, res) => {
     if (roverClient === res) {
       roverClient = null;
       markRoverDisconnected("sse_closed");
+      logger.log(req, "rover.stream.closed", null, "rover");
       // The rover dropped off mid-mission. It keeps driving on its own and
       // will reconnect, so DON'T end the mission — flag it 'interrupted'
       // (resumable) and keep the persisted progress. The reconnecting rover's
@@ -1758,7 +1767,7 @@ function sendRoverEvent(event, data) {
     try { roverClient.end(); } catch {}
     roverClient = null;
     markRoverDisconnected("write_failed");
-    logger.warn(null, "rover.stream.write_failed", { event }, "rover");
+    logger.warn(null, "rover.stream.write_failed", { event }, "rover", SYS);
     broadcastRoverStatus();
     return false;
   }
@@ -1773,7 +1782,7 @@ function sendReceiverEvent(event, data) {
     try { receiverClient.end(); } catch {}
     receiverClient = null;
     markReceiverDisconnected("write_failed");
-    logger.warn(null, "receiver.stream.write_failed", { event }, "receiver");
+    logger.warn(null, "receiver.stream.write_failed", { event }, "receiver", SYS);
     broadcastRoverStatus();
     return false;
   }
@@ -1889,7 +1898,7 @@ app.put("/api/gps/config", (req, res) => {
     setGpsConfigStmt.run("active_base_point_id", point ? String(point.id) : "");
   });
   if (!result.success) {
-    logger.warn(req, "gps.config.update", { error: result.error }, "gps");
+    logger.warn(req, "gps.config.update", { error: result.internalError || result.error }, "gps");
     return res.status(result.status).send(result.error);
   }
   ntripSourceCache = ntrip_source;
@@ -1923,7 +1932,7 @@ app.post("/api/gps/survey-points", (req, res) => {
     return getSurveyPointStmt.get(Number(info.lastInsertRowid));
   });
   if (!result.success) {
-    logger.warn(req, "gps.survey_point.create", { error: result.error }, name);
+    logger.warn(req, "gps.survey_point.create", { error: result.internalError || result.error }, name);
     return res.status(result.status).send(
       result.error?.includes("UNIQUE") ? "이미 존재하는 측량점 이름입니다." : result.error);
   }
@@ -1945,7 +1954,7 @@ app.delete("/api/gps/survey-points/:id", (req, res) => {
   }
   const result = dbRun(() => deleteSurveyPointStmt.run(id));
   if (!result.success) {
-    logger.warn(req, "gps.survey_point.delete", { error: result.error, id }, point.name);
+    logger.warn(req, "gps.survey_point.delete", { error: result.internalError || result.error, id }, point.name);
     return res.status(result.status).send(result.error);
   }
   // 측량 중이던 측량점을 지웠으면 base 상태를 즉시 idle로 되돌린다(수신기 survey-result를
@@ -1998,11 +2007,12 @@ app.post("/api/gps/survey-points/:id/survey", (req, res) => {
 app.post("/api/gps/survey-points/:id/survey/cancel", (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).send("올바르지 않은 id입니다.");
-  sendReceiverEvent("base-survey-cancel", { point_id: id });
+  // 수신기가 끊겨 있으면 취소 이벤트가 전달되지 않는다. 전달 여부를 로그에 남긴다.
+  const delivered = sendReceiverEvent("base-survey-cancel", { point_id: id });
   if (receiverState.base.state === "surveying" && receiverState.base.point_id === id) {
     receiverState.base = { state: "idle", point_id: null, survey: null, last_rtcm_at: 0, rtcm_bytes: 0 };
   }
-  logger.log(req, "gps.survey.cancel", { id }, "gps");
+  logger.log(req, "gps.survey.cancel", { id, delivered }, "gps");
   broadcastRoverStatus();
   res.json({ ok: true });
 });
@@ -2056,7 +2066,7 @@ app.post("/api/rover/base/survey-result", (req, res) => {
   const result = dbRun(() =>
     updateSurveyPointResultStmt.run(lat, lng, altValue, hAccValue, sampleCount, id));
   if (!result.success) {
-    logger.warn(req, "gps.survey.result", { error: result.error, id }, point.name);
+    logger.warn(req, "gps.survey.result", { error: result.internalError || result.error, id }, point.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "gps.survey.result",
@@ -2167,7 +2177,7 @@ app.post("/api/rover/execute", (req, res) => {
         logger.log(req, "course.snapshot.auto", { snapshot_id: snapshotId, course_id: courseId }, course?.name);
       }
     }
-    catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, `course#${courseId}`); }
+    catch (err) { logger.warn(req, "course.snapshot.auto", { error: String(err) }, course.name); }
   }
 
   // 로버에 경로를 보내기 전에 미션을 먼저 기록한다. 순서를 뒤집으면 기록 실패 시 로버는 이미
@@ -2666,6 +2676,28 @@ app.post("/api/rover/pump-duration", (req, res) => {
 });
 
 // POST /api/rover/control - 수동 제어
+// 조이스틱 입력은 초당 수십 패킷으로 들어오므로 패킷 단위로 로깅하지 않는다.
+// 성공은 "운전 세션" 경계에서만 한 줄 남긴다 — 직전 패킷에서 5분 넘게 지났거나
+// 다른 사용자가 조종을 시작하면 새 세션으로 본다(세션당 감사 로그 1건).
+// 반복 거부 warn도 같은 이유로 사용자·실패 원인별 60초에 한 번만 남긴다.
+const CONTROL_SESSION_GAP_MS = 5 * 60 * 1000;
+const CONTROL_WARN_INTERVAL_MS = 60 * 1000;
+let lastControlAt = 0;
+let lastControlActor = null;
+const controlWarnState = new Map(); // actor email + 실패 원인 → { at, suppressed }
+function warnControlThrottled(req, actor, reason, detail, now) {
+  const key = `${actor || "anonymous"}:${reason}`;
+  const state = controlWarnState.get(key);
+  if (state && now - state.at < CONTROL_WARN_INTERVAL_MS) {
+    state.suppressed += 1;
+    return;
+  }
+  logger.warn(req, "rover.control", {
+    ...detail,
+    ...(state?.suppressed ? { suppressed: state.suppressed } : {}),
+  }, "rover");
+  controlWarnState.set(key, { at: now, suppressed: 0 });
+}
 app.post("/api/rover/control", (req, res) => {
   const { throttle, steering } = req.body;
   if (typeof throttle !== "number" || typeof steering !== "number" || !Number.isFinite(throttle) || !Number.isFinite(steering)) {
@@ -2674,26 +2706,40 @@ app.post("/api/rover/control", (req, res) => {
 
   const t = Math.max(-100, Math.min(100, throttle));
   const s = Math.max(-100, Math.min(100, steering));
+  const actor = req.user?.email || null;
+  const now = Date.now();
   // Joystick input arrives at up to 20 Hz. Manual-authority gating needs only
   // the mutation-maintained bounded summary, never the full occurrence plan.
   const activeMission = missionV2.activeMissionSummary();
   if ((t !== 0 || s !== 0) && activeMission
       && !activeMission.motion_confirmed_held) {
-    logger.warn(req, "rover.control", {
+    warnControlThrottled(req, actor, "autonomous_mission_not_held", {
       error: "autonomous_mission_not_held",
       mission_id: activeMission.id,
       mission_status: activeMission.status,
       throttle: t,
       steering: s,
-    }, "rover");
+    }, now);
     return res.status(409).send("자율 미션을 먼저 일시정지한 뒤 수동 조작하세요.");
   }
-  if (!roverClient) return rejectNoRover(req, res, "rover.control", { throttle: t, steering: s });
+  if (!roverClient) {
+    warnControlThrottled(req, actor, "not_connected", {
+      error: "not_connected", throttle: t, steering: s,
+    }, now);
+    return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  }
 
   if (!sendRoverEvent("manual-control", { throttle: t, steering: s })) {
     logger.warn(req, "rover.control", { error: "write_failed" }, "rover");
     return res.status(503).send("로버 연결이 끊어졌습니다.");
   }
+
+  // 세션 경계 감사 로그: 사람이 실물 로버를 수동 조종했다는 기록.
+  if (now - lastControlAt > CONTROL_SESSION_GAP_MS || actor !== lastControlActor) {
+    logger.log(req, "rover.control", {}, "rover");
+  }
+  lastControlAt = now;
+  lastControlActor = actor;
 
   res.json({ throttle: t, steering: s });
 });
@@ -2767,6 +2813,10 @@ function sendCameraControl(event, data) {
     cameraControlClient.write(`event: ${event}\ndata: ${data ? JSON.stringify(data) : "{}"}\n\n`);
     return true;
   } catch {
+    // perception 제어 채널이 죽었다. 슬롯을 비우면 close 핸들러의 control_closed 로그도
+    // 못 남으므로(guard가 false) 여기서 흔적을 남긴다. 비워진 슬롯이 이후 send를
+    // 즉시 false로 단락시키므로 teardown당 warn 1건 — 플러딩 없음.
+    logger.warn(null, "rover.camera.control_write_failed", { event }, "rover", SYS);
     try { cameraControlClient.end(); } catch {}
     cameraControlClient = null;
     return false;
@@ -2811,8 +2861,14 @@ app.get("/api/rover/camera/control", (req, res) => {
   });
   res.write("event: connected\ndata: {}\n\n");
   // Async socket errors (peer reset) don't throw — without a listener they'd
-  // crash the process. Just drop the slot.
-  res.on("error", () => { if (cameraControlClient === res) cameraControlClient = null; });
+  // crash the process. Drop the slot, and leave a trail: nulling the slot means
+  // the close handler's control_closed log can never fire for this connection.
+  res.on("error", () => {
+    if (cameraControlClient === res) {
+      cameraControlClient = null;
+      logger.warn(req, "rover.camera.control_write_failed", { reason: "socket_error" }, "rover");
+    }
+  });
   if (cameraControlClient && cameraControlClient !== res) {
     // Session takeover (e.g. a perception container replaced by auto-update) —
     // leave an audit trail, mirroring /api/rover/stream's rover.stream.replaced.
@@ -2967,6 +3023,7 @@ app.get("/api/rover/camera/hold", (req, res) => {
   // mode=vr → stereo (rover-vr); anything else → 2D mono/composite (rover-2d).
   const set = req.query.mode === "vr" ? holdViewersVr : holdViewers2d;
   if (set.size >= MAX_CAMERA_VIEWERS) {
+    logger.warn(req, "rover.camera.view", { error: "too_many_viewers", viewers: set.size }, "rover");
     return res.status(503).send("too many viewers");
   }
   res.writeHead(200, {
@@ -3044,9 +3101,9 @@ app.post("/api/rover/camera/detection", (req, res) => {
   // real inter-service delivery failure; a plain "perception offline" is benign
   // because reconnect re-applies the stored state.
   if (wasConnected && !delivered) {
-    logger.warn(req, "rover.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
+    logger.warn(req, "rover.camera.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
   } else {
-    logger.log(req, "rover.detection", detail, "rover");
+    logger.log(req, "rover.camera.detection", detail, "rover");
   }
   broadcastRoverStatus();
   res.json({ ok: true, detection: on, camera_connected: !!cameraControlClient });
@@ -3057,6 +3114,23 @@ app.post("/api/rover/camera/detection", (req, res) => {
 // view can't draw VWorld/Google tiles onto its minimap canvas directly — proxy
 // them here (server-side VWORLD_KEY, else a Google fallback) so the canvas stays
 // same-origin. z/x/y are slippy-map (XYZ) tile indices.
+//
+// 실패 warn은 실패 원인별로 60초에 한 번만 남긴다. 미니맵은 화면당 수십 장의
+// 타일을 요청하므로, VWORLD_KEY 만료 같은 지속 장애를 타일마다 기록하면 warn
+// 필터가 브라우저 요청 속도로 밀려난다. 억눌린 횟수는 다음 로그의 suppressed에 합산.
+const MAP_TILE_WARN_INTERVAL_MS = 60 * 1000;
+const mapTileWarnState = new Map(); // 실패 원인 키 → { at: 마지막 기록 시각, suppressed: 그 후 억눌린 횟수 }
+function warnMapTile(req, key, detail) {
+  const now = Date.now();
+  const state = mapTileWarnState.get(key);
+  if (state && now - state.at < MAP_TILE_WARN_INTERVAL_MS) {
+    state.suppressed += 1;
+    return;
+  }
+  const suppressed = state?.suppressed || 0;
+  mapTileWarnState.set(key, { at: now, suppressed: 0 });
+  logger.warn(req, "rover.map_tile", suppressed > 0 ? { ...detail, suppressed } : detail, "rover");
+}
 app.get("/api/rover/map-tile", async (req, res) => {
   const z = Number(req.query.z), x = Number(req.query.x), y = Number(req.query.y);
   const okInt = (v, hi) => Number.isInteger(v) && v >= 0 && v <= hi;
@@ -3070,14 +3144,16 @@ app.get("/api/rover/map-tile", async (req, res) => {
   try {
     const upstream = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!upstream.ok) {
-      logger.warn(req, "rover.map_tile", { error: `upstream ${upstream.status}`, z, x, y }, "rover");
+      warnMapTile(req, `upstream-${upstream.status}`, { error: `upstream ${upstream.status}`, z, x, y });
       return res.status(502).send("tile upstream error");
     }
     res.set("Content-Type", upstream.headers.get("content-type") || "image/jpeg");
     res.set("Cache-Control", "public, max-age=86400");
     res.send(Buffer.from(await upstream.arrayBuffer()));
   } catch (e) {
-    logger.warn(req, "rover.map_tile", { error: String(e?.message || e), z, x, y }, "rover");
+    // 키는 에러 종류(TimeoutError 등)로 묶는다 — 메시지 원문은 타일 좌표가 섞여
+    // 키가 무한히 늘어나므로 detail에만 담는다.
+    warnMapTile(req, `fetch-${e?.name || "error"}`, { error: String(e?.message || e), z, x, y });
     res.status(502).send("tile fetch failed");
   }
 });

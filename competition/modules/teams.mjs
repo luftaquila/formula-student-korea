@@ -42,7 +42,7 @@ export function createTeamsModule({
 }) {
   const store = new TeamStore(db);
   const logger = createLogger(db, "entry");
-  const app = createApp({ express, validateUser, validateUserCacheTtl, staticRoot }, (req) => {
+  const app = createApp({ express, logger, validateUser, validateUserCacheTtl, staticRoot }, (req) => {
     if (req.path === "/health") return null;
     if (req.method === "GET" && req.path === "/teams" && req.query.includeInactive !== "true") return null;
     if (req.method === "GET" && req.path === "/vehicle-types") return null;
@@ -148,7 +148,7 @@ export function createTeamsModule({
     try {
       before = store.getById(req.params.id);
       const result = store.updateTeam(req.params.id, req.body);
-      logger.log(req, result.after.active ? "team.update" : "team.deactivate", {
+      logger.log(req, "team.update", {
         before: auditTeam(result.before),
         after: auditTeam(result.after),
         updatedProjections: result.projections,

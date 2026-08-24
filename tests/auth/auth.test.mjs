@@ -217,6 +217,35 @@ describe('POST /api/users/bulk', () => {
     const user = db.prepare("SELECT role FROM users WHERE email = 'bulk4@example.com'").get();
     assert.equal(user.role, 'student');
   });
+
+  // 행별 거절 사유는 예전엔 응답으로만 반환되고 버려졌다 — 감사 로그에도 남아야 한다.
+  it('logs user.bulk_create at info level with per-row reject reasons', async () => {
+    const res = await client.post('/api/users/bulk', {
+      body: {
+        users: [
+          { email: 'bulklog1@example.com', role: 'student' },
+          { role: 'student' },                                  // missing email
+          { email: 'not-an-email', role: 'student' },           // bad format
+          { email: 'bulklog2@example.com', role: 'superuser' }, // unknown role → student
+        ],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+
+    const row = db.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'user.bulk_create' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(row, 'the bulk create must be logged');
+    assert.equal(row.level, 'info');
+    const detail = JSON.parse(row.detail);
+    assert.ok(Array.isArray(detail.errors), 'detail carries the reject reasons');
+    assert.equal(detail.errors.length, 3);
+    assert.ok(detail.errors.some((e) => e.reason.includes('이메일 없음')));
+    assert.ok(detail.errors.some((e) => e.reason.includes('올바르지 않은 이메일 형식')));
+    assert.ok(detail.errors.some((e) => e.email === 'bulklog2@example.com' && e.reason.includes('알 수 없는 역할')));
+    assert.ok(detail.added.includes('bulklog1@example.com'));
+  });
 });
 
 describe('PATCH /api/users/:id', () => {
@@ -974,6 +1003,22 @@ describe('Rate limiting', () => {
     const rateLimited = results.find(r => r.status === 302 && r.location?.includes('login_error=rate_limit'));
     assert.ok(rateLimited, 'should redirect with rate_limit error after exceeding rate limit');
   });
+
+  // 무차별 대입 중 위반마다 warn을 남기면 초당 수십 행으로 로그 뷰어가 침수된다.
+  // 윈도우당 첫 위반(count===21)만 기록해야 한다. 전용 IP로 다른 테스트와 격리.
+  it('logs auth.rate_limit only once per window despite repeated violations', async () => {
+    const ip = '198.51.100.42';
+    for (let i = 0; i < 26; i++) {
+      await fetch(`${baseUrl}/api/login`, { redirect: 'manual', headers: { 'X-Real-IP': ip } });
+    }
+
+    const rows = db.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'auth.rate_limit' AND detail LIKE ?",
+    ).all(`%${ip}%`);
+    assert.equal(rows.length, 1, 'exactly one warn for the whole window, not one per violation');
+    assert.equal(rows[0].level, 'warn');
+    assert.equal(JSON.parse(rows[0].detail).count, 21, 'the logged violation is the first one');
+  });
 });
 
 // ─── Logs ────────────────────────────────────────────────────────────────
@@ -1462,21 +1507,36 @@ describe('Account applications', () => {
     assert.equal(res.status, 400);
   });
 
-  it('POST /api/apply rejects an already-registered user (409)', async () => {
+  it('POST /api/apply rejects an already-registered user (409) and logs the rejection', async () => {
     const res = await client.post('/api/apply', {
       body: { realname: 'A', phone: '010-0000-0000', affiliation: 'X' },
       cookie: applicantCookie('alice@example.com', 'Alice'),
     });
     assert.equal(res.status, 409);
+
+    // DB 기반 비즈니스 거절은 warn으로 관측 가능해야 한다(duplicate/closed와 동일).
+    const row = db.prepare(
+      "SELECT level, detail, target FROM logs WHERE action = 'applicant.apply' AND level = 'warn' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(row, 'the rejection must be logged');
+    assert.match(row.detail, /already registered/);
+    assert.equal(row.target, 'alice@example.com');
   });
 
-  it('POST /api/apply is rejected when applications are closed (403)', async () => {
+  it('POST /api/apply is rejected when applications are closed (403) and logs the rejection', async () => {
     await client.patch('/api/applications/config', { body: { open: false }, cookie: adminCookie });
     const res = await client.post('/api/apply', {
       body: { realname: 'Bob', phone: '010-5555-6666', affiliation: 'Y' },
       cookie: applicantCookie('bob@example.com', 'Bob'),
     });
     assert.equal(res.status, 403);
+
+    const row = db.prepare(
+      "SELECT level, detail, target FROM logs WHERE action = 'applicant.apply' AND level = 'warn' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.ok(row, 'the closed rejection must be logged');
+    assert.match(row.detail, /closed/);
+    assert.equal(row.target, 'bob@example.com');
   });
 });
 

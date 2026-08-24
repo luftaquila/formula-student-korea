@@ -138,6 +138,25 @@ export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
 
+  // 보안 차단은 공격자가 요청 속도로 반복할 수 있으므로 원인별로 60초에 한 번만
+  // 기록한다. 키는 고정된 두 종류뿐이라 공격자가 경로나 IP를 바꿔도 상태가 무한히
+  // 늘지 않는다. 다음 기록에는 그동안 억눌린 횟수를 포함한다.
+  const SECURITY_WARN_INTERVAL_MS = 60 * 1000;
+  const securityWarnState = new Map();
+  const securityNow = deps.securityWarnNow || Date.now;
+  function warnSecurity(req, key, action, detail, target, fallbackMessage) {
+    const now = securityNow();
+    const state = securityWarnState.get(key);
+    if (state && now - state.at < SECURITY_WARN_INTERVAL_MS) {
+      state.suppressed += 1;
+      return;
+    }
+    const auditDetail = state?.suppressed ? { ...detail, suppressed: state.suppressed } : detail;
+    securityWarnState.set(key, { at: now, suppressed: 0 });
+    if (deps.logger?.warn) deps.logger.warn(req, action, auditDetail, target);
+    else console.warn(`${fallbackMessage}${state?.suppressed ? ` (suppressed ${state.suppressed})` : ""}`);
+  }
+
   if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
     console.error("FATAL: JWT_SECRET must be set in production. Exiting.");
     process.exit(1);
@@ -198,6 +217,12 @@ export function createApp(deps, authRoleFn) {
   app.use((req, res, next) => {
     if (CSRF_SAFE_METHODS.has(req.method)) return next();
     if (req.headers["sec-fetch-site"] === "cross-site") {
+      const path = req.originalUrl || req.url;
+      warnSecurity(req, "csrf_cross_site", "auth.csrf_rejected", {
+        reason: "cross_site_write",
+        method: req.method,
+        path,
+      }, path, `[csrf] blocked cross-site ${req.method} ${path} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("cross-site 요청은 허용되지 않습니다.");
     }
     next();
@@ -235,6 +260,14 @@ export function createApp(deps, authRoleFn) {
         req.user = { email: "internal", name: "Service", role: "admin" };
         return next();
       }
+      // Caddy가 외부의 이 헤더를 벗기므로, 불일치는 시크릿 로테이션 실수(장애급 설정
+      // 오류)거나 내부망 탐색이다. 헤더 값 자체는 시크릿 후보이므로 기록하지 않는다.
+      const path = req.originalUrl || req.url;
+      warnSecurity(req, "internal_secret_mismatch", "auth.internal_secret_rejected", {
+        reason: "secret_mismatch",
+        method: req.method,
+        path,
+      }, path, `[auth] internal-secret mismatch on ${req.method} ${path} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("Forbidden");
     }
     const token = req.cookies.fsk_session;
@@ -406,6 +439,9 @@ export function createDbRun() {
       if (e.status && e.message) {
         return { success: false, status: e.status, error: e.message, internalError };
       }
+      // internalError는 로거 전용이다 — 클라이언트 응답에는 새니타이즈된 error만 내보낸다.
+      // DB 자체가 실패 원인일 수 있어(SQLITE_BUSY/IOERR 등 로거 INSERT도 같이 실패하는
+      // 상황) 콘솔 폴백을 유지한다.
       console.error("[DB]", e.message || e);
       return { success: false, status: 500, error: "서버 오류가 발생했습니다.", internalError };
     }

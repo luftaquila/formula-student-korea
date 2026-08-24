@@ -287,7 +287,7 @@ app.get("/api/time", (req, res) => res.json({ now: Date.now() }));
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager();
+const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
 
 function broadcastEvent(event, data) {
   broadcastSSEEvent(event, data);
@@ -580,15 +580,16 @@ function getDebounceMs() {
   const row = db.prepare("SELECT debounce_ms FROM wireless_light WHERE id = 1").get();
   return Number.isFinite(row?.debounce_ms) ? row.debounce_ms : 300;
 }
+// 백그라운드(기록 엔진·워치독) 로그의 actorOverride. 사용자 요청 경로에서는 쓰지 않는다.
+const SYS_ACTOR = { email: "system", name: "system", role: "admin" };
 // 동적 기록 테이블에 한 줄 저장 + records 브로드캐스트.
 // binding = 귀속 정보 {team, event_name}: arm 스냅샷(run.bound) 또는 live 세션.
 // 선택 정보(team·event_name) 자체가 없으면 = 테스트 모드 → 조용히 skip(경고 없음).
 // 선택은 됐는데 검증 실패(잘못된 팀/이름) → warn 로그(유선의 POST /api/records와 동일 검증).
 function engineSaveRecord(eventType, binding, result, detail, audit = null) {
-  const SYS = { email: "system", name: "system", role: "admin" };
   const auditLog = (level, logDetail, target) => {
     if (audit?.req) logger[level](audit.req, "wireless.record", logDetail, target);
-    else logger[level](null, "wireless.record", logDetail, target, SYS);
+    else logger[level](null, "wireless.record", logDetail, target, SYS_ACTOR);
   };
   const t = binding?.team;
   if (!binding?.event_name || !t) return false; // 미선택 = 테스트 모드(조용히)
@@ -629,12 +630,11 @@ function engineSaveRecord(eventType, binding, result, detail, audit = null) {
 // 내구: 랩을 기록 1건에 이어붙인다. run.laps 전체로 result(총합)·detail(랩 목록)을 매 랩 갱신 —
 // 첫 저장은 INSERT(rowid 보관), 이후는 같은 행 UPDATE. 귀속(team+event_name) 없으면 skip(테스트 모드).
 function enduranceUpsertRecord(eventType, binding, run) {
-  const SYS = { email: "system", name: "system", role: "admin" };
   const t = binding?.team;
   if (!binding?.event_name || !t) return; // 미선택 = 테스트 모드(표시만)
   const nv = validateRecordName(binding.event_name);
   if (!nv.valid) {
-    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS);
+    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS_ACTOR);
     return;
   }
   const total = enduranceTotal(run.laps);
@@ -646,7 +646,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
     const data = { time: new Date().toISOString(), type: eventType, entry: t, result: total, detail };
     const dv = validateRecordData(data);
     if (!dv.valid) {
-      logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS);
+      logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS_ACTOR);
       return;
     }
     const r = dbRun(() => db.transaction(() => {
@@ -661,12 +661,12 @@ function enduranceUpsertRecord(eventType, binding, run) {
       return record;
     })());
     if (!r.success) {
-      logger.warn(null, "wireless.record", { error: r.error, event_type: eventType }, name, SYS);
+      logger.warn(null, "wireless.record", { error: r.internalError || r.error, event_type: eventType }, name, SYS_ACTOR);
       return;
     }
     run.recordName = name;
     run.recordRowid = r.result.rowid;
-    logger.log(null, "wireless.record", { type: eventType, result: total, num: r.result.num, laps: run.laps.length }, name, SYS);
+    logger.log(null, "wireless.record", { type: eventType, result: total, num: r.result.num, laps: run.laps.length }, name, SYS_ACTOR);
     if (run.runId) broadcastEvent("wireless:session", getSession(eventType));
     broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run.runId ?? null });
   } else {
@@ -689,7 +689,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
         event_type: eventType,
         run_id: run.runId ?? null,
         rowid: run.recordRowid,
-      }, run.recordName, SYS);
+      }, run.recordName, SYS_ACTOR);
       return;
     }
     logger.log(null, "wireless.record", {
@@ -701,7 +701,7 @@ function enduranceUpsertRecord(eventType, binding, run) {
       lap_detail: detail,
       before: { result: r.result.before.result, detail: r.result.before.detail },
       after: { result: r.result.after.result, detail: r.result.after.detail },
-    }, run.recordName, SYS);
+    }, run.recordName, SYS_ACTOR);
     broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result.after, event_type: eventType, run_id: run.runId ?? null });
   }
 }
@@ -813,10 +813,12 @@ function runBridgeWatch() {
       db.prepare("UPDATE wireless_light SET bridge_online = 0 WHERE id = 1").run();
       bridgeOnline = false;
       broadcastEvent("wireless:bridge", getBridgeState());
-      logger.log(null, "wireless.bridge", { online: false, last_seen: lastBridgeSeenIso }, "bridge",
-        { email: "system", name: "system", role: "admin" });
+      // 명시적 offline 신고(POST /bridge/offline)와 달리 워치독 감지는 브리지가 예기치 않게
+      // 죽었다는 뜻 — 운영자가 레벨 필터로 찾아야 하므로 warn.
+      logger.warn(null, "wireless.bridge", { online: false, watchdog: true, last_seen: lastBridgeSeenIso }, "bridge", SYS_ACTOR);
     } catch (e) {
-      logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", { email: "system", name: "system", role: "admin" });
+      logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", SYS_ACTOR);
+      // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
       console.error("[wireless] bridge watch:", e.message || e);
     }
   }
@@ -827,7 +829,6 @@ bridgeWatch.unref?.();
 
 // lease 만료 정리: 만료된 controller를 비우고 해당 경기 세션을 브로드캐스트(전 클라가 read-only 해제 인지).
 function runLeaseWatch() {
-  const SYS = { email: "system", name: "system", role: "admin" };
   try {
     const expired = db
       .prepare("SELECT event_type, controller, lease_expires_at FROM wireless_session WHERE controller IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?")
@@ -840,12 +841,13 @@ function runLeaseWatch() {
         event_type: before.event_type,
         before: { controller: before.controller, lease_expires_at: before.lease_expires_at },
         after: { controller: null, lease_expires_at: null },
-      }, before.event_type, SYS);
+      }, before.event_type, SYS_ACTOR);
       broadcastEvent("wireless:session", getSession(before.event_type));
     }
     return { skipped: false, expired: expired.length };
   } catch (e) {
-    logger.warn(null, "wireless.lease.watch", { error: e.message || String(e) }, "lease", { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "wireless.lease.watch", { error: e.message || String(e) }, "lease", SYS_ACTOR);
+    // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
     console.error("[wireless] lease watch:", e.message || e);
   }
   return { skipped: false, expired: 0 };
@@ -855,7 +857,6 @@ leaseWatch.unref?.();
 
 // 무선 이벤트 보존 한도(약 50만 행). 백그라운드 트림.
 function runEventRetention() {
-  const SYS = { email: "system", name: "system", role: "admin" };
   try {
     const result = pruneWirelessEvents();
     if (result.removed > 0) {
@@ -863,11 +864,12 @@ function runEventRetention() {
         cutoff_id: result.cutoff,
         removed: result.removed,
         retained_limit: RETAIN_EVENTS,
-      }, "wireless_event", SYS);
+      }, "wireless_event", SYS_ACTOR);
     }
     return { skipped: false, ...result };
   } catch (e) {
-    logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", { email: "system", name: "system", role: "admin" });
+    logger.warn(null, "wireless.event.retention", { error: e.message || String(e) }, "wireless_event", SYS_ACTOR);
+    // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
     console.error("[wireless] event retention:", e.message || e);
   }
   return { skipped: false, removed: 0, cutoff: null };
@@ -1162,7 +1164,7 @@ app.post("/api/records", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "record.create", { error: result.error, entry_num: data.entry.num }, name);
+    logger.warn(req, "record.create", { error: result.internalError || result.error, entry_num: data.entry.num }, name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1366,21 +1368,22 @@ app.delete("/api/records/:name", (req, res) => {
   });
   if (!preflight.ok) return;
 
-  const result = dbRun(() => {
+  const result = dbRun(() =>
     db.transaction(() => {
-      db.prepare("DELETE FROM record WHERE name = ?").run(name);
+      const deleted = db.prepare("DELETE FROM record WHERE name = ?").run(name).changes;
       const legacy = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='table' AND name = ? AND name NOT IN (${reservedSql})`).get(name);
       if (legacy) db.exec(`DROP TABLE IF EXISTS '${name}'`);
       db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
-    })();
-  });
+      return deleted;
+    })(),
+  );
 
   if (!result.success) {
     logger.warn(req, "record.delete", { error: result.internalError || result.error }, name);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "record.delete", { dropped: true }, name);
+  logger.log(req, "record.delete", { deleted: result.result }, name);
 
   // SSE 브로드캐스트
   broadcastEvent("records", { type: "delete", name, recordFiles: getRecordFiles() });
@@ -1446,11 +1449,11 @@ app.delete("/api/controllers", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM controller").run());
 
   if (!result.success) {
-    logger.warn(req, "controller.clear", { error: result.error });
+    logger.warn(req, "controller.clear", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "controller.clear");
+  logger.log(req, "controller.clear", { deleted: result.result.changes });
   res.status(200).send();
 });
 
@@ -1488,7 +1491,7 @@ app.put("/api/event-modes/:type", (req, res) => {
     db.prepare("UPDATE event_mode SET enabled = ? WHERE event_type = ?").run(newEnabled, eventType),
   );
   if (!result.success) {
-    logger.warn(req, "event_mode.toggle", { error: result.error }, eventType);
+    logger.warn(req, "event_mode.toggle", { error: result.internalError || result.error }, eventType);
     return res.status(result.status).send(result.error);
   }
 
@@ -1770,7 +1773,7 @@ app.put("/api/wireless/physical-event", (req, res) => {
     return { row: getLightState(), prev: prev?.owner_event || null };
   });
   if (!result.success) {
-    logger.warn(req, "wireless.physical_event", { error: result.error, requested: value });
+    logger.warn(req, "wireless.physical_event", { error: result.internalError || result.error, requested: value });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.physical_event", { event_type: value, prev: result.result.prev });
@@ -1790,7 +1793,7 @@ app.put("/api/wireless/debounce", (req, res) => {
     return getLightState();
   });
   if (!result.success) {
-    logger.warn(req, "wireless.debounce", { error: result.error, ms }, "settings");
+    logger.warn(req, "wireless.debounce", { error: result.internalError || result.error, ms }, "settings");
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.debounce", { ms }, "settings");
@@ -2000,6 +2003,7 @@ app.post("/api/wireless/dnf", (req, res) => {
   }
   // 내구는 이미 랩을 이어붙인 누적 행(run.recordRowid)이 있으면 그 행의 result를 -1로 UPDATE한다
   // — 별도 DNF 행을 INSERT하면 누적 행과 공존해 이중 기록이 된다. 그 외 종목/누적 행 없으면 신규 -1.
+  // DNF는 사용자 요청 파괴적 조작(result → -1)이므로 로그를 요청자에게 귀속한다(system 아님).
   let ok;
   if (event_type === "내구" && run?.recordRowid != null && run?.recordName) {
     const r = dbRun(() => {
@@ -2229,7 +2233,7 @@ app.put("/api/wireless/mapping/:node_id", (req, res) => {
     return { row: db.prepare("SELECT node_id, event_type, role, label, enabled, updated_at FROM wireless_mapping WHERE node_id = ?").get(node), prev };
   });
   if (!result.success) {
-    logger.warn(req, "wireless.mapping", { error: result.error, event_type, role }, node);
+    logger.warn(req, "wireless.mapping", { error: result.internalError || result.error, event_type, role }, node);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.mapping", { event_type, role, label, enabled, prev: result.result.prev }, node);
@@ -2247,7 +2251,7 @@ app.delete("/api/wireless/mapping/:node_id", (req, res) => {
     return prev;
   });
   if (!result.success) {
-    logger.warn(req, "wireless.mapping.delete", { error: result.error }, node);
+    logger.warn(req, "wireless.mapping.delete", { error: result.internalError || result.error }, node);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "wireless.mapping.delete", { prev: result.result }, node);

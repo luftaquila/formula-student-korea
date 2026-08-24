@@ -45,6 +45,18 @@ describe('createServiceSkeleton', () => {
       const health = await client.get('/api/health');
       assert.equal(await health.text(), 'ok');
 
+      const blocked = await fetch(`${baseUrl}/api/write`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site' },
+        body: '{}',
+      });
+      assert.equal(blocked.status, 403);
+      assert.equal(
+        db.prepare("SELECT COUNT(*) AS count FROM logs WHERE action = 'auth.csrf_rejected'").get().count,
+        1,
+        'the skeleton must inject its structured logger into shared security middleware',
+      );
+
       const adminCookie = makeAuthCookie({ email: 'a@t.co', name: 'A', role: 'admin' });
       const logsRes = await client.get('/api/logs', { cookie: adminCookie });
       assert.equal(logsRes.status, 200);

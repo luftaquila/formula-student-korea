@@ -133,7 +133,7 @@ function maskValue(key, value) {
 app.get("/api/config", (req, res) => {
   const result = dbRun(() => getAllConfig());
   if (!result.success) {
-    logger.warn(req, "config.list", { error: result.error });
+    logger.warn(req, "config.list", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   const configs = {};
@@ -164,12 +164,13 @@ app.put("/api/config", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "config.update", { error: result.error, keys: updated });
+    logger.warn(req, "config.update", { error: result.internalError || result.error, keys: updated });
     return res.status(result.status).send(result.error);
   }
 
-  for (const key of updated) {
-    logger.log(req, "config.update", { key, value: maskValue(key, getConfig(key)) });
+  // 한 번의 저장은 한 행으로 — 키당 행을 남기면 성공/실패 로그 형태도 어긋난다(실패는 배치 1행).
+  if (updated.length > 0) {
+    logger.log(req, "config.update", { updated: updated.map((key) => ({ key, value: maskValue(key, getConfig(key)) })) });
   }
   res.json({ updated });
 });
@@ -196,7 +197,7 @@ app.post("/api/config/reset", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "config.reset", { error: result.error, group });
+    logger.warn(req, "config.reset", { error: result.internalError || result.error, group });
     return res.status(result.status).send(result.error);
   }
 
@@ -221,7 +222,7 @@ app.get("/api/stats", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "stats.query", { error: result.error });
+    logger.warn(req, "stats.query", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);
@@ -242,7 +243,7 @@ app.get("/api/quota", async (req, res) => {
 
     if (!resp.ok) {
       const text = await resp.text();
-      logger.warn(req, "quota.fetch", { error: text, status: resp.status });
+      logger.warn(req, "email.quota_check", { error: text, status: resp.status });
       return res.json({ remaining: null, error: `Brevo API 오류 (${resp.status})` });
     }
 
@@ -251,7 +252,7 @@ app.get("/api/quota", async (req, res) => {
     const remaining = freePlan?.credits ?? 0;
     res.json({ remaining });
   } catch (e) {
-    logger.warn(req, "quota.fetch", { error: e.message });
+    logger.warn(req, "email.quota_check", { error: e.message });
     res.json({ remaining: null, error: "Brevo API 연결 실패" });
   }
 });
@@ -285,7 +286,7 @@ app.get("/api/emails", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "emails.list", { error: result.error });
+    logger.warn(req, "email.list", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);
@@ -304,7 +305,7 @@ app.get("/api/emails/:id", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "emails.get", { error: result.error }, String(id));
+    logger.warn(req, "email.get", { error: result.internalError || result.error }, String(id));
     return res.status(result.status).send(result.error);
   }
   if (!result.result) return res.status(404).send("Email not found");
@@ -464,6 +465,8 @@ ${htmlContent}
   let lastMessageId = null;
   let lastError = null;
   let lastErrorStatus = 500;
+  // 실패 수신자·사유 목록(뷰어 detail용, 10건 캡). 전수 기록은 email_log 테이블이 담당.
+  const failedRecipients = [];
 
   for (let i = 0; i < recipients.length; i++) {
     const recipient = recipients[i];
@@ -475,7 +478,7 @@ ${htmlContent}
         db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.messageId || null, htmlContent, source, sentBy)
       );
-      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
+      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.internalError || logResult.error, subject, recipient, source });
       successCount++;
       lastMessageId = result.messageId || lastMessageId;
     } else {
@@ -483,7 +486,8 @@ ${htmlContent}
         db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.error, htmlContent, source, sentBy)
       );
-      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, subject, recipient, source });
+      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.internalError || logResult.error, subject, recipient, source });
+      if (failedRecipients.length < 10) failedRecipients.push({ recipient, error: result.error });
       lastError = result.error;
       lastErrorStatus = result.status;
     }
@@ -502,7 +506,7 @@ ${htmlContent}
   }
 
   if (successCount < recipients.length) {
-    logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, lastError, source });
+    logger.warn(req, "email.send_partial", { subject, successCount, failedCount: recipients.length - successCount, failed: failedRecipients, lastError, source });
   }
   // 내부 서비스에서 호출한 경우(예: documents 예약 알림은 수신자별 1건씩 호출), 호출자가
   // 자체 집계 로그(`schedule.*`)를 남기므로 성공 info는 생략해 로그 노이즈를 줄인다.
@@ -550,7 +554,7 @@ app.get("/api/internal/sms-config", (req, res) => {
     return configs;
   });
   if (!result.success) {
-    logger.warn(req, "sms_config.fetch", { error: result.error });
+    logger.warn(req, "sms_config.fetch", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);

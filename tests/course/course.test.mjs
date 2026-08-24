@@ -16,6 +16,14 @@ setupTestEnv();
 
 import { createCourseApp } from '../../course/index.mjs';
 
+function withFailureTimeout(promise, label, timeoutMs = 2_000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
 let server, baseUrl, client, db, dbPath;
@@ -457,6 +465,25 @@ describe('course ordered route markers', () => {
     });
     assert.equal(res.status, 400);
   });
+
+  it('keeps the original SQLite cause in guided-route failure logs', async () => {
+    db.exec(`CREATE TEMP TRIGGER fail_route_marker_insert
+      BEFORE INSERT ON route_marker
+      BEGIN SELECT RAISE(ABORT, 'injected route storage failure'); END`);
+    try {
+      const res = await client.post('/api/courses/1/route/markers', {
+        body: { lat: 35.294, lng: 126.576, label: '실패 주입' }, cookie: adminCookie,
+      });
+      assert.equal(res.status, 500);
+      assert.equal(await res.text(), '서버 오류가 발생했습니다.');
+      const warning = db.prepare(`SELECT detail FROM logs
+        WHERE action = 'route_marker.create' AND target = '오토크로스 A-1'
+        ORDER BY id DESC LIMIT 1`).get();
+      assert.equal(JSON.parse(warning.detail).error, 'injected route storage failure');
+    } finally {
+      db.exec('DROP TRIGGER IF EXISTS fail_route_marker_insert');
+    }
+  });
 });
 
 // ─── Cascade Delete ─────────────────────────────────────────────────────
@@ -485,11 +512,54 @@ describe('DELETE /api/courses/:id (cascade)', () => {
 });
 
 describe('DELETE /api/courses/:id (remaining)', () => {
-  it('deletes remaining course', async () => {
+  it('deletes remaining course and audits the full cascade/detach scope', async () => {
+    const coneId = db.prepare('SELECT id FROM cone WHERE course_id = 1 ORDER BY id LIMIT 1').get().id;
+    db.prepare(`INSERT INTO memo (course_id, lat, lng, width, height, content)
+      VALUES (1, 35, 126, 2, 1, 'delete audit')`).run();
+    db.prepare(`INSERT INTO course_snapshot (course_id, taken_at, reason, cones_json)
+      VALUES (1, ?, 'delete audit', '[]')`).run(Date.now());
+    const presetId = Number(db.prepare(`INSERT INTO mission_route_preset
+      (course_id, name, finish_behavior, created_at, updated_at)
+      VALUES (1, 'delete audit preset', 'stop', ?, ?)`).run(Date.now(), Date.now()).lastInsertRowid);
+    db.prepare(`INSERT INTO mission_route_preset_item
+      (id, preset_id, position, cone_id, cone_id_snapshot, lat_snapshot, lng_snapshot, side_snapshot)
+      VALUES ('delete-audit-item', ?, 0, ?, ?, 35, 126, 'left')`).run(presetId, coneId, coneId);
+    const missionId = Number(db.prepare(`INSERT INTO mission
+      (course_id, started_at, ended_at, status, waypoints_json, lifecycle_state)
+      VALUES (1, ?, ?, 'completed', '[]', 'completed')`).run(Date.now() - 1, Date.now()).lastInsertRowid);
+    db.prepare(`INSERT INTO mission_waypoint
+      (id, mission_id, position, cone_id, cone_id_snapshot, lat, lng, side, state, created_at, updated_at)
+      VALUES ('delete-audit-waypoint', ?, 0, ?, ?, 35, 126, 'left', 'completed', ?, ?)`)
+      .run(missionId, coneId, coneId, Date.now(), Date.now());
+    const count = (table, where = 'course_id = 1') =>
+      db.prepare(`SELECT COUNT(*) AS count FROM ${table} WHERE ${where}`).get().count;
+    const expectedCascade = {
+      cones: count('cone'),
+      memos: count('memo'),
+      route_markers: count('route_marker'),
+      route_steps: count('route_step'),
+      snapshots: count('course_snapshot'),
+      mission_presets: count('mission_route_preset'),
+      mission_preset_items: count('mission_route_preset_item', `preset_id = ${presetId}`),
+    };
+
     const res = await client.delete('/api/courses/1', { cookie: adminCookie });
     assert.equal(res.status, 200);
     const courses = await (await client.get('/api/courses', { cookie: adminCookie })).json();
     assert.deepEqual(courses, []);
+    assert.equal(db.prepare('SELECT course_id FROM mission WHERE id = ?').get(missionId).course_id, null);
+    assert.equal(
+      db.prepare("SELECT cone_id FROM mission_waypoint WHERE id = 'delete-audit-waypoint'").get().cone_id,
+      null,
+    );
+    const audit = db.prepare(`SELECT detail FROM logs
+      WHERE action = 'course.delete' AND target = '오토크로스 A-1'
+      ORDER BY id DESC LIMIT 1`).get();
+    assert.deepEqual(JSON.parse(audit.detail), {
+      course_id: 1,
+      cascade: expectedCascade,
+      detached: { missions: 1, mission_waypoints: 1 },
+    });
   });
 });
 
@@ -594,6 +664,26 @@ describe('POST /api/courses/import', () => {
     assert.deepEqual(route.steps, [route.markers[0].id, route.markers[1].id, route.markers[0].id, route.markers[1].id, route.markers[0].id]);
     const exported = await (await client.get(`/api/courses/${course.id}/export`, { cookie: adminCookie })).json();
     assert.deepEqual(exported.route_steps, [0, 1, 0, 1, 0]);
+  });
+
+  it('logs route validation failures with structured error detail', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: {
+        name: 'invalid-route-import',
+        cones: [],
+        route_markers: [{ lat: 91, lng: 126.1, label: 'invalid' }],
+        route_steps: [0],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+
+    const log = db.prepare(
+      "SELECT level, actor_email, detail FROM logs WHERE action = 'course.import' AND target = ? ORDER BY id DESC LIMIT 1",
+    ).get('invalid-route-import');
+    assert.equal(log.level, 'warn');
+    assert.equal(log.actor_email, 'admin@test.com');
+    assert.equal(typeof JSON.parse(log.detail).error, 'string');
   });
 
   it('rejects import with invalid altitude', async () => {
@@ -1035,6 +1125,50 @@ describe('POST /api/rover/end-mission', () => {
 });
 
 describe('POST /api/rover/control', () => {
+  async function withIsolatedControlApp(fn) {
+    const isolatedPath = tmpDbPath();
+    const created = createCourseApp({ dbPath: isolatedPath, validateUser: TRUST_JWT });
+    const started = await startServer(created.app);
+    try {
+      await fn({
+        db: created.db,
+        url: started.baseUrl,
+        client: createClient(started.baseUrl),
+      });
+    } finally {
+      started.server.closeAllConnections?.();
+      await stopServer(started.server);
+      created.db.close();
+      cleanup(isolatedPath);
+    }
+  }
+
+  async function openIsolatedRover(url, isolated) {
+    const controller = new AbortController();
+    const response = await fetch(`${url}/api/rover/stream`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: controller.signal,
+    });
+    assert.equal(response.status, 200);
+    const reader = response.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    return {
+      async close() {
+        try { await reader.cancel(); } catch { /* already closed */ }
+        controller.abort();
+        await drained;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          const status = await (await isolated.get('/api/rover/status', { cookie: adminCookie })).json();
+          if (!status.connected) return;
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        assert.fail('rover close handler did not clear the connected state');
+      },
+    };
+  }
+
   it('returns 503 when rover is not connected', async () => {
     const res = await client.post('/api/rover/control', {
       body: { throttle: 50, steering: -30 },
@@ -1049,6 +1183,103 @@ describe('POST /api/rover/control', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('throttles disconnected-rover warnings per operator', async () => {
+    const operatorEmail = 'control-throttle@test.com';
+    const operatorCookie = makeAuthCookie({
+      email: operatorEmail,
+      name: 'Control Operator',
+      role: 'admin',
+    });
+
+    for (let i = 0; i < 2; i += 1) {
+      const res = await client.post('/api/rover/control', {
+        body: { throttle: 25, steering: -10 },
+        cookie: operatorCookie,
+      });
+      assert.equal(res.status, 503);
+    }
+
+    const logs = db.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'rover.control' AND actor_email = ? ORDER BY id",
+    ).all(operatorEmail);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].level, 'warn');
+    assert.deepEqual(JSON.parse(logs[0].detail), {
+      error: 'not_connected',
+      throttle: 25,
+      steering: -10,
+    });
+  });
+
+  it('logs connected manual control once per operator session, not per packet', async () => {
+    await withIsolatedControlApp(async ({ db: isolatedDb, url, client: isolated }) => {
+      const rover = await openIsolatedRover(url, isolated);
+      try {
+        const firstCookie = makeAuthCookie({ email: 'driver-a@test.com', name: 'Driver A', role: 'admin' });
+        const secondCookie = makeAuthCookie({ email: 'driver-b@test.com', name: 'Driver B', role: 'admin' });
+        for (const cookie of [firstCookie, firstCookie, secondCookie]) {
+          const res = await isolated.post('/api/rover/control', {
+            body: { throttle: 20, steering: 5 }, cookie,
+          });
+          assert.equal(res.status, 200);
+        }
+        const logs = isolatedDb.prepare(`SELECT actor_email, level, detail FROM logs
+          WHERE action = 'rover.control' AND level = 'info' ORDER BY id`).all();
+        assert.deepEqual(logs.map((row) => row.actor_email), [
+          'driver-a@test.com',
+          'driver-b@test.com',
+        ]);
+        assert.ok(logs.every((row) => row.detail === '{}'));
+      } finally {
+        await rover.close();
+      }
+    });
+  });
+
+  it('throttles repeated manual-control rejection while an autonomous mission is moving', async () => {
+    await withIsolatedControlApp(async ({ db: isolatedDb, client: isolated }) => {
+      const courseRes = await isolated.post('/api/courses', {
+        body: { name: 'Control gate course' }, cookie: adminCookie,
+      });
+      const isolatedCourse = await courseRes.json();
+      const coneRes = await isolated.post(`/api/courses/${isolatedCourse.id}/cones`, {
+        body: { lat: 35, lng: 126, side: 'left' }, cookie: adminCookie,
+      });
+      const cone = await coneRes.json();
+      const missionRes = await isolated.post('/api/missions', {
+        body: {
+          course_id: isolatedCourse.id,
+          items: [{ cone_id: cone.id, lat: cone.lat, lng: cone.lng, alt: cone.alt, side: cone.side }],
+        },
+        cookie: adminCookie,
+      });
+      assert.equal(missionRes.status, 201);
+      const mission = await missionRes.json();
+      isolatedDb.prepare("UPDATE mission SET lifecycle_state = 'running', status = 'running' WHERE id = ?")
+        .run(mission.id);
+      const active = await (await isolated.get('/api/missions/active', { cookie: adminCookie })).json();
+      assert.equal(active.mission.motion_confirmed_held, false);
+
+      const operatorEmail = 'blocked-driver@test.com';
+      const operatorCookie = makeAuthCookie({ email: operatorEmail, name: 'Blocked Driver', role: 'admin' });
+      for (let i = 0; i < 2; i += 1) {
+        const res = await isolated.post('/api/rover/control', {
+          body: { throttle: 30, steering: -5 }, cookie: operatorCookie,
+        });
+        assert.equal(res.status, 409);
+      }
+      const warnings = isolatedDb.prepare(`SELECT detail FROM logs
+        WHERE action = 'rover.control' AND level = 'warn' AND actor_email = ?
+        ORDER BY id`).all(operatorEmail);
+      assert.equal(warnings.length, 1);
+      assert.equal(JSON.parse(warnings[0].detail).error, 'autonomous_mission_not_held');
+      isolatedDb.prepare(`UPDATE mission
+        SET lifecycle_state = 'cancelled', status = 'stopped', ended_at = ? WHERE id = ?`)
+        .run(Date.now(), mission.id);
+      await isolated.get('/api/missions/active', { cookie: adminCookie });
+    });
   });
 });
 
@@ -1171,6 +1402,39 @@ describe('GET /api/rover/map-tile', () => {
       const res = await client.get(`/api/rover/map-tile?${q}`, { cookie: adminCookie });
       assert.equal(res.status, 400, `expected 400 for ?${q}`);
     }
+  });
+
+  it('throttles repeated upstream failures to one rover.map_tile warn per reason', async () => {
+    // A minimap screen requests dozens of tiles, so a persistent upstream
+    // failure (expired VWORLD_KEY etc.) must not flood the warn filter: the
+    // route logs once per failure reason per 60s. Fail the upstream fetch
+    // deterministically (offline-safe) by intercepting the tile hosts only —
+    // the throttle keys on the error name, so a unique name isolates this test.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (input, init) => {
+      const target = String(typeof input === 'string' ? input : input?.url ?? input);
+      if (target.includes('api.vworld.kr') || target.includes('mt0.google.com')) {
+        const err = new Error('simulated tile upstream outage');
+        err.name = 'TestTileFailure';
+        return Promise.reject(err);
+      }
+      return realFetch(input, init);
+    };
+    try {
+      for (let i = 0; i < 3; i++) {
+        const res = await client.get(`/api/rover/map-tile?z=18&x=${i}&y=1`, { cookie: adminCookie });
+        assert.equal(res.status, 502, 'every failed tile request still 502s');
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    const rows = db.prepare(
+      "SELECT detail FROM logs WHERE action = 'rover.map_tile' AND level = 'warn' AND detail LIKE '%simulated tile upstream outage%'",
+    ).all();
+    assert.equal(rows.length, 1, '3 failing tile requests must produce exactly ONE warn row');
+    const detail = JSON.parse(rows[0].detail);
+    assert.match(detail.error, /simulated tile upstream outage/);
+    assert.equal(detail.z, 18, 'the logged row keeps the tile coords for triage');
   });
 });
 
@@ -2581,6 +2845,91 @@ describe('Ground calibration trigger', () => {
     assert.ok(rec, 'a bare disconnect logs control_closed');
     assert.equal(rec.level, 'info', 'a benign close is info, not warn');
     assert.equal(rec.detail, null, 'a benign close carries no aborted-calibration detail');
+  });
+});
+
+// ─── Camera control write failure (sendCameraControl teardown) ───────────
+describe('Camera control write failure', () => {
+  let srv, url, cli, localDb, localDbPath;
+
+  before(async () => {
+    localDbPath = tmpDbPath();
+    const result = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
+    localDb = result.db;
+    const started = await startServer(result.app);
+    srv = started.server; url = started.baseUrl; cli = createClient(url);
+  });
+  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
+
+  it('a throwing control write logs control_write_failed once and drops the slot', async () => {
+    // Capture the server-side response object of the perception control SSE:
+    // http.Server emits 'request' to every listener, so this sees the same res
+    // the route stores in cameraControlClient. By the time the client fetch
+    // resolves (headers received) the handler has already run, so the capture
+    // is deterministic — no polling.
+    let ctlRes = null;
+    srv.on('request', (rq, rs) => {
+      if (rq.url.startsWith('/api/rover/camera/control')) ctlRes = rs;
+    });
+
+    const ac = new AbortController();
+    const ctl = await fetch(`${url}/api/rover/camera/control`, {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
+      signal: ac.signal,
+    });
+    assert.equal(ctl.status, 200);
+    const reader = ctl.body.getReader();
+    const drained = (async () => {
+      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
+    })();
+    assert.ok(ctlRes, 'the control response is captured on attach');
+    const controlClosed = new Promise((resolve) => ctlRes.once('close', resolve));
+
+    // Simulate a dead perception socket: writing to a destroyed http response
+    // does NOT throw synchronously in Node (the error is emitted async), so
+    // force the synchronous-throw path sendCameraControl guards against by
+    // sabotaging this connection's write. (Same technique as the documents
+    // tests' fs.renameSync monkeypatch — instance-scoped, restored by close.)
+    ctlRes.write = () => { throw new Error('simulated dead control socket'); };
+
+    const countWriteFailed = () => localDb.prepare(
+      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_write_failed'",
+    ).get().n;
+    const countClosed = () => localDb.prepare(
+      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'",
+    ).get().n;
+    assert.equal(countWriteFailed(), 0, 'no write-failed rows before the failure');
+
+    // Any control-triggering call now hits the throwing write.
+    const res = await cli.post('/api/rover/camera/detection', {
+      body: { on: true }, cookie: adminCookie,
+    });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.camera_connected, false, 'the dead control slot is dropped after the failed write');
+
+    assert.equal(countWriteFailed(), 1, 'the failed control write leaves exactly one warn trail');
+    const rec = localDb.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_write_failed' ORDER BY id DESC LIMIT 1",
+    ).get();
+    assert.equal(rec.level, 'warn');
+    assert.equal(JSON.parse(rec.detail).event, 'detect-on', 'the warn names the event that failed to deliver');
+
+    // The emptied slot short-circuits later sends to false — no warn flooding.
+    await cli.post('/api/rover/camera/detection', { body: { on: false }, cookie: adminCookie });
+    assert.equal(countWriteFailed(), 1, 'subsequent control calls must not log again');
+
+    // The slot was cleared by the failed write, so the eventual client
+    // disconnect must NOT also log control_closed for this connection (the
+    // close handler's cameraControlClient === res guard is false).
+    const closedBefore = countClosed();
+    ac.abort();
+    await withFailureTimeout(
+      Promise.all([drained.catch(() => {}), controlClosed]),
+      'camera control close',
+    );
+    assert.equal(countClosed(), closedBefore,
+      'a connection torn down by a failed write does not double-log control_closed');
   });
 });
 

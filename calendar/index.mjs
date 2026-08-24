@@ -156,7 +156,7 @@ app.get("/api/events", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "event.list", { error: result.error });
+    logger.warn(req, "event.list", { error: result.internalError || result.error });
     return res.status(result.status).json({ error: result.error });
   }
 
@@ -222,7 +222,7 @@ app.post("/api/events", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "event.create", { error: result.error, title, start, end });
+    logger.warn(req, "event.create", { error: result.internalError || result.error, title, start, end });
     return res.status(result.status).json({ error: result.error });
   }
 
@@ -262,7 +262,7 @@ app.put("/api/events/:id", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "event.update", { error: result.error, title, start, end }, id);
+    logger.warn(req, "event.update", { error: result.internalError || result.error, title, start, end }, id);
     return res.status(result.status).json({ error: result.error });
   }
 
@@ -290,7 +290,7 @@ app.delete("/api/events/:id", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM events WHERE id = ?").run(id));
 
   if (!result.success) {
-    logger.warn(req, "event.delete", { error: result.error }, id);
+    logger.warn(req, "event.delete", { error: result.internalError || result.error }, id);
     return res.status(result.status).json({ error: result.error });
   }
 
@@ -333,7 +333,7 @@ app.get("/api/events/ical", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "event.ical", { error: result.error });
+    logger.warn(req, "event.ical", { error: result.internalError || result.error });
     return res.status(result.status).send("Internal error");
   }
 

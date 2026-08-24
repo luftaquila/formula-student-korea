@@ -516,7 +516,7 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 | `user.login` | info | 로그인 |
 | `user.logout` | info | 로그아웃 |
 | `user.create` | info | 사용자 생성 |
-| `user.create_bulk` | info | 사용자 일괄 생성 |
+| `user.bulk_create` | info | 사용자 일괄 생성 |
 | `user.bulk_toggle` | info | 사용자 일괄 활성/비활성 토글 |
 | `user.bulk_delete` | info | 사용자 일괄 삭제 |
 | `user.update` | info | 사용자 정보 수정 |
@@ -531,7 +531,6 @@ chief 이상 권한으로 일정을 추가/수정/삭제할 수 있습니다.
 |------|------|------|
 | `team.create` | info/warn | 엔트리 생성 또는 실패 |
 | `team.update` | info/warn | 엔트리 수정 또는 실패 |
-| `team.deactivate` | info | 엔트리 비활성화 |
 | `team.import_initial` | info/warn | 빈 현재 연도의 초기 엔트리 업로드 또는 실패 |
 | `vehicle_type.create` | info/warn | 차종 추가 또는 실패 |
 | `vehicle_type.update` | info/warn | 연도별 차종 이름·색상·순서 수정 |
