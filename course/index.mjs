@@ -955,7 +955,7 @@ app.post("/api/courses/import", (req, res) => {
 
   if (!result.success) {
     const msg = result.error?.includes("UNIQUE") ? "이미 존재하는 코스 이름입니다." : result.error;
-    logger.warn(req, "course.import", { error: msg }, name);
+    logger.warn(req, "course.import", { error: result.internalError || msg }, name);
     if (result.error?.includes("UNIQUE")) return res.status(400).send("이미 존재하는 코스 이름입니다.");
     return res.status(result.status).send(result.error);
   }
@@ -1000,13 +1000,38 @@ app.delete("/api/courses/:id", (req, res) => {
     });
   }
 
-  const result = dbRun(() => db.prepare("DELETE FROM course WHERE id = ?").run(id));
+  const result = dbRun(() => db.transaction(() => {
+    // course 삭제는 최신 스키마에서 여러 편집 자산을 cascade하고 완료된 미션 기록은
+    // 보존한 채 연결만 끊는다. 삭제 전 범위를 같은 트랜잭션에서 세어 감사 로그가
+    // 실제 적용 결과와 어긋나지 않게 한다.
+    const cascade = {
+      cones: db.prepare("SELECT COUNT(*) AS count FROM cone WHERE course_id = ?").get(id).count,
+      memos: db.prepare("SELECT COUNT(*) AS count FROM memo WHERE course_id = ?").get(id).count,
+      route_markers: db.prepare("SELECT COUNT(*) AS count FROM route_marker WHERE course_id = ?").get(id).count,
+      route_steps: db.prepare("SELECT COUNT(*) AS count FROM route_step WHERE course_id = ?").get(id).count,
+      snapshots: db.prepare("SELECT COUNT(*) AS count FROM course_snapshot WHERE course_id = ?").get(id).count,
+      mission_presets: db.prepare("SELECT COUNT(*) AS count FROM mission_route_preset WHERE course_id = ?").get(id).count,
+      mission_preset_items: db.prepare(`SELECT COUNT(*) AS count
+        FROM mission_route_preset_item item
+        JOIN mission_route_preset preset ON preset.id = item.preset_id
+        WHERE preset.course_id = ?`).get(id).count,
+    };
+    const detached = {
+      missions: db.prepare("SELECT COUNT(*) AS count FROM mission WHERE course_id = ?").get(id).count,
+      mission_waypoints: db.prepare(`SELECT COUNT(*) AS count
+        FROM mission_waypoint waypoint
+        JOIN cone ON cone.id = waypoint.cone_id
+        WHERE cone.course_id = ?`).get(id).count,
+    };
+    db.prepare("DELETE FROM course WHERE id = ?").run(id);
+    return { cascade, detached };
+  })());
   if (!result.success) {
     logger.warn(req, "course.delete", { error: result.internalError || result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "course.delete", { course_id: id }, course.name);
+  logger.log(req, "course.delete", { course_id: id, ...result.result }, course.name);
   broadcastEvent("courses", { type: "delete", courseId: id, courses: getCourses() });
   res.status(200).send();
 });
@@ -1195,7 +1220,13 @@ app.get("/api/courses/:id/route", (req, res) => {
   const course = getCourseById(courseId);
   if (!course) return rejectRouteRequest(req, res, 404, "course_route.read", "코스를 찾을 수 없습니다.", null, { course_id: courseId });
   const result = dbRun(() => getCourseRoute(courseId));
-  if (!result.success) return rejectRouteRequest(req, res, result.status, "course_route.read", result.error, course, { course_id: courseId });
+  if (!result.success) {
+    logger.warn(req, "course_route.read", {
+      error: result.internalError || result.error,
+      course_id: courseId,
+    }, course.name);
+    return res.status(result.status).send(result.error);
+  }
   res.json(result.result);
 });
 
@@ -1218,7 +1249,7 @@ app.post("/api/courses/:id/route/markers", (req, res) => {
     return { marker, route: getCourseRoute(courseId) };
   });
   if (!result.success) {
-    logger.warn(req, "route_marker.create", { error: result.error, lat: body.lat, lng: body.lng }, course.name);
+    logger.warn(req, "route_marker.create", { error: result.internalError || result.error, lat: body.lat, lng: body.lng }, course.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "route_marker.create", { marker_id: result.result.marker.id, lat: body.lat, lng: body.lng, label: label.value }, course.name);
@@ -1253,7 +1284,7 @@ app.patch("/api/route/markers/:id", (req, res) => {
     return { marker: getRouteMarkerById(id), route: getCourseRoute(marker.course_id) };
   });
   if (!result.success) {
-    logger.warn(req, "route_marker.update", { error: result.error, marker_id: id }, course?.name);
+    logger.warn(req, "route_marker.update", { error: result.internalError || result.error, marker_id: id }, course?.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "route_marker.update", {
@@ -1282,7 +1313,7 @@ app.delete("/api/route/markers/:id", (req, res) => {
     return getCourseRoute(marker.course_id);
   })());
   if (!result.success) {
-    logger.warn(req, "route_marker.delete", { error: result.error, marker_id: id, visit_count: before.steps.filter((x) => x === id).length }, course?.name);
+    logger.warn(req, "route_marker.delete", { error: result.internalError || result.error, marker_id: id, visit_count: before.steps.filter((x) => x === id).length }, course?.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "route_marker.delete", { marker_id: id, lat: marker.lat, lng: marker.lng, label: marker.label, removed_visits: before.steps.filter((x) => x === id).length }, course?.name);
@@ -1310,7 +1341,7 @@ app.put("/api/courses/:id/route/steps", (req, res) => {
     return getCourseRoute(courseId);
   })());
   if (!result.success) {
-    logger.warn(req, "course_route.update", { error: result.error, before, requested: steps }, course.name);
+    logger.warn(req, "course_route.update", { error: result.internalError || result.error, before, requested: steps }, course.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "course_route.update", { before, after: steps }, course.name);

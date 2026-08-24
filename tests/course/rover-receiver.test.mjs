@@ -189,6 +189,55 @@ describe('device liveness watchdog', () => {
     }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
   });
 
+  it('attributes rover and Mission v2 stale-watchdog warnings to the system actor', async () => {
+    await withFreshServer(async ({ url, cli, db: isolatedDb }) => {
+      const course = await (await cli.post('/api/courses', {
+        body: { name: 'Stale watchdog course' }, cookie: adminCookie,
+      })).json();
+      const cone = await (await cli.post(`/api/courses/${course.id}/cones`, {
+        body: { lat: 35, lng: 126, side: 'left' }, cookie: adminCookie,
+      })).json();
+      const missionResponse = await cli.post('/api/missions', {
+        body: {
+          course_id: course.id,
+          items: [{ cone_id: cone.id, lat: cone.lat, lng: cone.lng, alt: cone.alt, side: cone.side }],
+        },
+        cookie: adminCookie,
+      });
+      assert.equal(missionResponse.status, 201);
+      const mission = await missionResponse.json();
+      isolatedDb.prepare("UPDATE mission SET lifecycle_state = 'running', status = 'running' WHERE id = ?")
+        .run(mission.id);
+      await cli.get('/api/missions/active', { cookie: adminCookie }); // refresh bounded active summary
+
+      const rover = await openSse(
+        '/api/rover/stream?device=rover&protocol_version=2&boot_id=stale-watchdog',
+        internalHeaders,
+        'connected',
+        url,
+      );
+      try {
+        assert.equal((await statusOf(cli)).connected, true);
+        await poll(() => statusOf(cli), (value) => value.connected === false);
+        const rows = isolatedDb.prepare(`SELECT action, actor_email, actor_name, actor_role FROM logs
+          WHERE action IN ('mission.v2.interrupted', 'rover.stream.stale')
+          ORDER BY id`).all();
+        assert.deepEqual(rows.map((row) => row.action), [
+          'mission.v2.interrupted',
+          'rover.stream.stale',
+        ]);
+        for (const row of rows) {
+          assert.deepEqual(
+            { email: row.actor_email, name: row.actor_name, role: row.actor_role },
+            { email: 'system', name: 'system', role: 'admin' },
+          );
+        }
+      } finally {
+        rover.close();
+      }
+    }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
+  });
+
   it('keeps the receiver online while telemetry keeps arriving', async () => {
     await withFreshServer(async ({ url, cli }) => {
       const receiver = await openSse('/api/rover/stream?device=gps', internalHeaders, 'connected', url);

@@ -1018,7 +1018,7 @@ describe("Competition modular monolith", () => {
     }
   });
 
-  it("audits a rejected Documents sender result with recipient and integration error", async () => {
+  it("aggregates a rejected Documents sender result with recipient and integration error", async () => {
     const fixture = fixtureRoot();
     fixtures.push(fixture);
     const created = createCompetitionApp({
@@ -1051,19 +1051,24 @@ describe("Competition modular monolith", () => {
       assert.equal(notification.sent, 0);
       assert.deepEqual(JSON.parse(notification.sent_recipients), []);
       assert.equal(notification.attempts, 1);
-      const warning = created.db.prepare(`
+      const warnings = created.db.prepare(`
         SELECT actor_email, detail FROM logs
         WHERE action = 'schedule.session_open' AND level = 'warn'
-          AND detail LIKE '%recipient_send%'
-        ORDER BY id DESC LIMIT 1
-      `).get();
+          AND target = 'Sender rejection'
+        ORDER BY id
+      `).all();
+      assert.equal(warnings.length, 1, "one scheduler attempt must produce one aggregate warning");
+      const warning = warnings[0];
       assert.equal(warning.actor_email, null);
       assert.deepEqual(JSON.parse(warning.detail), {
-        error: "injected email service rejection",
-        reason: "injected email service rejection",
-        recipient: "notify-c@test.invalid",
-        phase: "recipient_send",
+        error: "partial_send",
         sent: 0,
+        remaining: 1,
+        attempts: 1,
+        failed: [{
+          email: "notify-c@test.invalid",
+          error: "injected email service rejection",
+        }],
       });
     } finally {
       await created.close();

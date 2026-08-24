@@ -521,7 +521,7 @@ app.put("/api/sheet/template/:id", (req, res) => {
 app.delete("/api/sheet/template/:id", (req, res) => {
   const id = Number(req.params.id);
   const node = templateNodePreflight(req, res, {
-    action: "template.delete", id, columns: "year, name",
+    action: "template.delete", id, columns: "year, level, name",
   });
   if (!node) return;
   if (node.year !== currentCompetitionYear()) {

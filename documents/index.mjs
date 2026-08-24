@@ -2081,22 +2081,9 @@ async function runScheduledNotifications() {
           } else {
             const error = result.error || "email_send_rejected";
             if (failed.length < 10) failed.push({ email, error });
-            logger.warn(null, `schedule.${n.type}`, {
-              error,
-              reason: error,
-              recipient: email,
-              phase: "recipient_send",
-              sent: alreadySent.size,
-            }, n.name);
           }
         } catch (error) {
           if (failed.length < 10) failed.push({ email, error: error?.message || String(error) });
-          logger.warn(null, `schedule.${n.type}`, {
-            error: error?.message || String(error),
-            recipient: email,
-            phase: "recipient_send",
-            sent: alreadySent.size,
-          }, n.name);
         }
       }
 

@@ -18,6 +18,14 @@ import {
 import { createQueueApp, INSPECTIONS } from '../../queue/index.mjs';
 import { competitionYearBounds, currentCompetitionYear } from '../../shared/competition-year.mjs';
 
+function withFailureTimeout(promise, label, timeoutMs = 2_000) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 const CURRENT_YEAR = currentCompetitionYear();
 
 const TEST_TEAMS = {
@@ -2049,7 +2057,7 @@ describe('Queue logging audit', () => {
         body: { num: 1 }, cookie: officialCookie,
       });
       assert.equal(cancelled.status, 200, await cancelled.clone().text());
-      await failed;
+      await withFailureTimeout(failed, 'simulated SMS socket failure');
       await Promise.resolve();
 
       const rows = created.db.prepare(`

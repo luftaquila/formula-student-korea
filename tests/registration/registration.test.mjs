@@ -252,6 +252,37 @@ describe("Registration queue", () => {
     assert.equal(warning.detail.includes("01099999999"), false);
   });
 
+  it("logs only the first rejected lookup in each rate-limit window", async () => {
+    const f = await fixture();
+    const team = f.team(23);
+    await openQueue(f);
+    await register(f, team, "01023232323");
+
+    const statuses = [];
+    for (let i = 0; i < 62; i += 1) {
+      const response = await f.client.post("/api/lookup", {
+        headers: { "X-Real-IP": "192.0.2.23" },
+        body: { year: YEAR, num: team.number, phone: "01023232323" },
+      });
+      statuses.push(response.status);
+    }
+    assert.deepEqual(statuses.slice(0, 60), Array(60).fill(200));
+    assert.deepEqual(statuses.slice(60), [429, 429]);
+
+    const warnings = f.db.prepare(`
+      SELECT detail FROM logs
+      WHERE module = 'registration' AND action = 'registration.lookup' AND level = 'warn'
+        AND json_extract(detail, '$.reason') = 'rate_limit'
+      ORDER BY id
+    `).all();
+    assert.equal(warnings.length, 1);
+    assert.deepEqual(JSON.parse(warnings[0].detail), {
+      reason: "rate_limit",
+      count: 61,
+      ip: "192.0.2.23",
+    });
+  });
+
   it("keeps stable team identity through renumbering and retains the phone in finished history", async () => {
     const f = await fixture();
     const team = f.team(31);

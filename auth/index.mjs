@@ -187,7 +187,7 @@ async function notifyNewUser(emails) {
 
 // validateUserCacheTtl: 0 — auth의 검증기는 로컬 인덱스 SELECT라 캐시가 무익하고,
 // auth 자신의 사용자 관리 UI는 역할 변경이 즉시 반영되어야 한다.
-const app = createApp({ express, validateUser, validateUserCacheTtl: 0 }, (req) => {
+const app = createApp({ express, logger, validateUser, validateUserCacheTtl: 0 }, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/forward-auth") return null;
   if (req.path === "/api/session") return null;

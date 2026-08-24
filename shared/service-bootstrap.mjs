@@ -20,6 +20,7 @@ export function createServiceSkeleton({
   const logger = createLogger(db, name, maxLogRows);
   const deps = {
     express,
+    logger,
     validateUser: options.validateUser,
     staticRoot: options.staticRoot,
   };

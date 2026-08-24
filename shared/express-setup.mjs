@@ -138,6 +138,25 @@ export function createApp(deps, authRoleFn) {
   const { express } = deps;
   ensureDataDir();
 
+  // 보안 차단은 공격자가 요청 속도로 반복할 수 있으므로 원인별로 60초에 한 번만
+  // 기록한다. 키는 고정된 두 종류뿐이라 공격자가 경로나 IP를 바꿔도 상태가 무한히
+  // 늘지 않는다. 다음 기록에는 그동안 억눌린 횟수를 포함한다.
+  const SECURITY_WARN_INTERVAL_MS = 60 * 1000;
+  const securityWarnState = new Map();
+  const securityNow = deps.securityWarnNow || Date.now;
+  function warnSecurity(req, key, action, detail, target, fallbackMessage) {
+    const now = securityNow();
+    const state = securityWarnState.get(key);
+    if (state && now - state.at < SECURITY_WARN_INTERVAL_MS) {
+      state.suppressed += 1;
+      return;
+    }
+    const auditDetail = state?.suppressed ? { ...detail, suppressed: state.suppressed } : detail;
+    securityWarnState.set(key, { at: now, suppressed: 0 });
+    if (deps.logger?.warn) deps.logger.warn(req, action, auditDetail, target);
+    else console.warn(`${fallbackMessage}${state?.suppressed ? ` (suppressed ${state.suppressed})` : ""}`);
+  }
+
   if (process.env.NODE_ENV === "production" && !process.env.JWT_SECRET) {
     console.error("FATAL: JWT_SECRET must be set in production. Exiting.");
     process.exit(1);
@@ -198,9 +217,12 @@ export function createApp(deps, authRoleFn) {
   app.use((req, res, next) => {
     if (CSRF_SAFE_METHODS.has(req.method)) return next();
     if (req.headers["sec-fetch-site"] === "cross-site") {
-      // 차단 발동 = 공격 아니면 연동 버그 — 둘 다 봐야 한다. 이 계층에는 logger가 없어
-      // (createLogger는 서비스 DB 필요, 여기는 앱 골격 조립 시점) 콘솔로 남긴다.
-      console.warn(`[csrf] blocked cross-site ${req.method} ${req.originalUrl || req.url} from ${req.headers["x-real-ip"] || req.ip}`);
+      const path = req.originalUrl || req.url;
+      warnSecurity(req, "csrf_cross_site", "auth.csrf_rejected", {
+        reason: "cross_site_write",
+        method: req.method,
+        path,
+      }, path, `[csrf] blocked cross-site ${req.method} ${path} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("cross-site 요청은 허용되지 않습니다.");
     }
     next();
@@ -239,8 +261,13 @@ export function createApp(deps, authRoleFn) {
         return next();
       }
       // Caddy가 외부의 이 헤더를 벗기므로, 불일치는 시크릿 로테이션 실수(장애급 설정
-      // 오류)거나 내부망 탐색이다. 이 계층에는 logger가 없어 콘솔로 남긴다.
-      console.warn(`[auth] internal-secret mismatch on ${req.method} ${req.originalUrl || req.url} from ${req.headers["x-real-ip"] || req.ip}`);
+      // 오류)거나 내부망 탐색이다. 헤더 값 자체는 시크릿 후보이므로 기록하지 않는다.
+      const path = req.originalUrl || req.url;
+      warnSecurity(req, "internal_secret_mismatch", "auth.internal_secret_rejected", {
+        reason: "secret_mismatch",
+        method: req.method,
+        path,
+      }, path, `[auth] internal-secret mismatch on ${req.method} ${path} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("Forbidden");
     }
     const token = req.cookies.fsk_session;

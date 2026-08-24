@@ -311,6 +311,17 @@ describe('Template CRUD', () => {
     const delRes = await client.delete(`/api/sheet/template/${tempCatId}`, { cookie: adminCookie });
     assert.equal(delRes.status, 200);
 
+    const audit = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'template.delete' AND target = 'TempCat'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.deepEqual(JSON.parse(audit.detail), {
+      year: CURRENT_YEAR,
+      level: 'category',
+      id: tempCatId,
+    });
+
     // Verify child is gone too
     const tree = await (await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, { cookie: officialCookie })).json();
     const ids = [];

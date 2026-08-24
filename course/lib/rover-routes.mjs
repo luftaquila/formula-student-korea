@@ -502,11 +502,11 @@ const deviceLivenessWatchdog = setInterval(() => {
         after: "interrupted",
         reason: "telemetry_stale",
         boot_id: roverBootId,
-      }, "rover");
+      }, "rover", SYS);
       broadcastMissionMutation(interrupted);
     }
     roverProtocolVersion = 0;
-    logger.warn(null, "rover.stream.stale", { silent_ms: now - roverState.last_seen }, "rover");
+    logger.warn(null, "rover.stream.stale", { silent_ms: now - roverState.last_seen }, "rover", SYS);
     broadcastRoverStatus();
   }
   if (receiverState.connected && now - receiverState.last_seen > DEVICE_STALE_MS) {
@@ -2679,12 +2679,25 @@ app.post("/api/rover/pump-duration", (req, res) => {
 // 조이스틱 입력은 초당 수십 패킷으로 들어오므로 패킷 단위로 로깅하지 않는다.
 // 성공은 "운전 세션" 경계에서만 한 줄 남긴다 — 직전 패킷에서 5분 넘게 지났거나
 // 다른 사용자가 조종을 시작하면 새 세션으로 본다(세션당 감사 로그 1건).
-// 로버 미연결 warn도 같은 이유로 사용자별 60초에 한 번만 남긴다.
+// 반복 거부 warn도 같은 이유로 사용자·실패 원인별 60초에 한 번만 남긴다.
 const CONTROL_SESSION_GAP_MS = 5 * 60 * 1000;
-const CONTROL_NO_ROVER_WARN_INTERVAL_MS = 60 * 1000;
+const CONTROL_WARN_INTERVAL_MS = 60 * 1000;
 let lastControlAt = 0;
 let lastControlActor = null;
-const controlNoRoverWarnAt = new Map(); // actor email → 마지막 warn 시각 (epoch ms)
+const controlWarnState = new Map(); // actor email + 실패 원인 → { at, suppressed }
+function warnControlThrottled(req, actor, reason, detail, now) {
+  const key = `${actor || "anonymous"}:${reason}`;
+  const state = controlWarnState.get(key);
+  if (state && now - state.at < CONTROL_WARN_INTERVAL_MS) {
+    state.suppressed += 1;
+    return;
+  }
+  logger.warn(req, "rover.control", {
+    ...detail,
+    ...(state?.suppressed ? { suppressed: state.suppressed } : {}),
+  }, "rover");
+  controlWarnState.set(key, { at: now, suppressed: 0 });
+}
 app.post("/api/rover/control", (req, res) => {
   const { throttle, steering } = req.body;
   if (typeof throttle !== "number" || typeof steering !== "number" || !Number.isFinite(throttle) || !Number.isFinite(steering)) {
@@ -2700,21 +2713,19 @@ app.post("/api/rover/control", (req, res) => {
   const activeMission = missionV2.activeMissionSummary();
   if ((t !== 0 || s !== 0) && activeMission
       && !activeMission.motion_confirmed_held) {
-    logger.warn(req, "rover.control", {
+    warnControlThrottled(req, actor, "autonomous_mission_not_held", {
       error: "autonomous_mission_not_held",
       mission_id: activeMission.id,
       mission_status: activeMission.status,
       throttle: t,
       steering: s,
-    }, "rover");
+    }, now);
     return res.status(409).send("자율 미션을 먼저 일시정지한 뒤 수동 조작하세요.");
   }
   if (!roverClient) {
-    const lastWarnAt = controlNoRoverWarnAt.get(actor) || 0;
-    if (now - lastWarnAt >= CONTROL_NO_ROVER_WARN_INTERVAL_MS) {
-      controlNoRoverWarnAt.set(actor, now);
-      logger.warn(req, "rover.control", { error: "not_connected", throttle: t, steering: s }, "rover");
-    }
+    warnControlThrottled(req, actor, "not_connected", {
+      error: "not_connected", throttle: t, steering: s,
+    }, now);
     return res.status(503).send("로버가 연결되어 있지 않습니다.");
   }
 
