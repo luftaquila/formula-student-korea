@@ -2,6 +2,77 @@ function radians(value) {
   return value * Math.PI / 180;
 }
 
+const MISSION_ROUTE_COLOR_STOPS = Object.freeze([
+  Object.freeze([34, 197, 94]),
+  Object.freeze([234, 179, 8]),
+  Object.freeze([249, 115, 22]),
+  Object.freeze([239, 68, 68]),
+]);
+
+export function missionRouteProgressColor(index, segmentCount) {
+  const count = Math.max(1, Number(segmentCount) || 1);
+  const progress = count <= 1 ? 0 : Math.max(0, Math.min(1, Number(index) / (count - 1)));
+  const scaled = progress * (MISSION_ROUTE_COLOR_STOPS.length - 1);
+  const stopIndex = Math.min(Math.floor(scaled), MISSION_ROUTE_COLOR_STOPS.length - 2);
+  const localProgress = scaled - stopIndex;
+  const start = MISSION_ROUTE_COLOR_STOPS[stopIndex];
+  const end = MISSION_ROUTE_COLOR_STOPS[stopIndex + 1];
+  const channels = start.map((value, channel) => Math.round(
+    value + (end[channel] - value) * localProgress,
+  ));
+  return `rgb(${channels.join(",")})`;
+}
+
+export function missionRouteMapSegments(items) {
+  const valid = items
+    .map((item, index) => ({ item, index }))
+    .filter(({ item }) => Number.isFinite(item?.lat) && Number.isFinite(item?.lng));
+  const segmentCount = Math.max(0, valid.length - 1);
+  return valid.slice(0, -1).map((from, index) => ({
+    from: from.item,
+    to: valid[index + 1].item,
+    fromIndex: from.index,
+    toIndex: valid[index + 1].index,
+    color: missionRouteProgressColor(index, segmentCount),
+  }));
+}
+
+// Geographic chevron points keep direction arrows aligned with the route when
+// leaflet-rotate turns the map. Pixel/CSS-rotated icons would need their angle
+// corrected after every bearing change.
+export function missionRouteDirectionArrow(from, to) {
+  if (![from?.lat, from?.lng, to?.lat, to?.lng].every(Number.isFinite)) return [];
+  const meanLat = radians((from.lat + to.lat) / 2);
+  const metersPerLat = 110540;
+  const metersPerLng = 111320 * Math.cos(meanLat);
+  const east = (to.lng - from.lng) * metersPerLng;
+  const north = (to.lat - from.lat) * metersPerLat;
+  const distance = Math.hypot(east, north);
+  if (distance < 0.5 || Math.abs(metersPerLng) < 1e-6) return [];
+
+  const forwardEast = east / distance;
+  const forwardNorth = north / distance;
+  const leftEast = -forwardNorth;
+  const leftNorth = forwardEast;
+  const length = Math.min(3, Math.max(0.8, distance * 0.28), distance * 0.62);
+  const halfWidth = Math.max(0.35, length * 0.42);
+  const tip = {
+    lat: from.lat + (to.lat - from.lat) * 0.56,
+    lng: from.lng + (to.lng - from.lng) * 0.56,
+  };
+  const point = (back, side) => ({
+    lat: tip.lat + (-back * forwardNorth + side * leftNorth) / metersPerLat,
+    lng: tip.lng + (-back * forwardEast + side * leftEast) / metersPerLng,
+  });
+  return [point(length, halfWidth), tip, point(length, -halfWidth)];
+}
+
+// Match the main map's leaflet-rotate raster workaround. An exact 180-degree
+// transform can enter a browser fast path that leaves satellite tiles blank.
+export function renderMissionMapBearing(bearing) {
+  return bearing === 180 ? 179.9 : bearing;
+}
+
 export function routeDistance(a, b) {
   const earth = 6371000;
   const dLat = radians(b.lat - a.lat);

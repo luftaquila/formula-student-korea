@@ -8,8 +8,11 @@ import {
   groupRouteMapVisits,
   missionConeDisplayName,
   missionConeShortName,
+  missionRouteDirectionArrow,
+  missionRouteMapSegments,
   moveRouteItem,
   optimizeConeRoute,
+  renderMissionMapBearing,
 } from "../lib/mission-route.mjs";
 import {
   missionEmptyRouteMode,
@@ -29,6 +32,7 @@ const props = defineProps({
   busy: { type: Boolean, default: false },
   presetBusy: { type: Boolean, default: false },
   completedCount: { type: Number, default: 0 },
+  mapBearing: { type: Number, default: 0 },
 });
 const emit = defineEmits(["close", "apply", "run", "save-preset", "delete-preset"]);
 
@@ -214,19 +218,24 @@ let builderMap = null;
 let coneMapLayer = null;
 let routeMapLayer = null;
 let positionMapLayer = null;
+let mapInitCancelled = false;
 
 function addBaseMapLayer() {
   const vworldKey = window.__VWORLD_KEY__;
+  // The popup map is short-lived. Keep no off-screen tile ring and fetch after
+  // movement settles so opening it does not leave a large decoded-image set in
+  // the browser after teardown.
+  const tileOptions = { keepBuffer: 0, updateWhenIdle: true };
   if (vworldKey) {
     L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${vworldKey}/Satellite/{z}/{y}/{x}.jpeg`, {
-      attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
+      ...tileOptions, attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
     }).addTo(builderMap);
     L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${vworldKey}/Hybrid/{z}/{y}/{x}.png`, {
-      attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
+      ...tileOptions, attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
     }).addTo(builderMap);
   } else {
     L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
-      subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
+      ...tileOptions, subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
     }).addTo(builderMap);
   }
 }
@@ -258,11 +267,27 @@ function renderRouteMapLayer() {
   if (!builderMap || !routeMapLayer) return;
   routeMapLayer.clearLayers();
   const visitsByLocation = groupRouteMapVisits(route.value);
-  const validRoute = visitsByLocation.flat().sort((a, b) => a.index - b.index);
-  if (validRoute.length >= 2) {
-    L.polyline(validRoute.map(({ item }) => [item.lat, item.lng]), {
-      color: "#8b5cf6", weight: 4, opacity: 0.88,
+  const segments = missionRouteMapSegments(route.value);
+  if (segments.length > 0) {
+    const path = [segments[0].from, ...segments.map(({ to }) => to)];
+    L.polyline(path.map(({ lat, lng }) => [lat, lng]), {
+      color: "#0b1021", weight: 7, opacity: 0.72, interactive: false,
+      lineCap: "round", lineJoin: "round",
     }).addTo(routeMapLayer);
+  }
+  for (const { from, to, color } of segments) {
+    L.polyline([[from.lat, from.lng], [to.lat, to.lng]], {
+      color, weight: 4, opacity: 1, interactive: false,
+      lineCap: "round", lineJoin: "round",
+    }).addTo(routeMapLayer);
+    const arrow = missionRouteDirectionArrow(from, to);
+    if (arrow.length > 0) {
+      const latlngs = arrow.map((point) => [point.lat, point.lng]);
+      L.polygon(latlngs, {
+        color: "#0b1021", weight: 1.5, opacity: 1, interactive: false,
+        fillColor: color, fillOpacity: 1, lineJoin: "round",
+      }).addTo(routeMapLayer);
+    }
   }
 
   for (const visits of visitsByLocation) {
@@ -347,10 +372,21 @@ function centerMapOnCurrent() {
   }
 }
 
-function initBuilderMap() {
+async function initBuilderMap() {
   if (!mapElement.value || builderMap) return;
+  const expectedElement = mapElement.value;
+  // MapView normally loaded the plugin already. Keep the conditional fallback
+  // for isolated component mounts without re-running plugin initialization on
+  // every popup open.
+  if (typeof L.Map.prototype.setBearing !== "function") {
+    globalThis.L = L;
+    await import("leaflet-rotate");
+  }
+  if (mapInitCancelled || !mapElement.value || mapElement.value !== expectedElement || builderMap) return;
   builderMap = L.map(mapElement.value, {
     preferCanvas: true, zoomControl: true, maxZoom: 21, boxZoom: false,
+    rotate: true, rotateControl: false, touchRotate: false, shiftKeyRotate: false,
+    bearing: renderMissionMapBearing(props.mapBearing),
   }).setView([35.292012, 126.574415], 19);
   addBaseMapLayer();
   coneMapLayer = L.layerGroup().addTo(builderMap);
@@ -373,11 +409,21 @@ watch(() => props.cones, () => {
 }, { deep: true });
 watch(() => props.currentPosition, renderPositionMapLayer, { deep: true });
 watch(() => props.missionStart, renderPositionMapLayer, { deep: true });
+watch(() => props.mapBearing, (bearing) => {
+  if (builderMap) builderMap.setBearing(renderMissionMapBearing(bearing));
+});
 watch(activeRouteIndex, renderRouteMapLayer);
 
-onMounted(() => nextTick(initBuilderMap));
+onMounted(() => nextTick(() => { void initBuilderMap(); }));
 onBeforeUnmount(() => {
-  if (builderMap) builderMap.remove();
+  mapInitCancelled = true;
+  coneMapLayer?.clearLayers();
+  routeMapLayer?.clearLayers();
+  positionMapLayer?.clearLayers();
+  if (builderMap) {
+    builderMap.off();
+    builderMap.remove();
+  }
   builderMap = null;
   coneMapLayer = null;
   routeMapLayer = null;
@@ -475,9 +521,11 @@ function drop(index) {
               <span><i class="legend-dot center"></i>중앙</span>
               <span><i class="legend-dot right"></i>오른쪽</span>
               <span><i class="legend-route">1</i>방문 순서</span>
+              <span><i class="legend-progress"></i>초기→후반</span>
+              <span><i class="legend-direction">›</i>진행 방향</span>
             </div>
           </div>
-          <p class="map-help">콘을 지도에서 바로 누르면 경로에 추가되며, 다시 누르면 해당 콘의 방문이 제거됩니다.</p>
+          <p class="map-help">콘을 누르면 경로에 추가·제거됩니다. 경로색은 초록에서 빨강 순서로, 화살표는 진행 방향을 나타냅니다.</p>
         </section>
 
         <section class="route-editor">
@@ -580,7 +628,6 @@ function drop(index) {
   place-items: center;
   padding: .5rem;
   background: rgba(2, 6, 23, .78);
-  backdrop-filter: blur(4px);
 }
 
 .mission-builder {
@@ -924,6 +971,24 @@ function drop(index) {
   font-size: .62rem;
   font-style: normal;
   font-weight: 800;
+}
+.legend-progress {
+  width: 38px;
+  height: 6px;
+  border: 1px solid rgba(255, 255, 255, .8);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #22c55e, #eab308, #f97316, #ef4444);
+}
+.legend-direction {
+  width: 18px;
+  height: 18px;
+  display: inline-grid;
+  place-items: center;
+  color: #f8fafc;
+  font-size: 20px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1;
 }
 .map-help {
   margin: .45rem 0 0;
