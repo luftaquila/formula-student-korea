@@ -143,7 +143,7 @@ function startMission(waypoints, actor, courseId) {
     return insertMission.run(courseId || null, Date.now(), JSON.stringify(waypoints), actor || null);
   })());
   if (!r.success) {
-    logger.warn(null, "mission.start", { error: r.error, cause: r.cause, course_id: courseId, actor }, "rover", SYS);
+    logger.warn(null, "mission.start", { error: r.internalError || r.error, course_id: courseId, actor }, "rover", SYS);
     return false;
   }
   if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior, actor }, "rover", SYS);
@@ -1898,7 +1898,7 @@ app.put("/api/gps/config", (req, res) => {
     setGpsConfigStmt.run("active_base_point_id", point ? String(point.id) : "");
   });
   if (!result.success) {
-    logger.warn(req, "gps.config.update", { error: result.error, cause: result.cause }, "gps");
+    logger.warn(req, "gps.config.update", { error: result.internalError || result.error }, "gps");
     return res.status(result.status).send(result.error);
   }
   ntripSourceCache = ntrip_source;
@@ -1932,7 +1932,7 @@ app.post("/api/gps/survey-points", (req, res) => {
     return getSurveyPointStmt.get(Number(info.lastInsertRowid));
   });
   if (!result.success) {
-    logger.warn(req, "gps.survey_point.create", { error: result.error, cause: result.cause }, name);
+    logger.warn(req, "gps.survey_point.create", { error: result.internalError || result.error }, name);
     return res.status(result.status).send(
       result.error?.includes("UNIQUE") ? "이미 존재하는 측량점 이름입니다." : result.error);
   }
@@ -1954,7 +1954,7 @@ app.delete("/api/gps/survey-points/:id", (req, res) => {
   }
   const result = dbRun(() => deleteSurveyPointStmt.run(id));
   if (!result.success) {
-    logger.warn(req, "gps.survey_point.delete", { error: result.error, cause: result.cause, id }, point.name);
+    logger.warn(req, "gps.survey_point.delete", { error: result.internalError || result.error, id }, point.name);
     return res.status(result.status).send(result.error);
   }
   // 측량 중이던 측량점을 지웠으면 base 상태를 즉시 idle로 되돌린다(수신기 survey-result를
@@ -2066,7 +2066,7 @@ app.post("/api/rover/base/survey-result", (req, res) => {
   const result = dbRun(() =>
     updateSurveyPointResultStmt.run(lat, lng, altValue, hAccValue, sampleCount, id));
   if (!result.success) {
-    logger.warn(req, "gps.survey.result", { error: result.error, cause: result.cause, id }, point.name);
+    logger.warn(req, "gps.survey.result", { error: result.internalError || result.error, id }, point.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "gps.survey.result",
@@ -2693,6 +2693,8 @@ app.post("/api/rover/control", (req, res) => {
 
   const t = Math.max(-100, Math.min(100, throttle));
   const s = Math.max(-100, Math.min(100, steering));
+  const actor = req.user?.email || null;
+  const now = Date.now();
   // Joystick input arrives at up to 20 Hz. Manual-authority gating needs only
   // the mutation-maintained bounded summary, never the full occurrence plan.
   const activeMission = missionV2.activeMissionSummary();
@@ -2707,7 +2709,14 @@ app.post("/api/rover/control", (req, res) => {
     }, "rover");
     return res.status(409).send("자율 미션을 먼저 일시정지한 뒤 수동 조작하세요.");
   }
-  if (!roverClient) return rejectNoRover(req, res, "rover.control", { throttle: t, steering: s });
+  if (!roverClient) {
+    const lastWarnAt = controlNoRoverWarnAt.get(actor) || 0;
+    if (now - lastWarnAt >= CONTROL_NO_ROVER_WARN_INTERVAL_MS) {
+      controlNoRoverWarnAt.set(actor, now);
+      logger.warn(req, "rover.control", { error: "not_connected", throttle: t, steering: s }, "rover");
+    }
+    return res.status(503).send("로버가 연결되어 있지 않습니다.");
+  }
 
   if (!sendRoverEvent("manual-control", { throttle: t, steering: s })) {
     logger.warn(req, "rover.control", { error: "write_failed" }, "rover");

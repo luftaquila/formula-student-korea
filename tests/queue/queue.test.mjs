@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.resolve('../../queue/index.mjs'));
 const Database = require('better-sqlite3');
@@ -26,9 +27,12 @@ const TEST_TEAMS = {
 };
 const teamStore = {
   moduleEntries: () => TEST_TEAMS,
-  getByNumber: (_year, num) => Number(num) === 999
-    ? null
-    : (TEST_TEAMS[num] ?? { id: Number(num), num: Number(num), univ: '테스트대', team: `팀${num}`, active: true }),
+  getByNumber: (_year, num, { includeInactive = false } = {}) => {
+    if (Number(num) === 999) return null;
+    const team = TEST_TEAMS[num]
+      ?? { id: Number(num), num: Number(num), univ: '테스트대', team: `팀${num}`, active: true };
+    return team.active || includeInactive ? team : null;
+  },
 };
 
 setupTestEnv();
@@ -1934,55 +1938,45 @@ describe('Queue legacy → normalized migration', () => {
   });
 });
 
-// ─── Logging audit: 비활성 409 warn / team.active 400 warn / queue.cancel detail ─
-// sms.send 통합 액션(timeout/socket-error 포함 동일 action)은 여기서 검증하지 않는다:
-// 테스트 환경에서는 smsConfig가 로드되지 않아 sendSmsNotification이 조기 반환하고,
-// NCP HTTPS 호출을 결정적으로 실패시킬 주입 지점이 없다.
+// ─── Logging audit: 비활성 409 warn / queue.cancel detail / SMS action ────
 describe('Queue logging audit', () => {
-  const year = new Date().getFullYear();
+  const year = CURRENT_YEAR;
   const lastLog = (action, target) => db.prepare(
     "SELECT * FROM logs WHERE action = ? AND target = ? ORDER BY id DESC LIMIT 1",
   ).get(action, target);
 
   it('warns priority.set when the entry is deactivated (409)', async () => {
     const num = 880;
-    const deactivate = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num, year, active: false, revision: 1 },
-    });
-    assert.equal(deactivate.status, 200);
-
-    const res = await client.post('/api/admin/priority/battery', {
-      body: { num, priority: 1 },
-      cookie: chiefCookie,
-    });
-    assert.equal(res.status, 409);
-    const log = lastLog('priority.set', `#${num}`);
-    assert.equal(log.level, 'warn');
-    assert.ok(log.detail.includes('비활성화'), 'warn detail must state the entry is deactivated');
+    TEST_TEAMS[num] = { id: num, num, univ: '비활성대', team: '비활성팀', active: false };
+    try {
+      const res = await client.post('/api/admin/priority/battery', {
+        body: { num, priority: 1 },
+        cookie: chiefCookie,
+      });
+      assert.equal(res.status, 409);
+      const log = lastLog('priority.set', `#${num}`);
+      assert.equal(log.level, 'warn');
+      assert.ok(log.detail.includes('inactive_or_missing_team'));
+    } finally {
+      delete TEST_TEAMS[num];
+    }
   });
 
   it('warns booth.enter when the entry is deactivated (409)', async () => {
-    const num = 880; // 위 테스트에서 비활성화됨
-    const res = await client.post('/api/admin/booths/battery/1/enter', {
-      body: { num },
-      cookie: officialCookie,
-    });
-    assert.equal(res.status, 409);
-    const log = lastLog('booth.enter', `#${num}`);
-    assert.equal(log.level, 'warn');
-    assert.ok(log.detail.includes('비활성화'), 'warn detail must state the entry is deactivated');
-  });
-
-  it('warns team.active on an invalid internal body (missing revision → 400)', async () => {
-    const res = await client.patch('/api/internal/team-active', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-      body: { num: 881, year, active: false },
-    });
-    assert.equal(res.status, 400);
-    const log = db.prepare("SELECT * FROM logs WHERE action = 'team.active' ORDER BY id DESC LIMIT 1").get();
-    assert.equal(log.level, 'warn');
-    assert.ok(log.detail.includes('올바르지 않은'), 'warn detail must state the request was invalid');
+    const num = 881;
+    TEST_TEAMS[num] = { id: num, num, univ: '비활성대', team: '비활성팀', active: false };
+    try {
+      const res = await client.post('/api/admin/booths/battery/1/enter', {
+        body: { num },
+        cookie: officialCookie,
+      });
+      assert.equal(res.status, 409);
+      const log = lastLog('booth.enter', `#${num}`);
+      assert.equal(log.level, 'warn');
+      assert.ok(log.detail.includes('inactive_or_missing_team'));
+    } finally {
+      delete TEST_TEAMS[num];
+    }
   });
 
   it('queue.cancel info detail includes the applied penalty (or penalty:false)', async () => {
@@ -2010,5 +2004,73 @@ describe('Queue logging audit', () => {
       'detail must state the applied penalty minutes or penalty:false');
 
     db.prepare("DELETE FROM cancel_penalty WHERE num = 3 AND year = ?").run(year);
+  });
+
+  it('logs socket failures under the unified sms.send action', async () => {
+    const isolatedPath = tmpDbPath();
+    let requestFailed;
+    const failed = new Promise((resolve) => { requestFailed = resolve; });
+    const smsRequest = () => {
+      const request = new EventEmitter();
+      request.setTimeout = () => request;
+      request.write = () => {};
+      request.destroy = () => {};
+      request.end = () => queueMicrotask(() => {
+        request.emit('error', Object.assign(new Error('simulated SMS socket failure'), { code: 'ECONNRESET' }));
+        requestFailed();
+      });
+      return request;
+    };
+    const created = createQueueApp({
+      dbPath: isolatedPath,
+      validateUser: TRUST_JWT,
+      teamStore,
+      smsRequest,
+      smsConfig: {
+        naver_cloud_access_key: 'access',
+        naver_cloud_secret_key: 'secret',
+        naver_cloud_sms_service_id: 'service',
+        phone_number_sms_sender: '01000000000',
+      },
+    });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      created.db.prepare("UPDATE settings SET value = 'TRUE' WHERE key = 'sms'").run();
+      created.db.prepare("UPDATE settings SET value = '1' WHERE key = 'sms_rank'").run();
+      for (const [num, phone] of [[1, '01011112222'], [2, '01022223333']]) {
+        const registered = await isolated.post('/api/admin/register/battery', {
+          body: { num, phone }, cookie: chiefCookie,
+        });
+        assert.equal(registered.status, 201, await registered.clone().text());
+      }
+
+      const cancelled = await isolated.post('/api/admin/cancel/battery', {
+        body: { num: 1 }, cookie: officialCookie,
+      });
+      assert.equal(cancelled.status, 200, await cancelled.clone().text());
+      await failed;
+      await Promise.resolve();
+
+      const rows = created.db.prepare(`
+        SELECT action, level, detail FROM logs
+        WHERE action IN ('sms.send', 'sms.timeout', 'sms.error')
+        ORDER BY id
+      `).all();
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].action, 'sms.send');
+      assert.equal(rows[0].level, 'warn');
+      assert.deepEqual(JSON.parse(rows[0].detail), {
+        error: 'simulated SMS socket failure',
+        code: 'SMS_SEND_FAILED',
+        num: 2,
+        type: 'battery',
+      });
+    } finally {
+      for (const timer of created.timers || []) clearInterval(timer);
+      await stopServer(started.server);
+      created.db.close();
+      cleanup(isolatedPath);
+    }
   });
 });

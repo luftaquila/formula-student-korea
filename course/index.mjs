@@ -602,10 +602,10 @@ app.post("/api/courses", (req, res) => {
 
   if (!result.success) {
     if (result.error?.includes("UNIQUE")) {
-      logger.warn(req, "course.create", { error: result.error, cause: result.cause }, validation.value);
+      logger.warn(req, "course.create", { error: result.internalError || result.error }, validation.value);
       return res.status(400).send("이미 존재하는 코스 이름입니다.");
     }
-    logger.warn(req, "course.create", { error: result.error, cause: result.cause }, validation.value);
+    logger.warn(req, "course.create", { error: result.internalError || result.error }, validation.value);
     return res.status(result.status).send(result.error);
   }
 
@@ -632,10 +632,10 @@ app.patch("/api/courses/:id", (req, res) => {
 
   if (!result.success) {
     if (result.error?.includes("UNIQUE")) {
-      logger.warn(req, "course.rename", { error: result.error, cause: result.cause }, course.name);
+      logger.warn(req, "course.rename", { error: result.internalError || result.error }, course.name);
       return res.status(400).send("이미 존재하는 코스 이름입니다.");
     }
-    logger.warn(req, "course.rename", { error: result.error, cause: result.cause }, course.name);
+    logger.warn(req, "course.rename", { error: result.internalError || result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -689,7 +689,7 @@ app.patch("/api/courses/:id/direction", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "course.direction", { error: result.error, cause: result.cause, ...detail }, course.name);
+    logger.warn(req, "course.direction", { error: result.internalError || result.error, ...detail }, course.name);
     return res.status(result.status).send(result.error);
   }
   if (!result.result) {
@@ -783,7 +783,7 @@ app.post("/api/courses/:id/snapshots", (req, res) => {
 
   const result = dbRun(() => takeCourseSnapshot(id, actor, reason));
   if (!result.success) {
-    logger.warn(req, "course.snapshot.create", { error: result.error, cause: result.cause }, course.name);
+    logger.warn(req, "course.snapshot.create", { error: result.internalError || result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "course.snapshot.create", { snapshot_id: result.result, cone_count: cones.length, reason }, course.name);
@@ -827,7 +827,7 @@ app.post("/api/courses/:id/snapshots/:sid/restore", (req, res) => {
     })();
   });
   if (!result.success) {
-    logger.warn(req, "course.snapshot.restore", { error: result.error, cause: result.cause, snapshot_id: sid }, course.name);
+    logger.warn(req, "course.snapshot.restore", { error: result.internalError || result.error, snapshot_id: sid }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -848,7 +848,7 @@ app.delete("/api/courses/:id/snapshots/:sid", (req, res) => {
 
   const result = dbRun(() => db.prepare("DELETE FROM course_snapshot WHERE id = ?").run(sid));
   if (!result.success) {
-    logger.warn(req, "course.snapshot.delete", { error: result.error, cause: result.cause, snapshot_id: sid }, course.name);
+    logger.warn(req, "course.snapshot.delete", { error: result.internalError || result.error, snapshot_id: sid }, course.name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "course.snapshot.delete", { snapshot_id: sid }, course.name);
@@ -906,17 +906,17 @@ app.post("/api/courses/import", (req, res) => {
   const routeMarkers = req.body.route_markers === undefined ? [] : req.body.route_markers;
   const routeSteps = req.body.route_steps === undefined ? [] : req.body.route_steps;
   if (!Array.isArray(routeMarkers) || !Array.isArray(routeSteps) || routeMarkers.length > 200 || routeSteps.length > 500) {
-    logger.warn(req, "course.import", "올바르지 않은 주행 마커 데이터입니다.", name);
+    logger.warn(req, "course.import", { error: "올바르지 않은 주행 마커 데이터입니다." }, name);
     return res.status(400).send("올바르지 않은 주행 마커 데이터입니다.");
   }
   for (const marker of routeMarkers) {
     const cv = validateCoordinate(marker.lat, marker.lng);
-    if (!cv.valid) { logger.warn(req, "course.import", cv.error, name); return res.status(400).send(cv.error); }
+    if (!cv.valid) { logger.warn(req, "course.import", { error: cv.error }, name); return res.status(400).send(cv.error); }
     const lv = validateRouteMarkerLabel(marker.label);
-    if (!lv.valid) { logger.warn(req, "course.import", lv.error, name); return res.status(400).send(lv.error); }
+    if (!lv.valid) { logger.warn(req, "course.import", { error: lv.error }, name); return res.status(400).send(lv.error); }
   }
   if (routeSteps.some((index) => !Number.isInteger(index) || index < 0 || index >= routeMarkers.length)) {
-    logger.warn(req, "course.import", "주행 순서가 존재하지 않는 마커를 참조합니다.", name);
+    logger.warn(req, "course.import", { error: "주행 순서가 존재하지 않는 마커를 참조합니다." }, name);
     return res.status(400).send("주행 순서가 존재하지 않는 마커를 참조합니다.");
   }
 
@@ -1002,7 +1002,7 @@ app.delete("/api/courses/:id", (req, res) => {
 
   const result = dbRun(() => db.prepare("DELETE FROM course WHERE id = ?").run(id));
   if (!result.success) {
-    logger.warn(req, "course.delete", { error: result.error, cause: result.cause }, course.name);
+    logger.warn(req, "course.delete", { error: result.internalError || result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1053,7 +1053,7 @@ app.post("/api/courses/:id/cones", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "cone.create", { error: result.error, cause: result.cause }, course.name);
+    logger.warn(req, "cone.create", { error: result.internalError || result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1082,7 +1082,7 @@ app.delete("/api/courses/:id/cones", (req, res) => {
   })());
 
   if (!result.success) {
-    logger.warn(req, "cone.delete_all", { error: result.error, cause: result.cause, count }, course.name);
+    logger.warn(req, "cone.delete_all", { error: result.internalError || result.error, count }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1142,7 +1142,7 @@ app.patch("/api/cones/:id", (req, res) => {
 
   if (!result.success) {
     const updateCourse = getCourseById(cone.course_id);
-    logger.warn(req, "cone.update", { error: result.error, cause: result.cause }, updateCourse?.name);
+    logger.warn(req, "cone.update", { error: result.internalError || result.error }, updateCourse?.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1169,7 +1169,7 @@ app.delete("/api/cones/:id", (req, res) => {
   })());
   if (!result.success) {
     const delCourse = getCourseById(cone.course_id);
-    logger.warn(req, "cone.delete", { error: result.error, cause: result.cause }, delCourse?.name);
+    logger.warn(req, "cone.delete", { error: result.internalError || result.error }, delCourse?.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1362,7 +1362,7 @@ app.post("/api/courses/:id/memos", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "memo.create", { error: result.error, cause: result.cause }, course.name);
+    logger.warn(req, "memo.create", { error: result.internalError || result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1429,7 +1429,7 @@ app.patch("/api/memos/:id", (req, res) => {
 
   if (!result.success) {
     const memoCourse = getCourseById(memo.course_id);
-    logger.warn(req, "memo.update", { error: result.error, cause: result.cause }, memoCourse?.name);
+    logger.warn(req, "memo.update", { error: result.internalError || result.error }, memoCourse?.name);
     return res.status(result.status).send(result.error);
   }
 
@@ -1458,7 +1458,7 @@ app.delete("/api/memos/:id", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM memo WHERE id = ?").run(id));
   if (!result.success) {
     const delCourse = getCourseById(memo.course_id);
-    logger.warn(req, "memo.delete", { error: result.error, cause: result.cause }, delCourse?.name);
+    logger.warn(req, "memo.delete", { error: result.internalError || result.error }, delCourse?.name);
     return res.status(result.status).send(result.error);
   }
 

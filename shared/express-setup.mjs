@@ -412,7 +412,7 @@ export function createDbRun() {
       if (e.status && e.message) {
         return { success: false, status: e.status, error: e.message, internalError };
       }
-      // cause는 로거 전용이다 — 클라이언트 응답에는 새니타이즈된 error만 내보낸다.
+      // internalError는 로거 전용이다 — 클라이언트 응답에는 새니타이즈된 error만 내보낸다.
       // DB 자체가 실패 원인일 수 있어(SQLITE_BUSY/IOERR 등 로거 INSERT도 같이 실패하는
       // 상황) 콘솔 폴백을 유지한다.
       console.error("[DB]", e.message || e);

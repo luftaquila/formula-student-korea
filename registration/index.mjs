@@ -215,7 +215,7 @@ export function createRegistrationApp(options = {}) {
     return { year, open: settingsForYear(year).open, waiting };
   }
 
-  const { broadcast, handler: sseHandler, close: closeSse } = createSSEManager();
+  const { broadcast, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
 
   function broadcastChange(year) {
     let status;

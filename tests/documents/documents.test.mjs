@@ -1105,6 +1105,28 @@ describe('File upload', () => {
     assert.match(stored.storage_dir, new RegExp(`^${sessionId}/team-${stored.team_id}/`));
   });
 
+  it('batches MIME mismatch warnings into one submission log', async () => {
+    const beforeId = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id;
+    const res = await uploadFile(sessionId, studentCookie, [
+      { name: 'first.pdf', type: 'text/plain', content: Buffer.from('first') },
+      { name: 'second.pdf', type: 'application/octet-stream', content: Buffer.from('second') },
+    ]);
+    assert.equal(res.status, 200, await res.clone().text());
+    submissionId = (await res.json()).id;
+
+    const rows = db.prepare(`
+      SELECT actor_email, detail FROM logs
+      WHERE id > ? AND action = 'submission.create' AND level = 'warn'
+        AND detail LIKE '%mime_mismatch%'
+      ORDER BY id
+    `).all(beforeId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].actor_email, 'student1@test.com');
+    const detail = JSON.parse(rows[0].detail);
+    assert.equal(detail.total, 2);
+    assert.deepEqual(detail.files.map((file) => file.filename), ['first.pdf', 'second.pdf']);
+  });
+
   it('POST /api/sessions/:id/submit rejects wrong extension', async () => {
     // Session has allowed_extensions: 'pdf,docx'
     const fileContent = Buffer.from('test exe content');

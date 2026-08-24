@@ -221,7 +221,6 @@ describe('SSE Manager logging', () => {
 
     const res1 = await getSSE(`${baseUrl}/events`);
     assert.equal(res1.statusCode, 200);
-    await new Promise((r) => setTimeout(r, 50));
 
     // 첫 거부는 warn을 남긴다.
     const res2 = await getSSE(`${baseUrl}/events`);
@@ -250,7 +249,6 @@ describe('SSE Manager logging', () => {
 
     const res1 = await getSSE(`${baseUrl}/events`);
     assert.equal(res1.statusCode, 200);
-    await new Promise((r) => setTimeout(r, 50));
 
     const res2 = await getSSE(`${baseUrl}/events`);
     assert.equal(res2.statusCode, 429);
@@ -295,7 +293,6 @@ describe('SSE Manager logging', () => {
 
     const res1 = await getSSE(`${baseUrl}/events`);
     assert.equal(res1.statusCode, 200);
-    await new Promise((r) => setTimeout(r, 50));
 
     const res2 = await getSSE(`${baseUrl}/events`);
     assert.equal(res2.statusCode, 503);

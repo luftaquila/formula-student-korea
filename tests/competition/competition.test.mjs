@@ -260,6 +260,13 @@ describe("Competition modular monolith", () => {
       assert.equal(updated.id, team.id);
       assert.equal(updated.number, 8);
       assert.equal(updated.active, false);
+      const updateLog = created.db.prepare(`
+        SELECT level, detail FROM logs
+        WHERE module = 'entry' AND action = 'team.update' AND target = ?
+        ORDER BY id DESC LIMIT 1
+      `).get(String(team.id));
+      assert.equal(updateLog.level, "info");
+      assert.equal(JSON.parse(updateLog.detail).after.active, false);
 
       const listed = await client.get(`/competition/api/v1/teams?year=${YEAR}&includeInactive=true`, { cookie: admin });
       assert.deepEqual((await listed.json()).map(({ id, number }) => ({ id, number })), [{ id: team.id, number: 8 }]);

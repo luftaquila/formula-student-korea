@@ -516,7 +516,7 @@ function getQueueRow(type, num, year) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastEvent, handler: sseHandler, close: closeSse } = createSSEManager();
+const { broadcast: broadcastEvent, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
 
 // SSE 엔드포인트
 app.get("/api/events", sseHandler(() => {
@@ -845,7 +845,7 @@ app.patch("/api/admin/inspection/:type", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "inspection.toggle", { error: result.error, cause: result.cause }, req.params.type);
+    logger.warn(req, "inspection.toggle", { error: result.internalError || result.error }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -871,7 +871,7 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "inspection.visibility", { error: result.error, cause: result.cause }, req.params.type);
+    logger.warn(req, "inspection.visibility", { error: result.internalError || result.error }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -961,7 +961,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "queue.register", denyReason ? { error: result.error, cause: result.cause, reason: denyReason } : { error: result.error, cause: result.cause }, `#${num}`);
+    logger.warn(req, "queue.register", denyReason ? { error: result.internalError || result.error, reason: denyReason } : { error: result.internalError || result.error }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -992,6 +992,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
+      let appliedPenalty = null;
       // SMS 대상 조회도 취소 mutation의 preflight다. 실패하면 삭제를 시작하지
       // 않고 동일한 audited boundary에서 응답한다.
       const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
@@ -1035,7 +1036,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
 
       // 대기열 이벤트 로그 기록 (트랜잭션 내부)
       db.prepare("INSERT INTO queue_log (event, num, inspection, timestamp, year) VALUES (?, ?, ?, ?, ?)").run("cancel", num, type, Date.now(), year);
-      return { prev };
+      return { prev, appliedPenalty };
     })();
   });
 
@@ -1050,8 +1051,8 @@ app.post("/api/admin/cancel/:type", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "queue.cancel", appliedPenalty
-    ? { inspection: type, penalty_minutes: appliedPenalty.minutes, penalty_until: appliedPenalty.until }
+  logger.log(req, "queue.cancel", result.result.appliedPenalty
+    ? { inspection: type, penalty_minutes: result.result.appliedPenalty.minutes, penalty_until: result.result.appliedPenalty.until }
     : { inspection: type, penalty: false }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
@@ -1147,7 +1148,7 @@ app.post("/api/admin/penalties/:type/:num/restore", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.restore", { error: result.error, cause: result.cause, inspection: type, year }, `#${num}`);
+    logger.warn(req, "penalty.restore", { error: result.internalError || result.error, inspection: type, year }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1184,7 +1185,7 @@ app.delete("/api/admin/penalties/:type/:num", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.clear", { error: result.error, cause: result.cause, inspection: type, year }, `#${num}`);
+    logger.warn(req, "penalty.clear", { error: result.internalError || result.error, inspection: type, year }, `#${num}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1269,7 +1270,7 @@ app.post("/api/admin/priority/:type", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "priority.set", { error: result.error, cause: result.cause }, `#${numValidation.value}`);
+    logger.warn(req, "priority.set", { error: result.internalError || result.error }, `#${numValidation.value}`);
     return res.status(result.status).send(result.error);
   }
 
@@ -1336,7 +1337,7 @@ app.delete("/api/admin/priority/:type/all", (req, res) => {
   const result = dbRun(() => db.prepare("DELETE FROM team_priority WHERE inspection = ? AND year = ?").run(req.params.type, currentYear()));
 
   if (!result.success) {
-    logger.warn(req, "priority.clear", { error: result.error, cause: result.cause }, req.params.type);
+    logger.warn(req, "priority.clear", { error: result.internalError || result.error }, req.params.type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1388,7 +1389,7 @@ app.delete("/api/admin/history/:type", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "history.clear", { error: result.error, cause: result.cause }, type);
+    logger.warn(req, "history.clear", { error: result.internalError || result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1424,7 +1425,7 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "inspection.ignore", { error: result.error, cause: result.cause }, type);
+    logger.warn(req, "inspection.ignore", { error: result.internalError || result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1508,7 +1509,7 @@ app.patch("/api/admin/booths/:type/config", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "booth.count", { error: result.error, cause: result.cause }, type);
+    logger.warn(req, "booth.count", { error: result.internalError || result.error }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -1552,7 +1553,7 @@ app.patch("/api/admin/booths/:type/:boothNum", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "booth.toggle", { error: result.error, cause: result.cause, booth: boothNum, active: req.body.active === true }, type);
+    logger.warn(req, "booth.toggle", { error: result.internalError || result.error, booth: boothNum, active: req.body.active === true }, type);
     return res.status(result.status).send(result.error);
   }
 
@@ -2137,7 +2138,7 @@ app.patch("/api/admin/settings/sms", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "settings.sms", { error: result.error, cause: result.cause });
+    logger.warn(req, "settings.sms", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -2166,7 +2167,7 @@ app.patch("/api/admin/settings/sms-rank", (req, res) => {
   const result = dbRun(() => db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(String(rank), "sms_rank"));
 
   if (!result.success) {
-    logger.warn(req, "settings.sms_rank", { error: result.error, cause: result.cause });
+    logger.warn(req, "settings.sms_rank", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -2197,7 +2198,7 @@ app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "settings.cancel_penalty", { error: result.error, cause: result.cause });
+    logger.warn(req, "settings.cancel_penalty", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
 
@@ -2253,12 +2254,11 @@ function sendSmsNotification(type, prev) {
         ({ response, status }) => logger.log(null, "sms.send", {
           response, status, num: target.num, type,
         }),
-        // SENS 가 응답한 4xx/5xx 는 계속 sms.send(warn) 로 남긴다 — 저장된 로그
-        // 조회와의 연속성을 위해서다. 소켓 오류만 sms.error, 타임아웃은 sms.timeout.
-        (error) => logger.warn(null, error?.code === "SMS_TIMEOUT"
-          ? "sms.timeout"
-          : (error?.status ? "sms.send" : "sms.error"), {
+        // 성공/실패 모두 sms.send로 묶고 세부 원인은 code/status로 구분한다. 로그
+        // 뷰어의 액션 필터 하나로 전체 발송 시도를 조회할 수 있어야 한다.
+        (error) => logger.warn(null, "sms.send", {
           error: error?.response || error?.message || String(error),
+          code: error?.code,
           status: error?.status,
           num: target.num,
           type,

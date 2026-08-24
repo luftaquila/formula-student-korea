@@ -263,12 +263,12 @@ function sanitize(s) {
   return s.replace(/[/\\:*?"<>|]/g, "_");
 }
 
-function rmDir(dir, { logFailure = true } = {}) {
+function rmDir(dir, { logFailure = true, req = null } = {}) {
   try {
     removeDirectory(dir);
     return { removed: true, error: null };
   } catch (err) {
-    if (logFailure) logger.warn(null, "file.cleanup", { error: err.message, dir });
+    if (logFailure) logger.warn(req, "file.cleanup", { error: err.message, dir });
     return { removed: false, error: err.message || String(err) };
   }
 }
@@ -776,7 +776,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       if (!allowedExts.includes(ext)) {
         aborted = true;
         fileStream.resume();
-        rmDir(tmpDir, req);
+        rmDir(tmpDir, { req });
         if (!res.headersSent) {
           logger.warn(req, "submission.create", { error: "invalid_extension", filename: info.filename, ext, allowed: allowedExts, session_id: session.id, team_num: team.team_num }, session.name);
           res.status(400).send(`허용되지 않는 파일 형식입니다. (허용: ${allowedExts.join(", ")})`);
@@ -832,7 +832,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         aborted = true;
         fileStream.resume();
         ws.destroy();
-        rmDir(tmpDir, req);
+        rmDir(tmpDir, { req });
         if (!res.headersSent) {
           logger.warn(req, "submission.create", { error: "file_size_exceeded", max_file_size: session.max_file_size, total_size: totalSize, filename: info.filename, session_id: session.id, team_num: team.team_num }, session.name);
           res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
@@ -843,7 +843,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     fileStream.on("limit", () => {
       aborted = true;
       ws.destroy();
-      rmDir(tmpDir, req);
+      rmDir(tmpDir, { req });
       if (!res.headersSent) {
         logger.warn(req, "submission.create", { error: "file_size_exceeded", max_file_size: session.max_file_size, filename: info.filename, session_id: session.id, team_num: team.team_num }, session.name);
         res.status(413).send(`파일 용량 제한(${Math.round(session.max_file_size / 1024 / 1024)}MB)을 초과했습니다.`);
@@ -855,7 +855,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
   busboy.on("filesLimit", () => {
     aborted = true;
-    rmDir(tmpDir, req);
+    rmDir(tmpDir, { req });
     if (!res.headersSent) {
       logger.warn(req, "submission.create", { error: "files_limit_exceeded", limit: 100, session_id: session.id, team_num: team.team_num }, session.name);
       res.status(400).send("파일 수가 100개를 초과했습니다.");
@@ -864,7 +864,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
   busboy.on("error", (err) => {
     aborted = true;
-    rmDir(tmpDir, req);
+    rmDir(tmpDir, { req });
     if (!res.headersSent) {
       logger.warn(req, "submission.create", { error: err?.message || "busboy_error", session_id: session.id, team_num: team.team_num }, session.name);
       res.status(500).send("업로드 중 오류가 발생했습니다.");
@@ -877,21 +877,21 @@ app.post("/api/sessions/:id/submit", (req, res) => {
     // 모든 파일 write stream이 완료될 때까지 대기
     try { await Promise.all(filePromises); } catch (writeErr) {
       logger.warn(req, "submission.create", { error: writeErr?.message || "file_write_failed", phase: "write_stream", session_id: session.id, team_num: team.team_num }, session.name);
-      rmDir(tmpDir, req);
+      rmDir(tmpDir, { req });
       if (!res.headersSent) res.status(500).send("파일 저장 중 오류가 발생했습니다.");
       return;
     }
 
     if (aborted) return;
     if (filesInfo.length === 0) {
-      rmDir(tmpDir, req);
+      rmDir(tmpDir, { req });
       return res.status(400).send("파일을 선택하세요.");
     }
 
     // 업로드 완료 시간 기준으로 마감·지각 여부 결정
     const submittedTime = now();
     if (submittedTime > effectiveLateEnd) {
-      rmDir(tmpDir, req);
+      rmDir(tmpDir, { req });
       logger.warn(req, "submission.create", { error: "upload_past_deadline", started_at: startTime, submitted_at: submittedTime, deadline: effectiveLateEnd, session_id: session.id, team_num: team.team_num }, session.name);
       if (!res.headersSent) return res.status(400).send("업로드 완료 시간이 제출 마감을 초과했습니다.");
       return;
@@ -907,7 +907,7 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         teamNum: team.team_num,
       });
     } catch (error) {
-      rmDir(tmpDir);
+      rmDir(tmpDir, { req });
       logger.warn(req, "submission.create", {
         error: error?.message || String(error),
         phase: "metadata_revalidation_hook",
@@ -1109,14 +1109,14 @@ app.post("/api/sessions/:id/submit", (req, res) => {
         year: session.year,
         team_num: team.team_num,
       }, session.name);
-      if (movedFinalDir) rmDir(movedFinalDir);
-      else rmDir(tmpDir);
+      if (movedFinalDir) rmDir(movedFinalDir, { req });
+      else rmDir(tmpDir, { req });
       return res.status(txResult.status).send(
         fileMoveError ? "파일 저장에 실패했습니다." : txResult.error,
       );
     }
     if (txResult.result.rejected) {
-      rmDir(tmpDir);
+      rmDir(tmpDir, { req });
       logger.warn(req, "submission.create", txResult.result.audit, session.name);
       return res.status(txResult.result.status).send(txResult.result.message);
     }
@@ -1151,6 +1151,15 @@ app.post("/api/sessions/:id/submit", (req, res) => {
       }
     }
 
+    if (mimeMismatches.length > 0) {
+      logger.warn(req, "submission.create", {
+        warning: "mime_mismatch",
+        files: mimeMismatches.slice(0, 10),
+        total: mimeMismatches.length,
+        session_id: session.id,
+        team_num: team.team_num,
+      }, session.name);
+    }
     const { toDelete, storage_dir, ...result } = txResult.result;
     logger.log(req, "submission.create", { session_id: session.id, team_id: canonicalTeamId, team_num: team.team_num, files: filesInfo.length, size: totalSize, is_late: isLate, started_at: startTime, submitted_at: submittedTime }, session.name);
     res.json(result);
@@ -1158,14 +1167,14 @@ app.post("/api/sessions/:id/submit", (req, res) => {
 
   req.on("error", () => {
     aborted = true;
-    rmDir(tmpDir, req);
+    rmDir(tmpDir, { req });
     if (!res.headersSent) res.status(400).send("업로드가 중단되었습니다.");
   });
 
   req.on("close", () => {
     if (!req.complete && !aborted && fs.existsSync(tmpDir)) {
       aborted = true;
-      rmDir(tmpDir, req);
+      rmDir(tmpDir, { req });
     }
   });
 
@@ -1301,7 +1310,7 @@ app.post("/api/admin/sessions", (req, res) => {
     return tx();
   });
 
-  if (!txResult.success) { logger.warn(req, "session.create", { error: txResult.error, cause: txResult.cause }, name.trim()); return res.status(txResult.status).send(txResult.error); }
+  if (!txResult.success) { logger.warn(req, "session.create", { error: txResult.internalError || txResult.error }, name.trim()); return res.status(txResult.status).send(txResult.error); }
   logger.log(req, "session.create", { year: numYear, start_at: nStart, end_at: nEnd, late_end_at: nLateEnd || undefined, max_file_size: maxSize, allowed_extensions: exts, teams: teams.length }, name.trim());
   res.status(201).json(txResult.result);
 
@@ -1370,9 +1379,7 @@ app.put("/api/admin/sessions/:id", (req, res) => {
       for (const oldTeam of oldTeams) {
         if (!newTeamsSet.has(oldTeam)) {
           const subs = db.prepare("SELECT id, session_id, team_num, storage_dir FROM submission WHERE session_id = ? AND team_num = ?").all(id, oldTeam);
-          if (subs.length) {
-            removedSubmissions += db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam).changes;
-          }
+          if (subs.length) db.prepare("DELETE FROM submission WHERE session_id = ? AND team_num = ?").run(id, oldTeam);
           if (subs.length) removedSubmissions.push(...subs);
         }
       }
@@ -1444,9 +1451,6 @@ app.delete("/api/admin/sessions/:id", (req, res) => {
     }, `session:${id}`);
     return res.status(404).send("세션을 찾을 수 없습니다.");
   }
-
-  // FK cascade로 함께 파괴되는 제출물 수를 삭제 전에 집계한다 (감사 로그용)
-  const submissionCount = db.prepare("SELECT COUNT(*) AS count FROM submission WHERE session_id = ?").get(id).count;
 
   const txResult = dbRun(() => {
     db.prepare("DELETE FROM session WHERE id = ?").run(id);
@@ -1703,7 +1707,7 @@ app.post("/api/admin/student-teams", (req, res) => {
       logger.warn(req, "student_team.create", { error: "duplicate", team_num: numTeam, year: numYear }, email.trim().toLowerCase());
       return res.status(400).send("이미 등록된 이메일이거나 해당 팀에 이미 학생이 있습니다.");
     }
-    logger.warn(req, "student_team.create", { error: result.error, cause: result.cause }, email.trim().toLowerCase());
+    logger.warn(req, "student_team.create", { error: result.internalError || result.error }, email.trim().toLowerCase());
     return res.status(result.status).send(result.error);
   }
 
@@ -2075,15 +2079,18 @@ async function runScheduledNotifications() {
             db.prepare("UPDATE scheduled_notification SET sent_recipients = ? WHERE id = ?")
               .run(JSON.stringify([...alreadySent]), n.id);
           } else {
+            const error = result.error || "email_send_rejected";
+            if (failed.length < 10) failed.push({ email, error });
             logger.warn(null, `schedule.${n.type}`, {
-              error: result.error || "email_send_rejected",
-              reason: result.error || "email_send_rejected",
+              error,
+              reason: error,
               recipient: email,
               phase: "recipient_send",
               sent: alreadySent.size,
             }, n.name);
           }
         } catch (error) {
+          if (failed.length < 10) failed.push({ email, error: error?.message || String(error) });
           logger.warn(null, `schedule.${n.type}`, {
             error: error?.message || String(error),
             recipient: email,

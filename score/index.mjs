@@ -274,10 +274,10 @@ async function fetchYearRecords(year) {
    ============================================ */
 const {
   broadcast: broadcastAdminEvent, handler: sseHandler, close: closeAdminSse,
-} = createSSEManager();
+} = createSSEManager(200, { logger });
 const {
   broadcast: broadcastPublicEvent, handler: publicSseHandler, close: closePublicSse,
-} = createSSEManager(500);
+} = createSSEManager(500, { logger });
 
 // 관리자에게는 원본 이벤트를, 공개 페이지에는 데이터가 없는 refresh 신호만 보낸다.
 // 공개 클라이언트가 관리자용 SSE 페이로드를 통해 숨긴 열의 값을 받지 않도록 스트림을 분리한다.
@@ -454,7 +454,7 @@ app.put("/api/score/publication", (req, res) => {
   `).run(year, enabled ? 1 : 0));
 
   if (!result.success) {
-    logger.warn(req, "score_publication.update", { error: result.error, cause: result.cause, year, enabled }, String(year));
+    logger.warn(req, "score_publication.update", { error: result.internalError || result.error, year, enabled }, String(year));
     return res.status(result.status).send(result.error);
   }
 
@@ -799,7 +799,7 @@ app.put("/api/score/penalty", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "penalty.update", { error: result.error, cause: result.cause, year: numYear }, event_type);
+    logger.warn(req, "penalty.update", { error: result.internalError || result.error, year: numYear }, event_type);
     return res.status(result.status).send(result.error);
   }
 
@@ -839,7 +839,7 @@ app.put("/api/score/setting", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "setting.update", { error: result.error, cause: result.cause, year: numYear, key: setting_key }, event_type);
+    logger.warn(req, "setting.update", { error: result.internalError || result.error, year: numYear, key: setting_key }, event_type);
     return res.status(result.status).send(result.error);
   }
 

@@ -596,6 +596,26 @@ describe('POST /api/courses/import', () => {
     assert.deepEqual(exported.route_steps, [0, 1, 0, 1, 0]);
   });
 
+  it('logs route validation failures with structured error detail', async () => {
+    const res = await client.post('/api/courses/import', {
+      body: {
+        name: 'invalid-route-import',
+        cones: [],
+        route_markers: [{ lat: 91, lng: 126.1, label: 'invalid' }],
+        route_steps: [0],
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+
+    const log = db.prepare(
+      "SELECT level, actor_email, detail FROM logs WHERE action = 'course.import' AND target = ? ORDER BY id DESC LIMIT 1",
+    ).get('invalid-route-import');
+    assert.equal(log.level, 'warn');
+    assert.equal(log.actor_email, 'admin@test.com');
+    assert.equal(typeof JSON.parse(log.detail).error, 'string');
+  });
+
   it('rejects import with invalid altitude', async () => {
     const res = await client.post('/api/courses/import', {
       body: { name: 'bad-alt-import', cones: [{ lat: 35.0, lng: 126.0, side: 'left', alt: 'high' }] },
@@ -1049,6 +1069,34 @@ describe('POST /api/rover/control', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('throttles disconnected-rover warnings per operator', async () => {
+    const operatorEmail = 'control-throttle@test.com';
+    const operatorCookie = makeAuthCookie({
+      email: operatorEmail,
+      name: 'Control Operator',
+      role: 'admin',
+    });
+
+    for (let i = 0; i < 2; i += 1) {
+      const res = await client.post('/api/rover/control', {
+        body: { throttle: 25, steering: -10 },
+        cookie: operatorCookie,
+      });
+      assert.equal(res.status, 503);
+    }
+
+    const logs = db.prepare(
+      "SELECT level, detail FROM logs WHERE action = 'rover.control' AND actor_email = ? ORDER BY id",
+    ).all(operatorEmail);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0].level, 'warn');
+    assert.deepEqual(JSON.parse(logs[0].detail), {
+      error: 'not_connected',
+      throttle: 25,
+      steering: -10,
+    });
   });
 });
 
@@ -2620,7 +2668,6 @@ describe('Ground calibration trigger', () => {
 // ─── Camera control write failure (sendCameraControl teardown) ───────────
 describe('Camera control write failure', () => {
   let srv, url, cli, localDb, localDbPath;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   before(async () => {
     localDbPath = tmpDbPath();
@@ -2653,6 +2700,7 @@ describe('Camera control write failure', () => {
       try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
     })();
     assert.ok(ctlRes, 'the control response is captured on attach');
+    const controlClosed = new Promise((resolve) => ctlRes.once('close', resolve));
 
     // Simulate a dead perception socket: writing to a destroyed http response
     // does NOT throw synchronously in Node (the error is emitted async), so
@@ -2693,8 +2741,7 @@ describe('Camera control write failure', () => {
     // close handler's cameraControlClient === res guard is false).
     const closedBefore = countClosed();
     ac.abort();
-    await drained.catch(() => {});
-    await sleep(150);
+    await Promise.all([drained.catch(() => {}), controlClosed]);
     assert.equal(countClosed(), closedBefore,
       'a connection torn down by a failed write does not double-log control_closed');
   });

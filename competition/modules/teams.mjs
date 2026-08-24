@@ -148,7 +148,7 @@ export function createTeamsModule({
     try {
       before = store.getById(req.params.id);
       const result = store.updateTeam(req.params.id, req.body);
-      logger.log(req, result.after.active ? "team.update" : "team.deactivate", {
+      logger.log(req, "team.update", {
         before: auditTeam(result.before),
         after: auditTeam(result.after),
         updatedProjections: result.projections,

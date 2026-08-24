@@ -285,7 +285,7 @@ function validateStoredCalculationGraph(year) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager();
+const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
 
 function broadcastEvent(event, data) {
   broadcastSSEEvent(event, data);
@@ -410,7 +410,7 @@ app.post("/api/sheet/template", (req, res) => {
   })());
 
   if (!result.success) {
-    logger.warn(req, "template.create", { error: result.error, cause: result.cause, year }, name);
+    logger.warn(req, "template.create", { error: result.internalError || result.error, year }, name);
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.create", { year, level }, name);
@@ -654,7 +654,7 @@ app.post("/api/sheet/template/copy", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.copy", { error: result.error, cause: result.cause, from_year, to_year });
+    logger.warn(req, "template.copy", { error: result.internalError || result.error, from_year, to_year });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.copy", { from_year, to_year });
@@ -717,7 +717,7 @@ app.post("/api/sheet/template/import", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "template.import", { error: result.error, cause: result.cause, year });
+    logger.warn(req, "template.import", { error: result.internalError || result.error, year });
     return res.status(result.status).send(result.error);
   }
   logger.log(req, "template.import", { year, replaced_categories: result.result.replaced, imported_categories: template.length });

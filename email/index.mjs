@@ -133,7 +133,7 @@ function maskValue(key, value) {
 app.get("/api/config", (req, res) => {
   const result = dbRun(() => getAllConfig());
   if (!result.success) {
-    logger.warn(req, "config.list", { error: result.error, cause: result.cause });
+    logger.warn(req, "config.list", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   const configs = {};
@@ -164,7 +164,7 @@ app.put("/api/config", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "config.update", { error: result.error, cause: result.cause, keys: updated });
+    logger.warn(req, "config.update", { error: result.internalError || result.error, keys: updated });
     return res.status(result.status).send(result.error);
   }
 
@@ -197,7 +197,7 @@ app.post("/api/config/reset", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "config.reset", { error: result.error, cause: result.cause, group });
+    logger.warn(req, "config.reset", { error: result.internalError || result.error, group });
     return res.status(result.status).send(result.error);
   }
 
@@ -222,7 +222,7 @@ app.get("/api/stats", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "stats.query", { error: result.error, cause: result.cause });
+    logger.warn(req, "stats.query", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);
@@ -286,7 +286,7 @@ app.get("/api/emails", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "email.list", { error: result.error, cause: result.cause });
+    logger.warn(req, "email.list", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);
@@ -305,7 +305,7 @@ app.get("/api/emails/:id", (req, res) => {
   );
 
   if (!result.success) {
-    logger.warn(req, "email.get", { error: result.error, cause: result.cause }, String(id));
+    logger.warn(req, "email.get", { error: result.internalError || result.error }, String(id));
     return res.status(result.status).send(result.error);
   }
   if (!result.result) return res.status(404).send("Email not found");
@@ -478,7 +478,7 @@ ${htmlContent}
         db.prepare("INSERT INTO email_log (subject, recipient, status, message_id, html_content, source, sent_by, sent_at) VALUES (?, ?, 'sent', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.messageId || null, htmlContent, source, sentBy)
       );
-      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, cause: logResult.cause, subject, recipient, source });
+      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.internalError || logResult.error, subject, recipient, source });
       successCount++;
       lastMessageId = result.messageId || lastMessageId;
     } else {
@@ -486,7 +486,7 @@ ${htmlContent}
         db.prepare("INSERT INTO email_log (subject, recipient, status, error, html_content, source, sent_by, sent_at) VALUES (?, ?, 'error', ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))")
           .run(subject, recipient, result.error, htmlContent, source, sentBy)
       );
-      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.error, cause: logResult.cause, subject, recipient, source });
+      if (!logResult.success) logger.warn(req, "email.log_insert", { error: logResult.internalError || logResult.error, subject, recipient, source });
       if (failedRecipients.length < 10) failedRecipients.push({ recipient, error: result.error });
       lastError = result.error;
       lastErrorStatus = result.status;
@@ -554,7 +554,7 @@ app.get("/api/internal/sms-config", (req, res) => {
     return configs;
   });
   if (!result.success) {
-    logger.warn(req, "sms_config.fetch", { error: result.error, cause: result.cause });
+    logger.warn(req, "sms_config.fetch", { error: result.internalError || result.error });
     return res.status(result.status).send(result.error);
   }
   res.json(result.result);
