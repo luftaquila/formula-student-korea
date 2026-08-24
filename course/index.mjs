@@ -290,7 +290,10 @@ runMigrationOnce(db, "course.seed_route_markers_from_direction.v1", () => {
   const insertStep = db.prepare("INSERT INTO route_step (course_id, position, marker_id) VALUES (?, ?, ?)");
   let seeded = 0, skipped = 0;
   for (const course of courses) {
-    if (db.prepare("SELECT 1 FROM route_step WHERE course_id = ? LIMIT 1").get(course.id)) continue;
+    // 이미 마커를 하나라도 놓은 코스는 건드리지 않는다. 방문 순서를 아직 만들지
+    // 않았을 뿐 누군가 경로를 작성하는 중이며, 여기서 마커 2개를 더 심으면 그 작업을
+    // 어지럽히고 의도하지 않은 2단계 순서로 코스를 oriented로 바꿔 버린다.
+    if (db.prepare("SELECT 1 FROM route_marker WHERE course_id = ? LIMIT 1").get(course.id)) continue;
     const cones = db.prepare("SELECT id, lat, lng, side, alt FROM cone WHERE course_id = ? ORDER BY id").all(course.id);
     const startCone = course.start_cone_id != null
       ? cones.find((cone) => cone.id === course.start_cone_id)

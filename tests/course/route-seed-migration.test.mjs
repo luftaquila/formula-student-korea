@@ -39,7 +39,7 @@ function seedLegacyCourse(db, { name, reverse, startConeIndex }) {
 
 describe("route marker seeding migration", () => {
   let dbPath, server, client, db;
-  let reversedCourse, forwardCourse, emptyCourseId;
+  let reversedCourse, forwardCourse, emptyCourseId, inProgress, inProgressMarkerId;
 
   before(async () => {
     dbPath = tmpDbPath();
@@ -49,6 +49,11 @@ describe("route marker seeding migration", () => {
     forwardCourse = seedLegacyCourse(first.db, { name: "레거시 정방향", reverse: false, startConeIndex: null });
     // A course with no cones must survive the sweep untouched.
     emptyCourseId = first.db.prepare("INSERT INTO course (name) VALUES (?)").run("콘 없는 코스").lastInsertRowid;
+    // Someone is already authoring this one: markers placed, order not built yet.
+    inProgress = seedLegacyCourse(first.db, { name: "작성 중", reverse: false, startConeIndex: null });
+    inProgressMarkerId = first.db
+      .prepare("INSERT INTO route_marker (course_id, lat, lng, label) VALUES (?, ?, ?, ?)")
+      .run(inProgress.courseId, fixture.cones[0].lat, fixture.cones[0].lng, "손으로 놓은 마커").lastInsertRowid;
     first.db.prepare("DELETE FROM schema_migrations WHERE name = ?").run(SEED_MIGRATION);
     first.db.close();
 
@@ -79,6 +84,15 @@ describe("route marker seeding migration", () => {
       assert.equal(route.markers.length, 2, "one start marker plus one direction marker");
       assert.deepEqual(route.steps, route.markers.map((marker) => marker.id));
     }
+  });
+
+  it("leaves a half-authored route alone rather than adding markers to it", async () => {
+    const res = await client.get(`/api/courses/${inProgress.courseId}/route`, { cookie: chiefCookie });
+    assert.equal(res.status, 200);
+    const route = await res.json();
+    assert.deepEqual(route.markers.map((marker) => marker.id), [inProgressMarkerId],
+      "the operator's own marker must be the only one");
+    assert.deepEqual(route.steps, [], "and no visit order may be invented for it");
   });
 
   it("leaves a course with no cones alone", async () => {
