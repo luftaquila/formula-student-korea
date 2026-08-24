@@ -114,11 +114,14 @@ test.describe("Registration queue", () => {
       const waitingRow = officialPage.locator("tbody tr").filter({ hasText: "PNU Racing" });
       await expect(waitingRow).toContainText("010-2468-1357");
 
+      const refreshedLookup = publicPage.waitForResponse((response) =>
+        response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");
       const completed = officialPage.waitForResponse((response) =>
         response.url().includes(`${PREFIX}/queue/`) && response.url().endsWith("/done"));
       await waitingRow.getByRole("button", { name: "완료", exact: true }).click();
       expect((await completed).status()).toBe(200);
       await expect(officialPage.locator(".summary-card").filter({ hasText: "오늘 완료" })).toContainText(/[1-9]\d*/);
+      expect((await refreshedLookup).status()).toBe(404);
       await expect(publicPage.locator(".result-card")).toContainText("대기 중인 등록 내역이 없습니다.");
       await expect(publicPage.locator(".query-card")).not.toContainText("대기 중인 등록 내역이 없습니다.");
     } finally {
