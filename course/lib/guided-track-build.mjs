@@ -80,42 +80,110 @@ function surfaceNormal(metric, x, y, delta) {
   return [world[0] / m, world[2] / m, -world[1] / m];
 }
 
-// Rasterise the union of edge capsules into one indexed height-field. A cell is
-// road when its centre is within the interpolated corridor half-width. Shared
-// grid vertices ensure junctions have one collision surface and no z-fighting.
+// Contour the union of edge capsules into one indexed height-field.
+//
+// The corridor is a signed field f = halfWidth - distance, positive on asphalt.
+// f is sampled on the grid lattice; cells fully inside emit their shared quad,
+// and cells the boundary crosses are clipped against f >= 0 so the rim lands on
+// the interpolated corridor edge instead of a cell wall. Emitting whole cells
+// (the earlier approach) could only follow the 0.5 m grid, which left a skidpad
+// circle visibly faceted and up to a metre wide of the surveyed edge.
+//
+// Boundary vertices are keyed by the lattice pair they interpolate between, so
+// the two cells sharing a grid edge reuse one vertex and the surface stays
+// watertight. Shared vertices are also what keeps a junction — a waist crossed
+// several times — a single collision surface rather than stacked coplanar road.
 function buildRoadSurface(metric, { cellSize = 0.5, maxVertices = 62000 } = {}) {
   const bounds = usedBounds(metric, 1);
   const spanX = bounds.maxx - bounds.minx, spanY = bounds.maxy - bounds.miny;
   let cell = Math.max(0.25, cellSize);
   let nx = Math.max(1, Math.ceil(spanX / cell)), ny = Math.max(1, Math.ceil(spanY / cell));
-  // Worst case every grid point is used. Coarsen deterministically before mesh creation.
-  while ((nx + 1) * (ny + 1) > maxVertices) {
+  // Lattice points dominate the vertex count; clipped cells add a little on top,
+  // so coarsen against a budget that leaves the boundary room inside the cap.
+  const latticeBudget = Math.floor(maxVertices * 0.8);
+  while ((nx + 1) * (ny + 1) > latticeBudget) {
     cell *= 1.05;
     nx = Math.max(1, Math.ceil(spanX / cell)); ny = Math.max(1, Math.ceil(spanY / cell));
   }
   const dx = spanX / nx, dy = spanY / ny;
-  const vertexMap = new Map(), positions = [], normals = [], uvs = [], indices = [];
-  const vertex = (ix, iy) => {
-    const key = iy * (nx + 1) + ix;
-    if (vertexMap.has(key)) return vertexMap.get(key);
-    const x = bounds.minx + ix * dx, y = bounds.miny + iy * dy;
-    const z = closestEdgeSample(metric, x, y).z;
+
+  const positions = [], normals = [], uvs = [], indices = [];
+  const vertexMap = new Map();
+  const vertex = (key, x, y) => {
+    const hit = vertexMap.get(key);
+    if (hit !== undefined) return hit;
     const id = positions.length;
-    positions.push([x, z, -y]);
+    positions.push([x, closestEdgeSample(metric, x, y).z, -y]);
     normals.push(surfaceNormal(metric, x, y, Math.max(dx, dy)));
     uvs.push([x / 4, y / 4]);
     vertexMap.set(key, id);
     return id;
   };
+
+  // f is cached per lattice point so both cells on a grid edge interpolate the
+  // identical crossing and no seam opens between them.
+  const fieldCache = new Map();
+  const fieldAt = (key, x, y) => {
+    const hit = fieldCache.get(key);
+    if (hit !== undefined) return hit;
+    const sample = closestEdgeSample(metric, x, y);
+    const value = sample.halfWidth - Math.sqrt(sample.d2);
+    fieldCache.set(key, value);
+    return value;
+  };
+  const corner = (ix, iy) => {
+    const x = bounds.minx + ix * dx, y = bounds.miny + iy * dy;
+    return { key: `C:${ix}:${iy}`, x, y, f: fieldAt(`C:${ix}:${iy}`, x, y) };
+  };
+
+  const crossing = (a, b) => {
+    const span = a.f - b.f;
+    const t = Math.abs(span) < 1e-12 ? 0.5 : Math.max(0, Math.min(1, a.f / span));
+    return {
+      key: a.key < b.key ? `${a.key}|${b.key}` : `${b.key}|${a.key}`,
+      x: a.x + t * (b.x - a.x),
+      y: a.y + t * (b.y - a.y),
+      f: 0,
+    };
+  };
+
+  // Sutherland-Hodgman against the half-space f >= 0. Input winding is preserved
+  // and the result is convex, so a fan triangulation is safe.
+  const emitClipped = (poly) => {
+    const kept = [];
+    for (let i = 0; i < poly.length; i++) {
+      const c = poly[i], n = poly[(i + 1) % poly.length];
+      if (c.f >= 0) kept.push(c);
+      if ((c.f >= 0) !== (n.f >= 0)) kept.push(crossing(c, n));
+    }
+    if (kept.length < 3) return;
+    const ids = kept.map((v) => vertex(v.key, v.x, v.y));
+    for (let i = 1; i < ids.length - 1; i++) indices.push(ids[0], ids[i], ids[i + 1]);
+  };
+
   for (let iy = 0; iy < ny; iy++) {
-    const y = bounds.miny + (iy + 0.5) * dy;
     for (let ix = 0; ix < nx; ix++) {
-      const x = bounds.minx + (ix + 0.5) * dx;
-      const sample = closestEdgeSample(metric, x, y);
-      // Include a half-cell fringe so the raster never cuts inside the surveyed lane.
-      if (Math.sqrt(sample.d2) > sample.halfWidth + Math.hypot(dx, dy) / 2) continue;
-      const a = vertex(ix, iy), b = vertex(ix + 1, iy), c = vertex(ix, iy + 1), d = vertex(ix + 1, iy + 1);
-      indices.push(a, b, d, a, d, c);
+      const c00 = corner(ix, iy), c10 = corner(ix + 1, iy);
+      const c11 = corner(ix + 1, iy + 1), c01 = corner(ix, iy + 1);
+      const quad = [c00, c10, c11, c01];
+      const inside = quad.reduce((n, v) => n + (v.f >= 0 ? 1 : 0), 0);
+      if (inside === 4) {
+        const a = vertex(c00.key, c00.x, c00.y), b = vertex(c10.key, c10.x, c10.y);
+        const d = vertex(c11.key, c11.x, c11.y), e = vertex(c01.key, c01.x, c01.y);
+        indices.push(a, b, d, a, d, e);
+        continue;
+      }
+      if (inside === 0) {
+        // A cell can still be crossed with every corner dry (a thin lane through
+        // the middle); the centre sample catches that before the cell is dropped.
+        const cx = bounds.minx + (ix + 0.5) * dx, cy = bounds.miny + (iy + 0.5) * dy;
+        if (fieldAt(`M:${ix}:${iy}`, cx, cy) < 0) continue;
+      }
+      // Fan the cell around its centre and clip each wedge: a triangle cut by a
+      // half-plane stays convex, which keeps saddle cells from folding over.
+      const cx = bounds.minx + (ix + 0.5) * dx, cy = bounds.miny + (iy + 0.5) * dy;
+      const mid = { key: `M:${ix}:${iy}`, x: cx, y: cy, f: fieldAt(`M:${ix}:${iy}`, cx, cy) };
+      for (let k = 0; k < 4; k++) emitClipped([quad[k], quad[(k + 1) % 4], mid]);
     }
   }
   if (!indices.length) throw new Error("주행 마커 경로에서 도로 메시를 만들 수 없습니다.");
