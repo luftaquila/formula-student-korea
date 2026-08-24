@@ -181,6 +181,57 @@ function buildGraph(cones, frame) {
   return { nodes, edges: [...edgeMap.values()], adjacency, width };
 }
 
+// Asphalt does not step. A cone whose surveyed altitude is well off its
+// surroundings — a bad RTK fix, a cone stood on a kerb or in a drain — otherwise
+// lands in the graph as a cliff, and the road mesh reads these node altitudes
+// directly, so the driver meets a ledge. The measured 2026 skidpad has exactly
+// this: four cones at the entry and exit arm tips sit ~0.3 m below a pad that is
+// otherwise flat to within 0.15 m, producing 13-16% grades where no other edge
+// exceeds 2.5%.
+//
+// So bound the longitudinal grade over the graph instead of trusting every cone.
+// The legacy circuit builder gets the same protection from its σ=10 m elevation
+// Gaussian (road-edges.mjs); a grade limit is the structure-aware equivalent for
+// a branched graph, and it is gentler — it only moves nodes that break the bound
+// and leaves genuine relief alone.
+const MAX_ALTITUDE_GRADE = 0.05;
+
+function limitAltitudeGrade(nodes, edges, maxGrade = MAX_ALTITUDE_GRADE) {
+  const neighbours = nodes.map(() => []);
+  for (const edge of edges) {
+    const a = nodes[edge.a], b = nodes[edge.b];
+    const length = Math.hypot(b.point[0] - a.point[0], b.point[1] - a.point[1]);
+    if (!(length > 1e-6)) continue;
+    neighbours[edge.a].push({ index: edge.b, length });
+    neighbours[edge.b].push({ index: edge.a, length });
+  }
+  // Clamp each node into the band its neighbours allow and repeat: one pass
+  // fixes an isolated spike, further passes carry the correction outwards when
+  // several bad cones sit together. Bounded so a pathological graph terminates.
+  for (const field of ["altitude", "leftAltitude", "rightAltitude"]) {
+    for (let pass = 0; pass < 32; pass++) {
+      let moved = false;
+      for (let i = 0; i < nodes.length; i++) {
+        const value = nodes[i][field];
+        if (value == null) continue;
+        let lo = -Infinity, hi = Infinity;
+        for (const { index, length } of neighbours[i]) {
+          const other = nodes[index][field];
+          if (other == null) continue;
+          lo = Math.max(lo, other - maxGrade * length);
+          hi = Math.min(hi, other + maxGrade * length);
+        }
+        // Neighbours that disagree with each other cannot bound anything; leave
+        // the node as surveyed rather than inventing a value between them.
+        if (!(lo <= hi)) continue;
+        const clamped = Math.min(hi, Math.max(lo, value));
+        if (Math.abs(clamped - value) > 1e-9) { nodes[i][field] = clamped; moved = true; }
+      }
+      if (!moved) break;
+    }
+  }
+}
+
 // Recover the shared straight through a skidpad from cone pairs straddling the
 // entry→exit marker axis. This is intentionally marker-constrained: it adds no
 // speculative branches elsewhere and can join same-colour walls at the waist
@@ -522,6 +573,9 @@ export function computeGuidedRoute(cones, markers, steps, opts = {}) {
       !augmentAxisCorridor(graph, cones, frame, ordered[0], ordered[ordered.length - 1])) {
     throw new Error("진입·진출 마커 축에서 연속된 중앙 통로를 찾지 못했습니다. 양쪽 팔 끝에 마커를 두고 중앙 통로의 콘 쌍을 확인하세요.");
   }
+  // Only now is the graph complete: the arms augmentAxisCorridor just added are
+  // where the worst surveyed altitudes sit, so the grade limit runs last.
+  limitAltitudeGrade(graph.nodes, graph.edges);
   const interiorMarkerIds = new Set(steps.slice(1, -1));
   const snappedByMarker = new Map();
   const snapped = ordered.map((marker, index) => {
