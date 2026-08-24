@@ -9,6 +9,7 @@ import path from "node:path";
 
 import { setupTestEnv, TRUST_JWT } from "../helpers/test-utils.mjs";
 import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { createMissionV2Store } from "../../course/lib/mission-v2.mjs";
 
 setupTestEnv();
 const { createCompetitionApp } = await import("../../competition/index.mjs");
@@ -94,6 +95,31 @@ function validateDatabase(dbPath) {
 
 function validateSupportDatabase(service, dbPath) {
   return spawnSync(process.execPath, [supportDatabaseValidator, service, dbPath], { encoding: "utf8" });
+}
+
+function createPendingCourseMission(dbPath) {
+  const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+  const now = new Date().toISOString();
+  const courseId = Number(created.db.prepare(
+    "INSERT INTO course (name,created_at,updated_at) VALUES ('Validator mission',?,?)",
+  ).run(now, now).lastInsertRowid);
+  const coneId = Number(created.db.prepare(`INSERT INTO cone
+    (course_id,lat,lng,alt,side,created_at,updated_at) VALUES (?,35,126,NULL,'left',?,?)`)
+    .run(courseId, now, now).lastInsertRowid);
+  const store = createMissionV2Store(created.db);
+  const mission = store.createMission({
+    courseId,
+    items: [{ cone_id: coneId, lat: 35, lng: 126, alt: null, side: "left" }],
+  });
+  const issued = store.issueCommand({
+    missionId: mission.id,
+    action: "start",
+    expectedPlanHash: mission.plan_hash,
+    expectedOccurrenceRevision: mission.occurrence_revision,
+    targetBootId: "validator-boot",
+  });
+  created.db.close();
+  return { mission, commandId: issued.command.id };
 }
 
 function writeExecutable(filePath, contents) {
@@ -334,6 +360,18 @@ function createNamedButMalformedAuthDatabase(dbPath) {
   db.close();
 }
 
+function addInvalidCourseMissionState(dbPath) {
+  const { commandId } = createPendingCourseMission(dbPath);
+  const db = new Database(dbPath);
+  const payload = JSON.parse(db.prepare(
+    "SELECT payload_json FROM mission_command WHERE id=?",
+  ).get(commandId).payload_json);
+  payload.waypoints[0].lat += 1;
+  db.prepare("UPDATE mission_command SET payload_json=? WHERE id=?")
+    .run(JSON.stringify(payload), commandId);
+  db.close();
+}
+
 function createRestoreFixture({
   minimalDatabase = false,
   missingRuntimeColumn = false,
@@ -341,6 +379,7 @@ function createRestoreFixture({
   unexpectedExecutableTrigger = false,
   corruptSupportDatabase = false,
   malformedNamedSupportSchema = false,
+  invalidCourseMissionState = false,
   missingSupportDatabase = null,
   symlinkCompetitionDatabase = false,
   intermediateUploadSymlink = false,
@@ -374,6 +413,9 @@ function createRestoreFixture({
   }
   if (malformedNamedSupportSchema) {
     createNamedButMalformedAuthDatabase(path.join(archiveRoot, "db", "auth.db"));
+  }
+  if (invalidCourseMissionState) {
+    addInvalidCourseMissionState(path.join(archiveRoot, "db", "course.db"));
   }
   if (missingSupportDatabase) {
     fs.rmSync(path.join(archiveRoot, "db", `${missingSupportDatabase}.db`), { force: true });
@@ -425,6 +467,7 @@ function createBackupFixture({
   unexpectedExecutableTrigger = false,
   invalidSupportSchema = false,
   malformedNamedSupportSchema = false,
+  invalidCourseMissionState = false,
   missingSupportDatabase = null,
   fileBrowserFiles = false,
   intermediateUploadSymlink = false,
@@ -461,6 +504,9 @@ function createBackupFixture({
   }
   if (malformedNamedSupportSchema) {
     createNamedButMalformedAuthDatabase(path.join(root, "auth", "data", "auth.db"));
+  }
+  if (invalidCourseMissionState) {
+    addInvalidCourseMissionState(path.join(root, "course", "data", "course.db"));
   }
   if (missingSupportDatabase) {
     fs.rmSync(path.join(root, missingSupportDatabase, "data", `${missingSupportDatabase}.db`), { force: true });
@@ -954,6 +1000,181 @@ describe("Competition backup/restore artifact validation", () => {
     }
   });
 
+  it("rejects a Course backup missing durable mission protocol state", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-schema-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+    created.db.exec("DROP TABLE mission_command");
+    created.db.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /mission_command<table:missing>/);
+  });
+
+  it("rejects a Course backup with a weakened active-mission index predicate", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-index-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+    created.db.exec(`
+      DROP INDEX idx_mission_one_active;
+      CREATE UNIQUE INDEX idx_mission_one_active ON mission((1))
+      WHERE lifecycle_state = 'running';
+    `);
+    created.db.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /idx_mission_one_active<index:definition>/);
+  });
+
+  it("rejects a Course backup with a dangling active mission command pointer", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-pointer-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+    created.db.prepare(`INSERT INTO mission
+      (started_at,status,waypoints_json,current_waypoint_idx,spray_results_json,updated_at,
+       created_at,lifecycle_state,finish_behavior,plan_hash,active_command_id,protocol_version)
+      VALUES (1,'paused','[]',0,'{}',1,1,'ready','stop',?,'missing-command',2)`)
+      .run("a".repeat(64));
+    created.db.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid course mission state: .*active_command_id/);
+  });
+
+  it("rejects a Course backup with invalid v2 lifecycle and empty-plan semantics", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-semantic-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+    created.db.prepare(`INSERT INTO mission
+      (started_at,status,waypoints_json,current_waypoint_idx,spray_results_json,updated_at,
+       created_at,lifecycle_state,finish_behavior,plan_hash,empty_plan_mode,protocol_version)
+      VALUES (1,'paused','[]',0,'{}',1,1,'teleporting','stop',?,'return_only',2)`)
+      .run("b".repeat(64));
+    created.db.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid course mission state: .*lifecycle_state/);
+    assert.match(result.stderr, /return_only_finish_behavior/);
+  });
+
+  it("rejects unknown mission protocol versions and non-canonical plan hashes", () => {
+    for (const mutation of ["protocol", "hash"]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `fsk-course-${mutation}-validator-`));
+      roots.push(root);
+      const dbPath = path.join(root, "course.db");
+      const { mission } = createPendingCourseMission(dbPath);
+      const writer = new Database(dbPath);
+      if (mutation === "protocol") {
+        writer.prepare("UPDATE mission SET protocol_version=99 WHERE id=?").run(mission.id);
+      } else {
+        writer.prepare("UPDATE mission SET plan_hash=? WHERE id=?").run("f".repeat(64), mission.id);
+      }
+      writer.close();
+      const result = validateSupportDatabase("course", dbPath);
+      assert.notEqual(result.status, 0);
+      assert.match(result.stderr, mutation === "protocol" ? /protocol_version/ : /plan_hash_content/);
+    }
+  });
+
+  it("rejects an orphan pending command even without a forward mission pointer", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-orphan-command-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const { mission, commandId } = createPendingCourseMission(dbPath);
+    const writer = new Database(dbPath);
+    writer.prepare(`UPDATE mission SET lifecycle_state='ready',status='paused',active_command_id=NULL
+      WHERE id=?`).run(mission.id);
+    writer.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, new RegExp(`command#${commandId}:orphan_pending`));
+  });
+
+  it("rejects pending commands whose executable payload no longer matches durable mission state", () => {
+    const mutations = [
+      ["finish", (payload) => { payload.finish_behavior = "return_to_start"; }, /executable_context/],
+      ["waypoint", (payload) => { payload.waypoints[0].lat += 1; }, /:waypoints/],
+      ["shape", (payload) => { payload.unreviewed_field = true; }, /payload_shape/],
+      ["occurrence", (payload) => { payload.expected_occurrence_revision = null; }, /occurrence_revision/],
+    ];
+    for (const [name, mutate, expected] of mutations) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `fsk-course-payload-${name}-validator-`));
+      roots.push(root);
+      const dbPath = path.join(root, "course.db");
+      const { commandId } = createPendingCourseMission(dbPath);
+      const writer = new Database(dbPath);
+      const row = writer.prepare("SELECT payload_json FROM mission_command WHERE id=?").get(commandId);
+      const payload = JSON.parse(row.payload_json);
+      mutate(payload);
+      writer.prepare("UPDATE mission_command SET payload_json=? WHERE id=?")
+        .run(JSON.stringify(payload), commandId);
+      writer.close();
+      const result = validateSupportDatabase("course", dbPath);
+      assert.notEqual(result.status, 0, name);
+      assert.match(result.stderr, expected, name);
+    }
+  });
+
+  it("rejects a return-only ready mission without a durable start position", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-return-only-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const { mission } = createPendingCourseMission(dbPath);
+    const writer = new Database(dbPath);
+    writer.prepare("UPDATE mission_command SET state='superseded' WHERE mission_id=?").run(mission.id);
+    writer.prepare(`UPDATE mission SET lifecycle_state='ready',status='paused',active_command_id=NULL,
+      empty_plan_mode='return_only',finish_behavior='return_to_start',start_lat=NULL,start_lng=NULL
+      WHERE id=?`).run(mission.id);
+    writer.prepare("UPDATE mission_waypoint SET state='skipped' WHERE mission_id=?").run(mission.id);
+    writer.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /return_only_start_position/);
+  });
+
+  it("rejects terminal and reboot-hold fence combinations that runtime cannot publish", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-fence-validator-"));
+    roots.push(root);
+    const dbPath = path.join(root, "course.db");
+    const created = supportAppCreators.course({ dbPath, skipStaticValidation: true });
+    const planHash = "c".repeat(64);
+    const missionId = Number(created.db.prepare(`INSERT INTO mission
+      (started_at,ended_at,status,waypoints_json,current_waypoint_idx,spray_results_json,updated_at,
+       created_at,lifecycle_state,finish_behavior,plan_hash,active_command_id,active_hold_id,hold_reason,protocol_version)
+      VALUES (1,2,'completed','[]',0,'{}',2,1,'completed','stop',?,'end-command','hold-after-end','rover_rebooted',2)`)
+      .run(planHash).lastInsertRowid);
+    created.db.prepare(`INSERT INTO mission_command
+      (id,mission_id,command_seq,action,plan_hash,state,requested_at,payload_json)
+      VALUES ('end-command',?,1,'end',?,'pending',1,?)`).run(
+      missionId,
+      planHash,
+      JSON.stringify({
+        protocol_version: 2,
+        command_id: "end-command",
+        command_seq: 1,
+        mission_id: missionId,
+        action: "end",
+        plan_hash: planHash,
+      }),
+    );
+    created.db.close();
+
+    const result = validateSupportDatabase("course", dbPath);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /terminal_fence/);
+    assert.match(result.stderr, /reboot_hold/);
+  });
+
   it("rejects support tables that have every required name but unusable columns", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-support-column-validator-"));
     roots.push(root);
@@ -1184,6 +1405,22 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(fs.readFileSync(fixture.liveAuth, "utf8"), beforeAuth);
   });
 
+  it("rejects semantically invalid Course mission state before stopping services", { skip: !operationalScriptsAvailable }, () => {
+    const fixture = createRestoreFixture({ invalidCourseMissionState: true });
+    const beforeCompetition = treeHash(fixture.liveData);
+    const beforeAuth = fs.readFileSync(fixture.liveAuth, "utf8");
+    const result = spawnSync("bash", [path.join(fixture.root, "scripts", "restore.sh"), fixture.zipPath], {
+      cwd: fixture.root,
+      encoding: "utf8",
+      env: { ...process.env, PATH: `${fixture.fakeBin}:${process.env.PATH}`, PODMAN_LOG: fixture.podmanLog },
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid course mission state/);
+    assert.equal(fs.existsSync(fixture.podmanLog), false);
+    assert.equal(treeHash(fixture.liveData), beforeCompetition);
+    assert.equal(fs.readFileSync(fixture.liveAuth, "utf8"), beforeAuth);
+  });
+
   it("rejects a restore missing a required support database before stopping services", { skip: !operationalScriptsAvailable }, () => {
     const fixture = createRestoreFixture({ missingSupportDatabase: "auth" });
     const before = treeHash(fixture.liveData);
@@ -1385,6 +1622,14 @@ exec "${realMv}" "$@"
     const result = runBackup(fixture);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /users<table:columns>/);
+    assert.deepEqual(fs.readdirSync(fixture.destination), []);
+  });
+
+  it("does not publish a backup with semantically invalid Course mission state", { skip: !operationalScriptsAvailable }, () => {
+    const fixture = createBackupFixture({ invalidCourseMissionState: true });
+    const result = runBackup(fixture);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /invalid course mission state/);
     assert.deepEqual(fs.readdirSync(fixture.destination), []);
   });
 

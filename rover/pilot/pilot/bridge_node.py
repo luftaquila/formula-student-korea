@@ -28,10 +28,11 @@ import os
 import queue
 import threading
 import time
+import uuid
 import requests
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
+from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from sensor_msgs.msg import NavSatFix
 from geometry_msgs.msg import Twist
 from std_msgs.msg import Empty, Float32, Int32, String
@@ -97,7 +98,30 @@ class BridgeNode(Node):
 
         # Publishers
         reliable_qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        # Mission protocol messages are durable server intents, not telemetry.
+        # The bridge often wins the ROS discovery race during a full stack boot,
+        # so retain the latest command/request until the navigator joins. A
+        # correlated command report replaces the retained command with a
+        # tombstone below, preventing an already-finished start from replaying
+        # after a later navigator-only restart.
+        mission_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        mission_report_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
         self._pub_execute = self.create_publisher(String, '/rover/cmd/execute_path', reliable_qos)
+        self._pub_mission = self.create_publisher(String, '/rover/cmd/mission', mission_qos)
+        self._pub_mission_state_request = self.create_publisher(
+            Empty, '/rover/cmd/mission_state_request', mission_qos)
+        self._pub_mission_reset = self.create_publisher(
+            String, '/rover/cmd/mission_reset', mission_qos)
+        self._pub_mission_safety_hold = self.create_publisher(
+            String, '/rover/cmd/mission_safety_hold', mission_qos)
         # Software-originated E-Stop goes to the dedicated sw_* topics so
         # the MCU bridge relays them to the MCU as 'E'/'C'. The bridge in
         # turn republishes /rover/cmd/{emergency_stop,clear_emergency} for
@@ -132,6 +156,13 @@ class BridgeNode(Node):
         # Subscribers
         self.create_subscription(NavSatFix, '/rover/gps/position', self._on_gps_position, 10)
         self.create_subscription(String, '/rover/nav/state', self._on_nav_state, 10)
+        # Navigator reports are transient-local as well: if DDS discovery lags
+        # the retained safety hold delivery, the bridge must still receive the
+        # resulting correlated acknowledgement instead of waiting solely on a
+        # later application-level retry.
+        self.create_subscription(
+            String, '/rover/mission/report', self._on_mission_report,
+            mission_report_qos)
         self.create_subscription(String, '/rover/gps/fix_status', self._on_fix_status, 10)
         self.create_subscription(String, '/rover/ntrip/status', self._on_ntrip_status, 10)
         self.create_subscription(Int32, '/rover/nav/waypoint_reached', self._on_waypoint_reached, reliable_qos)
@@ -147,6 +178,12 @@ class BridgeNode(Node):
         self._position_requested = False
         self._nav_state = 'IDLE'
         self._sse_connected = False
+        self._boot_id = str(uuid.uuid4())
+        self._mission_report_seq = 0
+        self._mission_identity = None
+        self._retained_mission_command_id = None
+        self._retained_mission_hold_id = None
+        self._retained_mission_hold_identity = None
         self._fix_status = None
         # monotonic() of the last immediate fix_status telemetry push, for the
         # leading-edge rate limit (see _FIX_PUSH_MIN_INTERVAL_S).
@@ -189,6 +226,17 @@ class BridgeNode(Node):
         self._post_session = requests.Session()
         self._post_thread = threading.Thread(target=self._post_loop, daemon=True)
         self._post_thread.start()
+
+        # Mission reports are never placed on the bounded telemetry queue. The
+        # current item is retried until the server accepts or definitively
+        # rejects it; after a reboot the navigator's durable checkpoint emits a
+        # full state report and closes any gap left by volatile RAM.
+        self._mission_report_queue = queue.Queue()
+        self._mission_report_session = requests.Session()
+        self._mission_report_wakeup = threading.Event()
+        self._mission_report_thread = threading.Thread(
+            target=self._mission_report_loop, daemon=True)
+        self._mission_report_thread.start()
 
         # Start network threads after all shared queues/sessions exist.
         self._sse_thread = threading.Thread(target=self._sse_loop, daemon=True)
@@ -250,6 +298,113 @@ class BridgeNode(Node):
             return
         self._nav_state = msg.data
         self._post_async('/api/rover/telemetry', self._telemetry_payload(), 'telemetry')
+
+    def _on_mission_report(self, msg):
+        """Queue a protocol-v2 mission report on the lossless retry worker."""
+        try:
+            payload = json.loads(msg.data)
+        except (json.JSONDecodeError, AttributeError):
+            self.get_logger().warn('Invalid mission report JSON')
+            return
+        if not isinstance(payload, dict) or payload.get('protocol_version') != 2:
+            self.get_logger().warn('Ignoring unsupported mission report')
+            return
+        self._mission_report_seq += 1
+        payload['boot_id'] = self._boot_id
+        payload['report_seq'] = self._mission_report_seq
+        self._mission_identity = {
+            'mission_id': payload.get('mission_id'),
+            'plan_hash': payload.get('plan_hash'),
+            'command_id': payload.get('command_id') or payload.get('last_command_id'),
+        }
+        retained_command_id = getattr(self, '_retained_mission_command_id', None)
+        if (retained_command_id is not None and payload.get('event') == 'command'
+                and payload.get('command_id') == retained_command_id):
+            # Retire the transient-local command only after the navigator has
+            # produced its correlated result. Late subscribers receive this
+            # inert envelope instead of replaying an acknowledged command.
+            retired = String()
+            retired.data = json.dumps({
+                'protocol_version': 2,
+                'retired_command_id': retained_command_id,
+            }, separators=(',', ':'))
+            self._pub_mission.publish(retired)
+            self._retained_mission_command_id = None
+        retained_hold_id = getattr(self, '_retained_mission_hold_id', None)
+        retained_hold_identity = getattr(
+            self, '_retained_mission_hold_identity', None)
+        if (retained_hold_id is not None
+                and payload.get('event') in ('held', 'interrupted')
+                and payload.get('hold_id') == retained_hold_id
+                and retained_hold_identity == (
+                    payload.get('mission_id'), payload.get('plan_hash'))
+                and payload.get('checkpoint_persisted') is True):
+            # Keep the hold retained until the navigator has physically stopped
+            # and echoed its correlation. The server also retries the SSE intent
+            # until this report reaches it, covering a bridge crash after this
+            # local retirement but before the HTTP acknowledgement.
+            retired = String()
+            retired.data = json.dumps({
+                'protocol_version': 2,
+                'retired_hold_id': retained_hold_id,
+            }, separators=(',', ':'))
+            self._pub_mission_safety_hold.publish(retired)
+            self._retained_mission_hold_id = None
+            self._retained_mission_hold_identity = None
+        self._mission_report_queue.put(payload)
+        self._mission_report_wakeup.set()
+
+    def _mission_report_loop(self):
+        while self._running:
+            try:
+                payload = self._mission_report_queue.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if payload is None:
+                break
+            delay = 0.25
+            while self._running:
+                url = self.get_parameter('server_url').value
+                if not url:
+                    self._mission_report_wakeup.clear()
+                    self._mission_report_wakeup.wait(delay)
+                    delay = min(delay * 2, 5.0)
+                    continue
+                try:
+                    response = self._mission_report_session.post(
+                        f'{url}/api/rover/mission-report',
+                        json=payload,
+                        headers=self._get_headers(),
+                        timeout=5.0,
+                    )
+                    if 200 <= response.status_code < 300:
+                        try:
+                            response_body = response.json()
+                        except (ValueError, AttributeError):
+                            response_body = {}
+                        if isinstance(response_body, dict) and response_body.get('reset_mission'):
+                            self.get_logger().warn(
+                                'Server marked checkpoint mission terminal; clearing local checkpoint')
+                            reset = String()
+                            reset.data = json.dumps({
+                                'protocol_version': 2,
+                                'mission_id': payload.get('mission_id'),
+                                'plan_hash': payload.get('plan_hash'),
+                            }, separators=(',', ':'))
+                            self._pub_mission_reset.publish(reset)
+                        break
+                    if 400 <= response.status_code < 500:
+                        self.get_logger().warn(
+                            f'mission report rejected ({response.status_code}): '
+                            f'{response.text[:200]}')
+                        break
+                    self.get_logger().warn(
+                        f'mission report server error ({response.status_code})')
+                except requests.RequestException as exc:
+                    self.get_logger().warn(f'mission report POST error: {exc}')
+                self._mission_report_wakeup.clear()
+                self._mission_report_wakeup.wait(delay)
+                delay = min(delay * 2, 5.0)
 
     def _on_fix_status(self, msg):
         """Track fix status; push telemetry on a change, leading-edge rate-limited.
@@ -440,6 +595,12 @@ class BridgeNode(Node):
             'fix_status': self._fix_status,
             'ntrip_connected': self._ntrip_connected,
         }
+        boot_id = getattr(self, '_boot_id', None)
+        if boot_id is not None:
+            payload['boot_id'] = boot_id
+        mission_identity = getattr(self, '_mission_identity', None)
+        if mission_identity is not None:
+            payload['mission'] = mission_identity
         if self._ntrip_detail is not None:
             payload['ntrip'] = self._ntrip_detail
         if self._battery is not None:
@@ -552,6 +713,11 @@ class BridgeNode(Node):
             request_ids = list(self._pending_position_request_ids)
             self._pending_position_request_ids.clear()
         payload = dict(self._last_position)
+        # Position is an authorization input for protocol-v2 start/resume
+        # distance checks. Correlate it to the same bridge boot announced on
+        # SSE/telemetry so a cached sample from an older process cannot release
+        # a newer session's mission command.
+        payload['boot_id'] = self._boot_id
         if request_ids:
             payload['request_id'] = request_ids[0]
             payload['request_ids'] = request_ids
@@ -604,7 +770,7 @@ class BridgeNode(Node):
         headers['Cache-Control'] = 'no-cache'
 
         resp = requests.get(
-            f'{url}/api/rover/stream',
+            f'{url}/api/rover/stream?protocol_version=2&boot_id={self._boot_id}',
             headers=headers,
             stream=True,
             # connect timeout, read timeout. Server heartbeat is 10s, so a 25s
@@ -701,6 +867,39 @@ class BridgeNode(Node):
             msg = String()
             msg.data = json.dumps(waypoints)
             self._pub_execute.publish(msg)
+
+        elif event == 'mission-command':
+            self.get_logger().info(
+                f"Mission command received: {payload.get('action')} "
+                f"#{payload.get('command_seq')}")
+            msg = String()
+            msg.data = json.dumps(payload, separators=(',', ':'))
+            self._retained_mission_command_id = payload.get('command_id')
+            self._pub_mission.publish(msg)
+
+        elif event == 'mission-state-request':
+            self.get_logger().info('Mission checkpoint state requested by server')
+            self._pub_mission_state_request.publish(Empty())
+
+        elif event == 'mission-safety-hold':
+            mission_id = payload.get('mission_id')
+            plan_hash = payload.get('plan_hash')
+            hold_id = payload.get('hold_id')
+            if (payload.get('protocol_version') != 2
+                    or not isinstance(mission_id, int)
+                    or isinstance(mission_id, bool) or mission_id <= 0
+                    or not isinstance(plan_hash, str) or len(plan_hash) != 64
+                    or not isinstance(hold_id, str) or not hold_id):
+                self.get_logger().warn(
+                    f'mission-safety-hold: invalid payload {payload!r}')
+                return
+            self.get_logger().warn(
+                f'Mission safety hold received: {hold_id}')
+            msg = String()
+            msg.data = json.dumps(payload, separators=(',', ':'))
+            self._retained_mission_hold_id = hold_id
+            self._retained_mission_hold_identity = (mission_id, plan_hash)
+            self._pub_mission_safety_hold.publish(msg)
 
         elif event == 'emergency-stop':
             self.get_logger().warn('Emergency stop received from server')
@@ -860,6 +1059,7 @@ class BridgeNode(Node):
 
     def destroy_node(self):
         self._running = False
+        self._mission_report_wakeup.set()
         if self._sse_thread:
             self._sse_thread.join(timeout=5.0)
         if getattr(self, '_telemetry_thread', None):
@@ -871,6 +1071,10 @@ class BridgeNode(Node):
             except queue.Full:
                 pass
             post_thread.join(timeout=5.0)
+        mission_report_thread = getattr(self, '_mission_report_thread', None)
+        if mission_report_thread is not None:
+            self._mission_report_queue.put(None)
+            mission_report_thread.join(timeout=5.0)
         super().destroy_node()
 
 

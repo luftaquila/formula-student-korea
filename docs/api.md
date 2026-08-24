@@ -471,7 +471,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/courses` | chief | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
 | PATCH | `/api/courses/:id` | chief | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
 | PATCH | `/api/courses/:id/direction` | chief | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). `courses` SSE(type=direction) 브로드캐스트 |
-| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘·스냅샷 CASCADE 삭제) |
+| DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘·스냅샷 CASCADE 삭제). 활성 미션이 사용 중이면 감사 로그를 남기고 `409 { reason:"active_mission_course" }` |
 | GET | `/api/courses/:id/export` | chief | — | `{ name, cones: [{lat, lng, side}...] }` | 코스+콘 JSON 다운로드 |
 | POST | `/api/courses/import` | chief | `{ name, cones: [{lat, lng, side}...] }` | 201 `{ id, name, ... }` | JSON으로 코스+콘 일괄 생성 (트랜잭션) |
 
@@ -511,9 +511,10 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/rover/stream` | internal | `?device=gps\|rover` | SSE stream | 기기 SSE 연결 (INTERNAL_SECRET 필수). `device=gps`는 GPS 수신기(fsk-rover-gps)의 **별도 슬롯**, 그 외는 로버 — 둘이 동시에 연결 가능(서로 밀어내지 않음). 서버가 `request-position`/`execute-path`/`base-activate`/`rtcm`/`ntrip-source` 등 명령 이벤트를 전달 |
-| POST | `/api/rover/position` | internal/admin | `{ lat, lng, alt?, request_id? }` `?device=gps\|rover` | `{ lat, lng, alt }` | 기기가 현재 위치 전송. `request_id`가 있으면 `/api/rover/request` pending 해소. 활성 소스일 때만 `rover` 라이브 이벤트 브로드캐스트 |
-| POST | `/api/rover/telemetry` | internal/admin | `{ fix_status, nav_state, ntrip_*, gps, mode?, base?, ... }` `?device=gps\|rover` | 200 | 주기 텔레메트리. 로버면 활성 미션 시 mission_telemetry 영속; 수신기(`device=gps`)면 receiverState(fix/ntrip/gps + base 상태) 갱신 |
+| GET | `/api/rover/stream` | internal | GPS: `?device=gps`; rover: `?protocol_version=2&boot_id=<uuid>` | SSE stream | 기기 SSE 연결 (INTERNAL_SECRET 필수). v2 boot ID는 서버에 generation으로 영속되므로 A→B 교체 후 A 재접속은 409. 재부팅 경계의 active mission은 persisted `mission-safety-hold { mission_id, plan_hash, hold_id }`를 받고, correlated durable held/interrupted ACK 전까지 재접속마다 재전송한다. `device=gps`는 별도 수신기 슬롯 |
+| POST | `/api/rover/mission-report` | internal | `{ protocol_version:2, boot_id, report_seq, mission_id, plan_hash, event, command_id?, command_seq?, command_result?, waypoint_id?, active_waypoint_id?, completed_waypoint_ids?, motion_state?, hold_id?, checkpoint_persisted? }` | `{ ok, duplicate?, reset_mission?, mission? }` | boot·순번·미션·계획에 결합된 미션 보고. 모든 checkpoint report의 `completed_waypoint_ids`를 검증/재현한다. reboot hold는 `held\|interrupted` + 동일 `hold_id` + `checkpoint_persisted:true`일 때만 해제된다. terminal 보고의 동일 순번 재전송도 `reset_mission:true`를 반환한다. stale boot/hash/waypoint는 409 |
+| POST | `/api/rover/position` | internal/admin | rover: `{ boot_id, lat, lng, alt?, request_id? }`; GPS: `{ lat, lng, alt?, request_id? }` `?device=gps\|rover` | `{ lat, lng, alt }` | v2 rover 위치는 현재 SSE boot와 일치할 때만 liveness·거리 gate·pending request를 갱신한다. GPS receiver는 별도 세션 계약 |
+| POST | `/api/rover/telemetry` | internal/admin | rover: `{ boot_id, fix_status, nav_state, ntrip_*, gps, ... }`; GPS: 기존 payload `?device=gps\|rover` | 200 | v2 rover 텔레메트리는 현재 SSE boot에만 결합된다. current boot의 authoritative `EMERGENCY_STOP`만 active v2 mission을 confirmed-held/interrupted로 조정한다. 수신기(`device=gps`)는 receiverState 갱신 |
 | POST | `/api/rover/waypoint_reached` | internal/admin | `{ index }` | 200 | 웨이포인트 도달 보고 (미션 진행 영속 + `rover:waypoint` 브로드캐스트) |
 | POST | `/api/rover/waypoint_skipped` | internal/admin | `{ index }` | 200 | stuck 웨이포인트 건너뜀 보고 (`rover:skipped` 브로드캐스트) |
 | POST | `/api/rover/spray_result` | internal/admin | `{ waypoint, outcome: success\|cancelled\|timeout }` | 200 | 도색 결과 보고 (미션에 영속 + `rover:spray` 브로드캐스트) |
@@ -531,15 +532,11 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/rover/status` | admin | — | `{ connected, nav_state, mission, last_position, ... }` | 로버 종합 상태 스냅샷 |
+| GET | `/api/rover/status` | admin | — | `{ connected, nav_state, active_mission, mission_protocol, last_position, ... }` | 로버 종합 상태. `active_mission`은 안정적 waypoint occurrence ID·상태·plan hash를 포함하고 `mission_protocol`은 요구/연결 버전과 boot ID를 표시 |
 | POST | `/api/rover/request` | admin | — | `{ lat, lng }` | 로버에 위치 요청 후 응답 대기 (5초 타임아웃). 503=미연결, 504=타임아웃 |
-| POST | `/api/rover/execute` | admin | `{ waypoints: [{lat,lng}...] }` | `{ sent }` | 경로 waypoint를 로버에 전송 (SSE `execute-path` 이벤트). 웨이포인트 간 거리 검증. 409=EMERGENCY_STOP 래치 상태 |
 | POST | `/api/rover/stop` | admin | — | `{ stopped: true }` | 비상정지 (SSE `emergency-stop` 이벤트) |
-| POST | `/api/rover/pause` | admin | — | 200 | 미션 일시정지 (SSE `pause` 이벤트) |
-| POST | `/api/rover/resume` | admin | — | 200 | 미션 재개 (SSE `resume` 이벤트) |
 | POST | `/api/rover/clear-emergency` | admin | — | `{ cleared: true }` | 비상정지 해제. 미션은 자동 종료되지 않고 보존되어 "이어서 실행" 가능 |
-| POST | `/api/rover/end-mission` | admin | — | `{ ended, mission_id? }` | 보존된 미션을 명시적으로 종료. 활성 미션 없으면 `ended:false` |
-| POST | `/api/rover/control` | admin | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100, SSE `manual-control` 이벤트) |
+| POST | `/api/rover/control` | admin | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100). v2 활성 미션은 로버가 실제 held를 보고한 경우(`motion_confirmed_held:true`)에만 non-zero 명령을 허용한다. 단순 SSE/telemetry 중단처럼 자율 주행이 계속될 수 있는 interruption은 409; 정지 명령(0/0)은 항상 전달 가능 |
 | POST | `/api/rover/pump` | admin | `{ on }` | `{ on }` | 페리스탈릭 펌프 수동 on/off 토글 |
 | POST | `/api/rover/pump-duration` | admin | `{ seconds }` (0~10) | `{ ok }` | 펌프 분사 시간(초) 설정. 로버 재연결 시 재전송 |
 | POST | `/api/rover/nav-lights` | admin | `{ ... }` | 200 | 항법등 제어 |
@@ -559,6 +556,8 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/rover/camera/detection` | admin | `{ on }` | `{ ok, detection, camera_connected }` | 근접(장애물) 감지 토글. depth와 달리 뷰어 게이트 없이 NAVIGATING 중 항상 적용되는 미션 안전 설정. roverState에 저장(`rover:status` 반영)되고 perception 재연결마다 재전송. 로버 env `OBSTACLE_DETECTION`이 하드 킬스위치, 이건 운영자 소프트 on/off |
 | GET | `/api/rover/camera/status` | admin | — | `{ camera_connected, viewers, depth, last_frame_age_ms }` | 카메라 릴레이 상태. `camera_connected`=perception 제어 SSE 연결됨, `viewers`=MJPEG 뷰어 수, `depth`=컴포지트 모드, `last_frame_age_ms`=서버 계산 프레임 경과(뷰어 없으면 null) |
 | GET | `/api/rover/map-tile` | admin | `?z=&x=&y=` | image (jpeg/png) | VR 미니맵용 위성 타일 **동일 출처 프록시**. WebGL 캔버스가 교차 출처 타일로 오염되지 않도록 VWorld(서버측 `VWORLD_KEY`)·구글 타일을 서버가 대신 가져와 전달. z/x/y는 slippy-map(XYZ) 인덱스, 범위 밖이면 400 |
+
+미션 v2 로버가 연결됐거나 v2 활성 미션이 있으면 레거시 `/api/rover/execute`, `/pause`, `/resume`, `/end-mission`은 410을 반환한다. 새 운용 UI는 아래 Missions API만 사용한다.
 
 ### GPS — 수신기 소스 선택 + base station 측량점
 
@@ -600,10 +599,23 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 
 ### Missions (admin)
 
+`mission.status`는 `ready → starting → running → pausing/paused 또는 interrupted → resuming → running → completed` 상태 기계다. `cancelled`도 종결 상태다. `plan_hash`는 종료 동작과 occurrence 순서를 묶고 start/resume 발행 시점에 `expected_plan_hash`로 CAS한다. `occurrence_revision`은 웨이포인트 진행 상태를 포함하며 남은 경로 편집과 start/resume 모두 `expected_occurrence_revision`까지 비교한다. `motion_confirmed_held`는 서버가 추정한 interruption과 로버가 확인한 실제 정지를 구분한다. end는 reboot safety hold 중에도 허용되지만 accepted+held ACK 전까지 미션을 active로 유지해 후속 미션과 수동 주행을 차단한다. 빈 return-only 경로는 영구 저장된 `start_position`이 있을 때만 편집·실행할 수 있다. 한 미션은 완료 항목을 포함해 최대 1,000 occurrence이며 코스별 프리셋은 최대 20개다.
+
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
+| GET | `/api/missions/active` | admin | — | `{ mission }` | 유일한 비종결 미션. 없으면 null |
+| POST | `/api/missions` | admin | `{ course_id, preset_id?, finish_behavior: stop\|return_to_start, items: [{cone_id,lat,lng,alt,side}...] }` | 201 mission | 서버 권위 미션 생성. 각 좌표/방향은 운영자가 마지막으로 확인한 값의 value-CAS이며 live cone과 다르면 409. 같은 cone ID를 여러 번 넣으면 서로 다른 occurrence ID로 보존 |
+| PUT | `/api/missions/:id/remaining` | admin | `{ expected_plan_hash, expected_occurrence_revision, finish_behavior, items: [{waypoint_id}\|{cone_id}...] }` | mission | `motion_confirmed_held:true`인 미션에서만 남은 경로 교체. 일반 stop 경로는 empty를 거부하고, 모든 pending이 `dispense_outcome_uncertain`이거나 return-only인 경우만 명시적 empty mode를 저장 |
+| POST | `/api/missions/:id/start` | admin | `{ expected_plan_hash, expected_occurrence_revision, force? }` | 202 `{ command_id, command_seq, delivered, replay, mission }` | ready 미션 시작 명령 |
+| POST | `/api/missions/:id/pause` | admin | — | 202 command envelope | running 미션 정지 명령. 수락 후 paused |
+| POST | `/api/missions/:id/resume` | admin | `{ expected_plan_hash, expected_occurrence_revision, force? }` | 202 command envelope | paused/interrupted 미션의 pending occurrence만 재개. 완료 항목은 전송하지 않음 |
+| POST | `/api/missions/:id/end` | admin | — | 202 command envelope | accepted+held ACK 후에만 cancelled. ACK 전에는 active/motion-unconfirmed fence를 유지 |
+| GET | `/api/rover/mission-presets` | admin | `?course_id=` | `{ presets:[{ preset_revision, ... }] }` | 순서·중복·종료 동작을 저장한 코스별 프리셋. 삭제된 콘이 있으면 `stale:true` |
+| POST | `/api/rover/mission-presets` | admin | `{ course_id, name, finish_behavior, items:[{cone_id}...] }` | 201 preset | 프리셋 생성 |
+| PUT | `/api/rover/mission-presets/:id` | admin | 생성 payload + `{ expected_preset_revision }` | preset | last-read revision이 일치할 때만 프리셋 갱신 |
+| DELETE | `/api/rover/mission-presets/:id` | admin | `{ expected_preset_revision }` | 204 | last-read revision이 일치할 때만 프리셋 삭제 |
 | GET | `/api/missions` | admin | `?limit=(≤500, 기본 50)&offset=` | `{ missions, total }` | 미션 이력 목록 |
-| GET | `/api/missions/:id` | admin | — | `{ ...mission, waypoints, spray_results }` | 미션 상세 |
+| GET | `/api/missions/:id` | admin | — | v2: `{ ...mission, waypoints, events }`; legacy: 기존 좌표 배열 | 미션 상세와 모든 lifecycle/command/route-edit 감사 이벤트 |
 | GET | `/api/missions/:id/telemetry` | admin | — | `{ samples: [...] }` | 미션 텔레메트리 전체 (대용량 가능 — 페이지네이션 미지원, 후속 과제) |
 
 ### SSE (`/api/events`, chief)
@@ -615,7 +627,8 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 변경 (type: add/update/delete/clear/restore) |
 | `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 변경 (type: add/update/delete) |
 | `rover` | `{ lat, lng, alt, source }` | 활성 소스 위치 수신 시 브로드캐스트 (source: rover\|receiver) |
-| `rover:status` | roverState + `{ receiver, position_source, ntrip_source }` | 로버·수신기·GPS·카메라·캘리브레이션 종합 상태 |
+| `rover:status` | roverState + `{ active_mission_summary, mission_protocol, receiver, position_source, ntrip_source }` | GPS-rate bounded 상태. `active_mission_summary`는 ID/status/hold/hash/revision 등 권한 판단 필드만 포함하고 waypoint 배열은 포함하지 않음 |
+| `rover:mission` | `{ mission }` | command acknowledgement, checkpoint reconcile, waypoint 결과, 정지/완료 직후 v2 미션 전체 상태 |
 | `rover:waypoint` / `rover:skipped` / `rover:spray` / `rover:obstacle` | `{ index }` / `{ waypoint, outcome }` / `{ nearest_m, paused }` 등 | 미션 진행 이벤트 |
 | `rover:logs` | `{ count, uploaded_at }` | 로버 로그 업로드 완료 |
 | `rover:antenna_calibration` | 캘리브레이션 결과 객체 | 안테나 오프셋 캘리브레이션 결과 |

@@ -49,6 +49,8 @@ class _FakeNode:
         self._params = {}
         self._logger = _FakeLogger()
         self._publishers = {}
+        self._publisher_specs = []
+        self._subscription_specs = []
         self._timers = []
         self._destroyed_timers = []
 
@@ -65,11 +67,13 @@ class _FakeNode:
     def get_logger(self):
         return self._logger
 
-    def create_publisher(self, *_a, **_kw):
+    def create_publisher(self, msg_type, topic, qos, **_kw):
+        self._publisher_specs.append((msg_type, topic, qos))
         pub = types.SimpleNamespace(publish=lambda *_a, **_kw: None)
         return pub
 
-    def create_subscription(self, *_a, **_kw):
+    def create_subscription(self, msg_type, topic, callback, qos, **_kw):
+        self._subscription_specs.append((msg_type, topic, callback, qos))
         return None
 
     def create_timer(self, _period, _cb, callback_group=None):

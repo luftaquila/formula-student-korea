@@ -1326,12 +1326,13 @@ describe('Rover disconnect reason exposure', () => {
   });
 });
 
-describe('Mission orphan recovery + boot re-adopt (on startup)', () => {
-  it('keeps a running mission resumable (interrupted, not error) and re-adopts it into memory', async () => {
+describe('Mission orphan recovery + boot reconciliation (on startup)', () => {
+  it('keeps a running mission resumable in the durable mission store', async () => {
     // A row left 'running' means the server died mid-mission. The rover keeps
     // driving and reconnects, so the mission must NOT be discarded — it becomes
-    // 'interrupted' (resumable, not ended) and is reloaded into mission_progress
-    // so the reconnecting rover stays attached and the UI can rebuild the view.
+    // 'interrupted' (resumable, not ended) and is exposed from the durable v2
+    // mission store. Legacy in-memory mission_progress must stay empty: the
+    // rover checkpoint and stable waypoint IDs are the source of progress now.
     const started_at = Date.now() - 60000;
     db.prepare(
       "INSERT INTO mission (started_at, status, waypoints_json, current_waypoint_idx, spray_results_json) VALUES (?, 'running', ?, ?, ?)"
@@ -1349,14 +1350,15 @@ describe('Mission orphan recovery + boot re-adopt (on startup)', () => {
       assert.equal(m.status, 'interrupted', 'running orphan must become resumable, not error');
       assert.ok(!m.ended_at, 'interrupted mission must not be ended');
 
-      // Re-adopted into memory: mission_progress restored with persisted index.
       const status = await (await localClient.get('/api/rover/status', { cookie: adminCookie })).json();
-      assert.equal(status.mission_progress.mission_id, orphanId);
-      assert.equal(status.mission_progress.current_waypoint_idx, 2);
-      assert.equal(status.mission_progress.status, 'interrupted');
-      assert.equal(status.mission_progress.waypoints.length, 3);
-      assert.equal(status.mission_progress.spray_results['0'], 'success');
+      assert.equal(status.mission_progress.mission_id, null);
+      assert.equal(status.active_mission.id, orphanId);
+      assert.equal(status.active_mission.status, 'interrupted');
+      assert.equal(status.active_mission.waypoints.length, 3);
+      assert.equal(status.active_mission.waypoints.filter((wp) => wp.state === 'completed').length, 2);
     } finally {
+      result.db.prepare("UPDATE mission SET lifecycle_state='cancelled', status='stopped', ended_at=? WHERE id=?")
+        .run(Date.now(), orphanId);
       await stopServer(started.server);
       result.db.close();
     }

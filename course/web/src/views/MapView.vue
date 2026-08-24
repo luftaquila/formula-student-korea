@@ -3,6 +3,34 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "
 import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
+import MissionBuilder from "../components/MissionBuilder.vue";
+import { optimizeConeRoute } from "../lib/mission-route.mjs";
+import {
+  buildMissionCommandPayload,
+  buildMissionPresetPayload,
+  buildMissionRemainingPayload,
+  missionBuilderSubmission,
+  missionCommandResponseDecision,
+  missionCommandToken,
+  missionCommandTokenAfterSync,
+  missionCourseId,
+  missionDraftMatches,
+  missionDraftToken,
+  missionEmptyResumeMode,
+  missionMotionConfirmedHeld,
+  missionNeedsManualRelease,
+  missionPathActionDisabled,
+  missionPathGeometry,
+  missionPreflightCanConfirm,
+  missionPreflightDistanceAllowed,
+  missionPreflightTarget,
+  missionRestoreDecision,
+  presetResponseIsCurrent,
+  shouldAbandonMissionForCourseSwitch,
+  shouldConsumeLegacyMissionIndexEvent,
+  trackManualControlRequest,
+  waitForManualControlDrain,
+} from "../lib/mission-session.mjs";
 import { useNotification } from "@shared/useNotification.js";
 import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
 import { computeCenterline } from "@lib/centerline.mjs";
@@ -83,7 +111,7 @@ function restoreLiveMapLayers() {
   if (!map) return;
   rebuildAllMarkers();
   syncDeviceMarkers(roverStatus.value);
-  if (pathStart && pathWaypoints.value.length > 0) renderPath();
+  if (pathStart) renderPath();
   renderSprayMarkers();
 }
 
@@ -132,12 +160,21 @@ const editCourseName = ref("");
 // Rover control
 const roverMode = ref("none"); // none | path-pick | path-ready | executing | stopped | manual
 const pathWaypoints = ref([]);
+const missionFinishBehavior = ref("stop");
+const showMissionBuilder = ref(false);
+const missionBuilderItems = ref([]);
+const missionBuilderEditing = ref(false);
+const missionBuilderBusy = ref(false);
+const missionBuilderBase = ref(null);
+const missionPresets = ref([]);
+const missionPresetBusy = ref(false);
+let missionPresetRequestSeq = 0;
 const executedIndex = ref(0);
-const resumeStartIdx = ref(0); // operator-chosen resume index (stopped mode)
 const pathProgress = ref(0);
 const pathDistance = ref(0);
 const manualThrottle = ref(0);
 const manualSteering = ref(0);
+const manualAuthorityReleaseBusy = ref(false);
 // Joystick DOM refs: the knob + readout are updated imperatively while dragging
 // so a pointermove (≈120Hz on mobile) doesn't re-render this whole component.
 const joystickKnobEl = ref(null);
@@ -169,6 +206,8 @@ const roverStatus = ref({
   // "ngii" | "base" — the rover's configured correction source (server config).
   // Used to warn when base is selected but the receiver isn't connected.
   ntrip_source: "ngii",
+  active_mission: null,
+  mission_protocol: { required: 2, connected: null, compatible: false, boot_id: null },
 });
 
 function syncAppRoverStatus(data) {
@@ -205,6 +244,10 @@ let sprayMarkers = {};
 const showPreflight = ref(false);
 const preflightForce = ref(false);
 const preflightMode = ref("execute"); // "execute" | "resume"
+const preflightRouteAlreadySynced = ref(false);
+const preflightMissionToken = ref(null);
+const preflightMissionDraft = ref(null);
+const preflightEmptyRouteMode = ref(null);
 
 // Tick ref — bumps every second so time-ago computeds recalc even when no
 // new SSE event arrives (otherwise "pos 0s" stays stale when the rover stops).
@@ -216,9 +259,13 @@ let uiTickInterval = null;
 const currentTargetDistance = computed(() => {
   if (roverMode.value !== "executing") return null;
   const idx = executedIndex.value;
-  if (idx < 0 || idx >= pathWaypoints.value.length) return null;
   const lp = roverStatus.value.last_position;
   if (!lp) return null;
+  if (pathWaypoints.value.length === 0
+      && missionFinishBehavior.value === "return_to_start" && pathStart) {
+    return haversine(lp, pathStart);
+  }
+  if (idx < 0 || idx >= pathWaypoints.value.length) return null;
   return haversine(lp, pathWaypoints.value[idx]);
 });
 
@@ -413,10 +460,13 @@ function onPumpDurationInput(val) {
 
 const missionChip = computed(() => {
   if (roverMode.value !== "executing" && roverMode.value !== "stopped") return null;
-  if (pathWaypoints.value.length === 0) return null;
-  const lines = [
-    `미션 진행: ${executedIndex.value} / ${pathWaypoints.value.length} (${pathProgress.value}%)`,
-  ];
+  const returnOnly = pathWaypoints.value.length === 0
+    && missionFinishBehavior.value === "return_to_start"
+    && pathStart && pathReturnOrigin;
+  if (pathWaypoints.value.length === 0 && !returnOnly) return null;
+  const lines = [returnOnly
+    ? `최초 미션 시작점 복귀: ${pathProgress.value}%`
+    : `미션 진행: ${executedIndex.value} / ${pathWaypoints.value.length} (${pathProgress.value}%)`];
   if (remainingDistanceM.value != null) {
     lines.push(`남은 거리: ${remainingDistanceM.value >= 1000
       ? (remainingDistanceM.value / 1000).toFixed(2) + " km"
@@ -425,10 +475,11 @@ const missionChip = computed(() => {
   if (missionETA.value) lines.push(`예상 완료: ${missionETA.value} 후`);
   if (roverStatus.value.gps?.speed != null) lines.push(`현재 속도: ${roverStatus.value.gps.speed.toFixed(2)} m/s`);
   return {
-    current: executedIndex.value,
-    total: pathWaypoints.value.length,
+    current: returnOnly ? 0 : executedIndex.value,
+    total: returnOnly ? 0 : pathWaypoints.value.length,
     percent: pathProgress.value,
     eta: missionETA.value,
+    returnOnly,
     detail: lines.join("\n"),
   };
 });
@@ -1088,11 +1139,16 @@ let pathLine = null;
 let pathStartMarker = null;
 let pathEndMarker = null;
 let pathStart = null; // { lat, lng } — preserved across compute/execute/resume for re-rendering
+let pathReturnOrigin = null; // fixed origin for an empty return-only leg; never chase live GPS while rendering
 let pathCumDist = []; // cumulative distance to each waypoint from start (length = pathWaypoints.value.length)
 let pathTotalDist = 0; // total distance including return-to-start segment
 let executionStartIdx = 0; // global waypoint index the current execute/resume call started from
+let displayedMissionId = null;
+let pathMissionBase = null;
+let localMissionCreatePending = false;
 let eventSource = null;
 let controlInterval = null;
+const pendingManualControlRequests = new Set();
 let suppressRebuild = false;
 let coneRenderer = null;       // shared <canvas> renderer for cone dots (rover/history tabs)
 let followTimer = null;        // throttle handle: at most one follow-pan per FOLLOW_MIN_MS
@@ -1160,6 +1216,17 @@ watch([inspectorWidth, sheetHeight, isMobile], () => {
 
 /* ── Computed ──────────────────────────────────────── */
 const activeCourse = computed(() => courses.value.find((c) => c.id === activeCourseId.value));
+const activeMission = computed(() => roverStatus.value.active_mission || null);
+const missionHeld = computed(() => missionMotionConfirmedHeld(activeMission.value));
+const emergencyStopLatched = computed(() =>
+  roverStatus.value.nav_state === "EMERGENCY_STOP" || roverStatus.value.stop_requested === true);
+const pathButtonDisabled = computed(() => missionPathActionDisabled({
+  activeConeCount: activeCones.value.length,
+  activeMission: activeMission.value,
+  roverMode: roverMode.value,
+  stopping: stopping.value,
+  emergencyStopped: emergencyStopLatched.value,
+}));
 
 const pathBtnLabel = computed(() => {
   // 글로벌 비상정지 래치가 잡혀 있는 동안에는 모든 미션 버튼이 정지 명령이
@@ -1167,6 +1234,9 @@ const pathBtnLabel = computed(() => {
   // 모순된 단계로 오해하지 않는다.
   if (stopping.value && (roverMode.value === "executing" || roverMode.value === "stopped")) {
     return "정지 요청 중...";
+  }
+  if (emergencyStopLatched.value && (roverMode.value === "stopped" || roverMode.value === "path-ready")) {
+    return "비상정지 해제 필요";
   }
   if (roverMode.value === "executing") {
     // 일시정지 중에는 메인 버튼이 상태만 표시하고, 재개는 전용 버튼이 담당.
@@ -1177,7 +1247,7 @@ const pathBtnLabel = computed(() => {
     if (!ACTIVE_NAV_STATES.has(roverStatus.value.nav_state)) return "시작 요청 중...";
     return `실행 중 ${pathProgress.value}%`;
   }
-  if (roverMode.value === "stopped") return "이어서 실행";
+  if (roverMode.value === "stopped") return activeMission.value?.status === "ready" ? "미션 시작" : "이어서 실행";
   if (roverMode.value === "path-ready") return "경로 실행";
   if (roverMode.value === "path-pick") return "계산 취소";
   return "경로 계산";
@@ -1197,20 +1267,32 @@ const preflightFlash = ref({});
 // Pre-flight checklist derived from current rover state + planned path.
 const preflightChecks = computed(() => {
   const s = roverStatus.value;
-  // In resume mode the rover drives to the chosen restart waypoint first, not
-  // waypoints[0], so gauge the approach distance against that one (the selector
-  // sits in this same modal, so changing it re-derives this check live).
   const wps = pathWaypoints.value;
-  const startIdx = preflightMode.value === "resume"
-    ? Math.max(0, Math.min(resumeStartIdx.value, wps.length - 1))
-    : 0;
-  const first = wps[startIdx];
+  // Resume always starts at the first server-authoritative pending occurrence;
+  // an empty return-only mission instead checks the current-to-start leg, while
+  // an uncertainty resolution explicitly performs no motion.
+  const targetDecision = missionPreflightTarget({
+    mode: preflightMode.value,
+    waypoints: wps,
+    finishBehavior: missionFinishBehavior.value,
+    missionStart: activeMission.value?.start_position,
+    emptyRouteMode: preflightEmptyRouteMode.value,
+  });
+  const first = targetDecision.target;
   const firstDist = first && s.last_position
     ? haversine({ lat: s.last_position.lat, lng: s.last_position.lng }, first)
     : null;
   const batteryOk = !s.battery || s.battery.percent == null || s.battery.percent > BATTERY_WARN_PERCENT;
+  const resolvingUncertain = targetDecision.kind === "resolve_uncertain";
+  const returningOnly = targetDecision.kind === "return_only";
   return [
     { key: "connected", label: "로버 SSE 연결", ok: !!s.connected },
+    { key: "estop", label: "비상정지 해제", ok: !emergencyStopLatched.value, blocking: true,
+      detail: emergencyStopLatched.value ? "비상정지가 래치되어 있습니다. 먼저 물리 상태를 확인하고 해제하세요." : "해제됨" },
+    { key: "protocol", label: "미션 프로토콜 v2", ok: s.mission_protocol?.compatible === true,
+      detail: s.mission_protocol?.connected == null
+        ? "버전 미수신"
+        : `rover v${s.mission_protocol.connected} / required v${s.mission_protocol.required}` },
     { key: "fix", label: "RTK Fixed GPS", ok: s.fix_status === "rtk_fixed",
       detail: s.fix_status ? s.fix_status.replace(/_/g, " ").toUpperCase() : "알 수 없음" },
     { key: "ntrip", label: "NTRIP 연결", ok: s.ntrip_connected === true,
@@ -1221,13 +1303,20 @@ const preflightChecks = computed(() => {
         const retry = s.ntrip?.fail_count ? ` · 재시도 ${s.ntrip.fail_count}` : "";
         return caster ? `${caster} · off${retry}` : `off${retry}`;
       })() },
-    { key: "firstwp", label: "첫 웨이포인트 거리", ok: firstDist != null && firstDist < 5,
-      detail: firstDist != null ? `${firstDist.toFixed(1)} m` : "위치 미수신" },
+    { key: "firstwp", label: resolvingUncertain ? "불확실 분사 결과 해소"
+      : (returningOnly ? "시작점 복귀 거리" : "첫 웨이포인트 거리"),
+      ok: missionPreflightDistanceAllowed({ kind: targetDecision.kind, distance: firstDist }),
+      detail: resolvingUncertain ? "추가 이동·재분사 없이 운영자가 결과 불확실성을 해소합니다."
+        : (firstDist != null ? `${firstDist.toFixed(1)} m${returningOnly ? " · 최초 미션 시작점" : ""}` : "위치 미수신") },
     { key: "battery", label: "배터리", ok: batteryOk,
       detail: s.battery && s.battery.percent != null ? `${s.battery.percent}%` : "미수신" },
   ];
 });
 const preflightAllOk = computed(() => preflightChecks.value.every((c) => c.ok));
+const preflightHasBlockingFailure = computed(() =>
+  preflightChecks.value.some((check) => check.blocking === true && !check.ok));
+const preflightCanConfirm = computed(() =>
+  missionPreflightCanConfirm(preflightChecks.value, preflightForce.value));
 
 // Flash a check row when it changes ok-state during an open modal so the
 // operator sees the transition even if they're focused on the button.
@@ -1241,6 +1330,7 @@ watch(preflightChecks, (next) => {
   for (const c of next) {
     const prev = lastPreflightOk[c.key];
     if (prev !== undefined && prev !== c.ok) flashes[c.key] = Date.now();
+    if (c.blocking === true && !c.ok) preflightForce.value = false;
   }
   lastPreflightOk = Object.fromEntries(next.map((c) => [c.key, c.ok]));
   if (Object.keys(flashes).length > 0) {
@@ -1772,19 +1862,31 @@ watch(selectedConeId, (id) => {
 // 미션 취소로 코스 전환을 되돌릴 때 재할당이 이 watcher 를 다시 트리거하므로,
 // 그 1회는 플래그로 무시한다 (되돌림에 clearPath/미션 폐기가 돌면 안 된다).
 let revertingCourseSwitch = false;
+let aligningMissionCourse = false;
+
+function alignCourseToMission(mission) {
+  const nextCourseId = missionCourseId(activeCourseId.value, mission);
+  if (nextCourseId === activeCourseId.value) return;
+  if (!courses.value.some((course) => course.id === nextCourseId)) return;
+  aligningMissionCourse = true;
+  activeCourseId.value = nextCourseId;
+}
+
 watch(activeCourseId, async (v, prev) => {
   if (revertingCourseSwitch) { revertingCourseSwitch = false; return; }
+  const missionAlignment = aligningMissionCourse;
+  aligningMissionCourse = false;
   // 미션 진행(executing)·중단(stopped) 중의 코스 전환은 아래 clearPath() 가 서버
   // 미션까지 폐기하는 파괴적 작업 — abandonMission 과 동일하게 반드시 확인을 받고,
   // 취소하거나 서버 종료가 실패하면 전환 자체를 이전 코스로 되돌린다.
   let missionEnded = false;
-  if (roverMode.value === "executing" || roverMode.value === "stopped") {
+  if (shouldAbandonMissionForCourseSwitch({ missionAlignment, roverMode: roverMode.value })) {
     const revert = () => { revertingCourseSwitch = true; activeCourseId.value = prev; };
     if (!window.confirm("코스를 전환하면 진행 중인 미션을 종료하고 폐기합니다.\n'이어서 실행'할 수 없게 됩니다. 계속하시겠습니까?")) { revert(); return; }
     // abandonMission 과 동일하게 서버 종료를 먼저 await 한다 — 응답 전에 로컬
     // 정리를 하면 다음 status tick 의 reconcileRoverMode 가 "stopped" 로 되튕긴다.
-    if (roverStatus.value.mission_progress?.mission_id) {
-      try { await request("/api/rover/end-mission", { method: "POST" }); }
+    if (activeMission.value?.id) {
+      try { await request(`/api/missions/${activeMission.value.id}/end`, { method: "POST" }); }
       catch (err) { notifyWarn(`미션 종료 실패: ${err.message}`); revert(); return; }
     }
     missionEnded = true;
@@ -1797,7 +1899,12 @@ watch(activeCourseId, async (v, prev) => {
   multiSelectedIds.value = new Set();
   coneFilter.value = "all";
   coneListScrolled.value = false;
-  clearPath({ endMissionOnServer: !missionEnded });
+  missionPresets.value = [];
+  missionPresetRequestSeq += 1;
+  // A server-active mission owns both route and course. Its internal course
+  // alignment must refresh course-scoped UI without clearing or abandoning the
+  // mission path that restoreActiveMission is installing in the same tick.
+  if (!missionAlignment) clearPath({ endMissionOnServer: !missionEnded });
   if (map) rebuildAllMarkers();
   if (v != null) {
     savePref("activeCourseId", v);
@@ -3502,8 +3609,170 @@ function stitchChains(start, chains) {
 }
 
 function startPathPick() {
-  clearPath();
-  roverMode.value = "path-pick";
+  openMissionBuilder();
+}
+
+async function loadMissionPresets() {
+  const courseId = activeCourseId.value;
+  const requestId = ++missionPresetRequestSeq;
+  missionPresets.value = [];
+  if (!courseId) return;
+  try {
+    const response = await request(`/api/rover/mission-presets?course_id=${courseId}`);
+    const presets = (await response.json()).presets || [];
+    if (presetResponseIsCurrent({
+      requestId,
+      latestRequestId: missionPresetRequestSeq,
+      requestedCourseId: courseId,
+      activeCourseId: activeCourseId.value,
+    })) missionPresets.value = presets;
+  } catch (error) {
+    if (presetResponseIsCurrent({
+      requestId,
+      latestRequestId: missionPresetRequestSeq,
+      requestedCourseId: courseId,
+      activeCourseId: activeCourseId.value,
+    })) notifyError(`프리셋을 불러오지 못했습니다: ${error.message}`);
+  }
+}
+
+function coneRouteItem(cone) {
+  return {
+    cone_id: cone.id, lat: cone.lat, lng: cone.lng, alt: cone.alt, side: cone.side,
+  };
+}
+
+function openMissionBuilder() {
+  if (!activeCourseId.value) return;
+  const mission = activeMission.value;
+  missionBuilderEditing.value = !!mission && missionHeld.value;
+  missionBuilderBusy.value = false;
+  missionBuilderBase.value = missionBuilderEditing.value ? missionDraftToken(mission) : null;
+  if (missionBuilderEditing.value) {
+    missionBuilderItems.value = mission.waypoints
+      .filter((waypoint) => waypoint.state === "pending" || waypoint.state === "active")
+      .map((waypoint) => ({ ...waypoint, waypoint_id: waypoint.id }));
+    missionFinishBehavior.value = mission.finish_behavior;
+  } else if (pathWaypoints.value.length > 0) {
+    missionBuilderItems.value = pathWaypoints.value.map((waypoint) => ({ ...waypoint }));
+  } else {
+    const start = roverStatus.value.last_position || activeCones.value[0] || null;
+    missionBuilderItems.value = optimizeConeRoute(activeCones.value, start).map(coneRouteItem);
+    missionFinishBehavior.value = "stop";
+  }
+  showMissionBuilder.value = true;
+  loadMissionPresets();
+}
+
+function installMissionBuilderPayload({ items, finishBehavior }) {
+  const editing = missionBuilderEditing.value;
+  const completed = editing && activeMission.value
+    ? activeMission.value.waypoints.filter((waypoint) => waypoint.state === "completed")
+    : [];
+  pathWaypoints.value = [
+    ...completed,
+    ...items.map((item) => ({ ...item, state: item.state === "active" ? "active" : "pending" })),
+  ];
+  missionFinishBehavior.value = finishBehavior;
+  const start = activeMission.value?.start_position || roverStatus.value.last_position || pathWaypoints.value[0];
+  pathStart = start ? { lat: start.lat, lng: start.lng } : null;
+  pathReturnOrigin = pathWaypoints.value.length === 0 && finishBehavior === "return_to_start"
+    ? (roverStatus.value.last_position ? { ...roverStatus.value.last_position } : null)
+    : null;
+  executedIndex.value = completed.length;
+  executionStartIdx = completed.length;
+  pathMissionBase = editing ? missionBuilderBase.value : null;
+  roverMode.value = editing ? "stopped" : "path-ready";
+  renderPath();
+}
+
+async function submitMissionBuilder(payload, { run = false } = {}) {
+  if (missionBuilderBusy.value) return;
+  const submission = missionBuilderSubmission({ editing: missionBuilderEditing.value, run });
+  if (!submission.persist) {
+    installMissionBuilderPayload(payload);
+    showMissionBuilder.value = false;
+    missionBuilderBase.value = null;
+    if (submission.next === "execute") openPreflight("execute");
+    return;
+  }
+
+  const mission = activeMission.value;
+  const draft = missionBuilderBase.value;
+  missionBuilderBusy.value = true;
+  // Close before the request so an incoming authoritative mission response
+  // cannot leave an editable stale copy mounted behind the result.
+  showMissionBuilder.value = false;
+  try {
+    const edited = await syncMissionRemaining(mission, {
+      draft,
+      items: payload.items,
+      finishBehavior: payload.finishBehavior,
+    });
+    missionBuilderBase.value = missionDraftToken(edited);
+    notifySuccess("남은 미션 경로를 저장했습니다.");
+    if (submission.next === "resume") {
+      openPreflight(edited.status === "ready" ? "start-existing" : "resume", {
+        routeAlreadySynced: submission.routeAlreadySynced,
+        emptyRouteMode: payload.emptyRouteMode,
+      });
+    }
+  } catch (error) {
+    missionBuilderBase.value = null;
+    notifyError(`남은 경로 저장 실패: ${error.message}`);
+    // A 409 response intentionally contains no route body. Fetch the current
+    // authority before allowing any further start/resume action.
+    await fetchRoverStatus();
+  } finally {
+    missionBuilderBusy.value = false;
+  }
+}
+
+async function applyMissionBuilder(payload) {
+  await submitMissionBuilder(payload);
+}
+
+async function runMissionBuilder(payload) {
+  await submitMissionBuilder(payload, { run: true });
+}
+
+async function saveMissionPreset({ name, items, finishBehavior }) {
+  if (missionPresetBusy.value) return;
+  missionPresetBusy.value = true;
+  try {
+    const existing = missionPresets.value.find((preset) => preset.name.toLowerCase() === name.toLowerCase());
+    await request(existing ? `/api/rover/mission-presets/${existing.id}` : "/api/rover/mission-presets", {
+      method: existing ? "PUT" : "POST",
+      body: JSON.stringify(buildMissionPresetPayload({
+        courseId: activeCourseId.value,
+        name,
+        finishBehavior,
+        items,
+        existing,
+      })),
+    });
+    notifySuccess(`미션 프리셋 '${name}'을 ${existing ? "갱신" : "저장"}했습니다.`);
+    await loadMissionPresets();
+  } catch (error) {
+    notifyError(`프리셋 저장 실패: ${error.message}`);
+    await loadMissionPresets();
+  } finally {
+    missionPresetBusy.value = false;
+  }
+}
+
+async function deleteMissionPreset(id) {
+  if (missionPresetBusy.value) return;
+  if (!window.confirm("이 미션 프리셋을 삭제할까요?")) return;
+  missionPresetBusy.value = true;
+  try {
+    await request(`/api/rover/mission-presets/${id}`, { method: "DELETE" });
+    await loadMissionPresets();
+  } catch (error) {
+    notifyError(`프리셋 삭제 실패: ${error.message}`);
+  } finally {
+    missionPresetBusy.value = false;
+  }
 }
 
 function computePathFromRover() {
@@ -3535,6 +3804,7 @@ function computePath(startLat, startLng) {
   const optimized = twoOptLoop(seed, start);
 
   pathStart = { lat: startLat, lng: startLng };
+  pathReturnOrigin = null;
   pathWaypoints.value = optimized;
   renderPath();
 
@@ -3542,24 +3812,41 @@ function computePath(startLat, startLng) {
 }
 
 function renderPath() {
-  if (!map || !pathStart || pathWaypoints.value.length === 0) return;
+  if (!map) return;
 
-  // Cumulative distance from start to each waypoint + total (including return-to-start)
-  pathCumDist = new Array(pathWaypoints.value.length);
-  let acc = haversine(pathStart, pathWaypoints.value[0]);
-  pathCumDist[0] = acc;
-  for (let i = 1; i < pathWaypoints.value.length; i++) {
-    acc += haversine(pathWaypoints.value[i - 1], pathWaypoints.value[i]);
-    pathCumDist[i] = acc;
+  if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
+  if (pathStartMarker) { map.removeLayer(pathStartMarker); pathStartMarker = null; }
+  if (pathEndMarker) { map.removeLayer(pathEndMarker); pathEndMarker = null; }
+  pathCumDist = [];
+  pathTotalDist = 0;
+  pathDistance.value = 0;
+  const geometry = missionPathGeometry({
+    pathStart,
+    waypoints: pathWaypoints.value,
+    finishBehavior: missionFinishBehavior.value,
+    returnOrigin: pathReturnOrigin,
+  });
+  if (!geometry) return;
+
+  if (geometry.returnOnly) {
+    pathTotalDist = haversine(geometry.points[0], geometry.points[1]);
+    pathDistance.value = pathTotalDist;
+  } else {
+    // Cumulative distance from the original mission start. A return leg is only
+    // drawn and counted when the mission explicitly requests it.
+    pathCumDist = new Array(pathWaypoints.value.length);
+    let acc = haversine(pathStart, pathWaypoints.value[0]);
+    pathCumDist[0] = acc;
+    for (let i = 1; i < pathWaypoints.value.length; i++) {
+      acc += haversine(pathWaypoints.value[i - 1], pathWaypoints.value[i]);
+      pathCumDist[i] = acc;
+    }
+    pathTotalDist = acc + (missionFinishBehavior.value === "return_to_start"
+      ? haversine(pathWaypoints.value[pathWaypoints.value.length - 1], pathStart) : 0);
+    pathDistance.value = pathTotalDist;
   }
-  pathTotalDist = acc + haversine(pathWaypoints.value[pathWaypoints.value.length - 1], pathStart);
-  pathDistance.value = pathTotalDist;
 
-  if (pathLine) map.removeLayer(pathLine);
-  if (pathStartMarker) map.removeLayer(pathStartMarker);
-  if (pathEndMarker) map.removeLayer(pathEndMarker);
-
-  const fullPath = [pathStart, ...pathWaypoints.value, pathStart];
+  const fullPath = geometry.points;
   const stops = [[34,197,94],[234,179,8],[249,115,22],[239,68,68]]; // green→yellow→orange→red
   const group = L.layerGroup();
   for (let i = 0; i < fullPath.length - 1; i++) {
@@ -3576,9 +3863,10 @@ function renderPath() {
   }
   pathLine = group.addTo(map);
 
-  const first = pathWaypoints.value[0];
-  pathStartMarker = pathLabel("S", [first.lat, first.lng], "#22c55e").addTo(map);
-  pathEndMarker = pathLabel("E", [pathStart.lat, pathStart.lng], "#ef4444").addTo(map);
+  const origin = fullPath[0];
+  pathStartMarker = pathLabel(geometry.returnOnly ? "R" : "S", [origin.lat, origin.lng], "#22c55e").addTo(map);
+  const end = fullPath[fullPath.length - 1];
+  pathEndMarker = pathLabel("E", [end.lat, end.lng], "#ef4444").addTo(map);
 }
 
 function pathLabel(text, latlng, color) {
@@ -3602,26 +3890,26 @@ function moveWaypoint(idx, delta) {
 }
 
 function clearPath({ endMissionOnServer = true } = {}) {
-  // EMERGENCY_STOP 동안 서버에 보존되어 있던 미션 레코드를 명시적으로 마감.
-  // (D1) clear-emergency 가 더 이상 자동으로 끝내지 않으므로, path 폐기 시
-  // dangling running 레코드가 남지 않도록 best-effort 로 정리한다. abandonMission
-  // 은 종료 응답을 먼저 await 한 뒤 endMissionOnServer:false 로 호출하므로 여기서
-  // 중복 POST 하지 않는다.
-  if (endMissionOnServer && roverStatus.value.mission_progress?.mission_id) {
-    request("/api/rover/end-mission", { method: "POST" }).catch(() => {});
-  }
+  // Local overlays are never allowed to destroy server mission state. Ending a
+  // mission is only performed by the explicit, confirmed abandon action.
+  void endMissionOnServer;
   if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
   if (pathStartMarker) { map.removeLayer(pathStartMarker); pathStartMarker = null; }
   if (pathEndMarker) { map.removeLayer(pathEndMarker); pathEndMarker = null; }
   pathStart = null;
+  pathReturnOrigin = null;
   pathWaypoints.value = [];
   pathCumDist = [];
   pathTotalDist = 0;
+  pathMissionBase = null;
+  displayedMissionId = null;
   executionStartIdx = 0;
   executedIndex.value = 0;
-  resumeStartIdx.value = 0;
   pathProgress.value = 0;
   pathDistance.value = 0;
+  missionFinishBehavior.value = "stop";
+  showMissionBuilder.value = false;
+  missionBuilderBase.value = null;
   clearSprayMarkers();
   if (roverMode.value !== "manual") roverMode.value = "none";
 }
@@ -3635,38 +3923,140 @@ async function abandonMission() {
   // (hasMission=false) 상태를 확인하기 전에 로컬 정리를 하면 다음 status tick 에서
   // 다시 "stopped" 로 튕겨, 미션이 비상정지 해제 후에야 종료되는 것처럼 보인다.
   // 종료 응답을 받은 뒤 로컬 정리를 해야 그 즉시 종료가 반영된다.
-  if (roverStatus.value.mission_progress?.mission_id) {
-    try { await request("/api/rover/end-mission", { method: "POST" }); }
+  if (activeMission.value?.id) {
+    try { await request(`/api/missions/${activeMission.value.id}/end`, { method: "POST" }); }
     catch (err) { notifyWarn(`미션 종료 실패: ${err.message}`); return; }
   }
+  roverStatus.value = { ...roverStatus.value, active_mission: null };
   clearPath({ endMissionOnServer: false });
 }
 
 function onPathBtn() {
   if (roverMode.value === "executing") return; // 실행 중에는 무시
-  if (roverMode.value === "stopped") { openPreflight("resume"); return; }
+  if (roverMode.value === "stopped") {
+    openPreflight(activeMission.value?.status === "ready" ? "start-existing" : "resume");
+    return;
+  }
   if (roverMode.value === "path-ready") { openPreflight("execute"); return; }
   if (roverMode.value === "path-pick") { clearPath(); return; }
   if (roverMode.value === "none") { startPathPick(); }
 }
 
-function openPreflight(mode) {
+function openPreflight(mode, { routeAlreadySynced = false, emptyRouteMode = null } = {}) {
   preflightMode.value = mode;
+  preflightRouteAlreadySynced.value = routeAlreadySynced;
+  preflightMissionToken.value = mode === "execute" ? null : missionCommandToken(activeMission.value);
+  preflightMissionDraft.value = mode === "execute" ? null : missionDraftToken(activeMission.value);
+  preflightEmptyRouteMode.value = emptyRouteMode || missionEmptyResumeMode(activeMission.value);
   preflightForce.value = false;
   showPreflight.value = true;
 }
 
 function cancelPreflight() {
   showPreflight.value = false;
+  preflightMissionToken.value = null;
+  preflightMissionDraft.value = null;
+  preflightEmptyRouteMode.value = null;
 }
 
 async function confirmPreflight() {
+  if (!preflightCanConfirm.value) {
+    notifyError(preflightHasBlockingFailure.value
+      ? "비상정지가 해제되기 전에는 미션을 시작하거나 재개할 수 없습니다."
+      : "점검 항목을 확인하거나 허용 가능한 경고를 명시적으로 승인하세요.");
+    return;
+  }
   const force = preflightForce.value && !preflightAllOk.value;
   showPreflight.value = false;
+  const commandToken = preflightMissionToken.value;
+  const commandDraft = preflightMissionDraft.value;
+  const emptyRouteMode = preflightEmptyRouteMode.value;
+  preflightMissionToken.value = null;
+  preflightMissionDraft.value = null;
+  preflightEmptyRouteMode.value = null;
   if (preflightMode.value === "resume") {
-    await resumePath({ force });
+    await resumePath({ force, routeAlreadySynced: preflightRouteAlreadySynced.value, commandToken, commandDraft, emptyRouteMode });
+  } else if (preflightMode.value === "start-existing") {
+    await startExistingPath({ force, routeAlreadySynced: preflightRouteAlreadySynced.value, commandToken, commandDraft, emptyRouteMode });
   } else {
     await executePath({ force });
+  }
+}
+
+async function syncMissionRemaining(mission, {
+  draft = pathMissionBase,
+  items = null,
+  finishBehavior = missionFinishBehavior.value,
+} = {}) {
+  const remaining = items || pathWaypoints.value.filter((waypoint) =>
+    waypoint.state === "pending" || waypoint.state === "active");
+  const body = buildMissionRemainingPayload({
+    draft,
+    mission,
+    finishBehavior,
+    items: remaining,
+  });
+  const response = await request(`/api/missions/${mission.id}/remaining`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+  const edited = await response.json();
+  roverStatus.value = { ...roverStatus.value, active_mission: edited };
+  restoreActiveMission(edited);
+  return edited;
+}
+
+const MISSION_COMMAND_LABELS = {
+  start: "미션 시작",
+  resume: "미션 재개",
+  pause: "미션 일시정지",
+};
+
+function applyMissionCommandResponse(data, action) {
+  const decision = missionCommandResponseDecision(data);
+  if (decision.mission) {
+    roverStatus.value = { ...roverStatus.value, active_mission: decision.mission };
+    restoreActiveMission(decision.mission);
+    reconcileRoverMode(roverStatus.value);
+  }
+  if (decision.failed) {
+    notifyError(`${MISSION_COMMAND_LABELS[action] || "미션 명령"}이 로버에 전달되지 않았습니다. `
+      + "로버가 계속 움직일 수 있으므로 화면과 현장 상태를 확인하고 안전 정지를 준비하세요.");
+    if (!decision.mission) void fetchRoverStatus();
+    return false;
+  }
+  return true;
+}
+
+async function startExistingPath(opts = {}) {
+  const mission = activeMission.value;
+  if (!mission) return;
+  try {
+    const preflightCommandBody = buildMissionCommandPayload({
+      token: opts.commandToken,
+      missionId: mission.id,
+      force: opts.force,
+    });
+    roverMode.value = "executing";
+    const edited = opts.routeAlreadySynced ? mission : await syncMissionRemaining(mission, { draft: opts.commandDraft });
+    const commandBody = opts.routeAlreadySynced ? preflightCommandBody : buildMissionCommandPayload({
+      token: missionCommandTokenAfterSync({
+        routeAlreadySynced: opts.routeAlreadySynced,
+        preflightToken: opts.commandToken,
+        editedMission: edited,
+      }),
+      missionId: edited.id,
+      force: opts.force,
+    });
+    const response = await request(`/api/missions/${edited.id}/start`, {
+      method: "POST",
+      body: JSON.stringify(commandBody),
+    });
+    const data = await response.json();
+    applyMissionCommandResponse(data, "start");
+  } catch (error) {
+    roverMode.value = "stopped";
+    notifyError(error.message);
   }
 }
 
@@ -3677,43 +4067,70 @@ async function executePath(opts = {}) {
   pathProgress.value = 0;
   clearSprayMarkers();
   roverMode.value = "executing";
+  localMissionCreatePending = true;
   try {
-    const res = await request("/api/rover/execute", {
+    const createResponse = await request("/api/missions", {
       method: "POST",
-      body: JSON.stringify({ waypoints: pathWaypoints.value, force: !!opts.force }),
+      body: JSON.stringify({
+        course_id: activeCourseId.value,
+        finish_behavior: missionFinishBehavior.value,
+        items: pathWaypoints.value.map((waypoint) => ({ cone_id: waypoint.cone_id })),
+      }),
     });
-    const data = await res.json();
-    if (Array.isArray(data.waypoints) && data.waypoints.length !== pathWaypoints.value.length) {
-      pathWaypoints.value = data.waypoints;
-      renderPath();
-    }
+    const mission = await createResponse.json();
+    roverStatus.value = { ...roverStatus.value, active_mission: mission };
+    restoreActiveMission(mission, { expectedLocalMission: true });
+    const startResponse = await request(`/api/missions/${mission.id}/start`, {
+      method: "POST",
+      body: JSON.stringify(buildMissionCommandPayload({
+        token: missionCommandToken(mission),
+        missionId: mission.id,
+        force: opts.force,
+      })),
+    });
+    const started = await startResponse.json();
+    applyMissionCommandResponse(started, "start");
   } catch (err) {
-    roverMode.value = "path-ready";
+    roverMode.value = activeMission.value ? "stopped" : "path-ready";
     notifyError(err.message);
+  } finally {
+    localMissionCreatePending = false;
   }
 }
 
 async function resumePath(opts = {}) {
-  // length-1 (not length): keep this in lockstep with the reconcileRoverMode /
-  // preflightChecks clamp so resumeStartIdx can never point past the last
-  // waypoint (which would slice to [] and clearPath instead of resuming).
-  const startIdx = Math.max(0, Math.min(resumeStartIdx.value, pathWaypoints.value.length - 1));
-  const prefix = pathWaypoints.value.slice(0, startIdx);
-  const remaining = pathWaypoints.value.slice(startIdx);
-  if (remaining.length === 0) { clearPath(); return; }
-  executionStartIdx = startIdx;
-  executedIndex.value = startIdx;
-  roverMode.value = "executing";
+  const mission = activeMission.value;
+  if (!mission) {
+    notifyError("이어갈 활성 미션이 없습니다.");
+    return;
+  }
   try {
-    const res = await request("/api/rover/execute", {
-      method: "POST",
-      body: JSON.stringify({ waypoints: remaining, force: !!opts.force }),
+    const preflightCommandBody = buildMissionCommandPayload({
+      token: opts.commandToken,
+      missionId: mission.id,
+      force: opts.force,
     });
-    const data = await res.json();
-    if (Array.isArray(data.waypoints) && data.waypoints.length !== remaining.length) {
-      pathWaypoints.value = [...prefix, ...data.waypoints];
-      renderPath();
-    }
+    const remaining = pathWaypoints.value.filter((waypoint) =>
+      waypoint.state === "pending" || waypoint.state === "active");
+    executionStartIdx = pathWaypoints.value.length - remaining.length;
+    executedIndex.value = executionStartIdx;
+    roverMode.value = "executing";
+    const edited = opts.routeAlreadySynced ? mission : await syncMissionRemaining(mission, { draft: opts.commandDraft });
+    const commandBody = opts.routeAlreadySynced ? preflightCommandBody : buildMissionCommandPayload({
+      token: missionCommandTokenAfterSync({
+        routeAlreadySynced: opts.routeAlreadySynced,
+        preflightToken: opts.commandToken,
+        editedMission: edited,
+      }),
+      missionId: edited.id,
+      force: opts.force,
+    });
+    const resumeResponse = await request(`/api/missions/${edited.id}/resume`, {
+      method: "POST",
+      body: JSON.stringify(commandBody),
+    });
+    const resumed = await resumeResponse.json();
+    applyMissionCommandResponse(resumed, "resume");
   } catch (err) {
     roverMode.value = "stopped";
     notifyError(err.message);
@@ -3721,7 +4138,14 @@ async function resumePath(opts = {}) {
 }
 
 function updatePathProgress(lat, lng) {
-  if (pathWaypoints.value.length === 0 || pathTotalDist === 0) return;
+  if (pathTotalDist === 0) return;
+  if (pathWaypoints.value.length === 0) {
+    if (missionFinishBehavior.value !== "return_to_start" || !pathStart) return;
+    const remaining = haversine({ lat, lng }, pathStart);
+    const walked = Math.max(0, pathTotalDist - remaining);
+    pathProgress.value = Math.min(100, Math.round((walked / pathTotalDist) * 100));
+    return;
+  }
   // Interpolate progress using cumulative segment distance. executedIndex is
   // advanced monotonically by the rover:waypoint SSE event, never by proximity.
   const idx = executedIndex.value;
@@ -3752,13 +4176,16 @@ function onWaypointReached(localIdx) {
    drive manually (e.g. around an obstacle) and then resume from the current
    waypoint. Pause is only meaningful while the rover is actually driving the
    mission; resume is offered whenever nav_state is PAUSED. */
-const PAUSABLE_NAV = new Set(["NAVIGATING", "SETTLING", "SPRAYING"]);
+const PAUSABLE_NAV = new Set(["CALIBRATING", "NAVIGATING", "SETTLING", "SPRAYING"]);
 const pauseBusy = ref(false);
 async function pauseMission() {
   if (pauseBusy.value) return;
+  if (!activeMission.value?.id) return;
   pauseBusy.value = true;
   try {
-    await request("/api/rover/pause", { method: "POST" });
+    const response = await request(`/api/missions/${activeMission.value.id}/pause`, { method: "POST" });
+    const data = await response.json();
+    applyMissionCommandResponse(data, "pause");
   } catch (err) {
     notifyError(`일시정지 실패: ${err.message}`);
   } finally {
@@ -3766,15 +4193,8 @@ async function pauseMission() {
   }
 }
 async function resumeMission() {
-  if (pauseBusy.value) return;
-  pauseBusy.value = true;
-  try {
-    await request("/api/rover/resume", { method: "POST" });
-  } catch (err) {
-    notifyError(`재개 실패: ${err.message}`);
-  } finally {
-    pauseBusy.value = false;
-  }
+  if (pauseBusy.value || !activeMission.value?.id) return;
+  openPreflight("resume");
 }
 
 // Perception flagged a driving-corridor obstacle. The rover ALREADY paused
@@ -3791,6 +4211,7 @@ function onObstacle(data) {
 
 /* ── Manual control ───────────────────────────────── */
 function startManualControl() {
+  if (manualAuthorityReleaseBusy.value) return;
   if (!roverStatus.value.connected) {
     notifyWarn("로버가 연결되어 있지 않습니다.");
     return;
@@ -3800,7 +4221,7 @@ function startManualControl() {
   // wipe the overlay (only rebuilt on mount/SSE-reconnect) but also POST
   // /api/rover/end-mission, abandoning the very mission we want to resume.
   // Outside a pause, manual mode discards any in-progress path pick as before.
-  if (roverStatus.value.nav_state !== "PAUSED") clearPath();
+  if (!missionHeld.value) clearPath();
   roverMode.value = "manual";
   manualThrottle.value = 0;
   manualSteering.value = 0;
@@ -3810,6 +4231,7 @@ function startManualControl() {
 }
 
 function stopManualControl() {
+  if (manualAuthorityReleaseBusy.value) return;
   if (controlInterval) { clearInterval(controlInterval); controlInterval = null; }
   manualThrottle.value = 0;
   manualSteering.value = 0;
@@ -3836,12 +4258,51 @@ function stopManualControl() {
   }
 }
 
-async function sendControl() {
+async function releaseManualForMissionAuthority() {
+  if (manualAuthorityReleaseBusy.value) return;
+  manualAuthorityReleaseBusy.value = true;
+  if (controlInterval) { clearInterval(controlInterval); controlInterval = null; }
+  activePointerId = null;
+  manualThrottle.value = 0;
+  manualSteering.value = 0;
+  manualFailCount = 0;
+  syncJoystickDom();
+  // A slow non-zero POST may already be in flight when the remote mission
+  // snapshot arrives. Wait for every request issued before interval shutdown,
+  // then make zero the final manual command observed by the server.
+  await waitForManualControlDrain(pendingManualControlRequests);
   try {
     await request("/api/rover/control", {
       method: "POST",
-      body: JSON.stringify({ throttle: manualThrottle.value, steering: manualSteering.value }),
+      body: JSON.stringify({ throttle: 0, steering: 0 }),
     });
+  } catch (error) {
+    notifyError(`다른 운영자가 미션을 재개해 수동 제어 송신을 중단했지만 0 명령은 확인되지 않았습니다: ${error.message}. `
+      + "로버의 자율 주행 상태와 현장을 즉시 확인하세요.");
+  }
+  if (pumpOn.value) {
+    try {
+      await request("/api/rover/pump", {
+        method: "POST",
+        body: JSON.stringify({ on: false }),
+      });
+    } catch (error) {
+      notifyError(`서버 미션 권한 전환 중 펌프 정지를 확인하지 못했습니다: ${error.message}`);
+    }
+  }
+  manualThrottle.value = 0;
+  manualSteering.value = 0;
+  roverMode.value = "none";
+  manualAuthorityReleaseBusy.value = false;
+  reconcileRoverMode(roverStatus.value);
+}
+
+async function sendControl() {
+  try {
+    await trackManualControlRequest(pendingManualControlRequests, request("/api/rover/control", {
+      method: "POST",
+      body: JSON.stringify({ throttle: manualThrottle.value, steering: manualSteering.value }),
+    }));
     manualFailCount = 0;
   } catch {
     manualFailCount++;
@@ -4081,6 +4542,7 @@ let joystickRect = null;
 let activePointerId = null;
 
 function onJoystickDown(e) {
+  if (manualAuthorityReleaseBusy.value) return;
   joystickEl = e.currentTarget;
   joystickRect = joystickEl.getBoundingClientRect();
   activePointerId = e.pointerId;
@@ -4089,6 +4551,7 @@ function onJoystickDown(e) {
 }
 
 function onJoystickMove(e) {
+  if (manualAuthorityReleaseBusy.value) return;
   if (e.pointerId !== activePointerId) return;
   updateJoystick(e);
 }
@@ -4113,7 +4576,7 @@ function syncJoystickDom() {
 }
 
 function updateJoystick(e) {
-  if (!joystickRect) return;
+  if (manualAuthorityReleaseBusy.value || !joystickRect) return;
   const cx = joystickRect.left + joystickRect.width / 2;
   const cy = joystickRect.top + joystickRect.height / 2;
   const maxR = joystickRect.width / 2;
@@ -4245,8 +4708,32 @@ function connectSSE() {
     reconcileRoverMode(roverStatus.value);
   });
 
+  eventSource.addEventListener("rover:mission", (e) => {
+    const data = parseSSE(e);
+    const mission = data?.mission;
+    if (!mission) return;
+    if (mission.status === "completed") {
+      notifySuccess("미션을 완료했습니다.");
+      roverStatus.value = { ...roverStatus.value, active_mission: null };
+      clearPath({ endMissionOnServer: false });
+      return;
+    }
+    if (mission.status === "cancelled") {
+      roverStatus.value = { ...roverStatus.value, active_mission: null };
+      clearPath({ endMissionOnServer: false });
+      return;
+    }
+    roverStatus.value = { ...roverStatus.value, active_mission: mission };
+    restoreActiveMission(mission);
+    reconcileRoverMode(roverStatus.value);
+  });
+
   eventSource.addEventListener("rover:waypoint", (e) => {
     const data = parseSSE(e);
+    if (!shouldConsumeLegacyMissionIndexEvent({
+      activeMission: activeMission.value,
+      connectedProtocol: roverStatus.value.mission_protocol?.connected,
+    })) return;
     if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
       onWaypointReached(data.index);
     }
@@ -4254,6 +4741,10 @@ function connectSSE() {
 
   eventSource.addEventListener("rover:skipped", (e) => {
     const data = parseSSE(e);
+    if (!shouldConsumeLegacyMissionIndexEvent({
+      activeMission: activeMission.value,
+      connectedProtocol: roverStatus.value.mission_protocol?.connected,
+    })) return;
     if (roverMode.value === "executing" && Number.isInteger(data?.index)) {
       // Stuck-skip: navigator advanced _cur_seg_idx past this waypoint
       // without firing waypoint_reached. Advance executedIndex the same
@@ -4267,6 +4758,10 @@ function connectSSE() {
 
   eventSource.addEventListener("rover:spray", (e) => {
     const data = parseSSE(e);
+    if (!shouldConsumeLegacyMissionIndexEvent({
+      activeMission: activeMission.value,
+      connectedProtocol: roverStatus.value.mission_protocol?.connected,
+    })) return;
     if (!Number.isInteger(data?.waypoint) || !data.outcome) return;
     onSprayResult(data.waypoint, data.outcome);
   });
@@ -4352,20 +4847,48 @@ async function fetchRoverStatus() {
     syncDeviceMarkers(roverStatus.value);
     // Restore in-flight mission so a tab reload during a mission doesn't lose
     // the path overlay, waypoint counter, or spray markers.
-    restoreMissionProgress(data.mission_progress);
+    restoreActiveMission(data.active_mission);
     reconcileRoverMode(roverStatus.value);
   } catch { /* best-effort */ }
 }
 
-function restoreMissionProgress(mp) {
-  if (!mp || !mp.mission_id || !Array.isArray(mp.waypoints) || mp.waypoints.length === 0) return;
-  if (pathWaypoints.value.length > 0) return; // user already has local state; don't clobber
+function restoreActiveMission(mission, { expectedLocalMission = false } = {}) {
+  const missionChanged = displayedMissionId !== mission?.id;
+  const decision = missionRestoreDecision({
+    mission,
+    displayedMissionId,
+    localWaypointCount: pathWaypoints.value.length,
+  });
+  if (!decision.restore) return;
 
-  pathWaypoints.value = mp.waypoints;
-  executedIndex.value = Math.max(0, Math.min(mp.current_waypoint_idx || 0, mp.waypoints.length));
-  executionStartIdx = 0; // server's waypoints are the active execution's full list
+  alignCourseToMission(mission);
+  const builderMissionEditable = missionMotionConfirmedHeld(mission);
+  if (showMissionBuilder.value
+      && (!builderMissionEditable || !missionDraftMatches(missionBuilderBase.value, mission))) {
+    showMissionBuilder.value = false;
+    missionBuilderBase.value = null;
+    notifyWarn("서버의 미션 경로가 변경되어 열려 있던 초안을 닫았습니다. 최신 경로를 확인하세요.");
+  } else if (decision.discardsLocalDraft && !expectedLocalMission && !localMissionCreatePending) {
+    notifyWarn("다른 운영자가 활성화한 서버 미션으로 로컬 경로 초안을 교체했습니다.");
+  }
+
+  displayedMissionId = mission.id;
+  pathWaypoints.value = mission.waypoints
+    .filter((waypoint) => waypoint.state !== "skipped")
+    .map((waypoint) => ({ ...waypoint, waypoint_id: waypoint.id }));
+  executedIndex.value = pathWaypoints.value.filter((waypoint) => waypoint.state === "completed").length;
+  pathMissionBase = missionDraftToken(mission);
+  missionFinishBehavior.value = mission.finish_behavior || "stop";
   const lp = roverStatus.value.last_position;
-  pathStart = (lp && isValidRoverPos(lp.lat, lp.lng)) ? lp : mp.waypoints[0];
+  pathStart = mission.start_position
+    || ((lp && isValidRoverPos(lp.lat, lp.lng)) ? lp : pathWaypoints.value[0]);
+  if (pathWaypoints.value.length === 0 && missionFinishBehavior.value === "return_to_start" && pathStart) {
+    if (missionChanged || !pathReturnOrigin) {
+      pathReturnOrigin = lp && isValidRoverPos(lp.lat, lp.lng) ? { lat: lp.lat, lng: lp.lng } : null;
+    }
+  } else {
+    pathReturnOrigin = null;
+  }
 
   // Rebuild path geometry + progress bar using renderPath's cumulative math.
   renderPath();
@@ -4374,75 +4897,42 @@ function restoreMissionProgress(mp) {
     pathProgress.value = Math.min(100, Math.round((walked / pathTotalDist) * 100));
   }
 
-  // Rehydrate spray markers from server-side results map.
   const restored = new Map();
-  for (const [k, outcome] of Object.entries(mp.spray_results || {})) {
-    const idx = Number(k);
-    if (Number.isInteger(idx)) restored.set(idx, { outcome, at: 0 });
-  }
+  pathWaypoints.value.forEach((waypoint, index) => {
+    if (waypoint.outcome) restored.set(index, { outcome: waypoint.outcome, at: waypoint.completed_at || 0 });
+  });
   sprayResults.value = restored;
   renderSprayMarkers();
 }
 
-// Server is the source of truth for nav_state / connected / mission_progress.
-// Every code path that ingests fresh server state (initial fetch, live SSE,
-// post-reconnect refetch) routes through this so the button label can never
-// diverge from reality. User-driven modes (path-pick, manual) are orthogonal
-// to server state and preserved.
+// The durable mission record is the only lifecycle/progress authority. Generic
+// nav telemetry is deliberately ignored here: a delayed IDLE frame cannot
+// complete or restart a mission without a correlated protocol-v2 report.
 function reconcileRoverMode(s) {
-  if (roverMode.value === "path-pick" || roverMode.value === "manual") return;
-
-  const nav = s?.nav_state;
-  const hasMission = !!s?.mission_progress?.mission_id;
-  const missionStatus = s?.mission_progress?.status;
-  const connected = !!s?.connected;
-  // 'interrupted' = rover dropped mid-mission; resume by re-sending the
-  // remaining waypoints ("이어서 실행"), since a fresh/rebooted rover has no
-  // in-memory plan to continue. (A soft 'paused' mission is different — the
-  // rover holds its plan and resumes in place via the dedicated 재개 button,
-  // so it stays in the 'executing' view below, not here.)
-  const resumable = hasMission && missionStatus === "interrupted";
-  // The "stopped" view (이어서 실행 / 미션 종료) only makes sense when there is
-  // actually something to resume: a mission the server is preserving, or a
-  // planned path still held locally. Once the operator ends the mission via
-  // 미션 종료, both are gone — so even while the E-Stop latch keeps nav_state at
-  // EMERGENCY_STOP, we must NOT force the view back to "stopped" (that made the
-  // mission appear to end only after the latch was later cleared).
-  const hasResumeTarget = hasMission || pathWaypoints.value.length > 0;
-
-  // Actively executing — or soft-paused, which is still an in-progress mission
-  // (path overlay + progress stay visible; the 일시정지/재개 button toggles it).
-  if (connected && (ACTIVE_NAV_STATES.has(nav) || nav === "PAUSED")) { roverMode.value = "executing"; return; }
-
-  // Resumable: e-stop / error latch, or an interrupted mission. Show
-  // "이어서 실행". Works whether or not the rover is currently connected — the
-  // server gates the actual resume until the rover SSE is back.
-  if ((nav === "EMERGENCY_STOP" || nav === "ERROR" || resumable) && hasResumeTarget) {
-    if (roverMode.value !== "stopped") {
+  const mission = s?.active_mission;
+  const held = missionMotionConfirmedHeld(mission);
+  if (missionNeedsManualRelease({ roverMode: roverMode.value, mission, held })) {
+    restoreActiveMission(mission);
+    void releaseManualForMissionAuthority();
+    return;
+  }
+  if (roverMode.value === "manual" && (!mission || missionHeld.value)) {
+    // Keep the joystick visible while an allowed held-mission reposition is in
+    // progress, but never let manual UI suppress a newer server route/course.
+    if (mission) restoreActiveMission(mission);
+    return;
+  }
+  if (mission) {
+    restoreActiveMission(mission);
+    if (["starting", "running", "pausing", "resuming"].includes(mission.status)) {
+      roverMode.value = "executing";
+    } else if (["ready", "paused", "interrupted"].includes(mission.status)) {
       roverMode.value = "stopped";
-      // Clamp to a real waypoint index (0..length-1). An interrupted mission can
-      // report executedIndex === length ("ran off the end but not marked
-      // complete"), which the <select> can't represent (renders blank) and which
-      // slices to an empty resume → silent clearPath on confirm. Pin it to the
-      // last waypoint so resume re-drives the final leg instead of abandoning.
-      if (resumeStartIdx.value === 0) {
-        resumeStartIdx.value = Math.max(0, Math.min(executedIndex.value, pathWaypoints.value.length - 1));
-      }
     }
     return;
   }
-
-  if (!connected) {
-    if (roverMode.value === "executing" || roverMode.value === "stopped") {
-      roverMode.value = pathWaypoints.value.length ? "path-ready" : "none";
-    }
-    return;
-  }
-
-  // nav IDLE/null + no resumable mission — only step out of executing/stopped
-  // once the server has also cleared the mission, so we don't bounce while the
-  // rover briefly touches IDLE between phases.
-  if (!hasMission && (roverMode.value === "executing" || roverMode.value === "stopped")) {
+  displayedMissionId = null;
+  if (roverMode.value === "executing" || roverMode.value === "stopped") {
     roverMode.value = pathWaypoints.value.length ? "path-ready" : "none";
     pathProgress.value = 0;
   }
@@ -4472,6 +4962,7 @@ function onChipStripScroll() {
 function onGlobalKeydown(e) {
   if (e.key === "Escape") {
     // Highest-open modal wins; others remain so a stack of prompts collapses one level at a time.
+    if (showMissionBuilder.value) { showMissionBuilder.value = false; e.preventDefault(); return; }
     if (showLogs.value) { showLogs.value = false; e.preventDefault(); return; }
     if (showSnapshots.value) { showSnapshots.value = false; e.preventDefault(); return; }
     if (showBatteryCal.value) { showBatteryCal.value = false; e.preventDefault(); return; }
@@ -4579,6 +5070,24 @@ onUnmounted(() => {
 <template>
   <div class="map-layout">
     <div class="content">
+      <MissionBuilder
+        v-if="showMissionBuilder"
+        :cones="activeCones"
+        :initial-items="missionBuilderItems"
+        :presets="missionPresets"
+        :current-position="roverStatus.last_position"
+        :initial-finish-behavior="missionFinishBehavior"
+        :mission-start="activeMission && activeMission.start_position"
+        :editing="missionBuilderEditing"
+        :completed-count="activeMission ? activeMission.waypoints.filter((waypoint) => waypoint.state === 'completed').length : 0"
+        :busy="missionBuilderBusy"
+        :preset-busy="missionPresetBusy"
+        @close="showMissionBuilder = false"
+        @apply="applyMissionBuilder"
+        @run="runMissionBuilder"
+        @save-preset="saveMissionPreset"
+        @delete-preset="deleteMissionPreset"
+      />
       <!-- Rover log viewer modal -->
       <div v-if="showLogs" class="preflight-backdrop" @click.self="showLogs = false">
         <div class="preflight-modal logs-modal">
@@ -4887,17 +5396,15 @@ onUnmounted(() => {
       <!-- Pre-flight checklist modal -->
       <div v-if="showPreflight" class="preflight-backdrop" @click.self="cancelPreflight">
         <div class="preflight-modal">
-          <h3>{{ preflightMode === 'resume' ? '재시작 전 점검' : '경로 실행 전 점검' }}</h3>
-          <!-- Resume-from selector lives here (not the panel) so it sits right
-               above the checks it affects — changing it re-derives the "첫
-               웨이포인트 거리" check against the chosen start waypoint. -->
-          <div v-if="preflightMode === 'resume' && pathWaypoints.length > 0" class="resume-selector">
-            <label class="resume-label">재시작 위치:</label>
-            <select v-model.number="resumeStartIdx" class="resume-select">
-              <option v-for="(wp, idx) in pathWaypoints" :key="idx" :value="idx">
-                #{{ idx + 1 }}{{ idx < executedIndex ? ' (완료)' : '' }}{{ idx === executedIndex ? ' (다음)' : '' }}
-              </option>
-            </select>
+          <h3>{{ preflightMode === 'resume' ? '재개 전 점검' : '경로 실행 전 점검' }}</h3>
+          <div v-if="preflightMode === 'resume'" class="resume-selector">
+            완료된 {{ executedIndex }}개 항목은 자동으로 제외하고, 서버에 저장된 남은 경로만 이어갑니다.
+          </div>
+          <div v-if="preflightEmptyRouteMode === 'return_only'" class="resume-selector">
+            콘 방문 없이 현재 위치에서 최초 미션 시작점으로 복귀합니다.
+          </div>
+          <div v-else-if="preflightEmptyRouteMode === 'resolve_uncertain'" class="resume-selector">
+            불확실한 마지막 분사 결과를 운영자 판단으로 해소하고 추가 이동 없이 미션을 완료합니다.
           </div>
           <ul class="preflight-list">
             <li
@@ -4909,7 +5416,7 @@ onUnmounted(() => {
               <span v-if="c.detail" class="preflight-detail">{{ c.detail }}</span>
             </li>
           </ul>
-          <label v-if="!preflightAllOk" class="preflight-override">
+          <label v-if="!preflightAllOk && !preflightHasBlockingFailure" class="preflight-override">
             <input type="checkbox" v-model="preflightForce" />
             경고를 이해했고, 강제 실행합니다
           </label>
@@ -4917,7 +5424,7 @@ onUnmounted(() => {
             <button class="btn btn-ghost btn-sm" @click="cancelPreflight">취소</button>
             <button
               class="btn btn-primary btn-sm"
-              :disabled="!preflightAllOk && !preflightForce"
+              :disabled="!preflightCanConfirm"
               @click="confirmPreflight"
             >{{ preflightMode === 'resume' ? '이어서 실행' : '실행' }}</button>
           </div>
@@ -4978,11 +5485,15 @@ onUnmounted(() => {
               <div class="mission-inline">
                 <span class="mission-emoji">🚩</span>
                 <div class="mission-bar"><div class="mission-fill" :style="{ width: missionChip.percent + '%' }"></div></div>
-                <span class="mission-counts">{{ missionChip.current }}/{{ missionChip.total }} · {{ missionChip.percent }}%</span>
+                <span class="mission-counts">
+                  {{ missionChip.returnOnly ? `시작점 복귀 · ${missionChip.percent}%` : `${missionChip.current}/${missionChip.total} · ${missionChip.percent}%` }}
+                </span>
                 <span v-if="missionChip.eta" class="mission-eta">ETA {{ missionChip.eta }}</span>
               </div>
               <span class="chip-popover" :style="popoverStyle">
-                <span class="popover-row"><span class="popover-key">PROGRESS</span><span class="popover-val">{{ missionChip.current }} / {{ missionChip.total }} ({{ missionChip.percent }}%)</span></span>
+                <span class="popover-row"><span class="popover-key">PROGRESS</span><span class="popover-val">
+                  {{ missionChip.returnOnly ? `최초 시작점 복귀 (${missionChip.percent}%)` : `${missionChip.current} / ${missionChip.total} (${missionChip.percent}%)` }}
+                </span></span>
                 <span v-if="missionChip.eta" class="popover-row"><span class="popover-key">ETA</span><span class="popover-val">{{ missionChip.eta }}</span></span>
               </span>
             </div>
@@ -5504,9 +6015,9 @@ onUnmounted(() => {
                     >카메라</button>
                     <button
                       :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
-                      :disabled="roverMode !== 'manual' && (!roverStatus.connected || (roverMode === 'executing' && roverStatus.nav_state !== 'PAUSED') || roverMode === 'stopped')"
+                      :disabled="manualAuthorityReleaseBusy || (roverMode !== 'manual' && (!roverStatus.connected || (activeMission && !missionHeld) || roverStatus.nav_state === 'EMERGENCY_STOP'))"
                       @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
-                    >수동 제어</button>
+                    >{{ manualAuthorityReleaseBusy ? '서버 제어 전환 중…' : '수동 제어' }}</button>
                     <!-- Row 2: VR · 보정 · 경로 계산 -->
                     <button
                       class="btn btn-lg-touch btn-ghost"
@@ -5520,7 +6031,7 @@ onUnmounted(() => {
                     <button
                       :class="['btn', 'btn-lg-touch', pathBtnClass]"
                       @click="onPathBtn"
-                      :disabled="activeCones.length === 0 || roverMode === 'manual' || (stopping && (roverMode === 'executing' || roverMode === 'stopped'))"
+                      :disabled="pathButtonDisabled"
                     >{{ pathBtnLabel }}</button>
                   </div>
 
@@ -5571,12 +6082,18 @@ onUnmounted(() => {
                   <div v-if="pathDistance > 0" class="path-info">
                     <div>예상 주행 거리: {{ pathDistance >= 1000 ? (pathDistance / 1000).toFixed(2) + ' km' : pathDistance.toFixed(1) + ' m' }}</div>
                     <div v-if="roverMode === 'executing' || roverMode === 'stopped'">
-                      웨이포인트 {{ executedIndex }}/{{ pathWaypoints.length }}
+                      <template v-if="pathWaypoints.length === 0 && missionFinishBehavior === 'return_to_start'">최초 미션 시작점 복귀</template>
+                      <template v-else>웨이포인트 {{ executedIndex }}/{{ pathWaypoints.length }}</template>
                       <span v-if="pathProgress > 0" class="path-info-progress">({{ pathProgress }}%)</span>
                     </div>
                   </div>
 
                   <!-- Waypoint reorder (path-ready only) -->
+                  <div v-if="roverMode === 'path-ready'" class="rover-controls">
+                    <button class="btn btn-lg-touch btn-ghost btn-block" @click="openMissionBuilder">
+                      콘 선택·순서·종료 동작 편집
+                    </button>
+                  </div>
                   <div v-if="roverMode === 'path-ready' && pathWaypoints.length > 1" class="inspector-group waypoint-list">
                     <div class="waypoint-list-header">
                       <span>웨이포인트 ({{ pathWaypoints.length }})</span>
@@ -5598,7 +6115,12 @@ onUnmounted(() => {
                   <!-- Abandon the preserved (e-stop/interrupted) mission. Map taps
                        no longer do this — only this explicit button — so a stray
                        tap can't wipe "이어서 실행". -->
-                  <div v-if="roverMode === 'stopped'" class="rover-controls">
+                  <div v-if="roverMode === 'stopped'" class="rover-controls mission-held-actions">
+                    <button
+                      class="btn btn-lg-touch btn-ghost"
+                      :disabled="!missionHeld"
+                      @click="openMissionBuilder"
+                    >남은 경로 편집</button>
                     <button
                       class="btn btn-lg-touch btn-danger btn-block"
                       :disabled="stopping"

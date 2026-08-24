@@ -6,6 +6,7 @@ import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/se
 import { createSSEManager } from "../shared/sse.mjs";
 import { ROLE_LEVELS } from "../shared/constants.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
+import { setupMissionV2Schema } from "./lib/mission-v2.mjs";
 
 const parsedMissionTelemetryMaxRows = Number.parseInt(process.env.MISSION_TELEMETRY_MAX_ROWS || "500000", 10);
 const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRows) && parsedMissionTelemetryMaxRows > 0
@@ -248,6 +249,11 @@ runMigrationOnce(db, "course.utc_timestamp_normalization.v1", () => {
   }
 });
 
+// Durable mission protocol v2: stable waypoint identities, editable remaining
+// routes, command acknowledgements, and named route presets. The migration is
+// additive and backfills legacy coordinate arrays without deleting history.
+setupMissionV2Schema(db, logger);
+
 // GPS 소스/기준국 설정. 로버가 쓸 NTRIP 소스(NGII vs 수신기 base station)를 서버에
 // 저장해 모든 클라이언트·로버 재연결 간에 공유한다. key-value 단순 저장:
 //   ntrip_source          "ngii" | "base" (기본 ngii)
@@ -317,6 +323,7 @@ function roleFn(req) {
     // browser can't spoof an obstacle to pause a running mission + raise a false
     // operator alarm.
     p === "/api/rover/obstacle" ||
+    p === "/api/rover/mission-report" ||
     // Base-station RTCM relay + survey result come from the GPS receiver only.
     // Internal-strict so a browser can't inject fake RTCM corrections into the
     // rover or forge a surveyed base coordinate.
@@ -860,13 +867,33 @@ app.delete("/api/courses/:id", (req, res) => {
   const course = getCourseById(id);
   if (!course) return res.status(404).send("코스를 찾을 수 없습니다.");
 
+  const activeMission = db.prepare(`SELECT id,lifecycle_state,plan_hash FROM mission
+    WHERE course_id=? AND lifecycle_state IN
+    ('ready','starting','running','pausing','paused','interrupted','resuming')
+    ORDER BY id DESC LIMIT 1`).get(id);
+  if (activeMission) {
+    logger.warn(req, "course.delete", {
+      error: "active_mission_course",
+      reason: "active_mission_course",
+      course_id: id,
+      mission_id: activeMission.id,
+      mission_state: activeMission.lifecycle_state,
+      plan_hash: activeMission.plan_hash,
+    }, course.name);
+    return res.status(409).json({
+      message: "진행 중인 미션이 사용하는 코스는 삭제할 수 없습니다.",
+      reason: "active_mission_course",
+      mission_id: activeMission.id,
+    });
+  }
+
   const result = dbRun(() => db.prepare("DELETE FROM course WHERE id = ?").run(id));
   if (!result.success) {
     logger.warn(req, "course.delete", { error: result.error }, course.name);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "course.delete", null, course.name);
+  logger.log(req, "course.delete", { course_id: id }, course.name);
   broadcastEvent("courses", { type: "delete", courseId: id, courses: getCourses() });
   res.status(200).send();
 });
@@ -1189,6 +1216,7 @@ registerRoverRoutes(app, {
   logger,
   broadcastEvent,
   getCourseById,
+  getCones,
   takeCourseSnapshot,
   validateCoordinate,
   validateAltitude,

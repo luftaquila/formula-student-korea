@@ -8,10 +8,12 @@ request) until the receiver recovers.
 
 import collections
 import json
+import queue
 import time
 import types
 
 import pytest
+from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 
 from pilot.bridge_node import BridgeNode, _POSITION_FIX_STATUSES
 
@@ -239,6 +241,201 @@ def test_sse_handler_isolates_publisher_exception():
         "manual-control", json.dumps({"throttle": 10.0, "steering": 0.0}))
 
 
+def test_mission_command_and_state_request_dispatch_to_dedicated_topics():
+    node = _make_sse_bridge()
+    node._pub_mission = _RecordingPub()
+    node._pub_mission_state_request = _RecordingPub()
+    command = {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'command_id': 'cmd-4',
+        'command_seq': 4,
+        'action': 'resume',
+        'waypoints': [{'id': 'wp-9', 'lat': 35.0, 'lng': 126.0}],
+    }
+
+    node._handle_sse_event('mission-command', json.dumps(command))
+    node._handle_sse_event('mission-state-request', '{}')
+
+    assert json.loads(node._pub_mission.published[0].data) == command
+    assert len(node._pub_mission_state_request.published) == 1
+
+
+def test_mission_safety_hold_is_validated_and_republished_until_ack():
+    node = _make_sse_bridge()
+    node._pub_mission_safety_hold = _RecordingPub()
+    hold = {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'hold_id': 'hold-7',
+        'reason': 'bridge_restarted',
+    }
+
+    node._handle_sse_event('mission-safety-hold', json.dumps(hold))
+    node._handle_sse_event('mission-safety-hold', json.dumps(hold))
+
+    assert [json.loads(msg.data) for msg in
+            node._pub_mission_safety_hold.published] == [hold, hold]
+    assert node._retained_mission_hold_id == 'hold-7'
+    assert node._retained_mission_hold_identity == (17, 'a' * 64)
+
+    malformed = dict(hold, hold_id='')
+    node._handle_sse_event('mission-safety-hold', json.dumps(malformed))
+    assert len(node._pub_mission_safety_hold.published) == 2
+    assert node._retained_mission_hold_id == 'hold-7'
+
+
+def test_mission_report_adds_boot_identity_and_monotonic_sequence():
+    node = BridgeNode.__new__(BridgeNode)
+    queued = []
+    node._boot_id = 'boot-xyz'
+    node._mission_report_seq = 8
+    node._mission_identity = None
+    node._mission_report_queue = types.SimpleNamespace(put=lambda payload: queued.append(payload))
+    node._mission_report_wakeup = types.SimpleNamespace(set=lambda: None)
+    node.get_logger = lambda: types.SimpleNamespace(warn=lambda *_a, **_kw: None)
+    report = {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'event': 'held',
+    }
+
+    node._on_mission_report(_StrMsg(json.dumps(report)))
+    node._on_mission_report(_StrMsg(json.dumps(report)))
+
+    assert [payload['report_seq'] for payload in queued] == [9, 10]
+    assert all(payload['boot_id'] == 'boot-xyz' for payload in queued)
+    assert node._mission_identity['mission_id'] == 17
+
+
+def test_correlated_report_retires_transient_mission_command():
+    node = BridgeNode.__new__(BridgeNode)
+    queued = []
+    node._boot_id = 'boot-xyz'
+    node._mission_report_seq = 0
+    node._mission_identity = None
+    node._retained_mission_command_id = 'cmd-4'
+    node._pub_mission = _RecordingPub()
+    node._mission_report_queue = types.SimpleNamespace(put=lambda payload: queued.append(payload))
+    node._mission_report_wakeup = types.SimpleNamespace(set=lambda: None)
+    node.get_logger = lambda: types.SimpleNamespace(warn=lambda *_a, **_kw: None)
+
+    node._on_mission_report(_StrMsg(json.dumps({
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'event': 'command',
+        'command_id': 'cmd-4',
+        'command_seq': 4,
+        'command_result': 'accepted',
+    })))
+
+    assert node._retained_mission_command_id is None
+    assert json.loads(node._pub_mission.published[-1].data) == {
+        'protocol_version': 2,
+        'retired_command_id': 'cmd-4',
+    }
+    assert queued[0]['command_id'] == 'cmd-4'
+
+
+def test_only_correlated_held_report_retires_transient_safety_hold():
+    node = BridgeNode.__new__(BridgeNode)
+    queued = []
+    node._boot_id = 'boot-xyz'
+    node._mission_report_seq = 0
+    node._mission_identity = None
+    node._retained_mission_command_id = None
+    node._retained_mission_hold_id = 'hold-7'
+    node._retained_mission_hold_identity = (17, 'a' * 64)
+    node._pub_mission_safety_hold = _RecordingPub()
+    node._mission_report_queue = types.SimpleNamespace(
+        put=lambda payload: queued.append(payload))
+    node._mission_report_wakeup = types.SimpleNamespace(set=lambda: None)
+    node.get_logger = lambda: types.SimpleNamespace(warn=lambda *_a, **_kw: None)
+
+    base = {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+        'event': 'held',
+        'checkpoint_persisted': True,
+    }
+    node._on_mission_report(_StrMsg(json.dumps(dict(base, hold_id='stale'))))
+    assert node._retained_mission_hold_id == 'hold-7'
+    assert node._pub_mission_safety_hold.published == []
+    node._on_mission_report(_StrMsg(json.dumps(dict(
+        base, mission_id=999, hold_id='hold-7'))))
+    assert node._retained_mission_hold_id == 'hold-7'
+    assert node._pub_mission_safety_hold.published == []
+    node._on_mission_report(_StrMsg(json.dumps(dict(
+        base, hold_id='hold-7', checkpoint_persisted=False))))
+    assert node._retained_mission_hold_id == 'hold-7'
+    assert node._pub_mission_safety_hold.published == []
+
+    node._on_mission_report(_StrMsg(json.dumps(dict(base, hold_id='hold-7'))))
+
+    assert node._retained_mission_hold_id is None
+    assert node._retained_mission_hold_identity is None
+    assert json.loads(node._pub_mission_safety_hold.published[-1].data) == {
+        'protocol_version': 2,
+        'retired_hold_id': 'hold-7',
+    }
+    assert [payload['report_seq'] for payload in queued] == [1, 2, 3, 4]
+
+
+def test_mission_report_worker_forwards_terminal_reset_to_navigator():
+    node = BridgeNode.__new__(BridgeNode)
+    node._running = True
+    node._mission_report_queue = queue.Queue()
+    node._mission_report_queue.put({'mission_id': 17, 'plan_hash': 'a' * 64})
+    node._mission_report_queue.put(None)
+    node._mission_report_wakeup = types.SimpleNamespace(clear=lambda: None, wait=lambda _delay: None)
+    node.get_parameter = lambda _name: types.SimpleNamespace(value='https://server.example')
+    node._get_headers = lambda: {}
+    reset = _RecordingPub()
+    node._pub_mission_reset = reset
+    node.get_logger = lambda: types.SimpleNamespace(warn=lambda *_a, **_kw: None)
+    response = types.SimpleNamespace(
+        status_code=200,
+        json=lambda: {'ok': True, 'reset_mission': True},
+        text='',
+    )
+    node._mission_report_session = types.SimpleNamespace(post=lambda *_a, **_kw: response)
+
+    node._mission_report_loop()
+
+    assert len(reset.published) == 1
+    assert json.loads(reset.published[0].data) == {
+        'protocol_version': 2,
+        'mission_id': 17,
+        'plan_hash': 'a' * 64,
+    }
+
+
+def test_bridge_mission_topics_are_reliable_transient_local(monkeypatch):
+    monkeypatch.setattr('pilot.bridge_node.threading.Thread.start', lambda _self: None)
+    node = BridgeNode()
+    specs = {topic: qos for _msg_type, topic, qos in node._publisher_specs}
+    subscription_specs = {
+        topic: qos for _msg_type, topic, _callback, qos
+        in node._subscription_specs
+    }
+
+    for topic in ('/rover/cmd/mission', '/rover/cmd/mission_state_request',
+                  '/rover/cmd/mission_reset',
+                  '/rover/cmd/mission_safety_hold'):
+        assert specs[topic].reliability == ReliabilityPolicy.RELIABLE
+        assert specs[topic].durability == DurabilityPolicy.TRANSIENT_LOCAL
+        assert specs[topic].depth == 1
+    report_qos = subscription_specs['/rover/mission/report']
+    assert report_qos.reliability == ReliabilityPolicy.RELIABLE
+    assert report_qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
+    assert report_qos.depth == 10
+
+
 # ── Position reporting is async (no blocking POST on the ROS executor) ───────
 # _report_position runs on the single-threaded executor (GPS callback), so a
 # synchronous requests.post stalled every other subscription for up to 5 s when
@@ -247,6 +444,7 @@ def test_sse_handler_isolates_publisher_exception():
 
 def _make_position_bridge():
     node = BridgeNode.__new__(BridgeNode)
+    node._boot_id = "boot-position-1"
     node._last_position = {"lat": 35.0, "lng": 126.0, "alt": 5.0}
     node._pending_position_request_ids = collections.deque(maxlen=32)
     node._last_report_time = 0.0
@@ -264,7 +462,12 @@ def test_report_position_enqueues_async_and_stamps_time():
     path, payload, label = node._async_calls[0]
     assert path == "/api/rover/position"
     assert label == "position"
-    assert payload == {"lat": 35.0, "lng": 126.0, "alt": 5.0}
+    assert payload == {
+        "lat": 35.0,
+        "lng": 126.0,
+        "alt": 5.0,
+        "boot_id": "boot-position-1",
+    }
     # Stamped on enqueue so the periodic gate paces even while the server is down.
     assert node._last_report_time > 0.0
 
@@ -275,6 +478,7 @@ def test_report_position_explicit_request_drains_ids():
     node._report_position(explicit_request=True)
     assert len(node._async_calls) == 1
     _, payload, _ = node._async_calls[0]
+    assert payload["boot_id"] == "boot-position-1"
     assert payload["request_id"] == "rid-1"
     assert payload["request_ids"] == ["rid-1", "rid-2"]
     assert len(node._pending_position_request_ids) == 0   # drained on send

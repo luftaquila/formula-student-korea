@@ -104,15 +104,11 @@ def plan(current_chassis_pose, antenna_offset,
         dock_x, dock_y, _ = _dock_chassis_pose(
             wp_e, wp_n, psi_dock, antenna_offset)
 
-        # Skip if chassis is essentially on the dock pose already (e.g.
-        # tight replan landing right on top of the next WP). L1Tracker
-        # handles cm-capture immediately on the next tick.
-        if hypot(dock_x - cur_x, dock_y - cur_y) < 1e-3:
-            cur_x, cur_y = dock_x, dock_y
-            prev_target = (wp_e, wp_n)
-            continue
-
         seg_wp_idx = idx + waypoint_index_offset
+        # Keep even a zero-length segment. Protocol-v2 permits an operator to
+        # add the same cone more than once (including consecutively); each
+        # occurrence is a distinct dispense action and must reach SPRAYING.
+        # L1Tracker immediately reports capture when already on the dock pose.
         segments.append(PathSegment(
             (dock_x, dock_y, psi_dock),
             (wp_e, wp_n),

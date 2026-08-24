@@ -281,6 +281,16 @@ Wheel scale calibration (CAL_WHEELS):
 - Persisted `(scale_l, scale_r)` is applied live by `mcu_bridge_node` as `v_wheel_corrected = v_wheel_raw × scale`.
 - Bounds: `scale ∈ [0.85, 1.15]`, GPS chord ≥ 5 m, ≥ 50 samples (1 s @ 50 Hz). OOB → reject and refuse to persist (caller falls back to current live scale).
 
+Mission recovery:
+
+- File: `/var/lib/pilot/mission_checkpoint.json` (host bind-mount).
+- The navigator atomically persists the protocol-v2 mission, stable waypoint occurrence IDs, completed occurrences, immutable command result, command sequence, and original start before motion and after progress changes. Directory fsync failures fail closed. State reconciliation echoes the durable last-command ID, sequence, result, and reason so the server can order a held snapshot against a pending replay.
+- Mission commands, state requests, and server reboot safety holds use reliable transient-local ROS QoS so bridge/navigator discovery order cannot lose a pending server intent. A safety hold remains retained and is retried by the server until the navigator has stopped, persisted the strongest local fence, and echoed its `hold_id` in a `held`/`interrupted` report. A `dispense_uncertain` hold ACK also carries the uncertainty reason, outcome, and occurrence ID, independent of cross-topic delivery order.
+- A restored mission is always held until an explicit operator resume. An operator pause received during a GPS `ERROR` also revokes the saved auto-recovery state and remains durably paused after RTK returns. Terminal state is removed only after a mission-ID/plan-hash-correlated server reset.
+- An invalid checkpoint creates a separate checksummed `mission_checkpoint.fault.json` latch. Start/resume stays fail-closed across reboots until a matching server reset or an explicit, command-correlated operator `end` recovery; best-effort identity read from a damaged file never authorizes motion.
+- An empty protocol-v2 `resume` with `finish_behavior=stop` is a durable all-occurrences-skipped completion; empty `start` remains invalid, and `return_to_start` continues to support a return-only resume.
+- Before firing the pump, the current occurrence is durably fenced as `dispense_uncertain`. A reboot, pause, E-stop, or timeout before the completion signal never auto-dispenses it again; the operator must skip the occurrence or replace it with a new occurrence for an explicit retry.
+
 ## OTA & rollback
 
 ```bash
@@ -509,4 +519,3 @@ cd rover/pilot && python3 -m pytest test/ -q
 npm run test:course
 npm run test:shared
 ```
-
