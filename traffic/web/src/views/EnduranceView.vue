@@ -123,7 +123,6 @@ watch(session, (s, previous) => {
   }
   if (s.run_id !== previous?.run_id) {
     clearRun();
-    if (s.saved_record_name) attemptFinalized.value = true;
   } else if (previous?.saved_record_name && !s.saved_record_name) attemptFinalized.value = false;
 }, { immediate: true });
 const entries = computed(() => entryStore.entries);
@@ -146,6 +145,11 @@ const {
 } = useAutoSavedRecord({
   wireless: () => props.wireless,
   session: () => serial.session,
+});
+// 내구는 첫 랩부터 저장 행을 만든 뒤 같은 행에 후속 랩을 누적한다. 따라서 저장 행의
+// 존재만으로 런을 종료하지 않고, 복구한 행에 명시적 특수 상태가 있을 때만 센서 수신을 막는다.
+watch(() => recentRecord.value?.status, (status) => {
+  if (status != null) attemptFinalized.value = true;
 });
 const bestLapMs = computed(() => (lapMsList.value.length ? Math.min(...lapMsList.value) : null));
 const lastLapMs = computed(() => (lapMsList.value.length ? lapMsList.value[lapMsList.value.length - 1] : null));
