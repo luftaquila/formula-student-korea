@@ -246,12 +246,12 @@ export function installCanonicalTeamReferences(db) {
         )
         WHERE rowid = NEW.rowid;
         SELECT RAISE(ABORT, 'unknown competition team')
-        WHERE COALESCE(NEW.invalidated, 0) = 0
+        WHERE COALESCE(NEW.status, '') != 'DSQ'
           AND (SELECT team_id FROM record WHERE rowid = NEW.rowid) IS NULL;
       END;
       DROP TRIGGER IF EXISTS trg_record_validate_team_insert;
       CREATE TRIGGER trg_record_validate_team_insert
-      BEFORE INSERT ON record WHEN NEW.team_id IS NOT NULL AND COALESCE(NEW.invalidated, 0) = 0
+      BEFORE INSERT ON record WHEN NEW.team_id IS NOT NULL AND COALESCE(NEW.status, '') != 'DSQ'
       BEGIN
         SELECT RAISE(ABORT, 'mismatched competition team')
         WHERE NOT EXISTS (
@@ -420,12 +420,17 @@ export function assertCanonicalTeamReferences(db) {
     if (count) violations.push({ table, count });
   }
   if (tableExists(db, "record") && columns(db, "record").has("team_id")) {
-    const invalidated = columns(db, "record").has("invalidated") ? "COALESCE(source_row.invalidated, 0) = 0 AND" : "";
+    const recordColumns = columns(db, "record");
+    const dsq = recordColumns.has("status")
+      ? "COALESCE(source_row.status, '') != 'DSQ' AND"
+      : recordColumns.has("invalidated")
+        ? "COALESCE(source_row.invalidated, 0) = 0 AND"
+        : "";
     const count = db.prepare(`
       SELECT COUNT(*) AS count
       FROM record source_row
       LEFT JOIN competition_team team ON team.id = source_row.team_id
-      WHERE ${invalidated} (team.id IS NULL
+      WHERE ${dsq} (team.id IS NULL
         OR team.year != CAST(substr(source_row.name, 5, 4) AS INTEGER)
         OR team.num != source_row.num)
     `).get().count;

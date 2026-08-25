@@ -11,6 +11,7 @@ import { addRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
 import EventNameField from "../components/EventNameField.vue";
 import RecordQuickEdit from "../components/RecordQuickEdit.vue";
+import EventStatusPanel from "../components/EventStatusPanel.vue";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
@@ -27,8 +28,10 @@ const startRecord = ref(null);
 const savedRecord = ref(null);
 const displayRecord = ref(null);
 const quickEditSaveState = ref("ready");
+const attemptFinalized = ref(false);
 
 async function onSensor({ sensor, tick }) {
+  if (attemptFinalized.value) return;
   // 모든 센서에 쿨다운 적용
   serial.setSensorCooldown(sensor);
 
@@ -98,6 +101,7 @@ function clearMeasurement() {
   startRecord.value = null;
   savedRecord.value = null;
   displayRecord.value = null;
+  attemptFinalized.value = false;
 }
 watch(session, (s, previous) => {
   if (!props.wireless || !s) return;
@@ -105,7 +109,10 @@ watch(session, (s, previous) => {
     eventName.value = s.event_name || "";
     selectedTeam.value = s.team?.num ?? null;
   }
-  if (s.run_id !== previous?.run_id) clearMeasurement();
+  if (s.run_id !== previous?.run_id) {
+    clearMeasurement();
+    if (s.saved_record_name) attemptFinalized.value = true;
+  } else if (previous?.saved_record_name && !s.saved_record_name) attemptFinalized.value = false;
 }, { immediate: true });
 const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
@@ -114,7 +121,9 @@ const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value)
 const {
   recentRecord,
   captureRecord,
+  adoptRecord,
   mergeRecord,
+  clearRecord,
   beginRun,
   endRun,
   getRunToken,
@@ -123,12 +132,13 @@ const {
   session: () => serial.session,
 });
 const recordResultDisplay = computed(() => {
+  if (recentRecord.value?.status) return recentRecord.value.status;
   if (displayRecord.value?.time) return displayRecord.value.time;
   const result = recentRecord.value?.result;
   if (result == null || result === "") return "—";
   const milliseconds = Number(result);
   if (!Number.isFinite(milliseconds)) return "—";
-  return milliseconds < 0 ? "DNF" : msToClockStr(milliseconds);
+  return msToClockStr(milliseconds);
 });
 
 function handleConnect() {
@@ -138,8 +148,8 @@ function handleGreen() {
   if (!canAutoSave.value) {
     notyf.open({ type: "warning", message: "테스트 모드" });
   }
+  clearMeasurement();
   if (!props.wireless) {
-    clearMeasurement();
     beginRun();
   }
   // 무선: arm 직전 현재 선택을 서버 세션에 flush(물리 경기 귀속 + 관찰자 미러). 가상 경기는
@@ -165,35 +175,6 @@ async function handleReset() {
     await serial.reset();
   } finally {
     resetSubmitting.value = false;
-  }
-}
-
-async function handleDNF() {
-  const entry = selectedEntry.value;
-  if (!eventName.value.trim() || !entry) {
-    notyf.error("이벤트 이름과 팀을 선택하세요.");
-    return;
-  }
-
-  // 무선: 서버가 세션 선택 정보로 DNF 저장. 유선: 로컬 저장.
-  if (props.wireless) {
-    try { await serial.dnf(); notyf.success("DNF 기록 저장"); }
-    catch (e) { notyf.error(`DNF 저장 실패: ${e.message}`); }
-    return;
-  }
-
-  const recordData = {
-    time: new Date(),
-    type: props.config.type,
-    entry: { id: entry.id, num: entry.num, univ: entry.univ, team: entry.team },
-    result: -1,
-  };
-
-  try {
-    await addRecord(eventName.value.trim(), recordData);
-    notyf.success("DNF 기록 저장");
-  } catch (e) {
-    notyf.error(`DNF 저장 실패: ${e.message}`);
   }
 }
 
@@ -318,13 +299,19 @@ onUnmounted(() => clearTimeout(selectTimer));
               </option>
             </select>
           </div>
-          <button
-            class="btn btn-danger btn-block"
-            :disabled="!isController || !canAutoSave || (!serial.records.length && !serial.green.active)"
-            @click="handleDNF"
-          >
-            DNF
-          </button>
+          <EventStatusPanel
+            :event-name="eventName"
+            :entry="selectedEntry"
+            :event-type="config.type"
+            :wireless="wireless"
+            :source="serial"
+            :record="recentRecord"
+            :disabled="!isController || resetInProgress"
+            @record="adoptRecord"
+            @update="mergeRecord"
+            @remove="clearRecord"
+            @finalize="attemptFinalized = $event"
+          />
           <button
             class="btn btn-warning btn-block mt-1"
             :disabled="!isController || resetSubmitting || (!serial.records.length && !serial.green.active && !recentRecord)"
@@ -404,6 +391,8 @@ onUnmounted(() => clearTimeout(selectTimer));
             :disabled="resetInProgress"
             :disabled-message="resetInProgress ? '마스터의 OFF 확인을 기다리는 중입니다. 기록 편집은 확인 후 종료됩니다.' : ''"
             @update="mergeRecord"
+            @remove="clearRecord(); attemptFinalized = false"
+            @finalize="attemptFinalized = $event"
             @save-state="quickEditSaveState = $event"
           >
             <template #summary>

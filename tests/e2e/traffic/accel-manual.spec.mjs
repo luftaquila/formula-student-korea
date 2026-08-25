@@ -106,33 +106,33 @@ test.describe("Acceleration manual mode measurement", () => {
     await scoreboard.click();
     await expect(scoreboard).toContainText("숨김");
 
-    const invalidated = page.getByTestId("quick-invalidated");
-    let releaseInvalidation;
-    let confirmInvalidationContinued;
-    const invalidationHeld = new Promise((resolve) => { releaseInvalidation = resolve; });
-    const invalidationContinued = new Promise((resolve) => { confirmInvalidationContinued = resolve; });
-    const holdInvalidation = async (route) => {
+    const dsqStatus = page.getByTestId("record-quick-edit").locator('[data-status="DSQ"]');
+    let releaseClassification;
+    let confirmClassificationContinued;
+    const classificationHeld = new Promise((resolve) => { releaseClassification = resolve; });
+    const classificationContinued = new Promise((resolve) => { confirmClassificationContinued = resolve; });
+    const holdClassification = async (route) => {
       const data = route.request().postDataJSON();
-      if (route.request().method() === "PATCH" && data?.field === "invalidated") {
-        await invalidationHeld;
+      if (route.request().method() === "PATCH" && data?.field === "status") {
+        await classificationHeld;
       }
       await route.continue();
-      if (data?.field === "invalidated") confirmInvalidationContinued();
+      if (data?.field === "status") confirmClassificationContinued();
     };
-    await page.route("**/competition/api/v1/traffic/records/**", holdInvalidation);
-    await invalidated.click();
-    await expect(invalidated).toBeDisabled();
+    await page.route("**/competition/api/v1/traffic/records/**", holdClassification);
+    await dsqStatus.click();
+    await expect(dsqStatus).toBeDisabled();
     await expect(scoreboard).toBeDisabled();
-    releaseInvalidation();
-    await invalidationContinued;
-    await page.unroute("**/competition/api/v1/traffic/records/**", holdInvalidation);
-    await expect(invalidated).toContainText("무효");
-    await expect(scoreboard).toBeDisabled();
+    releaseClassification();
+    await classificationContinued;
+    await page.unroute("**/competition/api/v1/traffic/records/**", holdClassification);
+    await expect(dsqStatus).toHaveAttribute("aria-pressed", "true");
+    await expect(scoreboard).toBeEnabled();
 
-    // 유효화 시 기존 서버 규칙대로 전광판 표시도 함께 복구된다.
-    await invalidated.click();
-    await expect(invalidated).toContainText("유효");
-    await expect(scoreboard).toContainText("표시");
+    // 정상 복원은 판정만 바꾸며 전광판 숨김 상태를 보존한다.
+    await page.getByTestId("record-quick-edit").locator('[data-status="normal"]').click();
+    await expect(dsqStatus).toHaveAttribute("aria-pressed", "false");
+    await expect(scoreboard).toContainText("숨김");
   });
 
   test("records DNF when DNF button is clicked", async ({ page }) => {
@@ -143,16 +143,13 @@ test.describe("Acceleration manual mode measurement", () => {
     await setCustomEventName(page, "E2E-DNF");
     await page.getByTestId("event-team").selectOption("2");
 
-    // Click green light to enable DNF button
-    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
-
-    // Click DNF button
-    const dnfBtn = page.locator("button.btn-danger.btn-block", { hasText: "DNF" });
+    // 판정은 arm 단계와 무관하게 가능하다.
+    const dnfBtn = page.locator('.event-status-panel [data-status="DNF"]');
     await expect(dnfBtn).toBeEnabled();
     await dnfBtn.click();
 
     // Verify DNF notification
-    await expectNotification(page, "success", "DNF 기록 저장");
+    await expectNotification(page, "success", "DNF 판정을 저장했습니다.");
   });
 
   test("resets and re-measures after reset", async ({ page }) => {

@@ -218,7 +218,7 @@ describe('GET /api/records/:name (existing)', () => {
     assert.equal(data[0].team, '팀A');
     assert.equal(data[0].type, '가속');
     assert.equal(data[0].result, 50000);
-    assert.equal(data[0].invalidated, 0);
+    assert.equal(data[0].status, null);
     assert.equal(data[0].scoreboard, 1);
   });
 });
@@ -226,25 +226,31 @@ describe('GET /api/records/:name (existing)', () => {
 describe('PATCH /api/records/:name/:rowid', () => {
   const tableName = `FSK ${CURRENT_YEAR} 가속 1차`;
 
-  it('toggles invalidated (invalidated ON → scoreboard auto OFF)', async () => {
+  it('sets DSQ while keeping scoreboard visibility independent', async () => {
     const res = await client.patch(`/api/records/${encodeURIComponent(tableName)}/1`, {
-      body: { field: 'invalidated' },
+      body: { field: 'status', value: 'DSQ' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.equal(data.invalidated, 1);
-    assert.equal(data.scoreboard, 0);
+    assert.equal(data.status, 'DSQ');
+    assert.equal(data.scoreboard, 1);
+    const audit = db.prepare(`
+      SELECT detail FROM logs
+      WHERE action = 'record.update' AND target = ? ORDER BY id DESC LIMIT 1
+    `).get(tableName);
+    assert.deepEqual(JSON.parse(audit.detail).before, { result: 50000, status: null });
+    assert.deepEqual(JSON.parse(audit.detail).after, { result: 50000, status: 'DSQ' });
   });
 
-  it('toggles invalidated back (invalidated OFF → scoreboard auto ON)', async () => {
+  it('restores a timed record to normal without changing scoreboard visibility', async () => {
     const res = await client.patch(`/api/records/${encodeURIComponent(tableName)}/1`, {
-      body: { field: 'invalidated' },
+      body: { field: 'status', value: null },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.equal(data.invalidated, 0);
+    assert.equal(data.status, null);
     assert.equal(data.scoreboard, 1);
   });
 
@@ -298,7 +304,7 @@ describe('PATCH /api/records/:name/:rowid', () => {
 
   it('returns 404 for non-existent table', async () => {
     const res = await client.patch(`/api/records/${encodeURIComponent(`FSK ${CURRENT_YEAR} NoSuchTable`)}/1`, {
-      body: { field: 'invalidated' },
+      body: { field: 'status', value: 'DNF' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 404);
@@ -306,7 +312,7 @@ describe('PATCH /api/records/:name/:rowid', () => {
 
   it('returns 404 for non-existent rowid', async () => {
     const res = await client.patch(`/api/records/${encodeURIComponent(tableName)}/9999`, {
-      body: { field: 'invalidated' },
+      body: { field: 'status', value: 'DNF' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 404);
@@ -330,6 +336,55 @@ describe('PATCH /api/records/:name/:rowid', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(data.oc, 0, 'negative oc should be clamped to 0');
+  });
+});
+
+describe('explicit record statuses and status-only cancellation', () => {
+  const shortName = '판정 모델';
+  const tableName = `FSK ${CURRENT_YEAR} ${shortName}`;
+  const entry = { num: 21, univ: '상태대', team: '상태팀' };
+
+  it('stores DNS/DNF/DSQ independently from an optional measured time', async () => {
+    for (const [status, result] of [['DNS', null], ['DNF', 12_345], ['DSQ', null]]) {
+      const response = await client.post('/api/records', {
+        cookie: adminCookie,
+        body: { name: shortName, data: { time: '2026-01-02T00:00:00Z', type: '가속', entry, result, status } },
+      });
+      assert.equal(response.status, 201, await response.clone().text());
+    }
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie })).json();
+    assert.deepEqual(rows.map(({ status, result, scoreboard }) => ({ status, result, scoreboard })), [
+      { status: 'DNS', result: null, scoreboard: 1 },
+      { status: 'DNF', result: 12_345, scoreboard: 1 },
+      { status: 'DSQ', result: null, scoreboard: 1 },
+    ]);
+  });
+
+  it('rejects unknown statuses and a normal row without measured time', async () => {
+    for (const status of ['RET', null]) {
+      const response = await client.post('/api/records', {
+        cookie: adminCookie,
+        body: { name: shortName, data: { time: '2026-01-02T00:00:00Z', type: '가속', entry, result: null, status } },
+      });
+      assert.equal(response.status, 400);
+    }
+  });
+
+  it('deletes only untimed status rows and audits the full deleted row', async () => {
+    const rows = await (await client.get(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie })).json();
+    const timed = rows.find((row) => row.result != null);
+    const untimed = rows.find((row) => row.status === 'DNS');
+    const rejected = await client.delete(`/api/records/${encodeURIComponent(tableName)}/${timed.rowid}`, { cookie: adminCookie });
+    assert.equal(rejected.status, 409);
+    const removed = await client.delete(`/api/records/${encodeURIComponent(tableName)}/${untimed.rowid}`, { cookie: adminCookie });
+    assert.equal(removed.status, 200);
+    const audit = db.prepare("SELECT detail FROM logs WHERE action = 'record.row_delete' AND target = ? ORDER BY id DESC LIMIT 1").get(tableName);
+    assert.equal(JSON.parse(audit.detail).before.status, 'DNS');
+    assert.equal(JSON.parse(audit.detail).before.result, null);
+  });
+
+  after(async () => {
+    await client.delete(`/api/records/${encodeURIComponent(tableName)}`, { cookie: adminCookie });
   });
 });
 
@@ -1454,17 +1509,59 @@ describe('Wireless server-authoritative record engine', () => {
     await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
   });
 
-  it('saves a DNF (result -1) via /api/wireless/dnf with session attribution', async () => {
+  it('finalizes a partial wireless endurance record when quick edit sets a status', async () => {
+    const ev = '내구';
+    const N = 'eng-en-status', NAME = 'ENG-EN-STATUS';
+    await client.put(`/api/wireless/mapping/${N}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
+    await client.post('/api/wireless/select', {
+      body: { event_type: ev, team: { num: 13, univ: 'HU', team: 'EN Status' }, event_name: NAME },
+      cookie: adminCookie,
+    });
+    await client.post('/api/wireless/arm', {
+      body: { event_type: ev, action: 'green', green_tick: '3200000000' }, cookie: adminCookie,
+    });
+
+    for (const [index, tick] of ['3200000000', '3216000000'].entries()) {
+      await client.post('/api/wireless/ingest', {
+        body: { events: [{ node_id: N, master_tick: tick, ev_seq: index + 101 }] },
+        cookie: adminCookie,
+      });
+    }
+    const before = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
+    assert.equal(before.length, 1);
+    assert.equal(before[0].result, 1000);
+
+    const classified = await client.patch(`/api/records/${encodeURIComponent(tbl(NAME))}/${before[0].rowid}`, {
+      body: { field: 'status', value: 'DSQ' }, cookie: adminCookie,
+    });
+    assert.equal(classified.status, 200);
+
+    await client.post('/api/wireless/ingest', {
+      body: { events: [{ node_id: N, master_tick: '3232000000', ev_seq: 103 }] },
+      cookie: adminCookie,
+    });
+    const after = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
+    assert.equal(after.length, 1);
+    assert.equal(after[0].status, 'DSQ');
+    assert.equal(after[0].result, 1000, 'late sensor packet must not alter the preserved raw time');
+    assert.equal(after[0].detail, '00:01.000');
+
+    await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
+  });
+
+  it('saves a DNF status with a nullable result via /api/wireless/status', async () => {
     const ev = '오토크로스', NAME = 'ENG-DNF';
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 3, univ: 'A', team: 'B' }, event_name: NAME }, cookie: adminCookie });
     await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
-    const res = await client.post('/api/wireless/dnf', { body: { event_type: ev }, cookie: adminCookie });
+    const res = await client.post('/api/wireless/status', { body: { event_type: ev, status: 'DNF' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const rows = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
-    assert.ok(rows.some((r) => r.type === ev && r.result === -1 && r.num === 3), 'DNF record saved');
+    assert.ok(rows.some((r) => r.type === ev && r.result === null && r.status === 'DNF' && r.num === 3), 'DNF status record saved');
     const dnfAudit = db.prepare(`
       SELECT actor_email, detail FROM logs
-      WHERE action = 'wireless.dnf' AND target = ? ORDER BY id DESC LIMIT 1
+      WHERE action = 'wireless.status' AND target = ? ORDER BY id DESC LIMIT 1
     `).get(ev);
     assert.equal(dnfAudit.actor_email, 'admin@test.com');
     assert.equal(JSON.parse(dnfAudit.detail).team.num, 3);
@@ -1477,10 +1574,10 @@ describe('Wireless server-authoritative record engine', () => {
     await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
   });
 
-  it('DNF without a selection returns 400', async () => {
+  it('status without a selection returns 400', async () => {
     const ev = '오토크로스';
     await client.post('/api/wireless/select', { body: { event_type: ev, team: null, event_name: null }, cookie: adminCookie });
-    const res = await client.post('/api/wireless/dnf', { body: { event_type: ev }, cookie: adminCookie });
+    const res = await client.post('/api/wireless/status', { body: { event_type: ev, status: 'DNS' }, cookie: adminCookie });
     assert.equal(res.status, 400);
   });
 
@@ -1699,12 +1796,16 @@ describe('Wireless save guards', () => {
     assert.equal(res.status, 200);
   });
 
-  it('DNF rejected when event not armed (400)', async () => {
+  it('allows a status before the event is armed', async () => {
     const ev = '오토크로스';
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 4, univ: 'A', team: 'B' }, event_name: 'ENG-NOARM-DNF' }, cookie: adminCookie });
     await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
-    const res = await client.post('/api/wireless/dnf', { body: { event_type: ev }, cookie: adminCookie });
-    assert.equal(res.status, 400);
+    const res = await client.post('/api/wireless/status', { body: { event_type: ev, status: 'DNS' }, cookie: adminCookie });
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.record.status, 'DNS');
+    assert.equal(body.record.result, null);
+    await client.delete(`/api/records/${encodeURIComponent(body.name)}/${body.record.rowid}`, { cookie: adminCookie });
   });
 
   it('does NOT save a negative (out-of-order) result', async () => {
@@ -1794,26 +1895,26 @@ describe('Wireless save guards', () => {
     assert.deepEqual(responses.map((response) => response.status), [400, 400, 400, 400, 400, 400, 400]);
 
     await client.post('/api/wireless/select', {
-      body: { event_type: '오토크로스', team: { num: 4, univ: 'A', team: 'B' }, event_name: 'AUDIT-DNF' },
+      body: { event_type: '오토크로스', team: null, event_name: null },
       cookie: adminCookie,
     });
     await client.post('/api/wireless/arm', {
       body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie,
     });
-    const dnf = await client.post('/api/wireless/dnf', {
-      body: { event_type: '오토크로스' }, cookie: adminCookie,
+    const dnf = await client.post('/api/wireless/status', {
+      body: { event_type: '오토크로스', status: 'DNF' }, cookie: adminCookie,
     });
     assert.equal(dnf.status, 400);
 
     const warnings = db.prepare(`
       SELECT action, actor_email, target, detail FROM logs
       WHERE id > ? AND level = 'warn'
-        AND action IN ('wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.dnf')
+        AND action IN ('wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.status')
       ORDER BY id
     `).all(beforeId);
     const actions = new Set(warnings.map((row) => row.action));
     assert.deepEqual(actions, new Set([
-      'wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.dnf',
+      'wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.status',
     ]));
     for (const row of warnings) {
       const detail = JSON.parse(row.detail);
@@ -1915,8 +2016,8 @@ describe('Traffic mutation state preflight auditing', () => {
         () => isolated.post('/api/wireless/select', {
           body: { event_type: '가속', team: null, event_name: null }, cookie: adminCookie,
         }),
-        () => isolated.post('/api/wireless/dnf', {
-          body: { event_type: '가속' }, cookie: adminCookie,
+        () => isolated.post('/api/wireless/status', {
+          body: { event_type: '가속', status: 'DNF' }, cookie: adminCookie,
         }),
         () => isolated.post('/api/wireless/command', {
           body: { event_type: '가속', action: 'off' }, cookie: adminCookie,
@@ -1939,12 +2040,12 @@ describe('Traffic mutation state preflight auditing', () => {
       const warnings = rawDb.prepare(`
         SELECT action, target, detail FROM logs
         WHERE level = 'warn' AND action IN (
-          'wireless.arm', 'wireless.select', 'wireless.dnf', 'wireless.command', 'wireless.lease',
+          'wireless.arm', 'wireless.select', 'wireless.status', 'wireless.command', 'wireless.lease',
           'event_mode.toggle'
         ) ORDER BY id
       `).all();
       assert.deepEqual(warnings.map((row) => row.action), [
-        'wireless.arm', 'wireless.select', 'wireless.dnf', 'wireless.command',
+        'wireless.arm', 'wireless.select', 'wireless.status', 'wireless.command',
         'wireless.lease', 'wireless.lease', 'event_mode.toggle',
       ]);
       for (const row of warnings) {
@@ -2156,14 +2257,14 @@ describe('Traffic legacy record consolidation migration', () => {
   it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
     migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
 
-    const rows = migDb.prepare("SELECT legacy_rowid, num, detail, invalidated, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
+    const rows = migDb.prepare("SELECT legacy_rowid, num, detail, status, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
     assert.equal(rows.length, 2);
     // legacy rowid preserved and ordered
     assert.deepEqual(rows.map((r) => [r.legacy_rowid, r.num]), [[1, 5], [2, 6]]);
     assert.equal(rows[0].detail, 'd5');
     assert.equal(rows[1].detail, null);
     // backfilled defaults
-    assert.deepEqual(rows.map((r) => [r.invalidated, r.scoreboard, r.cones, r.oc]), [[0, 1, 0, 0], [0, 1, 0, 0]]);
+    assert.deepEqual(rows.map((r) => [r.status, r.scoreboard, r.cones, r.oc]), [[null, 1, 0, 0], [null, 1, 0, 0]]);
 
     // visibility seeded, legacy table dropped, non-record table untouched
     assert.equal(migDb.prepare("SELECT visible FROM record_visibility WHERE name = ?").get(LEGACY).visible, 1);
@@ -2177,5 +2278,57 @@ describe('Traffic legacy record consolidation migration', () => {
     migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
+  });
+});
+
+describe('Traffic normalized record status migration', () => {
+  let migrationPath;
+
+  before(() => {
+    migrationPath = tmpDbPath();
+    const seed = new Database(migrationPath);
+    seed.exec(`
+      CREATE TABLE record (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        legacy_rowid INTEGER NOT NULL,
+        time TEXT NOT NULL,
+        num INTEGER NOT NULL,
+        univ TEXT NOT NULL,
+        team TEXT NOT NULL,
+        type TEXT NOT NULL,
+        result INTEGER NOT NULL,
+        detail TEXT,
+        cones INTEGER DEFAULT 0,
+        oc INTEGER DEFAULT 0,
+        invalidated INTEGER DEFAULT 0,
+        scoreboard INTEGER DEFAULT 1
+      );
+      INSERT INTO record VALUES
+        (7, 'FSK 2026 Legacy', 3, '2026-01-01T00:00:00Z', 1, 'U', 'T', '가속', 4321, 'raw', 0, 0, 1, 1),
+        (8, 'FSK 2026 Legacy', 4, '2026-01-01T00:01:00Z', 1, 'U', 'T', '가속', -1, NULL, 0, 0, 0, 1);
+    `);
+    seed.close();
+  });
+
+  after(() => cleanup(migrationPath));
+
+  it('maps invalidated to DSQ, result -1 to DNF, and preserves identity and raw time', () => {
+    const created = createTrafficApp({ dbPath: migrationPath, validateUser: TRUST_JWT });
+    for (const timer of created.timers || []) clearInterval(timer);
+    try {
+      const rows = created.db.prepare(`
+        SELECT id, name, legacy_rowid, result, status, detail, scoreboard
+        FROM record ORDER BY id
+      `).all();
+      assert.deepEqual(rows, [
+        { id: 7, name: 'FSK 2026 Legacy', legacy_rowid: 3, result: 4321, status: 'DSQ', detail: 'raw', scoreboard: 1 },
+        { id: 8, name: 'FSK 2026 Legacy', legacy_rowid: 4, result: null, status: 'DNF', detail: null, scoreboard: 1 },
+      ]);
+      assert.equal(created.db.prepare("SELECT COUNT(*) AS count FROM pragma_table_info('record') WHERE name = 'invalidated'").get().count, 0);
+    } finally {
+      created.closeSse?.();
+      created.db.close();
+    }
   });
 });

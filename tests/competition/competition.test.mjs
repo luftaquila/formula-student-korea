@@ -787,7 +787,7 @@ describe("Competition modular monolith", () => {
     }
   });
 
-  it("keeps invalidated unbound legacy Traffic rows permanently non-reactivatable", async () => {
+  it("keeps DSQ unbound legacy Traffic rows permanently non-reactivatable", async () => {
     const fixture = fixtureRoot();
     fixtures.push(fixture);
     const created = createCompetitionApp({
@@ -803,34 +803,34 @@ describe("Competition modular monolith", () => {
       });
       const insert = created.db.prepare(`
         INSERT INTO record
-          (name, legacy_rowid, time, num, univ, team, type, result, invalidated, scoreboard, team_id)
+          (name, legacy_rowid, time, num, univ, team, type, result, status, scoreboard, team_id)
         VALUES (?, 1, '2026-01-01T00:00:00.000Z', 41, 'Legacy University', 'Legacy Team',
-          'Acceleration', 1000, 1, 0, NULL)
+          'Acceleration', 1000, 'DSQ', 0, NULL)
       `);
       insert.run("legacy-record");
       const currentName = `FSK ${YEAR} Legacy Record`;
       insert.run(currentName);
       // The insert binder can resolve the current-year row. Reproduce a legacy
-      // invalidated artifact whose stable binding was never migrated.
+      // DSQ artifact whose stable binding was never migrated.
       created.db.prepare("UPDATE record SET team_id = NULL WHERE name = ?").run(currentName);
       validateArtifact(fixture.dbPath);
 
       const malformed = await client.patch(
         `/competition/api/v1/traffic/records/${encodeURIComponent("legacy-record")}/1`,
-        { cookie: admin, body: { field: "invalidated" } },
+        { cookie: admin, body: { field: "status", value: null } },
       );
       assert.equal(malformed.status, 400, await malformed.clone().text());
 
       const unbound = await client.patch(
         `/competition/api/v1/traffic/records/${encodeURIComponent(currentName)}/1`,
-        { cookie: admin, body: { field: "invalidated" } },
+        { cookie: admin, body: { field: "status", value: null } },
       );
       assert.equal(unbound.status, 409, await unbound.clone().text());
       assert.deepEqual(created.db.prepare(`
-        SELECT name, invalidated, scoreboard, team_id FROM record ORDER BY name
+        SELECT name, status, scoreboard, team_id FROM record ORDER BY name
       `).all(), [
-        { name: currentName, invalidated: 1, scoreboard: 0, team_id: null },
-        { name: "legacy-record", invalidated: 1, scoreboard: 0, team_id: null },
+        { name: currentName, status: "DSQ", scoreboard: 0, team_id: null },
+        { name: "legacy-record", status: "DSQ", scoreboard: 0, team_id: null },
       ]);
       assert.equal(team.active, true);
       validateArtifact(fixture.dbPath);

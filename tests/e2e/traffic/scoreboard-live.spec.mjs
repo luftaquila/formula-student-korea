@@ -109,7 +109,7 @@ test.describe("Traffic scoreboard live updates", () => {
     await expect(scoreboard).toContainText("한양대학교", { timeout: 10000 });
   });
 
-  test("invalidating a record auto-removes from scoreboard", async ({ page }) => {
+  test("classifying a visible record keeps it on scoreboard and shows the status", async ({ page }) => {
     await page.goto("/traffic/scoreboard");
     await waitForPageReady(page);
 
@@ -125,20 +125,21 @@ test.describe("Traffic scoreboard live updates", () => {
     const records = await recordsRes.json();
     const entry2Record = records.find((r) => r.num === 2);
 
-    // Invalidate entry 2's record (this should auto-set scoreboard=0)
+    // Classification does not alter independent scoreboard visibility.
     await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${entry2Record.rowid}`, {
-      data: { field: "invalidated" },
+      data: { field: "status", value: "DSQ" },
     });
 
-    // Verify entry 2 disappears from scoreboard
+    // The team stays visible and its current record is rendered as DSQ.
     await expect(async () => {
       const text = await scoreboard.textContent();
-      expect(text).not.toContain("한양대학교");
+      expect(text).toContain("한양대학교");
+      expect(text).toContain("DSQ");
     }).toPass({ timeout: 10000 });
 
-    // Restore: un-invalidate (toggles back)
+    // Restore the timed row to normal.
     await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${entry2Record.rowid}`, {
-      data: { field: "invalidated" },
+      data: { field: "status", value: null },
     });
 
     // Verify it reappears

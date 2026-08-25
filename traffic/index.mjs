@@ -4,7 +4,7 @@ import crypto from "node:crypto";
 import { runMigrationOnce, normalizeUtcTextTimestamp, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { EVENT_TYPES } from "../shared/constants.js";
+import { EVENT_TYPES, RESULT_STATUSES } from "../shared/constants.js";
 import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
 import { formatEnduranceDetail, enduranceTotal } from "./lib/event-timing.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
@@ -49,35 +49,71 @@ db.exec(`CREATE TABLE IF NOT EXISTS record_visibility (
   visible INTEGER NOT NULL DEFAULT 1
 );`);
 
-db.exec(`CREATE TABLE IF NOT EXISTS record (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  legacy_rowid INTEGER NOT NULL,
-  time TEXT NOT NULL,
-  num INTEGER NOT NULL,
-  univ TEXT NOT NULL,
-  team TEXT NOT NULL,
-  type TEXT NOT NULL,
-  result INTEGER NOT NULL,
-  detail TEXT,
-  cones INTEGER DEFAULT 0,
-  oc INTEGER DEFAULT 0,
-  invalidated INTEGER DEFAULT 0,
-  scoreboard INTEGER DEFAULT 1
-);`);
-{
-  const cols = db.prepare("PRAGMA table_info(record)").all().map((c) => c.name);
-  if (!cols.includes("legacy_rowid")) {
-    db.exec("ALTER TABLE record ADD COLUMN legacy_rowid INTEGER");
-    db.exec(`
-      WITH ranked AS (
-        SELECT id, ROW_NUMBER() OVER (PARTITION BY name ORDER BY id) AS rn
-        FROM record
-      )
-      UPDATE record
-      SET legacy_rowid = (SELECT rn FROM ranked WHERE ranked.id = record.id)
-      WHERE legacy_rowid IS NULL
-    `);
+function createRecordTable(table = "record", { teamId = false } = {}) {
+  db.exec(`CREATE TABLE ${table} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    legacy_rowid INTEGER NOT NULL,
+    time TEXT NOT NULL,
+    num INTEGER NOT NULL,
+    univ TEXT NOT NULL,
+    team TEXT NOT NULL,
+    type TEXT NOT NULL,
+    result INTEGER,
+    status TEXT CHECK(status IS NULL OR status IN ('DNS', 'DNF', 'DSQ')),
+    detail TEXT,
+    cones INTEGER DEFAULT 0,
+    oc INTEGER DEFAULT 0,
+    scoreboard INTEGER DEFAULT 1${teamId ? ",\n    team_id INTEGER" : ""},
+    CHECK(result IS NULL OR (typeof(result) = 'integer' AND result > 0)),
+    CHECK(status IS NOT NULL OR result IS NOT NULL)
+  );`);
+}
+
+const recordTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'record'").get();
+if (!recordTable) {
+  createRecordTable();
+} else {
+  const info = db.prepare("PRAGMA table_info(record)").all();
+  const columns = new Set(info.map((column) => column.name));
+  // status가 없거나 옛 invalidated/source result NOT NULL 제약이 남은 DB를 한 번에 최종
+  // 스키마로 재구성한다. 예상 밖 결과값은 CHECK에 기대어 부분 게시하지 않고 transaction 전체를 중단한다.
+  const resultColumn = info.find((column) => column.name === "result");
+  if (!columns.has("status") || columns.has("invalidated") || resultColumn?.notnull) {
+    db.transaction(() => {
+      if (!columns.has("legacy_rowid")) {
+        db.exec("ALTER TABLE record ADD COLUMN legacy_rowid INTEGER");
+        db.exec(`
+          WITH ranked AS (
+            SELECT id, ROW_NUMBER() OVER (PARTITION BY name ORDER BY id) AS rn
+            FROM record
+          )
+          UPDATE record
+          SET legacy_rowid = (SELECT rn FROM ranked WHERE ranked.id = record.id)
+          WHERE legacy_rowid IS NULL
+        `);
+      }
+      const migratedColumns = new Set(db.prepare("PRAGMA table_info(record)").all().map((column) => column.name));
+      const invalidatedSql = migratedColumns.has("invalidated") ? "COALESCE(invalidated, 0)" : "0";
+      const statusSql = migratedColumns.has("status")
+        ? `CASE WHEN ${invalidatedSql} = 1 THEN 'DSQ' WHEN status IN ('DNS', 'DNF', 'DSQ') THEN status WHEN result = -1 THEN 'DNF' ELSE NULL END`
+        : `CASE WHEN ${invalidatedSql} = 1 THEN 'DSQ' WHEN result = -1 THEN 'DNF' ELSE NULL END`;
+      const teamId = migratedColumns.has("team_id");
+      createRecordTable("record_status_v1", { teamId });
+      db.exec(`
+        INSERT INTO record_status_v1
+          (id, name, legacy_rowid, time, num, univ, team, type, result, status,
+           detail, cones, oc, scoreboard${teamId ? ", team_id" : ""})
+        SELECT id, name, legacy_rowid, time, num, univ, team, type,
+               CASE WHEN result = -1 THEN NULL ELSE result END,
+               ${statusSql}, detail, COALESCE(cones, 0), COALESCE(oc, 0),
+               COALESCE(scoreboard, CASE WHEN ${invalidatedSql} = 1 THEN 0 ELSE 1 END)
+               ${teamId ? ", team_id" : ""}
+        FROM record;
+        DROP TABLE record;
+        ALTER TABLE record_status_v1 RENAME TO record;
+      `);
+    })();
   }
 }
 // record 조회는 모두 legacy_rowid 또는 num 기준이라 (name, id) 인덱스는 미사용. 제거(기존 배포본 정리 포함).
@@ -253,23 +289,20 @@ runMigrationOnce(db, "traffic.utc_timestamp_normalization.v1", () => {
     const hasRequired = ["time", "num", "univ", "team", "type", "result"].every(hasColumn);
     if (!hasRequired) continue;
     const detailExpr = hasColumn("detail") ? "detail" : "NULL";
-    if (!columns.some((c) => c.name === "invalidated")) {
-      db.exec(`ALTER TABLE '${name}' ADD COLUMN invalidated INTEGER DEFAULT 0`);
-    }
-    if (!columns.some((c) => c.name === "scoreboard")) {
-      db.exec(`ALTER TABLE '${name}' ADD COLUMN scoreboard INTEGER DEFAULT 1`);
-      db.exec(`UPDATE '${name}' SET scoreboard = 0 WHERE invalidated = 1`);
-    }
-    if (!columns.some((c) => c.name === "cones")) {
-      db.exec(`ALTER TABLE '${name}' ADD COLUMN cones INTEGER DEFAULT 0`);
-    }
-    if (!columns.some((c) => c.name === "oc")) {
-      db.exec(`ALTER TABLE '${name}' ADD COLUMN oc INTEGER DEFAULT 0`);
-    }
+    const invalidatedExpr = hasColumn("invalidated") ? "COALESCE(invalidated, 0)" : "0";
+    const statusExpr = hasColumn("status")
+      ? `CASE WHEN ${invalidatedExpr} = 1 THEN 'DSQ' WHEN status IN ('DNS', 'DNF', 'DSQ') THEN status WHEN result = -1 THEN 'DNF' ELSE NULL END`
+      : `CASE WHEN ${invalidatedExpr} = 1 THEN 'DSQ' WHEN result = -1 THEN 'DNF' ELSE NULL END`;
+    const scoreboardExpr = hasColumn("scoreboard")
+      ? "COALESCE(scoreboard, 1)"
+      : `CASE WHEN ${invalidatedExpr} = 1 THEN 0 ELSE 1 END`;
+    const conesExpr = hasColumn("cones") ? "COALESCE(cones, 0)" : "0";
+    const ocExpr = hasColumn("oc") ? "COALESCE(oc, 0)" : "0";
     db.prepare(`
-      INSERT OR IGNORE INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard)
-      SELECT ?, rowid, time, num, univ, team, type, result, ${detailExpr},
-             COALESCE(cones, 0), COALESCE(oc, 0), COALESCE(invalidated, 0), COALESCE(scoreboard, 1)
+      INSERT OR IGNORE INTO record (name, legacy_rowid, time, num, univ, team, type, result, status, detail, cones, oc, scoreboard)
+      SELECT ?, rowid, time, num, univ, team, type,
+             CASE WHEN result = -1 THEN NULL ELSE result END, ${statusExpr}, ${detailExpr},
+             ${conesExpr}, ${ocExpr}, ${scoreboardExpr}
       FROM '${name}'
       ORDER BY rowid
     `).run(name);
@@ -313,7 +346,7 @@ function getYearRecordFiles(year) {
 function getRecordRows(name) {
   const year = recordYearFromName(name);
   return db.prepare(`
-    SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
+    SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, status, detail, cones, oc, scoreboard
     FROM record
     WHERE name = ?
       AND (? IS NULL OR NOT EXISTS (
@@ -329,7 +362,7 @@ function getYearRecordGroups(year) {
   const endName = `FSK ${Number(year) + 1} `;
   const rows = db.prepare(`
     SELECT r.name, r.legacy_rowid AS rowid, r.time, r.num, r.univ, r.team, r.type,
-           r.result, r.detail, r.cones, r.oc, r.invalidated, r.scoreboard
+           r.result, r.status, r.detail, r.cones, r.oc, r.scoreboard
     FROM record r
     LEFT JOIN record_visibility v ON v.name = r.name
     WHERE r.name >= ? AND r.name < ? AND COALESCE(v.visible, 1) != 0
@@ -354,7 +387,7 @@ function getYearRecordGroups(year) {
 
 function getRecordRow(name, rowid) {
   return db.prepare(`
-    SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, detail, cones, oc, invalidated, scoreboard
+    SELECT legacy_rowid AS rowid, time, num, univ, team, type, result, status, detail, cones, oc, scoreboard
     FROM record
     WHERE name = ? AND legacy_rowid = ?
   `).get(name, rowid);
@@ -372,9 +405,12 @@ function insertRecordRow(name, data) {
   db.prepare("INSERT OR IGNORE INTO record_visibility (name, visible) VALUES (?, 1)").run(name);
   const nextRowid = db.prepare("SELECT COALESCE(MAX(legacy_rowid), 0) + 1 AS value FROM record WHERE name = ?").get(name).value;
   db.prepare(`
-    INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, detail)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(name, nextRowid, data.time, entry.num, entry.univ, entry.team, data.type, data.result, data.detail ?? null);
+    INSERT INTO record (name, legacy_rowid, time, num, univ, team, type, result, status, detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    name, nextRowid, data.time, entry.num, entry.univ, entry.team, data.type,
+    data.result ?? null, data.status ?? null, data.detail ?? null,
+  );
   return getRecordRow(name, nextRowid);
 }
 
@@ -587,7 +623,7 @@ const SYS_ACTOR = { email: "system", name: "system", role: "admin" };
 // binding = 귀속 정보 {team, event_name}: arm 스냅샷(run.bound) 또는 live 세션.
 // 선택 정보(team·event_name) 자체가 없으면 = 테스트 모드 → 조용히 skip(경고 없음).
 // 선택은 됐는데 검증 실패(잘못된 팀/이름) → warn 로그(유선의 POST /api/records와 동일 검증).
-function engineSaveRecord(eventType, binding, result, detail, audit = null) {
+function engineSaveRecord(eventType, binding, result, detail, audit = null, status = null) {
   const auditLog = (level, logDetail, target) => {
     if (audit?.req) logger[level](audit.req, "wireless.record", logDetail, target);
     else logger[level](null, "wireless.record", logDetail, target, SYS_ACTOR);
@@ -600,7 +636,10 @@ function engineSaveRecord(eventType, binding, result, detail, audit = null) {
     return false;
   }
   // 유선 저장과 동일 검증 재사용 — 무선이라고 약식 검증하지 않는다.
-  const data = { time: new Date().toISOString(), type: eventType, entry: t, result, detail: detail ?? null };
+  const data = {
+    time: new Date().toISOString(), type: eventType, entry: t,
+    result: result ?? null, status, detail: detail ?? null,
+  };
   const dv = validateRecordData(data);
   if (!dv.valid) {
     auditLog("warn", { error: dv.error, event_type: eventType }, nv.value);
@@ -623,10 +662,10 @@ function engineSaveRecord(eventType, binding, result, detail, audit = null) {
     auditLog("warn", { error: r.internalError || r.error, event_type: eventType }, name);
     return false;
   }
-  auditLog("log", { type: eventType, result, num: r.result.num }, name);
+  auditLog("log", { type: eventType, result: result ?? null, status, num: r.result.num }, name);
   if (run?.runId) broadcastEvent("wireless:session", getSession(eventType));
   broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run?.runId ?? null });
-  return true;
+  return { name, record: r.result };
 }
 // 내구: 랩을 기록 1건에 이어붙인다. run.laps 전체로 result(총합)·detail(랩 목록)을 매 랩 갱신 —
 // 첫 저장은 INSERT(rowid 보관), 이후는 같은 행 UPDATE. 귀속(team+event_name) 없으면 skip(테스트 모드).
@@ -722,7 +761,21 @@ function processRecordEngine(rows) {
       const sess = sessByType.get(et);
       if (!sess || !sess.armed) continue;
       const sensor = m.role === "finish" ? 2 : 1;
-      if (!engineRun.has(et)) resetEngineRun(et, null, sess.run_id);
+      if (!engineRun.has(et)) {
+        resetEngineRun(et, null, sess.run_id);
+        const recovered = sess.saved_record_name && sess.saved_record_rowid != null
+          ? getRecordRow(sess.saved_record_name, sess.saved_record_rowid)
+          : null;
+        if (recovered) {
+          // A restart cannot reconstruct all timing edges safely. Preserve the
+          // already-persisted raw attempt and require an explicit reset rather
+          // than reopening it or overwriting an endurance total.
+          const recoveredRun = engineRun.get(et);
+          recoveredRun.recordName = sess.saved_record_name;
+          recoveredRun.recordRowid = sess.saved_record_rowid;
+          recoveredRun.saved = true;
+        }
+      }
       const run = engineRun.get(et);
       // 디바운스(tick 기준, 클라 acceptSensorTick과 동일): 한 통과의 다중 엣지 접기.
       const lastAcc = run.debounce[sensor];
@@ -746,7 +799,7 @@ function processRecordEngine(rows) {
       } else if (et === "내구") {
         // 단일 센서 멀티랩. 첫 통과=출발선(t0), 이후 통과마다 1랩을 기록 1건에 이어붙인다.
         if (sensor !== 1) continue;
-        if (run.saved) continue; // DNF 등으로 확정된 런은 랩을 더 이어붙이지 않는다.
+        if (run.saved) continue; // 판정 또는 정상 기록으로 확정된 런은 랩을 더 이어붙이지 않는다.
         if (run.lastTick == null) { run.lastTick = tickMs; continue; } // 첫 크로싱=출발선
         const lap = tickMs - run.lastTick;
         run.lastTick = tickMs;
@@ -949,7 +1002,7 @@ function validateRecordData(data) {
     return { valid: false, error: "올바르지 않은 기록 데이터입니다." };
   }
 
-  const required = ["time", "type", "entry", "result"];
+  const required = ["time", "type", "entry"];
   for (const field of required) {
     if (data[field] === undefined) {
       return { valid: false, error: `필수 필드가 누락되었습니다: ${field}` };
@@ -960,13 +1013,16 @@ function validateRecordData(data) {
     return { valid: false, error: "올바르지 않은 엔트리 데이터입니다." };
   }
 
-  if (typeof data.result !== "number" || !Number.isInteger(data.result)) {
-    return { valid: false, error: "결과값이 올바르지 않습니다." };
+  const status = data.status == null ? null : data.status;
+  if (status !== null && !RESULT_STATUSES.includes(status)) {
+    return { valid: false, error: "판정은 DNS, DNF, DSQ 또는 비움이어야 합니다." };
   }
-  // 유효 result는 양의 정수(ms 시간/누적 총합) 또는 -1(DNF)뿐. 0이 완주로 취급되면
-  // 점수 계산에서 해당 종목 전 팀 점수가 평탄화되어 붕괴하므로 0·(-1 외 음수)를 거부.
-  if (data.result !== -1 && data.result <= 0) {
-    return { valid: false, error: "결과값은 양의 정수(ms) 또는 -1(DNF)이어야 합니다." };
+  const result = data.result == null ? null : data.result;
+  if (result !== null && (!Number.isInteger(result) || result <= 0)) {
+    return { valid: false, error: "측정시간은 양의 정수(ms) 또는 비움이어야 합니다." };
+  }
+  if (status === null && result === null) {
+    return { valid: false, error: "정상 기록에는 측정시간이 필요합니다." };
   }
   if (data.detail !== undefined && data.detail !== null && typeof data.detail !== "string") {
     return { valid: false, error: "상세 정보가 올바르지 않습니다." };
@@ -1149,12 +1205,24 @@ app.get("/api/records/:name", (req, res) => {
 app.post("/api/records", (req, res) => {
   const nameValidation = validateRecordName(req.body.name);
   if (!nameValidation.valid) {
-    return res.status(400).send(nameValidation.error);
+    return rejectMutation(req, res, {
+      action: "record.create", status: 400, message: nameValidation.error,
+      target: "record", operation: "create",
+      context: { requested_name: req.body?.name ?? null },
+    });
   }
 
   const dataValidation = validateRecordData(req.body.data);
   if (!dataValidation.valid) {
-    return res.status(400).send(dataValidation.error);
+    return rejectMutation(req, res, {
+      action: "record.create", status: 400, message: dataValidation.error,
+      target: nameValidation.value, operation: "create",
+      context: {
+        entry_num: req.body?.data?.entry?.num ?? null,
+        result: req.body?.data?.result ?? null,
+        status: req.body?.data?.status ?? null,
+      },
+    });
   }
 
   const name = `FSK ${currentCompetitionYear()} ${nameValidation.value}`;
@@ -1169,7 +1237,12 @@ app.post("/api/records", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "record.create", { entry_num: data.entry.num, type: data.type, result: data.result }, name);
+  logger.log(req, "record.create", {
+    entry_num: data.entry.num,
+    type: data.type,
+    result: data.result ?? null,
+    status: data.status ?? null,
+  }, name);
 
   // SSE 브로드캐스트
   broadcastEvent("records", {
@@ -1186,7 +1259,11 @@ app.post("/api/records", (req, res) => {
 app.patch("/api/records/:name/:rowid", (req, res) => {
   const validation = validateRecordName(req.params.name);
   if (!validation.valid) {
-    return res.status(400).send(validation.error);
+    return rejectMutation(req, res, {
+      action: "record.update", status: 400, message: validation.error,
+      target: "record", operation: "update",
+      context: { requested_name: req.params.name ?? null, rowid: req.params.rowid ?? null },
+    });
   }
 
   const name = validation.value;
@@ -1203,15 +1280,29 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   const rowid = parseInt(req.params.rowid, 10);
 
   if (isNaN(rowid)) {
-    return res.status(400).send("올바르지 않은 rowid입니다.");
+    return rejectMutation(req, res, {
+      action: "record.update", status: 400, message: "올바르지 않은 rowid입니다.",
+      target: name, operation: "update", context: { rowid: req.params.rowid ?? null },
+    });
   }
   const { field, value } = req.body;
-  if (!["invalidated", "scoreboard", "detail", "cones", "oc", "result"].includes(field)) {
-    return res.status(400).send("올바르지 않은 필드입니다.");
+  if (!["status", "scoreboard", "detail", "cones", "oc", "result"].includes(field)) {
+    return rejectMutation(req, res, {
+      action: "record.update", status: 400, message: "올바르지 않은 필드입니다.",
+      target: name, operation: "update", context: { rowid, field: field ?? null },
+    });
   }
-  // result는 양의 정수(ms/누적 총합) 또는 -1(DNF)만. 0·(-1 외 음수)는 점수 붕괴 유발 → 거부.
-  if (field === "result" && (!Number.isInteger(value) || (value !== -1 && value <= 0))) {
-    return res.status(400).send("결과값은 양의 정수(ms) 또는 -1(DNF)이어야 합니다.");
+  if (field === "status" && value !== null && !RESULT_STATUSES.includes(value)) {
+    return rejectMutation(req, res, {
+      action: "record.update", status: 400, message: "판정은 DNS, DNF, DSQ 또는 비움이어야 합니다.",
+      target: name, operation: "update", context: { rowid, field, requested_status: value ?? null },
+    });
+  }
+  if (field === "result" && value !== null && (!Number.isInteger(value) || value <= 0)) {
+    return rejectMutation(req, res, {
+      action: "record.update", status: 400, message: "측정시간은 양의 정수(ms) 또는 비움이어야 합니다.",
+      target: name, operation: "update", context: { rowid, field, requested_result: value ?? null },
+    });
   }
 
   const preflight = runRecordPreflight(req, res, {
@@ -1230,7 +1321,7 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
       }
       const hasTeamId = db.prepare("PRAGMA table_info(record)").all().some((column) => column.name === "team_id");
       const targetRecord = db.prepare(`
-        SELECT num, invalidated${hasTeamId ? ", team_id" : ""}
+        SELECT num, result, status${hasTeamId ? ", team_id" : ""}
         FROM record WHERE name = ? AND legacy_rowid = ?
       `).get(name, rowid);
       if (!targetRecord) {
@@ -1258,12 +1349,12 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
           },
         };
       }
-      if (field === "invalidated" && targetRecord.invalidated
+      if (field === "status" && targetRecord.status === "DSQ" && value !== "DSQ"
         && !isRecordBoundToActiveTeam(recordYear, targetRecord)) {
         return {
           rejection: {
             status: 409,
-            message: "팀 연결이 없는 레거시 기록은 다시 활성화할 수 없습니다.",
+            message: "팀 연결이 없는 레거시 DSQ 기록은 판정을 변경할 수 없습니다.",
             context: {
               reason_code: "missing_active_canonical_team_binding",
               record_name: name,
@@ -1282,40 +1373,39 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   if (!preflight.ok) return;
 
   const result = dbRun(() => {
-    const row = db.prepare("SELECT num, invalidated, scoreboard, cones, oc FROM record WHERE name = ? AND legacy_rowid = ?").get(name, rowid);
+    const row = db.prepare(`
+      SELECT num, result, status, scoreboard, detail, cones, oc
+      FROM record WHERE name = ? AND legacy_rowid = ?
+    `).get(name, rowid);
     if (!row) {
       const err = new Error("기록을 찾을 수 없습니다.");
       err.status = 404;
       throw err;
     }
 
-    if (field === "invalidated") {
-      const newStatus = row.invalidated ? 0 : 1;
-      if (newStatus === 1) {
-        // 무효화 ON → 전광판도 자동 OFF
-        db.prepare("UPDATE record SET invalidated = 1, scoreboard = 0 WHERE name = ? AND legacy_rowid = ?").run(name, rowid);
-        return { num: row.num, invalidated: 1, scoreboard: 0 };
-      } else {
-        db.prepare("UPDATE record SET invalidated = 0, scoreboard = 1 WHERE name = ? AND legacy_rowid = ?").run(name, rowid);
-        return { num: row.num, invalidated: 0, scoreboard: 1 };
-      }
-    } else if (field === "scoreboard") {
-      const newStatus = row.scoreboard ? 0 : 1;
-      // 무효화된 기록은 전광판에서 자동으로 내려가는데(invalidated ON 시 scoreboard=0),
-      // scoreboard=0 상태를 토글하면 다시 1이 돼 무효 기록이 전광판에 재노출됐다. 차단.
-      if (newStatus === 1 && row.invalidated) {
-        const err = new Error("무효화된 기록은 전광판에 표시할 수 없습니다.");
+    if (field === "status") {
+      if (value === null && row.result == null) {
+        const err = new Error("측정시간이 없는 판정 기록은 정상으로 복원할 수 없습니다. 판정 취소를 사용하세요.");
         err.status = 400;
         throw err;
       }
+      db.prepare("UPDATE record SET status = ? WHERE name = ? AND legacy_rowid = ?").run(value, name, rowid);
+      return { num: row.num, result: row.result, status: value, scoreboard: row.scoreboard };
+    } else if (field === "scoreboard") {
+      const newStatus = row.scoreboard ? 0 : 1;
       db.prepare("UPDATE record SET scoreboard = ? WHERE name = ? AND legacy_rowid = ?").run(newStatus, name, rowid);
-      return { num: row.num, invalidated: row.invalidated, scoreboard: newStatus };
+      return { num: row.num, result: row.result, status: row.status, scoreboard: newStatus };
     } else if (field === "detail") {
       db.prepare("UPDATE record SET detail = ? WHERE name = ? AND legacy_rowid = ?").run(value ?? null, name, rowid);
-      return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, detail: value ?? null };
+      return { num: row.num, result: row.result, status: row.status, scoreboard: row.scoreboard, detail: value ?? null };
     } else if (field === "result") {
+      if (value === null && row.status === null) {
+        const err = new Error("정상 기록의 측정시간은 비울 수 없습니다.");
+        err.status = 400;
+        throw err;
+      }
       db.prepare("UPDATE record SET result = ? WHERE name = ? AND legacy_rowid = ?").run(value, name, rowid);
-      return { num: row.num, invalidated: row.invalidated, scoreboard: row.scoreboard, result: value };
+      return { num: row.num, result: value, status: row.status, scoreboard: row.scoreboard };
     } else if (field === "cones") {
       const numValue = Math.max(0, parseInt(value, 10) || 0);
       db.prepare("UPDATE record SET cones = ? WHERE name = ? AND legacy_rowid = ?").run(numValue, name, rowid);
@@ -1328,11 +1418,44 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   });
 
   if (!result.success) {
-    logger.warn(req, "record.update", { error: result.internalError || result.error }, name);
+    logger.warn(req, "record.update", {
+      error: result.internalError || result.error,
+      rowid,
+      field,
+      requested_value: value ?? null,
+    }, name);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "record.update", { entry_num: result.result.num, field, ...result.result }, name);
+  const updateAudit = { entry_num: result.result.num, rowid, field, ...result.result };
+  if (field === "status") {
+    updateAudit.before = { result: preflight.value.result, status: preflight.value.status };
+    updateAudit.after = { result: result.result.result, status: result.result.status };
+  }
+  logger.log(req, "record.update", updateAudit, name);
+
+  if (field === "status") {
+    // Quick edit uses the generic record PATCH route. If the row belongs to a
+    // live wireless run (notably a partial endurance record), finalize the
+    // server-side engine too so later sensor packets cannot mutate raw timing.
+    const sessionLookup = dbRun(() => db.prepare(`
+        SELECT event_type, run_id FROM wireless_session
+        WHERE saved_record_name = ? AND saved_record_rowid = ?
+      `).all(name, rowid));
+    if (!sessionLookup.success) {
+      logger.warn(req, "record.update", {
+        error: sessionLookup.internalError || sessionLookup.error,
+        rowid,
+        field,
+        phase: "wireless_engine_finalize",
+      }, name);
+    } else {
+      for (const session of sessionLookup.result) {
+        const run = engineRun.get(session.event_type);
+        if (run && run.runId === session.run_id) run.saved = true;
+      }
+    }
+  }
 
   // SSE 브로드캐스트 (업데이트된 전체 행 포함)
   try {
@@ -1343,6 +1466,104 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   }
 
   res.json(result.result);
+});
+
+// DELETE /api/records/:name/:rowid - 시간 없는 판정 전용 행 취소.
+// 측정 원시값이 있는 행은 상태로 보존해야 하므로 이 경로에서 삭제하지 않는다.
+app.delete("/api/records/:name/:rowid", (req, res) => {
+  const validation = validateRecordName(req.params.name);
+  if (!validation.valid) {
+    return rejectMutation(req, res, {
+      action: "record.row_delete", status: 400, message: validation.error,
+      target: "record", operation: "delete_status_only_row",
+      context: { requested_name: req.params.name ?? null, rowid: req.params.rowid ?? null },
+    });
+  }
+  const name = validation.value;
+  const recordYear = recordYearFromName(name);
+  if (recordYear == null) {
+    return rejectMutation(req, res, {
+      action: "record.row_delete", status: 400, message: "기록 이름에서 대회 연도를 확인할 수 없습니다.",
+      target: name, operation: "delete_status_only_row",
+    });
+  }
+  if (recordYear !== currentRecordYear()) {
+    return rejectMutation(req, res, {
+      action: "record.row_delete", status: 409, message: "현재 연도의 기록만 수정할 수 있습니다.",
+      target: name, operation: "delete_status_only_row", context: { record_year: recordYear },
+    });
+  }
+  const rowid = Number.parseInt(req.params.rowid, 10);
+  if (!Number.isInteger(rowid)) {
+    return rejectMutation(req, res, {
+      action: "record.row_delete", status: 400, message: "올바르지 않은 rowid입니다.",
+      target: name, operation: "delete_status_only_row", context: { rowid: req.params.rowid ?? null },
+    });
+  }
+
+  const hasTeamId = db.prepare("PRAGMA table_info(record)").all().some((column) => column.name === "team_id");
+  const preflight = runRecordPreflight(req, res, {
+    action: "record.row_delete",
+    operation: "delete_status_only_row",
+    target: name,
+    lookup: () => {
+      const row = db.prepare(`
+        SELECT num, result, status${hasTeamId ? ", team_id" : ""}
+        FROM record WHERE name = ? AND legacy_rowid = ?
+      `).get(name, rowid);
+      if (!row) return { rejection: { status: 404, message: "기록을 찾을 수 없습니다.", context: { rowid } } };
+      if (!isTeamActive(db, recordYear, row.num)) {
+        return { rejection: { status: 409, message: "비활성화된 엔트리의 기록은 수정할 수 없습니다.", context: { year: recordYear, team_num: row.num, rowid } } };
+      }
+      if (row.result != null) {
+        return { rejection: { status: 409, message: "측정시간이 있는 기록은 삭제할 수 없습니다. 판정을 변경하세요.", context: { rowid, result: row.result, status: row.status } } };
+      }
+      return { value: row };
+    },
+  });
+  if (!preflight.ok) return;
+
+  const result = dbRun(() => db.transaction(() => {
+    const before = getRecordRow(name, rowid);
+    if (!before) {
+      const error = new Error("기록을 찾을 수 없습니다.");
+      error.status = 404;
+      throw error;
+    }
+    const affectedSessions = db.prepare(`
+      SELECT event_type, run_id FROM wireless_session
+      WHERE saved_record_name = ? AND saved_record_rowid = ?
+    `).all(name, rowid);
+    const deleted = db.prepare("DELETE FROM record WHERE name = ? AND legacy_rowid = ?").run(name, rowid).changes;
+    if (deleted !== 1) throw new Error("기록 삭제 대상이 변경되었습니다.");
+    db.prepare(`
+      UPDATE wireless_session
+      SET saved_record_name = NULL, saved_record_rowid = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE saved_record_name = ? AND saved_record_rowid = ?
+    `).run(name, rowid);
+    if (!recordFileExists(name)) db.prepare("DELETE FROM record_visibility WHERE name = ?").run(name);
+    return { before, affectedSessions };
+  })());
+  if (!result.success) {
+    logger.warn(req, "record.row_delete", { error: result.internalError || result.error, rowid }, name);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, "record.row_delete", { rowid, before: result.result.before }, name);
+  for (const { event_type: eventType, run_id: runId } of result.result.affectedSessions) {
+    const run = engineRun.get(eventType);
+    if (run && run.runId === runId && run.recordName === name && run.recordRowid === rowid) {
+      run.recordName = null;
+      run.recordRowid = null;
+      run.saved = false;
+    }
+    broadcastEvent("wireless:session", getSession(eventType));
+  }
+  broadcastEvent("records", {
+    type: "remove", name, rowid, recordFiles: getRecordFiles(), record: result.result.before,
+  });
+  res.json({ name, rowid, deleted: true });
 });
 
 // DELETE /api/records/:name - 기록 테이블 삭제
@@ -1969,9 +2190,22 @@ app.post("/api/wireless/select", (req, res) => {
   }
   const team = v.team != null ? JSON.stringify(v.team) : null;
   const event_name = v.event_name;
+  const selectionChanged = (sess?.event_name ?? null) !== event_name
+    || Number(sess?.team?.teamId ?? sess?.team?.id ?? 0) !== Number(v.team?.teamId ?? v.team?.id ?? 0)
+    || Number(sess?.team?.num ?? 0) !== Number(v.team?.num ?? 0);
   const result = dbRun(() => {
-    db.prepare("UPDATE wireless_session SET team_json = ?, event_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-      .run(team, event_name, event_type);
+    if (selectionChanged && !sess?.armed) {
+      db.prepare(`
+        UPDATE wireless_session
+        SET team_json = ?, event_name = ?, run_id = NULL,
+            saved_record_name = NULL, saved_record_rowid = NULL,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type = ?
+      `).run(team, event_name, event_type);
+    } else {
+      db.prepare("UPDATE wireless_session SET team_json = ?, event_name = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+        .run(team, event_name, event_type);
+    }
     return getSession(event_type);
   });
   if (!result.success) {
@@ -1983,23 +2217,32 @@ app.post("/api/wireless/select", (req, res) => {
     before: { team: sess?.team ?? null, event_name: sess?.event_name ?? null },
     after: { team: result.result?.team ?? null, event_name: result.result?.event_name ?? null },
   }, event_type);
+  if (selectionChanged && !sess?.armed) engineRun.delete(event_type);
   broadcastEvent("wireless:session", result.result);
   res.json(result.result);
 });
 
-// POST /api/wireless/dnf - 진행 경기 DNF 기록(result -1). 세션 선택 정보(team·event_name)로 귀속.
-app.post("/api/wireless/dnf", (req, res) => {
-  const { event_type } = req.body || {};
+// POST /api/wireless/status - 현재 선택/런을 DNS·DNF·DSQ로 확정한다.
+// arm 단계와 무관하게 허용하되, 저장된/부분 행이 있으면 같은 행을 갱신해 중복 시도를 만들지 않는다.
+app.post("/api/wireless/status", (req, res) => {
+  const { event_type, status } = req.body || {};
   if (typeof event_type !== "string" || !EVENT_TYPES.includes(event_type)) {
     return rejectMutation(req, res, {
-      action: "wireless.dnf", status: 400, message: "올바르지 않은 종목입니다.",
-      target: typeof event_type === "string" ? event_type : "wireless", operation: "dnf",
-      context: { event_type: event_type ?? null },
+      action: "wireless.status", status: 400, message: "올바르지 않은 종목입니다.",
+      target: typeof event_type === "string" ? event_type : "wireless", operation: "classify",
+      context: { event_type: event_type ?? null, requested_status: status ?? null },
+    });
+  }
+  if (!RESULT_STATUSES.includes(status)) {
+    return rejectMutation(req, res, {
+      action: "wireless.status", status: 400, message: "판정은 DNS, DNF, DSQ 중 하나여야 합니다.",
+      target: typeof event_type === "string" ? event_type : "wireless", operation: "classify",
+      context: { event_type: event_type ?? null, requested_status: status ?? null },
     });
   }
   const sessionPreflight = runMutationPreflight(req, res, {
-    action: "wireless.dnf", operation: "dnf", target: event_type,
-    context: { event_type }, lookup: () => getSession(event_type),
+    action: "wireless.status", operation: "classify", target: event_type,
+    context: { event_type, requested_status: status }, lookup: () => getSession(event_type),
     failureMessage: "무선 세션 상태를 확인할 수 없습니다.",
   });
   if (!sessionPreflight.ok) return;
@@ -2008,68 +2251,124 @@ app.post("/api/wireless/dnf", (req, res) => {
   if (sess?.controller && sess.controller !== actor) {
     const message = `다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`;
     return rejectMutation(req, res, {
-      action: "wireless.dnf", status: 409, message, target: event_type, operation: "dnf",
-      context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor, team: sess.team ?? null },
+      action: "wireless.status", status: 409, message, target: event_type, operation: "classify",
+      context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor, team: sess.team ?? null, requested_status: status },
     });
   }
   if (!sess?.event_name || !sess?.team) {
     return rejectMutation(req, res, {
-      action: "wireless.dnf", status: 400, message: "이벤트 이름과 팀을 먼저 선택하세요.",
-      target: event_type, operation: "dnf", context: { event_type, team: sess?.team ?? null, event_name: sess?.event_name ?? null },
+      action: "wireless.status", status: 400, message: "이벤트 이름과 팀을 먼저 선택하세요.",
+      target: event_type, operation: "classify", context: { event_type, team: sess?.team ?? null, event_name: sess?.event_name ?? null, requested_status: status },
     });
   }
-  if (!sess.armed) {
-    return rejectMutation(req, res, {
-      action: "wireless.dnf", status: 400, message: "arm(녹색등)되지 않은 경기는 DNF 기록할 수 없습니다.",
-      target: event_type, operation: "dnf", context: { event_type, team: sess.team, event_name: sess.event_name },
-    });
-  }
-  // 이미 그 런에서 결과가 저장됐으면 DNF 이중 기록 금지.
   let run = engineRun.get(event_type);
-  if (run?.saved) {
-    return rejectMutation(req, res, {
-      action: "wireless.dnf", status: 409, message: "이미 기록이 저장된 경기입니다.",
-      target: event_type, operation: "dnf", context: { event_type, run_id: run.runId ?? sess.run_id ?? null, team: run.bound?.team ?? sess.team },
-    });
+  let selectionChanged = false;
+  if (run && !sess.armed) {
+    const boundTeam = run.bound?.team;
+    selectionChanged = run.bound?.event_name !== sess.event_name
+      || Number(boundTeam?.teamId ?? boundTeam?.id ?? 0) !== Number(sess.team?.teamId ?? sess.team?.id ?? 0)
+      || Number(boundTeam?.num ?? 0) !== Number(sess.team?.num ?? 0);
+    if (selectionChanged) run = null;
   }
-  // 내구는 이미 랩을 이어붙인 누적 행(run.recordRowid)이 있으면 그 행의 result를 -1로 UPDATE한다
-  // — 별도 DNF 행을 INSERT하면 누적 행과 공존해 이중 기록이 된다. 그 외 종목/누적 행 없으면 신규 -1.
-  // DNF는 사용자 요청 파괴적 조작(result → -1)이므로 로그를 요청자에게 귀속한다(system 아님).
-  let ok;
-  if (event_type === "내구" && run?.recordRowid != null && run?.recordName) {
-    const r = dbRun(() => {
-      db.prepare("UPDATE record SET result = ? WHERE name = ? AND legacy_rowid = ?").run(-1, run.recordName, run.recordRowid);
-      return getRecordRow(run.recordName, run.recordRowid);
+  let runId = selectionChanged ? null : (run?.runId ?? sess.run_id ?? null);
+  if (!run && sess.run_id && sess.saved_record_name
+    && !getRecordRow(sess.saved_record_name, sess.saved_record_rowid)) runId = null;
+  if (!runId) {
+    runId = crypto.randomUUID();
+    const initialized = dbRun(() => {
+      db.prepare(`
+        UPDATE wireless_session
+        SET run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL,
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type = ?
+      `).run(runId, event_type);
     });
-    ok = r.success;
-    if (ok) {
-      logger.log(req, "wireless.record", { type: event_type, result: -1, dnf: true, num: r.result.num }, run.recordName);
-      broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result, event_type, run_id: run.runId ?? null });
-    } else {
-      logger.warn(req, "wireless.record", { error: r.internalError || r.error, event_type }, run.recordName);
+    if (!initialized.success) {
+      logger.warn(req, "wireless.status", { error: initialized.internalError || initialized.error, event_type, status }, event_type);
+      return res.status(initialized.status).send(initialized.error);
     }
-  } else {
-    // 귀속은 arm 스냅샷(run.bound) 우선, 없으면 live 세션.
-    ok = engineSaveRecord(event_type, run?.bound || sess, -1, null, { req });
+    resetEngineRun(event_type, { team: sess.team, event_name: sess.event_name }, runId);
+    run = engineRun.get(event_type);
+  } else if (!run) {
+    resetEngineRun(event_type, { team: sess.team, event_name: sess.event_name }, runId);
+    run = engineRun.get(event_type);
   }
-  if (!ok) {
-    return rejectMutation(req, res, {
-      action: "wireless.dnf", status: 500, message: "DNF 기록 저장에 실패했습니다.",
-      target: event_type, operation: "dnf", context: { event_type, team: run?.bound?.team ?? sess.team, event_name: run?.bound?.event_name ?? sess.event_name },
+
+  let targetName = run?.recordName ?? sess.saved_record_name ?? null;
+  let targetRowid = run?.recordRowid ?? sess.saved_record_rowid ?? null;
+  if (targetName && targetRowid != null && !getRecordRow(targetName, targetRowid)) {
+    targetName = null;
+    targetRowid = null;
+    run.recordName = null;
+    run.recordRowid = null;
+    run.saved = false;
+  }
+  let saved;
+  if (targetName && targetRowid != null) {
+    const targetYear = recordYearFromName(targetName);
+    const targetRecord = getRecordRow(targetName, targetRowid);
+    if (targetYear !== currentRecordYear() || !targetRecord || !isTeamActive(db, targetYear, targetRecord.num)) {
+      return rejectMutation(req, res, {
+        action: "wireless.status", status: 409,
+        message: "현재 연도의 활성 팀 기록만 판정할 수 있습니다.",
+        target: targetName, operation: "classify",
+        context: { event_type, requested_status: status, record_name: targetName, record_rowid: targetRowid, record_year: targetYear },
+      });
+    }
+    const r = dbRun(() => {
+      const before = getRecordRow(targetName, targetRowid);
+      if (!before) {
+        const error = new Error("현재 런의 저장 기록을 찾을 수 없습니다.");
+        error.status = 404;
+        throw error;
+      }
+      db.prepare("UPDATE record SET status = ? WHERE name = ? AND legacy_rowid = ?").run(status, targetName, targetRowid);
+      db.prepare(`
+        UPDATE wireless_session
+        SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE event_type = ? AND run_id = ?
+      `).run(targetName, targetRowid, event_type, runId);
+      return { before, after: getRecordRow(targetName, targetRowid) };
     });
+    if (!r.success) {
+      logger.warn(req, "wireless.record", { error: r.internalError || r.error, event_type, status, run_id: runId }, targetName);
+      return res.status(r.status).send(r.error);
+    }
+    saved = { name: targetName, record: r.result.after };
+    logger.log(req, "wireless.record", {
+      type: event_type, run_id: runId, num: r.result.after.num,
+      before: { result: r.result.before.result, status: r.result.before.status },
+      after: { result: r.result.after.result, status: r.result.after.status },
+    }, targetName);
+    broadcastEvent("records", {
+      type: "update", name: targetName, field: "status", recordFiles: getRecordFiles(),
+      record: r.result.after, event_type, run_id: runId,
+    });
+  } else {
+    saved = engineSaveRecord(event_type, run?.bound || sess, null, null, { req }, status);
+    if (!saved) {
+      return rejectMutation(req, res, {
+        action: "wireless.status", status: 500, message: `${status} 판정 저장에 실패했습니다.`,
+        target: event_type, operation: "classify",
+        context: { event_type, status, team: run?.bound?.team ?? sess.team, event_name: run?.bound?.event_name ?? sess.event_name },
+      });
+    }
+    run.recordName = saved.name;
+    run.recordRowid = saved.record.rowid;
   }
-  // 늦게 도착하는 도착 센서가 이중 저장하지 않도록 런을 저장됨으로 표시.
-  // 서버 재기동 등으로 런이 비어 있으면 생성 후 표시 — 안 하면 뒤이은 센서가 새 런을
-  // 만들어 실기록을 추가 저장(DNF + 실기록 이중 저장)할 수 있다.
-  if (!run) { resetEngineRun(event_type, null, sess.run_id); run = engineRun.get(event_type); }
   run.saved = true;
-  logger.log(req, "wireless.dnf", {
+  logger.log(req, "wireless.status", {
     event_type,
-    run_id: run.runId ?? sess.run_id ?? null,
+    status,
+    run_id: runId,
     team: run.bound?.team ?? sess.team,
     event_name: run.bound?.event_name ?? sess.event_name,
+    record_name: saved.name,
+    record_rowid: saved.record.rowid,
   }, event_type);
-  res.json({ ok: true });
+  const session = getSession(event_type);
+  broadcastEvent("wireless:session", session);
+  res.json({ name: saved.name, record: saved.record, session });
 });
 
 // POST /api/wireless/command - 비-브리지 컨트롤러가 물리 신호등(SSR)을 원격 제어. 서버가 브리지로

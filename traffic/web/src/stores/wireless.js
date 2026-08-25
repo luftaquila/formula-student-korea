@@ -13,7 +13,7 @@ import {
   releaseWirelessLease,
   fetchServerTime,
   selectWirelessEvent,
-  dnfWirelessEvent,
+  statusWirelessEvent,
   commandWirelessPhysical,
 } from "../composables/useApi";
 import {
@@ -672,8 +672,8 @@ export const useWirelessStore = defineStore("wireless", () => {
         if (!holdsLease(mode)) return;
         selectWirelessEvent({ event_type: EVENT_TYPE[mode], team: team || null, event_name: eventName || null }).catch(() => {});
       },
-      // DNF는 서버가 저장(세션 선택 정보로 귀속).
-      dnf: () => dnfWirelessEvent(EVENT_TYPE[mode]),
+      // 판정은 서버가 저장한다(세션 선택 정보로 귀속).
+      setStatus: (status) => statusWirelessEvent(EVENT_TYPE[mode], status),
       // 디바운스는 routeSensor가 tick 기준으로 직접 처리. 뷰 호환용 no-op.
       setSensorCooldown: () => {},
       // 매뉴얼 모드는 무선에서 미사용(컨트롤러 카드 숨김). 인터페이스 호환용 no-op.

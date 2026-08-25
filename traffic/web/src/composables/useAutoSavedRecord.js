@@ -97,6 +97,10 @@ export function useAutoSavedRecord({
       update.name === recentRecord.value.name &&
       update.record.rowid === recentRecord.value.rowid
     ) {
+      if (update.type === "remove") {
+        clearRecord();
+        return;
+      }
       mergeRecord(update.record);
       return;
     }
@@ -135,6 +139,7 @@ export function useAutoSavedRecord({
   return {
     recentRecord,
     captureRecord,
+    adoptRecord: assignRecord,
     mergeRecord,
     clearRecord,
     beginRun,

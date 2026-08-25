@@ -135,26 +135,25 @@ test.describe("Traffic record management", () => {
     await expect(reloadedTable.locator("tbody").locator("tr").filter({ hasText: "서울대학교" }).locator(".penalty-cell").nth(1).locator(".penalty-text")).toHaveText(String(newOc));
   });
 
-  test("toggles invalidation on a record", async ({ page }) => {
+  test("classifies and restores a timed record", async ({ page }) => {
     const fileSelect = page.locator(".file-toolbar .form-select");
     await fileSelect.selectOption(`FSK ${YEAR} E2E-Records`);
 
     const table = page.locator(".data-table");
     await expect(table).toBeVisible({ timeout: 5000 });
 
-    // Click invalidate button on the second record
+    // Classify the second record as DSQ.
     const secondRow = table.locator("tbody tr").nth(1);
-    const invalidateBtn = secondRow.locator(".btn-invalidate");
-    await invalidateBtn.click();
+    const dsqButton = secondRow.locator('[data-status="DSQ"]');
+    await dsqButton.click();
 
-    // Row should now have is-invalidated class
-    await expect(secondRow).toHaveClass(/is-invalidated/);
+    await expect(secondRow).toHaveClass(/is-dsq/);
+    await expect(dsqButton).toHaveAttribute("aria-pressed", "true");
 
-    // Toggle it back (restore)
-    await invalidateBtn.click();
+    // A timed row can be restored to normal without losing its raw result.
+    await secondRow.locator('[data-status="normal"]').click();
 
-    // Row should no longer have is-invalidated class
-    await expect(secondRow).not.toHaveClass(/is-invalidated/);
+    await expect(secondRow).not.toHaveClass(/is-dsq/);
   });
 
   test("adds a manual record via the add form", async ({ page }) => {

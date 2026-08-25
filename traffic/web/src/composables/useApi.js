@@ -39,6 +39,13 @@ export async function deleteRecord(name) {
   });
 }
 
+export async function deleteRecordRow(name, rowid) {
+  const res = await request(`/api/records/${encodeURIComponent(name)}/${rowid}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
 export async function updateRecord(name, rowid, field, value) {
   const res = await request(`/api/records/${encodeURIComponent(name)}/${rowid}`, {
     method: "PATCH",
@@ -179,9 +186,12 @@ export async function selectWirelessEvent(body) {
   return res.json();
 }
 
-// DNF 기록(서버 저장). 세션 선택 정보로 귀속.
-export async function dnfWirelessEvent(eventType) {
-  const res = await ctrlRequest("/api/wireless/dnf", { method: "POST", body: JSON.stringify({ event_type: eventType }) });
+// 현재 무선 런의 DNS/DNF/DSQ 판정을 저장한다. 세션 선택 정보로 귀속된다.
+export async function statusWirelessEvent(eventType, status) {
+  const res = await ctrlRequest("/api/wireless/status", {
+    method: "POST",
+    body: JSON.stringify({ event_type: eventType, status }),
+  });
   return res.json();
 }
 

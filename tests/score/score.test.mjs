@@ -23,9 +23,9 @@ let mockEntryRequestCount = 0;
 let mockEntryTeamName = '팀A';
 
 const mainRecords = [
-  { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-  { rowid: 2, time: '2026-01-01T10:05:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 48000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
-  { rowid: 3, time: '2026-01-01T10:10:00', num: 2, univ: '카이스트', team: '팀B', type: '가속', result: 52000, cones: 0, oc: 1, invalidated: 0, scoreboard: 1 },
+  { rowid: 1, time: '2026-01-01T10:00:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 50000, status: null, cones: 0, oc: 0, scoreboard: 1 },
+  { rowid: 2, time: '2026-01-01T10:05:00', num: 1, univ: '서울대', team: '팀A', type: '가속', result: 48000, status: null, cones: 1, oc: 0, scoreboard: 1 },
+  { rowid: 3, time: '2026-01-01T10:10:00', num: 2, univ: '카이스트', team: '팀B', type: '가속', result: 52000, status: null, cones: 0, oc: 1, scoreboard: 1 },
 ];
 const richTemplate = [{
   id: 100, year: 2026, level: 'category', name: '코너웨이트', sort_order: 0,
@@ -52,6 +52,7 @@ function teamEntries(year, rich = false) {
     2: { id: 2, num: 2, univ: '카이스트', team: '팀B', type: energyIntegration ? 'E-Formula' : 'EV', active: true },
   };
   if (rich) entries[3] = { id: 3, num: 3, univ: '연세대', team: '팀C', type: 'EV', active: true };
+  if (rich) entries[4] = { id: 4, num: 4, univ: '한양대', team: '팀D', type: 'EV', active: true };
   return entries;
 }
 
@@ -68,23 +69,25 @@ function createCompetitionQueries({ rich = false, records = null, modes = null }
       {
         name: `FSK ${year} 가속 1차`,
         records: [
-          { rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 1, oc: 0, invalidated: 0, scoreboard: 1 },
-          { rowid: 2, time: 'T2', num: 2, univ: 'B', team: 'B', type: '가속', result: 48000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
-          { rowid: 3, time: 'T3', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+          { rowid: 1, time: '2026-01-01T10:00:00Z', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, status: null, cones: 1, oc: 0, scoreboard: 1 },
+          { rowid: 2, time: '2026-01-01T10:01:00Z', num: 2, univ: 'B', team: 'B', type: '가속', result: 48000, status: 'DNF', cones: 0, oc: 0, scoreboard: 0 },
+          { rowid: 3, time: '2026-01-01T10:02:00Z', num: 3, univ: 'C', team: 'C', type: '가속', result: null, status: 'DNF', cones: 0, oc: 0, scoreboard: 1 },
         ],
       },
       {
         name: `FSK ${year} 가속 2차`,
         records: [
-          { rowid: 4, time: 'T4', num: 1, univ: 'A', team: 'A', type: '가속', result: 55000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
-          { rowid: 5, time: 'T5', num: 2, univ: 'B', team: 'B', type: '가속', result: 49000, cones: 0, oc: 0, invalidated: 1, scoreboard: 0 },
-          { rowid: 6, time: 'T6', num: 3, univ: 'C', team: 'C', type: '가속', result: -1, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+          { rowid: 4, time: '2026-01-01T10:03:00Z', num: 1, univ: 'A', team: 'A', type: '가속', result: 55000, status: null, cones: 0, oc: 0, scoreboard: 1 },
+          { rowid: 5, time: '2026-01-01T10:04:00Z', num: 2, univ: 'B', team: 'B', type: '가속', result: 49000, status: 'DSQ', cones: 0, oc: 0, scoreboard: 0 },
+          { rowid: 6, time: '2026-01-01T10:05:00Z', num: 3, univ: 'C', team: 'C', type: '가속', result: null, status: 'DNF', cones: 0, oc: 0, scoreboard: 1 },
+          { rowid: 8, time: '2026-01-01T10:06:00Z', num: 2, univ: 'B', team: 'B', type: '가속', result: null, status: 'DNS', cones: 0, oc: 0, scoreboard: 1 },
+          { rowid: 9, time: '2026-01-01T10:07:00Z', num: 4, univ: 'D', team: 'D', type: '가속', result: null, status: 'DNS', cones: 0, oc: 0, scoreboard: 1 },
         ],
       },
       {
         name: `FSK ${year} 스키드패드`,
         records: [
-          { rowid: 7, time: 'T7', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 30000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 },
+          { rowid: 7, time: '2026-01-01T10:06:00Z', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 30000, status: null, cones: 0, oc: 0, scoreboard: 1 },
         ],
       },
     ] : [{ name: `FSK ${year} 가속 1차`, records: mainRecords }],
@@ -684,7 +687,7 @@ describe('GET /api/score', () => {
 // ─── Endurance calculation in aggregation ────────────────────────────────
 
 describe('Endurance calculation in aggregation', () => {
-  it('DNS entry excluded from endurance results', async () => {
+  it('DNS entry is represented explicitly without a result', async () => {
     // Set team 2 status to DNS
     await client.put('/api/score/endurance', {
       cookie: adminCookie,
@@ -696,10 +699,11 @@ describe('Endurance calculation in aggregation', () => {
     const data = await res.json();
     const endurance = data.events.find(e => e.type === '내구');
     assert.ok(endurance, '내구 event should exist');
-    assert.equal(endurance.records[2], undefined, 'DNS entry should be excluded');
+    assert.equal(endurance.records[2].result, null);
+    assert.equal(endurance.records[2].status, 'DNS');
   });
 
-  it('DNF entry has result -1', async () => {
+  it('DNF entry has an explicit status and no result sentinel', async () => {
     // Set team 2 status to DNF
     await client.put('/api/score/endurance', {
       cookie: adminCookie,
@@ -712,10 +716,11 @@ describe('Endurance calculation in aggregation', () => {
     const endurance = data.events.find(e => e.type === '내구');
     assert.ok(endurance, '내구 event should exist');
     assert.ok(endurance.records[2], 'DNF entry should be present');
-    assert.equal(endurance.records[2].result, -1, 'DNF should have result -1');
+    assert.equal(endurance.records[2].result, null);
+    assert.equal(endurance.records[2].status, 'DNF');
   });
 
-  it('DSQ entry has result -1', async () => {
+  it('DSQ entry has an explicit status and no result sentinel', async () => {
     // Set team 2 status to DSQ
     await client.put('/api/score/endurance', {
       cookie: adminCookie,
@@ -728,7 +733,8 @@ describe('Endurance calculation in aggregation', () => {
     const endurance = data.events.find(e => e.type === '내구');
     assert.ok(endurance, '내구 event should exist');
     assert.ok(endurance.records[2], 'DSQ entry should be present');
-    assert.equal(endurance.records[2].result, -1, 'DSQ should have result -1');
+    assert.equal(endurance.records[2].result, null);
+    assert.equal(endurance.records[2].status, 'DSQ');
   });
 
   it('calculates normal endurance time with all components', async () => {
@@ -984,7 +990,7 @@ describe('Public score publication', () => {
     assert.deepEqual(data.entries['1'], { univ: '서울대', team: '팀A', type: 'EV' });
     assert.equal(data.events.some((event) => event.type === '내구'), false);
     assert.ok(data.events.some((event) => event.type === '가속'));
-    assert.deepEqual(Object.keys(data.events.find((event) => event.type === '가속').records['1']), ['result']);
+    assert.deepEqual(Object.keys(data.events.find((event) => event.type === '가속').records['1']), ['result', 'status']);
 
     const cached = await client.get('/api/score/public/2026');
     assert.equal(cached.status, 200);
@@ -1096,24 +1102,38 @@ describe('Score aggregation business logic', () => {
     assert.ok(accel.records[1].allRuns.length >= 2, 'team 1 should have runs from multiple tables');
   });
 
-  it('excludes all-invalidated records (result: null)', async () => {
+  it('keeps the most recent DSQ when no normal finish exists', async () => {
     const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
     const data = await res.json();
 
     const accel = data.events.find(e => e.type === '가속');
-    // Team 2: both runs are invalidated → result should be null
+    // Team 2: the newer DSQ wins over an older DNF, while a later DNS is ignored;
+    // raw measured times and every status stay in allRuns.
     assert.ok(accel.records[2], 'team 2 should exist');
-    assert.equal(accel.records[2].result, null, 'all-invalidated should have result null');
+    assert.equal(accel.records[2].result, null);
+    assert.equal(accel.records[2].status, 'DSQ');
+    assert.deepEqual(accel.records[2].allRuns.map((run) => run.result), [48000, 49000, null]);
   });
 
-  it('all-DNF valid runs produce result -1', async () => {
+  it('all-DNF runs produce an explicit DNF without a result sentinel', async () => {
     const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
     const data = await res.json();
 
     const accel = data.events.find(e => e.type === '가속');
-    // Team 3: both runs are DNF (result < 0) but not invalidated → result: -1
+    // Team 3: both runs are DNF.
     assert.ok(accel.records[3], 'team 3 should exist');
-    assert.equal(accel.records[3].result, -1, 'all-DNF should have result -1');
+    assert.equal(accel.records[3].result, null);
+    assert.equal(accel.records[3].status, 'DNF');
+  });
+
+  it('all-DNS runs produce DNS with no scoreable result', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    const data = await res.json();
+
+    const accel = data.events.find(e => e.type === '가속');
+    assert.ok(accel.records[4], 'team 4 should exist');
+    assert.equal(accel.records[4].result, null);
+    assert.equal(accel.records[4].status, 'DNS');
   });
 
   it('excludes disabled event modes from events', async () => {
@@ -1161,7 +1181,7 @@ describe('Score aggregation over the pre-filtered traffic year response', () => 
     const competitionQueries = createCompetitionQueries({
       records: (year) => [{
         name: `FSK ${year} 가속 1차`,
-        records: [{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, cones: 0, oc: 0, invalidated: 0, scoreboard: 1 }],
+        records: [{ rowid: 1, time: 'T1', num: 1, univ: 'A', team: 'A', type: '가속', result: 50000, status: null, cones: 0, oc: 0, scoreboard: 1 }],
       }],
       modes: [{ event_type: '가속', enabled: 1 }],
     });

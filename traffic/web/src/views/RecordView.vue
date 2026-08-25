@@ -4,6 +4,7 @@ import {
   fetchRecord,
   fetchControllers,
   deleteRecord,
+  deleteRecordRow,
   deleteControllers,
   updateRecord,
   addRecord,
@@ -16,6 +17,7 @@ import { useSSE } from "../composables/useSSE";
 import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
 import { useRoute } from "vue-router";
+import RecordStatusControl from "../components/RecordStatusControl.vue";
 
 
 const { notyf } = useNotification();
@@ -39,7 +41,12 @@ const showAddForm = ref(false);
 const addType = ref(EVENT_TYPES[0]);
 const addEntry = ref(null);
 const addResult = ref("");
+const addStatus = ref(null);
 const addDetail = ref("");
+const addResultValue = computed(() => {
+  const value = Number(addResult.value);
+  return addResult.value !== "" && Number.isInteger(value) && value > 0 ? value : null;
+});
 
 // 인라인 편집 상태
 const editingDetailId = ref(null);
@@ -162,6 +169,8 @@ watch(lastUpdate, (update) => {
     } else {
       refreshRecords();
     }
+  } else if (update.type === "remove" && update.record) {
+    records.value = records.value.filter((record) => record.rowid !== update.record.rowid);
   } else if (update.type === "delete") {
     if (!recordFiles.value.includes(selectedFile.value)) {
       selectedFile.value = null;
@@ -243,17 +252,17 @@ function downloadCSV() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "팀", "경기", "기록", "콘터치", "코스 이탈", "상세", "무효화", "전광판"];
+    headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
       `${r.univ} ${r.team}`,
       r.type,
       formatResult(r.result),
+      r.status || "정상",
       r.cones || 0,
       r.oc || 0,
       r.detail || "",
-      r.invalidated ? "Y" : "N",
       r.scoreboard ? "Y" : "N",
     ]);
   }
@@ -281,17 +290,17 @@ async function downloadXLSX() {
     headers = ["시간", "데이터"];
     rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
   } else {
-    headers = ["시간", "엔트리", "팀", "경기", "기록", "콘터치", "코스 이탈", "상세", "무효화", "전광판"];
+    headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
     rows = sortedRecords.value.map((r) => [
       formatTime(r.time),
       r.num,
       `${r.univ} ${r.team}`,
       r.type,
       formatResult(r.result),
+      r.status || "정상",
       r.cones || 0,
       r.oc || 0,
       r.detail || "",
-      r.invalidated ? "Y" : "N",
       r.scoreboard ? "Y" : "N",
     ]);
   }
@@ -340,7 +349,7 @@ function formatTime(time) {
 }
 
 function formatResult(result) {
-  if (result < 0) return "DNF";
+  if (!Number.isInteger(result) || result <= 0) return "—";
   return msToClockStr(result);
 }
 
@@ -353,17 +362,28 @@ function getTypeClass(type) {
 function applyUpdateResult(record, result) {
   const idx = records.value.findIndex((r) => r.rowid === record.rowid);
   if (idx !== -1) {
-    records.value[idx].invalidated = result.invalidated;
-    records.value[idx].scoreboard = result.scoreboard;
+    records.value[idx] = { ...records.value[idx], ...result };
+    records.value = [...records.value];
   }
 }
 
-async function handleInvalidate(record) {
+async function handleStatus(record, status) {
   try {
-    const result = await updateRecord(selectedFile.value, record.rowid, "invalidated");
+    const result = await updateRecord(selectedFile.value, record.rowid, "status", status);
     applyUpdateResult(record, result);
   } catch (e) {
-    notyf.error(`무효화 실패: ${e.message}`);
+    notyf.error(`판정 변경 실패: ${e.message}`);
+  }
+}
+
+async function handleStatusCancel(record) {
+  if (!confirm("측정시간이 없는 판정 기록을 삭제할까요?")) return;
+  try {
+    await deleteRecordRow(selectedFile.value, record.rowid);
+    records.value = records.value.filter((row) => row.rowid !== record.rowid);
+    notyf.success("판정 기록을 삭제했습니다.");
+  } catch (e) {
+    notyf.error(`판정 취소 실패: ${e.message}`);
   }
 }
 
@@ -509,9 +529,13 @@ async function handleAddRecord() {
     return;
   }
 
-  const resultValue = Number(addResult.value);
-  if (isNaN(resultValue)) {
-    notyf.error("기록은 숫자로 입력해야 합니다.");
+  const resultValue = addResult.value === "" ? null : Number(addResult.value);
+  if (resultValue !== null && (!Number.isInteger(resultValue) || resultValue <= 0)) {
+    notyf.error("측정시간은 양의 정수(ms)로 입력해야 합니다.");
+    return;
+  }
+  if (addStatus.value === null && resultValue === null) {
+    notyf.error("정상 기록에는 측정시간이 필요합니다.");
     return;
   }
 
@@ -523,6 +547,7 @@ async function handleAddRecord() {
       type: addType.value,
       entry: { id: entry.id, num: entry.num, univ: entry.univ, team: entry.team },
       result: resultValue,
+      status: addStatus.value,
       detail: addDetail.value ? `${addDetail.value} (수동)` : "(수동)",
     });
     notyf.success("기록이 추가되었습니다.");
@@ -530,6 +555,7 @@ async function handleAddRecord() {
     addType.value = EVENT_TYPES[0];
     addEntry.value = null;
     addResult.value = "";
+    addStatus.value = null;
     addDetail.value = "";
     showAddForm.value = false;
   } catch (e) {
@@ -653,12 +679,21 @@ async function handleAddRecord() {
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">기록 (ms)</label>
+            <label class="form-label">측정시간 (ms)</label>
             <input
               v-model="addResult"
               type="number"
               class="form-input"
-              placeholder="밀리초 (-1 = DNF)"
+              placeholder="양의 정수, 판정 기록은 선택"
+            />
+          </div>
+          <div class="form-group add-status-control">
+            <label class="form-label">판정</label>
+            <RecordStatusControl
+              :status="addStatus"
+              :result="addResultValue"
+              compact
+              @select="addStatus = $event"
             />
           </div>
           <div class="form-group">
@@ -670,7 +705,7 @@ async function handleAddRecord() {
               placeholder="선택 사항"
             />
           </div>
-          <button class="btn btn-primary add-form-submit" @click="handleAddRecord" :disabled="!addEntry || addResult === ''">
+          <button class="btn btn-primary add-form-submit" @click="handleAddRecord" :disabled="!addEntry || (addStatus === null && addResultValue === null)">
             추가
           </button>
         </div>
@@ -730,7 +765,7 @@ async function handleAddRecord() {
               <th class="sortable" @click="handleSort('detail')">
                 상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
               </th>
-              <th class="center col-shrink">무효화</th>
+              <th class="center col-status">판정</th>
               <th class="center col-shrink">전광판</th>
             </tr>
           </thead>
@@ -738,7 +773,7 @@ async function handleAddRecord() {
             <tr
               v-for="(record, index) in sortedRecords"
               :key="record.rowid"
-              :class="{ 'is-invalidated': record.invalidated }"
+              :class="record.status ? `is-${record.status.toLowerCase()}` : ''"
             >
               <td class="time-cell">{{ formatTime(record.time) }}</td>
               <td class="center col-shrink">
@@ -748,7 +783,7 @@ async function handleAddRecord() {
               <td class="center col-shrink">
                 <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
               </td>
-              <td class="result-cell center col-shrink" :class="{ 'is-dnf': record.result < 0 }">
+              <td class="result-cell center col-shrink">
                 {{ formatResult(record.result) }}
               </td>
               <td class="penalty-cell center col-shrink" @click="startConesEdit(record.rowid)">
@@ -796,18 +831,15 @@ async function handleAddRecord() {
                   <span v-else class="detail-text">{{ record.detail || '' }}</span>
                 </template>
               </td>
-              <td class="center col-shrink">
-                <button
-                  class="btn-invalidate"
-                  :class="{ active: record.invalidated }"
-                  @click="handleInvalidate(record)"
-                  :title="record.invalidated ? '복원' : '무효화'"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="12" cy="12" r="10" />
-                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-                  </svg>
-                </button>
+              <td class="center col-status">
+                <RecordStatusControl
+                  :status="record.status"
+                  :result="record.result"
+                  compact
+                  allow-cancel
+                  @select="handleStatus(record, $event)"
+                  @cancel="handleStatusCancel(record)"
+                />
               </td>
               <td class="center col-shrink">
                 <button
@@ -1501,60 +1533,10 @@ async function handleAddRecord() {
   font-size: 0.875rem;
 }
 
-/* 무효화된 행 스타일 */
-.data-table tbody tr.is-invalidated {
-  opacity: 0.4;
-}
-
-.data-table tbody tr.is-invalidated td {
-  text-decoration: line-through;
-  text-decoration-color: var(--text-tertiary);
-}
-
-.data-table tbody tr.is-invalidated .btn-invalidate,
-.data-table tbody tr.is-invalidated .btn-scoreboard,
-.data-table tbody tr.is-invalidated .detail-input,
-.data-table tbody tr.is-invalidated .penalty-input {
-  text-decoration: none;
-}
-
-/* 무효화 버튼 */
-.btn-invalidate {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-invalidate svg {
-  width: 16px;
-  height: 16px;
-}
-
-.btn-invalidate:hover {
-  background: var(--bg-hover);
-  color: var(--accent-danger);
-  border-color: var(--accent-danger);
-}
-
-.btn-invalidate.active {
-  background: var(--accent-danger);
-  color: white;
-  border-color: var(--accent-danger);
-}
-
-.btn-invalidate.active:hover {
-  background: var(--accent-success);
-  border-color: var(--accent-success);
-}
+.col-status { min-width: 250px; }
+.data-table tbody tr.is-dns { background: rgba(100, 116, 139, 0.05); }
+.data-table tbody tr.is-dnf { background: rgba(245, 158, 11, 0.05); }
+.data-table tbody tr.is-dsq { background: rgba(239, 68, 68, 0.05); }
 
 /* 전광판 버튼 */
 .btn-scoreboard {
@@ -1638,6 +1620,8 @@ async function handleAddRecord() {
   align-items: flex-end;
   gap: 0.75rem;
 }
+
+.add-status-control { min-width: 260px; }
 
 .form-group {
   display: flex;

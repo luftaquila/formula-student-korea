@@ -30,6 +30,13 @@ async function clearFields(page, teamNum, fields) {
   }
 }
 
+async function setStatus(page, teamNum, status) {
+  const response = await page.request.put("/competition/api/v1/score/score/endurance", {
+    data: { year: YEAR, team_num: teamNum, field: "status", value: status },
+  });
+  expect(response.ok()).toBeTruthy();
+}
+
 test.describe("Score endurance input", () => {
   test.use({ storageState: storageStatePath("admin") });
 
@@ -246,33 +253,39 @@ test.describe("Score endurance input", () => {
 
     // Click DNS button
     const dnsBtn = row.locator(".status-btn").filter({ hasText: "DNS" });
-    await dnsBtn.click();
+    await setStatus(page, 1, null);
+    await expect(dnsBtn).not.toHaveClass(/active/);
 
-    // Verify DNS is active
-    await expect(dnsBtn).toHaveClass(/active/);
+    try {
+      await dnsBtn.click();
 
-    // Verify inputs in the row are disabled
-    const inputs = row.locator("input.cell-input");
-    const inputCount = await inputs.count();
-    for (let i = 0; i < inputCount; i++) {
-      await expect(inputs.nth(i)).toBeDisabled();
+      // Verify DNS is active
+      await expect(dnsBtn).toHaveClass(/active/);
+
+      // Verify inputs in the row are disabled
+      const inputs = row.locator("input.cell-input");
+      const inputCount = await inputs.count();
+      for (let i = 0; i < inputCount; i++) {
+        await expect(inputs.nth(i)).toBeDisabled();
+      }
+
+      // Verify via API
+      const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+      const data = await response.json();
+      expect(data[1]?.status).toBe("DNS");
+
+      // The scoring contract is part of the same DNS lifecycle. Keeping this
+      // assertion here avoids a second spec mutating the same endurance row.
+      const scoreResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
+      const scoreData = await scoreResponse.json();
+      const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
+      expect(enduranceEvent).toBeTruthy();
+      expect(enduranceEvent.records["1"]?.result).toBeNull();
+      expect(enduranceEvent.records["1"]?.status).toBe("DNS");
+    } finally {
+      await setStatus(page, 1, null);
     }
 
-    // Verify via API
-    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    const data = await response.json();
-    expect(data[1]?.status).toBe("DNS");
-
-    // The scoring contract is part of the same DNS lifecycle. Keeping this
-    // assertion here avoids a second spec mutating the same endurance row.
-    const scoreResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
-    const scoreData = await scoreResponse.json();
-    const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
-    expect(enduranceEvent).toBeTruthy();
-    expect(enduranceEvent.records["1"]).toBeUndefined();
-
-    // Toggle DNS off (click again to remove status)
-    await dnsBtn.click();
     await expect(dnsBtn).not.toHaveClass(/active/);
 
     // Inputs should be re-enabled
@@ -287,25 +300,31 @@ test.describe("Score endurance input", () => {
 
     // Click DNF button
     const dnfBtn = row.locator(".status-btn").filter({ hasText: "DNF" });
-    await dnfBtn.click();
-    await expect(dnfBtn).toHaveClass(/active/);
+    await setStatus(page, 2, null);
+    await expect(dnfBtn).not.toHaveClass(/active/);
 
-    // Verify the final record column shows "DNF"
-    await expect(row.locator(".record-value.dnf")).toContainText("DNF");
+    try {
+      await dnfBtn.click();
+      await expect(dnfBtn).toHaveClass(/active/);
 
-    // Verify via API
-    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    const data = await response.json();
-    expect(data[2]?.status).toBe("DNF");
+      // Verify the final record column shows "DNF"
+      await expect(row.locator(".record-value.dnf")).toContainText("DNF");
 
-    const scoreResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
-    const scoreData = await scoreResponse.json();
-    const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
-    expect(enduranceEvent).toBeTruthy();
-    expect(enduranceEvent.records["2"]?.result).toBe(-1);
+      // Verify via API
+      const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+      const data = await response.json();
+      expect(data[2]?.status).toBe("DNF");
 
-    // Clean up: toggle off
-    await dnfBtn.click();
+      const scoreResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
+      const scoreData = await scoreResponse.json();
+      const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
+      expect(enduranceEvent).toBeTruthy();
+      expect(enduranceEvent.records["2"]?.result).toBeNull();
+      expect(enduranceEvent.records["2"]?.status).toBe("DNF");
+    } finally {
+      await setStatus(page, 2, null);
+    }
+
     await expect(dnfBtn).not.toHaveClass(/active/);
   });
 
@@ -409,28 +428,33 @@ test.describe("Score endurance input", () => {
 
     // Click DSQ button
     const dsqBtn = row.locator(".status-btn").filter({ hasText: "DSQ" });
-    await dsqBtn.click();
+    await setStatus(page, 30, null);
+    await expect(dsqBtn).not.toHaveClass(/active/);
 
-    // Verify DSQ is active
-    await expect(dsqBtn).toHaveClass(/active/);
+    try {
+      await dsqBtn.click();
 
-    // Verify inputs in the row are disabled
-    const inputs = row.locator("input.cell-input");
-    const inputCount = await inputs.count();
-    for (let i = 0; i < inputCount; i++) {
-      await expect(inputs.nth(i)).toBeDisabled();
+      // Verify DSQ is active
+      await expect(dsqBtn).toHaveClass(/active/);
+
+      // Verify inputs in the row are disabled
+      const inputs = row.locator("input.cell-input");
+      const inputCount = await inputs.count();
+      for (let i = 0; i < inputCount; i++) {
+        await expect(inputs.nth(i)).toBeDisabled();
+      }
+
+      // Verify final record shows "DSQ"
+      await expect(row.locator(".record-value.dsq")).toContainText("DSQ");
+
+      // Verify via API
+      const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+      const data = await response.json();
+      expect(data[30]?.status).toBe("DSQ");
+    } finally {
+      await setStatus(page, 30, null);
     }
 
-    // Verify final record shows "DSQ"
-    await expect(row.locator(".record-value.dnf")).toContainText("DSQ");
-
-    // Verify via API
-    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    const data = await response.json();
-    expect(data[30]?.status).toBe("DSQ");
-
-    // Toggle DSQ off
-    await dsqBtn.click();
     await expect(dsqBtn).not.toHaveClass(/active/);
 
     // Inputs should be re-enabled

@@ -1,7 +1,7 @@
 export const SCORE_EXPORT_RUN_LIMIT = 4;
 
-export function formatScoreResult(result) {
-  if (result === -1) return "DNF";
+export function formatScoreResult(result, status = null) {
+  if (status) return status;
   if (result == null) return "-";
   const ms = Number(result);
   if (Number.isNaN(ms)) return String(result);
@@ -13,7 +13,7 @@ export function formatScoreResult(result) {
 }
 
 function adjustedResult(record, penalty = {}) {
-  if (!record || record.result == null || record.result === -1) return record?.result ?? null;
+  if (!record || record.status || record.result == null) return null;
   return Number(record.result)
     + (Number(record.cones) || 0) * (Number(penalty.cone_penalty) || 0) * 1000
     + (Number(record.oc) || 0) * (Number(penalty.oc_penalty) || 0) * 1000;
@@ -31,16 +31,14 @@ export function buildEventExportHeaders(eventType, {
 }
 
 export function buildEventExportCells({ record, score, penalty, runLimit = SCORE_EXPORT_RUN_LIMIT }) {
-  const cells = [score ?? "", formatScoreResult(adjustedResult(record, penalty))];
+  const cells = [score ?? "", formatScoreResult(adjustedResult(record, penalty), record?.status)];
   if (runLimit === 0) return cells;
 
-  const validRuns = (record?.allRuns || [])
-    .filter((run) => !run.invalidated && run.result != null && Number(run.result) >= 0)
-    .slice(0, runLimit);
+  const runs = (record?.allRuns || []).slice(0, runLimit);
 
   for (let index = 0; index < runLimit; index++) {
-    const run = validRuns[index];
-    cells.push(run ? formatScoreResult(adjustedResult(run, penalty)) : "");
+    const run = runs[index];
+    cells.push(run ? formatScoreResult(adjustedResult(run, penalty), run.status) : "");
   }
   return cells;
 }

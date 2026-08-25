@@ -402,11 +402,12 @@ function createPublicScorePayload(year, score) {
       const records = {};
       for (const [num, record] of Object.entries(event.records || {})) {
         let result = record?.result ?? null;
-        if (result != null && result !== -1) {
+        const status = record?.status ?? null;
+        if (status == null && result != null) {
           result += (record.cones || 0) * (penalty.cone_penalty || 0) * 1000;
           result += (record.oc || 0) * (penalty.oc_penalty || 0) * 1000;
         }
-        records[num] = { result };
+        records[num] = { result, status };
       }
       return { type: event.type, records };
     });
@@ -589,9 +590,10 @@ async function computeScore(year) {
         group[num].push({
           time: rec.time,
           result: rec.result,
+          status: rec.status ?? null,
           cones: rec.cones || 0,
           oc: rec.oc || 0,
-          invalidated: rec.invalidated || 0,
+          sequence: group[num].length,
         });
       }
     }
@@ -613,13 +615,14 @@ async function computeScore(year) {
       const pen = penalties[eventType] || { cone_penalty: 0, oc_penalty: 0 };
       const records = {};
       for (const [num, runs] of Object.entries(teamRecords)) {
-        const allRuns = runs.map((r) => ({ time: r.time, result: r.result, cones: r.cones, oc: r.oc, invalidated: r.invalidated }));
-        const valid = runs.filter((r) => !r.invalidated);
-        if (!valid.length) {
-          records[num] = { result: null, cones: 0, oc: 0, allRuns };
-          continue;
-        }
-        const finished = valid.filter((r) => r.result >= 0);
+        const allRuns = runs.map((r) => ({
+          time: r.time,
+          result: r.result,
+          status: r.status,
+          cones: r.cones,
+          oc: r.oc,
+        }));
+        const finished = runs.filter((r) => r.status == null && Number.isInteger(r.result) && r.result > 0);
         if (finished.length) {
           // 페널티 반영 시간 기준으로 최고 기록 선택
           const best = finished.reduce((a, b) => {
@@ -627,9 +630,23 @@ async function computeScore(year) {
             const bAdj = b.result + b.cones * pen.cone_penalty * 1000 + b.oc * pen.oc_penalty * 1000;
             return aAdj <= bAdj ? a : b;
           });
-          records[num] = { result: best.result, cones: best.cones, oc: best.oc, allRuns };
+          records[num] = { result: best.result, status: null, cones: best.cones, oc: best.oc, allRuns };
         } else {
-          records[num] = { result: -1, cones: 0, oc: 0, allRuns };
+          const classified = runs
+            .filter((r) => r.status === "DNF" || r.status === "DSQ")
+            .sort((a, b) => {
+              const aTime = Date.parse(a.time || "");
+              const bTime = Date.parse(b.time || "");
+              const byTime = (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+              return byTime || b.sequence - a.sequence;
+            });
+          records[num] = {
+            result: null,
+            status: classified[0]?.status || "DNS",
+            cones: 0,
+            oc: 0,
+            allRuns,
+          };
         }
       }
       events.push({ type: eventType, records });
@@ -646,9 +663,8 @@ async function computeScore(year) {
     `).all(year).filter((row) => entries[row.team_num]);
     const endurancePen = penalties["내구"] || { cone_penalty: 0, oc_penalty: 0, start_delay: 0 };
     for (const row of enduranceRows) {
-      if (row.status === "DNS") continue; // DNS → 기록 없음
-      if (row.status === "DNF" || row.status === "DSQ") {
-        enduranceRecords[row.team_num] = { result: -1, cones: 0, oc: 0, allRuns: [] };
+      if (row.status === "DNS" || row.status === "DNF" || row.status === "DSQ") {
+        enduranceRecords[row.team_num] = { result: null, status: row.status, cones: 0, oc: 0, allRuns: [] };
         continue;
       }
       // 두 드라이버 기록이 있으면 완주 기록으로 본다. 교체 초과시간 빈칸은 0초다.
@@ -658,7 +674,7 @@ async function computeScore(year) {
         const result = row.driver1_time + row.driver2_time + (row.driver_change_time || 0) + startDelayMs + manualPenaltyMs;
         const cones = (row.driver1_cones || 0) + (row.driver2_cones || 0);
         const oc = (row.driver1_oc || 0) + (row.driver2_oc || 0);
-        enduranceRecords[row.team_num] = { result, cones, oc, allRuns: [] };
+        enduranceRecords[row.team_num] = { result, status: null, cones, oc, allRuns: [] };
       }
       // 시간 필드 불완전 → 기록 없음 (skip)
     }

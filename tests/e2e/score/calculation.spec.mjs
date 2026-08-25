@@ -51,7 +51,7 @@ test.describe("Score calculation accuracy", () => {
       });
     }
 
-    // Create traffic record for team 2 (DNF result = -1)
+    // Create an explicit DNF attempt for team 2.
     await page.request.post("/competition/api/v1/traffic/records", {
       data: {
         name: "E2E-Score-Calc",
@@ -59,7 +59,8 @@ test.describe("Score calculation accuracy", () => {
           time: new Date().toISOString(),
           type: "가속",
           entry: await trafficEntry(2),
-          result: -1,
+          result: null,
+          status: "DNF",
           detail: "DNF run",
         },
       },
@@ -117,10 +118,11 @@ test.describe("Score calculation accuracy", () => {
     expect(team1Record).toBeTruthy();
     expect(team1Record.result).toBe(5000);
 
-    // Team 2: Only has DNF (result = -1), so best should be result = -1
+    // Team 2: only has DNF, represented without a numeric sentinel.
     const team2Record = accelEvent.records["2"];
     expect(team2Record).toBeTruthy();
-    expect(team2Record.result).toBe(-1);
+    expect(team2Record.result).toBeNull();
+    expect(team2Record.status).toBe("DNF");
 
     // Team 3: Single valid run with 6000ms
     const team3Record = accelEvent.records["3"];
