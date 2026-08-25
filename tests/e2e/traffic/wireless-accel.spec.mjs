@@ -142,8 +142,21 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).toBeVisible();
 
-    // 명시적 초기화가 확정되면 카드를 제거하고, 같은 종료 run_id의 red로 되살아나지 않는다.
+    // 물리 초기화 요청만 수락된 동안에는 저장 기록을 유지·잠그고 OFF 확인 대기를 명시한다.
+    await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [] } });
+    await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "가속" } });
     await page.getByRole("button", { name: "초기화", exact: true }).click();
+    await expect(page.getByRole("button", { name: "OFF 확인 대기 · 다시 전송", exact: true })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByTestId("quick-invalidated")).toBeDisabled();
+    await expect(observerPage.getByText("마스터의 OFF 확인을 기다리는 중입니다.", { exact: false })).toBeVisible({ timeout: 5000 });
+    await expect(observerPage.getByTestId("quick-invalidated")).toBeDisabled();
+    const pendingState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
+    const pendingSession = pendingState.sessions.find((session) => session.event_type === "가속");
+    expect(pendingSession.reset_pending).toBe(true);
+    expect(pendingSession.run_id).not.toBeNull();
+
+    // 마스터의 실제 OFF 보고가 초기화를 확정하면 모든 화면에서 카드를 제거한다.
+    await page.request.post("/competition/api/v1/traffic/wireless/light", { data: { color: "off" } });
     await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).not.toBeVisible();
     await expect(observerQuickEdit).not.toBeVisible();
@@ -154,6 +167,8 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     expect(resetSession.run_id).toBeNull();
     expect(resetSession.saved_record_name).toBeNull();
     expect(resetSession.saved_record_rowid).toBeNull();
+    expect(resetSession.reset_pending).toBe(false);
+    await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } });
     await page.getByRole("button", { name: "적색등", exact: true }).click();
     await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
     await expect(quickEdit).not.toBeVisible();

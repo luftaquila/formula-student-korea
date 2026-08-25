@@ -484,7 +484,12 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼 다운링크).
   async function commandPhysical(mode, action) {
     try {
-      await commandWirelessPhysical(EVENT_TYPE[mode], action);
+      const result = await commandWirelessPhysical(EVENT_TYPE[mode], action);
+      // 초기화 요청자는 SSE 전달이 지연되거나 재연결 중이어도 응답에 포함된 서버 권위
+      // pending 상태를 즉시 반영한다. 관찰자 화면은 같은 상태를 wireless:session으로 받는다.
+      if (result?.session?.event_type) {
+        sessions.value = { ...sessions.value, [result.session.event_type]: result.session };
+      }
       return true;
     } catch (e) {
       notyf.error(e.message);

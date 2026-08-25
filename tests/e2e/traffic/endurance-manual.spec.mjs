@@ -23,9 +23,11 @@ test.describe("Endurance manual mode post-processing", () => {
     await setCustomEventName(page, EVENT);
     await page.getByTestId("event-team").selectOption("1");
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
+    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
 
     const sensor = page.getByTestId("manual-sensor-1");
     await sensor.click(); // 출발선 t0
+    await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
     await page.waitForTimeout(400);
     await sensor.click(); // 첫 랩 저장
 

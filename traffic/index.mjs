@@ -420,7 +420,7 @@ const LEASE_TTL_MS = 30000; // heartbeat로 갱신. 제어 탭이 죽으면 이 
 function getSessions() {
   const now = Date.now();
   return db
-    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, run_id, saved_record_name, saved_record_rowid, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
+    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, run_id, saved_record_name, saved_record_rowid, reset_pending, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
     .all()
     .map((r) => {
       const expired = r.lease_expires_at && Date.parse(r.lease_expires_at) <= now;
@@ -435,6 +435,7 @@ function getSessions() {
         run_id: r.run_id,
         saved_record_name: r.saved_record_name,
         saved_record_rowid: r.saved_record_rowid,
+        reset_pending: !!r.reset_pending,
         team,
         event_name: r.event_name,
         controller: expired ? null : r.controller,
@@ -2107,9 +2108,12 @@ app.post("/api/wireless/command", (req, res) => {
       after: { reset_pending: resetAfter?.reset_pending ?? 1 },
     } : {}),
   }, event_type);
+  // 물리 초기화는 마스터의 OFF 확인 전까지 pending이다. 요청한 화면뿐 아니라 관찰자와
+  // 재접속 화면도 이 중간 상태를 알아야 편집기를 잠그고 완료로 오인하지 않는다.
+  if (resetAfter) broadcastEvent("wireless:session", resetAfter);
   // 브리지가 SSE로 받아 시리얼로 전달(실행 직전 isPhysical 재검사 — TOCTOU 방어).
   broadcastEvent("wireless:command", { event_type, action });
-  res.json({ ok: true });
+  res.json({ ok: true, session: resetAfter });
 });
 
 // POST /api/wireless/lease/:event - 경기 독점 제어 lease 획득/갱신(heartbeat). A안.

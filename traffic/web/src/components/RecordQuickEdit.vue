@@ -5,6 +5,8 @@ import { updateRecord } from "../composables/useApi";
 
 const props = defineProps({
   record: { type: Object, required: true },
+  disabled: { type: Boolean, default: false },
+  disabledMessage: { type: String, default: "" },
 });
 const emit = defineEmits(["update", "save-state"]);
 const { notyf } = useNotification();
@@ -42,6 +44,11 @@ function syncRecord(record) {
 watch(() => props.record, syncRecord, { immediate: true, deep: true });
 
 const isStatusSaving = computed(() => pending.invalidated || pending.scoreboard);
+const recordLabel = computed(() => [
+  Number.isInteger(Number(props.record?.num)) ? `#${props.record.num}` : null,
+  props.record?.team || null,
+  props.record?.type || null,
+].filter(Boolean).join(" · "));
 
 function setSaveState(state) {
   if (disposed) return;
@@ -82,7 +89,7 @@ function mergeResult(result) {
 async function toggle(field) {
   // 두 필드는 서버에서 현재 값을 기준으로 토글되고 무효화↔전광판 연동도 있으므로
   // 서로 다른 버튼이라도 동시에 보내지 않는다.
-  if (isStatusSaving.value) return;
+  if (props.disabled || isStatusSaving.value) return;
   pending[field] = true;
   beginMutation();
   let succeeded = false;
@@ -99,7 +106,7 @@ async function toggle(field) {
 }
 
 async function saveCount(field, value, input = null) {
-  if (pending[field]) return;
+  if (props.disabled || pending[field]) return;
   const next = normalizeCount(value);
   const previous = state[field];
   if (input) input.value = String(next);
@@ -140,19 +147,30 @@ onUnmounted(() => {
     :class="{ 'has-summary': !!$slots.summary }"
     data-testid="record-quick-edit"
     aria-label="기록 빠른 편집"
+    :aria-busy="disabled"
   >
     <div v-if="$slots.summary" class="quick-edit-summary">
       <slot name="summary"></slot>
     </div>
 
     <div class="quick-edit-body">
+      <div class="quick-edit-heading">
+        <div>
+          <strong>저장된 기록 후처리</strong>
+          <span v-if="recordLabel">{{ recordLabel }}</span>
+        </div>
+        <span class="saved-record-badge">저장됨</span>
+      </div>
+      <div v-if="disabled && disabledMessage" class="quick-edit-lock" role="status">
+        {{ disabledMessage }}
+      </div>
       <div class="toggle-grid">
         <button
           type="button"
           class="state-button"
           :class="state.invalidated ? 'is-danger' : 'is-success'"
           :aria-pressed="!!state.invalidated"
-          :disabled="isStatusSaving"
+          :disabled="disabled || isStatusSaving"
           data-testid="quick-invalidated"
           @click="toggle('invalidated')"
         >
@@ -165,7 +183,7 @@ onUnmounted(() => {
           class="state-button"
           :class="state.scoreboard ? 'is-success' : 'is-muted'"
           :aria-pressed="!!state.scoreboard"
-          :disabled="isStatusSaving || !!state.invalidated"
+          :disabled="disabled || isStatusSaving || !!state.invalidated"
           data-testid="quick-scoreboard"
           @click="toggle('scoreboard')"
         >
@@ -182,7 +200,7 @@ onUnmounted(() => {
             <button
               type="button"
               aria-label="콘터치 1 감소"
-              :disabled="pending.cones || state.cones <= 0"
+              :disabled="disabled || pending.cones || state.cones <= 0"
               @click="saveCount('cones', state.cones - 1)"
             >−</button>
             <input
@@ -192,7 +210,7 @@ onUnmounted(() => {
               min="0"
               step="1"
               inputmode="numeric"
-              :disabled="pending.cones"
+              :disabled="disabled || pending.cones"
               data-testid="quick-cones"
               @change="onCountChange('cones', $event)"
               @keydown.enter="$event.currentTarget.blur()"
@@ -200,7 +218,7 @@ onUnmounted(() => {
             <button
               type="button"
               aria-label="콘터치 1 증가"
-              :disabled="pending.cones"
+              :disabled="disabled || pending.cones"
               data-testid="quick-cones-plus"
               @click="saveCount('cones', state.cones + 1)"
             >+</button>
@@ -213,7 +231,7 @@ onUnmounted(() => {
             <button
               type="button"
               aria-label="코스 이탈 1 감소"
-              :disabled="pending.oc || state.oc <= 0"
+              :disabled="disabled || pending.oc || state.oc <= 0"
               @click="saveCount('oc', state.oc - 1)"
             >−</button>
             <input
@@ -223,7 +241,7 @@ onUnmounted(() => {
               min="0"
               step="1"
               inputmode="numeric"
-              :disabled="pending.oc"
+              :disabled="disabled || pending.oc"
               data-testid="quick-oc"
               @change="onCountChange('oc', $event)"
               @keydown.enter="$event.currentTarget.blur()"
@@ -231,7 +249,7 @@ onUnmounted(() => {
             <button
               type="button"
               aria-label="코스 이탈 1 증가"
-              :disabled="pending.oc"
+              :disabled="disabled || pending.oc"
               data-testid="quick-oc-plus"
               @click="saveCount('oc', state.oc + 1)"
             >+</button>
@@ -269,6 +287,49 @@ onUnmounted(() => {
 
 .quick-edit.has-summary .quick-edit-body,
 .quick-edit-summary + .quick-edit-body { margin-top: 1rem; }
+
+.quick-edit-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.85rem;
+}
+
+.quick-edit-heading > div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.quick-edit-heading strong {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.quick-edit-heading span {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+}
+
+.saved-record-badge {
+  flex-shrink: 0;
+  padding: 0.25rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--accent-success) !important;
+  font-weight: 700;
+}
+
+.quick-edit-lock {
+  margin-bottom: 0.85rem;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+}
 
 .toggle-grid,
 .penalty-grid {
