@@ -1836,17 +1836,26 @@ app.post("/api/wireless/arm", (req, res) => {
   // A안: 해당 경기를 점유한 controller만 제어. 점유자 없으면 허용(첫 제어).
   const sessionPreflight = runMutationPreflight(req, res, {
     action: "wireless.arm", operation: action, target: event_type,
-    context: { event_type }, lookup: () => getSession(event_type),
+    context: { event_type },
+    lookup: () => ({ session: getSession(event_type), light: getLightState() }),
     failureMessage: "무선 세션 상태를 확인할 수 없습니다.",
   });
   if (!sessionPreflight.ok) return;
-  const sess = sessionPreflight.value;
+  const sess = sessionPreflight.value.session;
   const actor = wirelessActor(req);
   if (sess?.controller && sess.controller !== actor) {
     const message = `다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`;
     return rejectMutation(req, res, {
       action: "wireless.arm", status: 409, message, target: event_type, operation: action,
       context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor },
+    });
+  }
+  if (action === "reset" && sessionPreflight.value.light?.owner_event === event_type) {
+    return rejectMutation(req, res, {
+      action: "wireless.arm", status: 409,
+      message: "물리 신호등 지정 경기는 마스터의 OFF 확인으로만 초기화할 수 있습니다.",
+      target: event_type, operation: action,
+      context: { event_type, owner_event: sessionPreflight.value.light.owner_event, reset_pending: !!sess?.reset_pending },
     });
   }
   if (action === "green" && sess?.reset_pending) {

@@ -1557,6 +1557,21 @@ describe('Wireless physical command downlink', () => {
     // ingest로 브리지 online 표시
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: 'cmd-x', master_tick: '100', ev_seq: 1 }] }, cookie: adminCookie });
     await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
+    // 물리 소유권 SSE를 놓친 클라이언트가 가상 reset 경로를 호출해도 런을 즉시 폐기하지 않는다.
+    const beforeStaleResetState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const beforeStaleReset = beforeStaleResetState.sessions.find((session) => session.event_type === '가속');
+    const staleClientReset = await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'reset' }, cookie: adminCookie,
+    });
+    assert.equal(staleClientReset.status, 409);
+    assert.match(await staleClientReset.text(), /OFF 확인/);
+    const afterStaleResetState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const afterStaleReset = afterStaleResetState.sessions.find((session) => session.event_type === '가속');
+    assert.equal(afterStaleReset.run_id, beforeStaleReset.run_id);
+    assert.equal(afterStaleReset.saved_record_name, beforeStaleReset.saved_record_name);
+    assert.equal(afterStaleReset.saved_record_rowid, beforeStaleReset.saved_record_rowid);
+    assert.equal(afterStaleReset.reset_pending, beforeStaleReset.reset_pending);
+
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
     const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'green' }, cookie: adminCookie });
@@ -1607,6 +1622,11 @@ describe('Wireless physical command downlink', () => {
     });
     assert.equal(armGreen.status, 409);
     assert.match(await armGreen.text(), /OFF 확인/);
+    const armReset = await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'reset' }, cookie: adminCookie,
+    });
+    assert.equal(armReset.status, 409);
+    assert.match(await armReset.text(), /OFF 확인/);
     const reportedGreen = await client.post('/api/wireless/light', {
       body: { color: 'green', green_tick: '18000000' }, cookie: adminCookie,
     });
