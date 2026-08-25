@@ -124,6 +124,8 @@ logger.warn(req, action, detail, target, actorOverride)   // level: warn (실패
 
 6. **detail에는 사람이 이해할 수 있는 충분한 맥락을 누락 없이 포함한다.** 로그만 보고 무슨 일이 있었는지 완전히 파악할 수 있어야 한다. 실패 로그에는 `{ error: "..." }` 형태로 에러 원인을, 성공 로그에는 변경된 값·대상·조건 등 핵심 정보를 담는다. ID만 남기고 이름을 빠뜨리거나, 에러 객체를 그대로 던지는 등 맥락이 불충분한 로그를 남기지 않는다.
 
+7. **Competition 로그의 엔트리 번호에는 정식 팀 정보를 함께 남긴다.** 공통 로거는 `#번호`, `연도#번호`, `team_num`, `entry_num` 등으로 팀을 식별하는 로그를 `competition_team` 기준의 `{ id, year, number, university, name, active }` 컨텍스트로 보강한다. 연도별로 번호가 재사용될 수 있으므로 과거 데이터를 읽는 로그에는 반드시 해당 연도를 포함한다.
+
 ## References
 
 See `docs/api.md` for endpoints, `docs/architecture.md` for runtime design, `docs/user-guide.md` for operator behavior, and `.env.example` for environment variables.

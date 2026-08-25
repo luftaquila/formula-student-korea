@@ -41,7 +41,7 @@ export function createTeamsModule({
   db, validateUser, validateUserCacheTtl, staticRoot, skipSpaFallback = false, onChange,
 }) {
   const store = new TeamStore(db);
-  const logger = createLogger(db, "entry");
+  const logger = createLogger(db, "entry", 50000, { teamSource: store });
   const app = createApp({ express, logger, validateUser, validateUserCacheTtl, staticRoot }, (req) => {
     if (req.path === "/health") return null;
     if (req.method === "GET" && req.path === "/teams" && req.query.includeInactive !== "true") return null;

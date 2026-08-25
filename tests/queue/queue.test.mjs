@@ -1998,6 +1998,19 @@ describe('Queue logging audit', () => {
       cookie: chiefCookie,
     });
     assert.equal(register.status, 201);
+    const registerLog = lastLog('queue.register', '#3');
+    assert.deepEqual(JSON.parse(registerLog.detail), {
+      team: {
+        id: 3,
+        year,
+        number: 3,
+        university: '연세대',
+        name: '팀C',
+        active: true,
+      },
+      inspection: 'noise',
+      phone: '01033334444',
+    });
     const cancel = await client.post('/api/admin/cancel/noise', {
       body: { num: 3 },
       cookie: officialCookie,
@@ -2069,6 +2082,14 @@ describe('Queue logging audit', () => {
       assert.equal(rows[0].action, 'sms.send');
       assert.equal(rows[0].level, 'warn');
       assert.deepEqual(JSON.parse(rows[0].detail), {
+        team: {
+          id: 2,
+          year,
+          number: 2,
+          university: '카이스트',
+          name: '팀B',
+          active: true,
+        },
         error: 'simulated SMS socket failure',
         code: 'SMS_SEND_FAILED',
         num: 2,

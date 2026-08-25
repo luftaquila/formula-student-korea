@@ -543,6 +543,14 @@ describe('PUT /api/score/endurance', () => {
       ORDER BY id DESC LIMIT 1
     `).get();
     assert.deepEqual(JSON.parse(audit.detail), {
+      team: {
+        id: 1,
+        year: 2026,
+        number: 1,
+        university: '서울대',
+        name: '팀A',
+        active: true,
+      },
       year: 2026,
       field: 'qualified',
       before: 0,

@@ -1,5 +1,186 @@
 import { runMigrationOnce, normalizeUtcTextTimestamp, setupRowCapRetention } from "./db-setup.mjs";
 import { createSecretChecker } from "./express-setup.mjs";
+import { currentCompetitionYear } from "./competition-year.mjs";
+
+function positiveInteger(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number > 0 ? number : null;
+}
+
+function competitionYear(value) {
+  const year = Number(value);
+  return Number.isInteger(year) && year >= 2000 && year <= 2099 ? year : null;
+}
+
+function normalizeAuditTeam(team, fallback = {}) {
+  if (!team || typeof team !== "object" || Array.isArray(team)) return null;
+  const number = positiveInteger(team.number ?? team.num ?? team.team_num ?? fallback.number);
+  const university = team.university ?? team.univ;
+  const name = team.name ?? team.team;
+  if (!number || typeof university !== "string" || !university.trim()
+      || typeof name !== "string" || !name.trim()) return null;
+
+  const id = positiveInteger(team.id ?? team.teamId ?? team.team_id ?? fallback.id);
+  const year = competitionYear(team.year ?? fallback.year);
+  return {
+    ...(id ? { id } : {}),
+    ...(year ? { year } : {}),
+    number,
+    university: university.trim(),
+    name: name.trim(),
+    ...(typeof team.active === "boolean" ? { active: team.active } : {}),
+  };
+}
+
+function teamReferenceYear(detail) {
+  if (!detail || typeof detail !== "object") return currentCompetitionYear();
+  for (const key of ["year", "state_year", "session_year", "record_year", "current_year"]) {
+    if (Object.hasOwn(detail, key) && detail[key] != null && detail[key] !== "") {
+      return competitionYear(detail[key]);
+    }
+  }
+  return currentCompetitionYear();
+}
+
+function targetTeamReference(target, fallbackYear) {
+  if (typeof target !== "string") return null;
+  let match = target.match(/^(\d{4})#(\d+)$/);
+  if (match) {
+    const year = competitionYear(match[1]);
+    const number = positiveInteger(match[2]);
+    return year && number ? { year, number } : null;
+  }
+  match = target.match(/^#(\d+)$/);
+  return match ? { year: fallbackYear, number: positiveInteger(match[1]) } : null;
+}
+
+function teamObjectReference(value, fallbackYear) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    id: value.id ?? value.teamId ?? value.team_id,
+    year: value.year ?? fallbackYear,
+    number: value.number ?? value.num ?? value.team_num,
+  };
+}
+
+function collectTeamReferences(detail, target) {
+  const year = teamReferenceYear(detail);
+  const refs = [];
+  const add = (reference) => {
+    const normalized = {
+      id: positiveInteger(reference?.id),
+      year: competitionYear(reference?.year) ?? year,
+      number: positiveInteger(reference?.number),
+    };
+    if (!normalized.id && !normalized.number) return;
+    if (normalized.number && !normalized.year && !normalized.id) return;
+    const existing = refs.find((candidate) => {
+      if (normalized.id && candidate.id) return candidate.id === normalized.id;
+      return normalized.number && candidate.number === normalized.number
+        && candidate.year === normalized.year;
+    });
+    if (existing) {
+      existing.id ??= normalized.id;
+      existing.year ??= normalized.year;
+      existing.number ??= normalized.number;
+      return;
+    }
+    refs.push(normalized);
+  };
+
+  const targetReference = targetTeamReference(target, year);
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    add(targetReference);
+    return refs;
+  }
+
+  const directId = detail.team_id ?? detail.teamId;
+  const directNumber = detail.team_num ?? detail.entry_num ?? detail.num ?? detail.number;
+  add({
+    id: directId,
+    year,
+    number: directNumber ?? (directId ? targetReference?.number : null),
+  });
+  for (const value of [detail.team, detail.entry]) add(teamObjectReference(value, year));
+  for (const state of [detail.before, detail.after]) {
+    if (!state || typeof state !== "object" || Array.isArray(state)) continue;
+    for (const value of [state.team, state.entry]) add(teamObjectReference(value, year));
+  }
+  add(targetReference);
+  for (const key of ["sub_team", "my_team"]) add({ year, number: detail[key] });
+  for (const key of ["before_teams", "after_teams", "team_numbers"]) {
+    if (Array.isArray(detail[key])) {
+      for (const number of detail[key]) add({ year, number });
+    }
+  }
+  for (const key of ["deleted_submissions", "file_cleanup"]) {
+    if (Array.isArray(detail[key])) {
+      for (const item of detail[key]) add({
+        id: item?.team_id ?? item?.teamId,
+        year: item?.year ?? year,
+        number: item?.team_num ?? item?.entry_num ?? item?.num,
+      });
+    }
+  }
+  if (Array.isArray(detail.teams)) {
+    for (const value of detail.teams) {
+      if (typeof value === "object" && value) {
+        add(teamObjectReference(value, year));
+      } else {
+        add({ year, number: value });
+      }
+    }
+  }
+  return refs;
+}
+
+function resolveAuditTeam(teamSource, reference) {
+  if (!teamSource || !reference) return null;
+  try {
+    let team = null;
+    if (reference.id && typeof teamSource.getById === "function") {
+      team = teamSource.getById(reference.id);
+    }
+    if (!team && reference.number && reference.year && typeof teamSource.getByNumber === "function") {
+      team = teamSource.getByNumber(reference.year, reference.number, { includeInactive: true });
+    }
+    if (!team && reference.number && reference.year && typeof teamSource.moduleEntries === "function") {
+      const entries = teamSource.moduleEntries(reference.year, { includeInactive: true });
+      team = entries?.[reference.number] ?? null;
+    }
+    return normalizeAuditTeam(team, reference);
+  } catch {
+    // Team lookup failures must not suppress the original audit event. The
+    // caller's own failure log remains writable even when canonical lookup is
+    // the operation that failed.
+    return null;
+  }
+}
+
+function enrichTeamDetail(detail, target, teamSource) {
+  if (!teamSource) return detail;
+  const objectDetail = detail == null
+    ? {}
+    : (typeof detail === "object" && !Array.isArray(detail) ? detail : null);
+  if (!objectDetail) return detail;
+
+  const resolved = collectTeamReferences(objectDetail, target)
+    .map((reference) => resolveAuditTeam(teamSource, reference))
+    .filter(Boolean);
+  const teams = [];
+  for (const team of resolved) {
+    if (teams.some((candidate) => (
+      team.id && candidate.id === team.id
+    ) || (candidate.year === team.year && candidate.number === team.number))) continue;
+    teams.push(team);
+  }
+  if (!teams.length) return detail;
+  if (teams.length === 1) {
+    if (Object.hasOwn(objectDetail, "team")) return { ...objectDetail, team: teams[0] };
+    return { team: teams[0], ...objectDetail };
+  }
+  return { ...objectDetail, teams };
+}
 
 // logs 테이블 필터 쿼리 파라미터(level/action/actor/from/to/search)를 WHERE 절과
 // 바인딩 파라미터로 변환한다. queryHandler와 auth의 로그 집계 로컬 쿼리가 공유한다.
@@ -62,7 +243,7 @@ export function parseLogCursor(raw) {
   return Number.isInteger(id) ? { ts: s.slice(0, idx), id } : null;
 }
 
-export function createLogger(db, serviceName, maxRows = 50000) {
+export function createLogger(db, serviceName, maxRows = 50000, { teamSource } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -103,7 +284,10 @@ export function createLogger(db, serviceName, maxRows = 50000) {
 
   function write(level, req, action, detail, target, actorOverride) {
     const actor = actorOverride || req?.user || {};
-    const detailStr = detail != null ? (typeof detail === "string" ? detail : JSON.stringify(detail)) : null;
+    const enrichedDetail = enrichTeamDetail(detail, target, teamSource);
+    const detailStr = enrichedDetail != null
+      ? (typeof enrichedDetail === "string" ? enrichedDetail : JSON.stringify(enrichedDetail))
+      : null;
     try {
       db.prepare(
         "INSERT INTO logs (module, level, action, actor_email, actor_name, actor_role, target, detail, ip) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"

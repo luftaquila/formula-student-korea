@@ -42,11 +42,6 @@ function normalizePhone(value) {
   return /^010\d{8}$/.test(digits) ? digits : null;
 }
 
-function maskedPhone(value) {
-  const phone = String(value || "");
-  return phone.length === 11 ? `${phone.slice(0, 3)}****${phone.slice(-4)}` : "invalid";
-}
-
 function auditTeam(team) {
   return team && {
     id: team.id,
@@ -278,7 +273,7 @@ export function createRegistrationApp(options = {}) {
       `).get(year, number, phone);
       if (!row) {
         logger.warn(req, "registration.lookup", {
-          reason: "not_found", year, number, phone: maskedPhone(phone),
+          reason: "not_found", year, number, phone,
         }, `${year}#${number}`);
         return res.status(404).json({ code: "REGISTRATION_NOT_FOUND", message: "대기 중인 등록 내역이 없습니다." });
       }
@@ -524,7 +519,7 @@ export function createRegistrationApp(options = {}) {
       logger.log(req, "registration.register", {
         registrationId: id,
         team: auditTeam(team),
-        phone: maskedPhone(phone),
+        phone,
         position,
       }, String(id));
       broadcastChange(team.year);
@@ -539,7 +534,7 @@ export function createRegistrationApp(options = {}) {
       });
     } catch (error) {
       logger.warn(req, "registration.register", {
-        error: error.message, team: auditTeam(team), phone: maskedPhone(phone),
+        error: error.message, team: auditTeam(team), phone,
       }, team ? String(team.id) : "registration");
       return sendError(res, error, "REGISTRATION_CREATE_FAILED");
     }

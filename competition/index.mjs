@@ -125,6 +125,7 @@ export function createCompetitionApp(options = {}) {
   const inspection = createInspectionApp({
     ...common,
     staticRoot: staticRoots.inspection,
+    teamStore: teams.store,
     mutationGuard: guarded("inspection"),
     onEvent: (event, data) => dispatchScoreSourceEvent("inspection", event, data),
   });
@@ -138,6 +139,7 @@ export function createCompetitionApp(options = {}) {
   const score = createScoreApp({
     ...common,
     staticRoot: staticRoots.score,
+    teamStore: teams.store,
     mutationGuard: guarded("score"),
     skipSSESubscriptions: true,
     competitionQueries: {

@@ -965,8 +965,7 @@ app.post("/api/admin/register/:type", async (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  const maskedPhone = phone ? phone.slice(0, 3) + "****" + phone.slice(-4) : "";
-  logger.log(req, "queue.register", { inspection: type, phone: maskedPhone }, `#${num}`);
+  logger.log(req, "queue.register", { inspection: type, phone }, `#${num}`);
 
   // SSE 브로드캐스트: 대기열 변경
   broadcastQueue(type);

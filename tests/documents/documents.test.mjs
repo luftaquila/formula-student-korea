@@ -9,6 +9,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const express = require('../../documents/node_modules/express/index.js');
 const Database = require('../../documents/node_modules/better-sqlite3');
+const archiver = require('../../documents/node_modules/archiver/index.js');
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -55,6 +56,22 @@ setupTestEnv();
 let server, baseUrl, client, db, dbPath, uploadsDir, documentsApp;
 let mockAuthServer;
 let rejectedRemovalPath = null;
+let injectedArchiveError = null;
+
+function archiveFactory(...args) {
+  if (!injectedArchiveError) return archiver(...args);
+  const error = injectedArchiveError;
+  injectedArchiveError = null;
+  const handlers = new Map();
+  return {
+    on(event, handler) { handlers.set(event, handler); return this; },
+    pipe() { return this; },
+    file() { return this; },
+    async finalize() {
+      handlers.get('error')?.(error);
+    },
+  };
+}
 
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
@@ -395,6 +412,7 @@ before(async () => {
     dbPath,
     uploadsDir,
     teamStore,
+    archiveFactory,
     removeDirectory: (dir) => {
       if (dir === rejectedRemovalPath) throw new Error('injected retained-file removal failure');
       fs.rmSync(dir, { recursive: true, force: true });
@@ -1561,7 +1579,51 @@ describe('Historical submission reads', () => {
       assert.equal(zipResponse.status, 200);
       const zip = Buffer.from(await zipResponse.arrayBuffer());
       assert.equal(zip.subarray(0, 2).toString('latin1'), 'PK');
+
+      const audit = db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'file.zip' AND level = 'info' AND target = '#10'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      const auditDetail = JSON.parse(audit.detail);
+      assert.equal(auditDetail.year, 2025);
+      assert.deepEqual(auditDetail.team, {
+        id: 10,
+        year: 2025,
+        number: 10,
+        university: '고려대',
+        name: '팀J',
+        active: true,
+      });
+
+      injectedArchiveError = new Error('simulated admin ZIP archive failure');
+      const failedAdminZip = await client.get(
+        `/api/admin/submissions/${historicalSubmissionId}/zip`,
+        { cookie: chiefCookie },
+      );
+      assert.equal(failedAdminZip.status, 500);
+      const failureAudit = db.prepare(`
+        SELECT target, detail FROM logs
+        WHERE action = 'file.admin_zip' AND level = 'warn'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(failureAudit.target, '#10');
+      assert.deepEqual(JSON.parse(failureAudit.detail), {
+        team: {
+          id: 10,
+          year: 2025,
+          number: 10,
+          university: '고려대',
+          name: '팀J',
+          active: true,
+        },
+        error: 'simulated admin ZIP archive failure',
+        year: 2025,
+        submission_id: historicalSubmissionId,
+        team_num: 10,
+      });
     } finally {
+      injectedArchiveError = null;
       db.prepare("DELETE FROM session WHERE id = ?").run(historicalSessionId);
       db.prepare("DELETE FROM student_team WHERE email = 'student1@test.com' AND year = 2025").run();
       fs.rmSync(path.join(uploadsDir, String(historicalSessionId)), { recursive: true, force: true });
