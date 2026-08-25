@@ -110,7 +110,8 @@ const isController = computed(() => (props.wireless ? serial.isController : true
 const lightReady = computed(() => (props.wireless ? isController.value : serial.connected));
 const canStopLight = computed(() => (props.wireless ? isController.value : serial.connected));
 const session = computed(() => serial.session);
-const resetPending = ref(false);
+const resetSubmitting = ref(false);
+const resetInProgress = computed(() => props.wireless && (resetSubmitting.value || !!session.value?.reset_pending));
 watch(session, (s, previous) => {
   if (!props.wireless || !s) return;
   if (!isController.value) {
@@ -118,11 +119,6 @@ watch(session, (s, previous) => {
     selectedTeam.value = s.team?.num ?? null;
   }
   if (s.run_id !== previous?.run_id) clearRun();
-  if (resetPending.value && s.light_color === "off") {
-    endRun();
-    clearRun();
-    resetPending.value = false;
-  }
 }, { immediate: true });
 const entries = computed(() => entryStore.entries);
 const canSave = computed(() => eventName.value.trim() && selectedTeam.value);
@@ -184,8 +180,12 @@ async function handleReset() {
     serial.reset();
     return;
   }
-  resetPending.value = true;
-  if (await serial.reset() === false) resetPending.value = false;
+  resetSubmitting.value = true;
+  try {
+    await serial.reset();
+  } finally {
+    resetSubmitting.value = false;
+  }
 }
 
 // 무선: 선택(팀·이벤트명)을 세션에 공유(컨트롤러만). 디바운스.
@@ -259,7 +259,7 @@ onUnmounted(() => clearTimeout(selectTimer));
             </div>
           </div>
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
+            <button class="btn btn-success" :disabled="!lightReady || serial.green.active || resetInProgress" @click="handleGreen">
               녹색등
             </button>
             <button
@@ -312,10 +312,10 @@ onUnmounted(() => clearTimeout(selectTimer));
           </div>
           <button
             class="btn btn-warning btn-block mt-1"
-            :disabled="!isController || (!lapTimes.length && !serial.green.active)"
+            :disabled="!isController || resetSubmitting || (!lapTimes.length && !serial.green.active && !recentRecord)"
             @click="handleReset"
           >
-            초기화
+            {{ resetSubmitting ? "초기화 요청 중…" : (session?.reset_pending ? "OFF 확인 대기 · 다시 전송" : "초기화") }}
           </button>
         </div>
       </div>
@@ -415,6 +415,8 @@ onUnmounted(() => clearTimeout(selectTimer));
           <RecordQuickEdit
             v-if="recentRecord"
             :record="recentRecord"
+            :disabled="resetInProgress"
+            :disabled-message="resetInProgress ? '마스터의 OFF 확인을 기다리는 중입니다. 기록 편집은 확인 후 종료됩니다.' : ''"
             @update="mergeRecord"
             @save-state="quickEditSaveState = $event"
           />

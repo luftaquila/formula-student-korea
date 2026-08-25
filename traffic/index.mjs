@@ -420,7 +420,7 @@ const LEASE_TTL_MS = 30000; // heartbeat로 갱신. 제어 탭이 죽으면 이 
 function getSessions() {
   const now = Date.now();
   return db
-    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, run_id, saved_record_name, saved_record_rowid, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
+    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, run_id, saved_record_name, saved_record_rowid, reset_pending, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
     .all()
     .map((r) => {
       const expired = r.lease_expires_at && Date.parse(r.lease_expires_at) <= now;
@@ -435,6 +435,7 @@ function getSessions() {
         run_id: r.run_id,
         saved_record_name: r.saved_record_name,
         saved_record_rowid: r.saved_record_rowid,
+        reset_pending: !!r.reset_pending,
         team,
         event_name: r.event_name,
         controller: expired ? null : r.controller,
@@ -1681,10 +1682,21 @@ app.post("/api/wireless/light", (req, res) => {
     // 물리 지정 경기의 arm 상태를 세션에도 반영(green=arm). 전 클라가 wireless:session으로 공유.
     let session = null;
     let resetFinalized = false;
+    let pendingGreenIgnored = false;
     let openedRun = null;
     if (light.owner_event) {
       const cur = db.prepare("SELECT armed, light_color, green_tick, reset_pending FROM wireless_session WHERE event_type = ?").get(light.owner_event);
-      if (color === "green") {
+      if (color === "off" && cur?.reset_pending) {
+        // 물리 초기화는 마스터가 실제 OFF를 보고한 시점에만 확정한다. 이 세션 갱신이
+        // 모든 관찰자와 재접속 클라이언트에서 이전 편집 카드를 폐기하는 권위 신호다.
+        db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+          .run(light.owner_event);
+        resetFinalized = true;
+      } else if (color === "green" && cur?.reset_pending) {
+        // 초기화 요청 이후 지연되거나 예기치 않게 도착한 green 보고가 이전 런을 새 run_id로
+        // 바꾸지 못하게 한다. pending은 오직 실제 OFF 보고만 해제할 수 있다.
+        pendingGreenIgnored = true;
+      } else if (color === "green") {
         // 중복 L green 방어: 이미 같은 green(또는 tick 미동봉 재보고)으로 armed면 런을 리셋하지 않는다.
         // (마스터의 재전송/바운스가 진행 중 측정 런을 날리는 것을 막음.)
         const dup = cur && cur.armed && cur.light_color === "green" && (gtParam == null || cur.green_tick === gtParam);
@@ -1694,19 +1706,13 @@ app.post("/api/wireless/light", (req, res) => {
             .run(gtParam, new Date().toISOString(), runId, light.owner_event);
           openedRun = { eventType: light.owner_event, runId };
         }
-      } else if (color === "off" && cur?.reset_pending) {
-        // 물리 초기화는 마스터가 실제 OFF를 보고한 시점에만 확정한다. 이 세션 갱신이
-        // 모든 관찰자와 재접속 클라이언트에서 이전 편집 카드를 폐기하는 권위 신호다.
-        db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(light.owner_event);
-        resetFinalized = true;
       } else {
         db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(color === "red" ? "red" : "off", light.owner_event);
       }
       session = getSession(light.owner_event);
     }
-    return { bridge, light, session, resetFinalized, openedRun };
+    return { bridge, light, session, resetFinalized, pendingGreenIgnored, openedRun };
   })());
   if (!result.success) {
     logger.warn(req, "wireless.light", {
@@ -1722,6 +1728,14 @@ app.post("/api/wireless/light", (req, res) => {
   }
   if (result.result.openedRun) {
     resetEngineRun(result.result.openedRun.eventType, null, result.result.openedRun.runId);
+  }
+  if (result.result.pendingGreenIgnored) {
+    logger.warn(req, "wireless.light", {
+      error: "초기화 OFF 확인 대기 중 green 보고를 무시했습니다.",
+      reason: "reset_pending",
+      color,
+      reset_pending: true,
+    }, result.result.session?.event_type || "light");
   }
   logger.log(req, "wireless.light", { color, green_tick: gtParam }, "light");
   if (result.result.resetFinalized && result.result.session) engineRun.delete(result.result.session.event_type);
@@ -1822,17 +1836,34 @@ app.post("/api/wireless/arm", (req, res) => {
   // A안: 해당 경기를 점유한 controller만 제어. 점유자 없으면 허용(첫 제어).
   const sessionPreflight = runMutationPreflight(req, res, {
     action: "wireless.arm", operation: action, target: event_type,
-    context: { event_type }, lookup: () => getSession(event_type),
+    context: { event_type },
+    lookup: () => ({ session: getSession(event_type), light: getLightState() }),
     failureMessage: "무선 세션 상태를 확인할 수 없습니다.",
   });
   if (!sessionPreflight.ok) return;
-  const sess = sessionPreflight.value;
+  const sess = sessionPreflight.value.session;
   const actor = wirelessActor(req);
   if (sess?.controller && sess.controller !== actor) {
     const message = `다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`;
     return rejectMutation(req, res, {
       action: "wireless.arm", status: 409, message, target: event_type, operation: action,
       context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor },
+    });
+  }
+  if (action === "reset" && sessionPreflight.value.light?.owner_event === event_type) {
+    return rejectMutation(req, res, {
+      action: "wireless.arm", status: 409,
+      message: "물리 신호등 지정 경기는 마스터의 OFF 확인으로만 초기화할 수 있습니다.",
+      target: event_type, operation: action,
+      context: { event_type, owner_event: sessionPreflight.value.light.owner_event, reset_pending: !!sess?.reset_pending },
+    });
+  }
+  if (action === "green" && sess?.reset_pending) {
+    return rejectMutation(req, res, {
+      action: "wireless.arm", status: 409,
+      message: "초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.",
+      target: event_type, operation: action,
+      context: { event_type, reset_pending: true, run_id: sess.run_id ?? null },
     });
   }
   let green_tick = null;
@@ -2082,6 +2113,14 @@ app.post("/api/wireless/command", (req, res) => {
       target: event_type, operation: action, context: { event_type, owner_event: light.owner_event ?? null },
     });
   }
+  if (action === "green" && sess?.reset_pending) {
+    return rejectMutation(req, res, {
+      action: "wireless.command", status: 409,
+      message: "초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.",
+      target: event_type, operation: action,
+      context: { event_type, reset_pending: true, run_id: sess.run_id ?? null },
+    });
+  }
   if (!bridgeOnline) {
     return rejectMutation(req, res, {
       action: "wireless.command", status: 409, message: "마스터에 연결된 브리지가 없습니다.",
@@ -2107,9 +2146,12 @@ app.post("/api/wireless/command", (req, res) => {
       after: { reset_pending: resetAfter?.reset_pending ?? 1 },
     } : {}),
   }, event_type);
+  // 물리 초기화는 마스터의 OFF 확인 전까지 pending이다. 요청한 화면뿐 아니라 관찰자와
+  // 재접속 화면도 이 중간 상태를 알아야 편집기를 잠그고 완료로 오인하지 않는다.
+  if (resetAfter) broadcastEvent("wireless:session", resetAfter);
   // 브리지가 SSE로 받아 시리얼로 전달(실행 직전 isPhysical 재검사 — TOCTOU 방어).
   broadcastEvent("wireless:command", { event_type, action });
-  res.json({ ok: true });
+  res.json({ ok: true, session: resetAfter });
 });
 
 // POST /api/wireless/lease/:event - 경기 독점 제어 lease 획득/갱신(heartbeat). A안.

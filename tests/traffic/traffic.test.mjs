@@ -1136,9 +1136,10 @@ describe('Wireless sessions & arm', () => {
     assert.equal(s.sessions.length, 4);
     const types = s.sessions.map((x) => x.event_type).sort();
     assert.deepEqual(types, ['가속', '스키드패드', '오토크로스', '내구'].sort());
-    // 각 세션은 arm 상태(불리언)와 light_color를 노출한다.
+    // 각 세션은 arm/초기화 대기 상태(불리언)와 light_color를 노출한다.
     for (const sess of s.sessions) {
       assert.equal(typeof sess.armed, 'boolean');
+      assert.equal(typeof sess.reset_pending, 'boolean');
       assert.ok(typeof sess.light_color === 'string');
     }
   });
@@ -1556,6 +1557,21 @@ describe('Wireless physical command downlink', () => {
     // ingest로 브리지 online 표시
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: 'cmd-x', master_tick: '100', ev_seq: 1 }] }, cookie: adminCookie });
     await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
+    // 물리 소유권 SSE를 놓친 클라이언트가 가상 reset 경로를 호출해도 런을 즉시 폐기하지 않는다.
+    const beforeStaleResetState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const beforeStaleReset = beforeStaleResetState.sessions.find((session) => session.event_type === '가속');
+    const staleClientReset = await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'reset' }, cookie: adminCookie,
+    });
+    assert.equal(staleClientReset.status, 409);
+    assert.match(await staleClientReset.text(), /OFF 확인/);
+    const afterStaleResetState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const afterStaleReset = afterStaleResetState.sessions.find((session) => session.event_type === '가속');
+    assert.equal(afterStaleReset.run_id, beforeStaleReset.run_id);
+    assert.equal(afterStaleReset.saved_record_name, beforeStaleReset.saved_record_name);
+    assert.equal(afterStaleReset.saved_record_rowid, beforeStaleReset.saved_record_rowid);
+    assert.equal(afterStaleReset.reset_pending, beforeStaleReset.reset_pending);
+
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
     const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'green' }, cookie: adminCookie });
@@ -1570,9 +1586,15 @@ describe('Wireless physical command downlink', () => {
     // 물리 초기화는 명령 수락만으로 런을 지우지 않고, 마스터의 OFF 보고에서 확정한다.
     await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '17000000' }, cookie: adminCookie });
     const armedState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.ok(armedState.sessions.find((session) => session.event_type === '가속').run_id);
+    const armedSession = armedState.sessions.find((session) => session.event_type === '가속');
+    assert.ok(armedSession.run_id);
+    await client.post('/api/wireless/light', { body: { color: 'red' }, cookie: adminCookie });
     const reset = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'reset' }, cookie: adminCookie });
     assert.equal(reset.status, 200);
+    const resetBody = await reset.json();
+    assert.equal(resetBody.ok, true);
+    assert.equal(resetBody.session.reset_pending, true);
+    assert.ok(resetBody.session.run_id, 'physical reset keeps the run until OFF is confirmed');
     const resetAudit = db.prepare(`
       SELECT actor_email, detail FROM logs
       WHERE action = 'wireless.command' AND target = '가속' AND level = 'info'
@@ -1581,14 +1603,45 @@ describe('Wireless physical command downlink', () => {
     assert.equal(resetAudit.actor_email, 'admin@test.com');
     assert.deepEqual(JSON.parse(resetAudit.detail), {
       action: 'reset',
-      before: { reset_pending: 0 },
-      after: { reset_pending: 1 },
+      before: { reset_pending: false },
+      after: { reset_pending: true },
     });
     const beforeOff = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.ok(beforeOff.sessions.find((session) => session.event_type === '가속').run_id, 'reset remains pending until physical OFF');
+    const pendingSession = beforeOff.sessions.find((session) => session.event_type === '가속');
+    assert.equal(pendingSession.reset_pending, true);
+    assert.ok(pendingSession.run_id, 'reset remains pending until physical OFF');
+
+    // OFF 확인 전에는 어떤 green 경로도 새 런을 열거나 pending을 해제할 수 없다.
+    const commandGreen = await client.post('/api/wireless/command', {
+      body: { event_type: '가속', action: 'green' }, cookie: adminCookie,
+    });
+    assert.equal(commandGreen.status, 409);
+    assert.match(await commandGreen.text(), /OFF 확인/);
+    const armGreen = await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'green', green_tick: '18000000' }, cookie: adminCookie,
+    });
+    assert.equal(armGreen.status, 409);
+    assert.match(await armGreen.text(), /OFF 확인/);
+    const armReset = await client.post('/api/wireless/arm', {
+      body: { event_type: '가속', action: 'reset' }, cookie: adminCookie,
+    });
+    assert.equal(armReset.status, 409);
+    assert.match(await armReset.text(), /OFF 확인/);
+    const reportedGreen = await client.post('/api/wireless/light', {
+      body: { color: 'green', green_tick: '18000000' }, cookie: adminCookie,
+    });
+    assert.equal(reportedGreen.status, 200);
+    const afterBlockedGreen = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
+    const stillPending = afterBlockedGreen.sessions.find((session) => session.event_type === '가속');
+    assert.equal(stillPending.reset_pending, true);
+    assert.equal(stillPending.run_id, armedSession.run_id);
+    assert.equal(stillPending.light_color, 'red');
+
     await client.post('/api/wireless/light', { body: { color: 'off' }, cookie: adminCookie });
     const afterOff = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    assert.equal(afterOff.sessions.find((session) => session.event_type === '가속').run_id, null);
+    const resetSession = afterOff.sessions.find((session) => session.event_type === '가속');
+    assert.equal(resetSession.reset_pending, false);
+    assert.equal(resetSession.run_id, null);
     await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
   });
 

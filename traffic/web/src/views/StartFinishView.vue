@@ -92,7 +92,8 @@ const lightReady = computed(() => (props.wireless ? isController.value : serial.
 const canStopLight = computed(() => (props.wireless ? isController.value : serial.connected));
 // 무선 경기 세션(서버 권위 선택·arm). 관찰자 뷰가 컨트롤러의 팀·이벤트명을 미러.
 const session = computed(() => serial.session);
-const resetPending = ref(false);
+const resetSubmitting = ref(false);
+const resetInProgress = computed(() => props.wireless && (resetSubmitting.value || !!session.value?.reset_pending));
 function clearMeasurement() {
   startRecord.value = null;
   savedRecord.value = null;
@@ -105,11 +106,6 @@ watch(session, (s, previous) => {
     selectedTeam.value = s.team?.num ?? null;
   }
   if (s.run_id !== previous?.run_id) clearMeasurement();
-  if (resetPending.value && s.light_color === "off") {
-    clearMeasurement();
-    endRun();
-    resetPending.value = false;
-  }
 }, { immediate: true });
 const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
@@ -125,6 +121,14 @@ const {
 } = useAutoSavedRecord({
   wireless: () => props.wireless,
   session: () => serial.session,
+});
+const recordResultDisplay = computed(() => {
+  if (displayRecord.value?.time) return displayRecord.value.time;
+  const result = recentRecord.value?.result;
+  if (result == null || result === "") return "—";
+  const milliseconds = Number(result);
+  if (!Number.isFinite(milliseconds)) return "—";
+  return milliseconds < 0 ? "DNF" : msToClockStr(milliseconds);
 });
 
 function handleConnect() {
@@ -156,8 +160,12 @@ async function handleReset() {
     serial.reset();
     return;
   }
-  resetPending.value = true;
-  if (await serial.reset() === false) resetPending.value = false;
+  resetSubmitting.value = true;
+  try {
+    await serial.reset();
+  } finally {
+    resetSubmitting.value = false;
+  }
 }
 
 async function handleDNF() {
@@ -262,7 +270,7 @@ onUnmounted(() => clearTimeout(selectTimer));
             </div>
           </div>
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
+            <button class="btn btn-success" :disabled="!lightReady || serial.green.active || resetInProgress" @click="handleGreen">
               녹색등
             </button>
             <button
@@ -319,10 +327,10 @@ onUnmounted(() => clearTimeout(selectTimer));
           </button>
           <button
             class="btn btn-warning btn-block mt-1"
-            :disabled="!isController || (!serial.records.length && !serial.green.active)"
+            :disabled="!isController || resetSubmitting || (!serial.records.length && !serial.green.active && !recentRecord)"
             @click="handleReset"
           >
-            초기화
+            {{ resetSubmitting ? "초기화 요청 중…" : (session?.reset_pending ? "OFF 확인 대기 · 다시 전송" : "초기화") }}
           </button>
         </div>
       </div>
@@ -381,7 +389,7 @@ onUnmounted(() => clearTimeout(selectTimer));
         </div>
       </div>
 
-      <div v-if="displayRecord" class="saved-section card">
+      <div v-if="displayRecord || recentRecord" class="saved-section card">
         <div class="card-header record-header">
           <h3>🏁 측정 기록</h3>
           <div v-if="recentRecord && quickEditSaveState === 'saved'" class="save-status" data-testid="quick-save-status" aria-live="polite">
@@ -393,18 +401,20 @@ onUnmounted(() => clearTimeout(selectTimer));
           <RecordQuickEdit
             v-if="recentRecord"
             :record="recentRecord"
+            :disabled="resetInProgress"
+            :disabled-message="resetInProgress ? '마스터의 OFF 확인을 기다리는 중입니다. 기록 편집은 확인 후 종료됩니다.' : ''"
             @update="mergeRecord"
             @save-state="quickEditSaveState = $event"
           >
             <template #summary>
               <div class="saved-item is-saved">
-                {{ displayRecord.time }}
+                {{ recordResultDisplay }}
                 <span class="save-badge">💾</span>
               </div>
             </template>
           </RecordQuickEdit>
           <div v-else class="saved-item" :class="{ 'is-saved': savedRecord }">
-            {{ displayRecord.time }}
+            {{ recordResultDisplay }}
             <span v-if="savedRecord" class="save-badge">💾</span>
           </div>
         </div>

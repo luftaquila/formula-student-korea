@@ -28,6 +28,14 @@ import {
 import { WIRELESS_EVENTS, EVENT_TYPE, roleToSensor } from "../composables/useEventTiming";
 import { acceptSensorTick } from "../composables/sensorDebounce";
 import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@lib/event-timing.mjs";
+import {
+  applyResetPendingMarker,
+  applyVirtualResetMarker,
+  createResetPendingMarker,
+  createVirtualResetMarker,
+  resetPendingMarkerResolved,
+  virtualResetMarkerResolved,
+} from "@lib/wireless-reset.mjs";
 
 const TICKS_PER_MS = 16000;
 const DEFAULT_DEBOUNCE_MS = 300;
@@ -65,6 +73,34 @@ export const useWirelessStore = defineStore("wireless", () => {
   const telemetry = wirelessTelemetry;
   const bridge = wirelessBridge;
   const sessions = wirelessSessions; // event_type -> 세션(arm/light/lease) — 서버 권위
+  // reset 요청자 전용 latch. 명령 응답이 성공했지만 pending SSE를 놓친 경우에도 OFF 확정
+  // 전까지 편집/green 잠금이 풀리지 않게 한다. 서버 세션 자체는 덮어쓰지 않는다.
+  const pendingResetMarkers = reactive(new Map());
+  // 가상 reset 완료 SSE를 놓친 요청자에게 응답의 완료 상태를 유지한다. 이전 런 SSE가
+  // 늦게 와도 되살리지 않고, 권위 init 또는 새 런이 도착하면 해제한다.
+  const virtualResetMarkers = reactive(new Map());
+
+  function effectiveSessionFor(mode) {
+    const eventType = EVENT_TYPE[mode];
+    const resetApplied = applyVirtualResetMarker(
+      sessions.value?.[eventType] || null,
+      virtualResetMarkers.get(eventType),
+    );
+    return applyResetPendingMarker(resetApplied, pendingResetMarkers.get(eventType));
+  }
+
+  function reconcileResetMarkers() {
+    for (const [eventType, marker] of pendingResetMarkers) {
+      if (resetPendingMarkerResolved(marker, sessions.value?.[eventType])) {
+        pendingResetMarkers.delete(eventType);
+      }
+    }
+    for (const [eventType, marker] of virtualResetMarkers) {
+      if (virtualResetMarkerResolved(marker, sessions.value?.[eventType])) {
+        virtualResetMarkers.delete(eventType);
+      }
+    }
+  }
 
   // 센서 디바운스 창(ms). 서버(wireless_light)에 저장돼 wireless:light로 공유. 기본 300ms.
   const debounceMs = computed(() => {
@@ -184,7 +220,8 @@ export const useWirelessStore = defineStore("wireless", () => {
     }
   }
   function applyAllSessions() {
-    for (const s of Object.values(sessions.value || {})) applySession(s);
+    reconcileResetMarkers();
+    for (const mode of WIRELESS_EVENTS) applySession(effectiveSessionFor(mode));
   }
   watch(sessions, applyAllSessions, { deep: true });
   applyAllSessions();
@@ -484,7 +521,14 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼 다운링크).
   async function commandPhysical(mode, action) {
     try {
-      await commandWirelessPhysical(EVENT_TYPE[mode], action);
+      const eventType = EVENT_TYPE[mode];
+      const result = await commandWirelessPhysical(eventType, action);
+      if (action === "reset") {
+        // 응답보다 OFF 확정 SSE가 먼저 왔다면 run_id가 달라 marker가 생성되지 않는다.
+        // pending SSE를 놓친 경우에는 같은 런에 boolean latch만 더해 재접속 init까지 잠근다.
+        const marker = createResetPendingMarker(sessions.value?.[eventType], result?.session);
+        if (marker) pendingResetMarkers.set(eventType, marker);
+      }
       return true;
     } catch (e) {
       notyf.error(e.message);
@@ -505,11 +549,22 @@ export const useWirelessStore = defineStore("wireless", () => {
   // green/red/off(=arm/disarm): 가상 → 서버 arm(전 클라 공유). 물리 → 브리지면 시리얼, 아니면 다운링크.
   async function armAction(mode, action, greenTickRaw) {
     // 낙관적(4d): 신호등 색만 즉시 반영. arm·기록·클럭은 applySession이 권위 reconcile. 실패 시 롤백.
+    const eventType = EVENT_TYPE[mode];
+    const requestedRunId = action === "reset" ? sessions.value?.[eventType]?.run_id ?? null : null;
     const slot = timing[mode];
     const prevLight = slot.light;
     slot.light = action === "green" ? "green" : action === "red" ? "red" : "grey";
     try {
-      await armWirelessEvent({ event_type: EVENT_TYPE[mode], action, green_tick: greenTickRaw });
+      const result = await armWirelessEvent({ event_type: eventType, action, green_tick: greenTickRaw });
+      if (action === "reset") {
+        const marker = createVirtualResetMarker(sessions.value?.[eventType], result, requestedRunId);
+        if (marker) {
+          virtualResetMarkers.set(eventType, marker);
+          // Map 변경은 sessions watcher를 실행하지 않으므로 응답으로 확정된 완료 상태를
+          // 즉시 타이밍 슬롯에도 적용한다. 화면의 session computed도 같은 Map을 추적한다.
+          applySession(effectiveSessionFor(mode));
+        }
+      }
       return true;
     } catch (e) {
       slot.light = prevLight;
@@ -535,6 +590,10 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   async function greenFor(mode, team = null, eventName = null) {
     if (!requireControl(mode)) return false;
+    if (effectiveSessionFor(mode)?.reset_pending) {
+      notyf.error("초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.");
+      return false;
+    }
     warnIfMasterOffline();
     const missing = missingRoles(mode);
     if (missing.length) {
@@ -594,7 +653,7 @@ export const useWirelessStore = defineStore("wireless", () => {
       get isController() { return holdsLease(mode); },
       get controller() { return controllerLabel(sessions.value?.[EVENT_TYPE[mode]]?.controller) || null; },
       // 경기 세션(서버 권위 선택·arm). 관찰자 뷰가 컨트롤러의 팀·이벤트명을 미러하는 데 사용.
-      get session() { return sessions.value?.[EVENT_TYPE[mode]] || null; },
+      get session() { return effectiveSessionFor(mode); },
       get green() { return slot.green; },
       get records() { return slot.records; },
       get clockDisplay() { return slot.clockDisplay; },

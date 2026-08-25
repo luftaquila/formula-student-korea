@@ -23,6 +23,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
     const TEAM = await trafficEntry(1);
 
     try {
+      await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("내구")}`).catch(() => {});
       // 내구는 단일 센서 멀티랩(role=start). 매핑 등록.
       const mapRes = await page.request.put(`/competition/api/v1/traffic/wireless/mapping/${NODE}`, {
         data: { event_type: "내구", role: "start" },
@@ -66,6 +67,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
       await page.goto("/traffic/wireless/endurance");
       await waitForPageReady(page);
       await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 8000 });
+      await expect(page.getByText("저장된 기록 후처리", { exact: true })).toBeVisible();
 
       r = await ingest(3, 12000);      // lap2 = 7000ms → 같은 행 UPDATE
       expect(r.status()).toBe(200);
@@ -83,8 +85,79 @@ test.describe("Wireless record engine (ingest contract)", () => {
       const enduranceRows = afterLap2.filter((row) => row.type === "내구");
       expect(enduranceRows.length).toBe(1);            // 멀티랩이 1건에 누적(다중 행 아님)
       expect(enduranceRows[0].detail).toBe("00:05.000 / 00:07.000");
+
+      // 이 화면은 과거 이벤트를 재생하지 않으므로 ingest(3)이 로컬 t0가 된다. 다음 통과로
+      // 로컬 타이밍 행도 만든 뒤, reset 응답만으로 캐시와 복구 편집기가 함께 지워지는지 본다.
+      r = await ingest(4, 20000);      // 로컬 lap1 = 8000ms, 서버 lap3 = 8000ms
+      expect(r.status()).toBe(200);
+      await expect(page.locator(".lap-table tbody tr")).toHaveCount(1, { timeout: 5000 });
+
+      // 저장 이후 화면을 연 클라이언트가 복구한 저장 행과 이후 수신한 로컬 랩을 함께 초기화할 수 있다.
+      await page.request.post("/competition/api/v1/traffic/wireless/arm", {
+        data: { event_type: "내구", action: "off" },
+      });
+      await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
+      await expect(page.getByTestId("record-quick-edit")).toBeVisible();
+      await page.getByRole("button", { name: "제어", exact: true }).click();
+      await expect(page.getByRole("button", { name: "제어 해제", exact: true })).toBeVisible({ timeout: 5000 });
+      const resetButton = page.getByRole("button", { name: "초기화", exact: true });
+      await expect(resetButton).toBeEnabled();
+
+      // reset POST 응답만 도착하고 wireless:session SSE는 누락된 상황을 결정적으로 재현한다.
+      // 서버를 호출하지 않은 성공 응답이어도 요청자는 응답의 권위 상태로 즉시 런을 닫아야 한다.
+      const beforeResetState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
+      const beforeResetSession = beforeResetState.sessions.find((session) => session.event_type === "내구");
+      expect(beforeResetSession.run_id).not.toBeNull();
+      const resetRunId = beforeResetSession.run_id;
+      const armRoute = "**/competition/api/v1/traffic/wireless/arm";
+      await page.route(armRoute, async (route) => {
+        const body = route.request().postDataJSON();
+        if (body?.event_type !== "내구" || body?.action !== "reset") return route.continue();
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ...beforeResetSession,
+            armed: false,
+            light_color: "off",
+            run_id: null,
+            saved_record_name: null,
+            saved_record_rowid: null,
+            reset_pending: false,
+            updated_at: new Date().toISOString(),
+          }),
+        });
+      });
+      await resetButton.click();
+      await expect(page.getByTestId("record-quick-edit")).not.toBeVisible({ timeout: 5000 });
+      await expect(page.locator(".lap-table tbody tr")).toHaveCount(0);
+      await expect(page.locator(".lap-section .empty-state")).toBeVisible();
+      await expect(page.locator(".clock")).toHaveText("00:00.000");
+      await expect(resetButton).toBeDisabled();
+
+      // mock 요청은 서버를 건드리지 않았으므로, UI 제거가 SSE가 아닌 POST 응답 reconciliation의
+      // 결과였음을 확인할 수 있다.
+      const omittedEventState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
+      const omittedEventSession = omittedEventState.sessions.find((session) => session.event_type === "내구");
+      expect(omittedEventSession.run_id).toBe(resetRunId);
+      await page.unroute(armRoute);
+
+      // 격리된 mock 뒤 서버 상태도 정리한다. APIRequestContext에는 탭의 X-Session-Id가 없으므로
+      // admin으로 lease를 먼저 회수한 뒤 실제 reset을 수행한다.
+      const releaseRes = await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("내구")}`);
+      expect(releaseRes.status()).toBe(200);
+      const resetRes = await page.request.post("/competition/api/v1/traffic/wireless/arm", {
+        data: { event_type: "내구", action: "reset" },
+      });
+      expect(resetRes.status()).toBe(200);
+      const resetState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
+      const resetSession = resetState.sessions.find((session) => session.event_type === "내구");
+      expect(resetSession.run_id).toBeNull();
+      expect(resetSession.saved_record_name).toBeNull();
+      expect(resetSession.saved_record_rowid).toBeNull();
     } finally {
       await page.request.post("/competition/api/v1/traffic/wireless/arm", { data: { event_type: "내구", action: "off" } }).catch(() => {});
+      await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("내구")}`).catch(() => {});
       await page.request.delete(`/competition/api/v1/traffic/records/${RECORD}`).catch(() => {});
       await page.request.delete(`/competition/api/v1/traffic/wireless/mapping/${NODE}`).catch(() => {});
       await ctx.close();
