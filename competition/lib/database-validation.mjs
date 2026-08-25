@@ -3,6 +3,9 @@ import { assertCanonicalTeamReferences } from "./team-references.mjs";
 
 export function normalizeSchemaSql(sql) {
   return String(sql || "").trim().replace(/\s+/g, " ")
+    // Traffic rebuilds the table through ALTER TABLE ... RENAME TO record;
+    // SQLite persists that equivalent declaration with a quoted table name.
+    .replace(/^CREATE TABLE "record"(?=\s*\()/i, "CREATE TABLE record")
     .replace(/(\byear\s+integer\s+not\s+null\s+default\s+)20\d{2}\b/gi, "$1<year>");
 }
 

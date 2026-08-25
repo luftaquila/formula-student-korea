@@ -218,6 +218,34 @@ function restoreRetiredCalledStatus(dbPath) {
   return teamId;
 }
 
+function restoreLegacyTrafficRecordSchema(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    DROP TABLE record;
+    CREATE TABLE record (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      legacy_rowid INTEGER NOT NULL,
+      time TEXT NOT NULL,
+      num INTEGER NOT NULL,
+      univ TEXT NOT NULL,
+      team TEXT NOT NULL,
+      type TEXT NOT NULL,
+      result INTEGER NOT NULL,
+      detail TEXT,
+      cones INTEGER DEFAULT 0,
+      oc INTEGER DEFAULT 0,
+      invalidated INTEGER DEFAULT 0,
+      scoreboard INTEGER DEFAULT 1,
+      team_id INTEGER
+    );
+    CREATE UNIQUE INDEX idx_record_name_legacy_rowid ON record(name, legacy_rowid);
+    CREATE INDEX idx_record_name_num ON record(name, num);
+    CREATE INDEX idx_record_team_id ON record(team_id);
+  `);
+  writer.close();
+}
+
 function removeRegistrationSchema(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
@@ -838,6 +866,36 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(upgraded.length, COMPETITION_SCHEMA_CONTRACT.objectCount);
     assert.equal(competitionSchemaContractDigest(upgraded), COMPETITION_SCHEMA_CONTRACT.sha256);
     assert.equal(validateDatabase(dbPath).status, 0);
+  });
+
+  it("accepts a Traffic status upgrade whose renamed record table is quoted by SQLite", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-traffic-status-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    restoreLegacyTrafficRecordSchema(dbPath);
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    upgraded.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    const recordSql = reader.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'record'",
+    ).get().sql;
+    const contract = captureCompetitionSchemaContract(reader);
+    reader.close();
+
+    assert.match(recordSql, /^CREATE TABLE "record"/);
+    assert.equal(contract.length, COMPETITION_SCHEMA_CONTRACT.objectCount);
+    assert.equal(competitionSchemaContractDigest(contract), COMPETITION_SCHEMA_CONTRACT.sha256);
+    const result = validateDatabase(dbPath);
+    assert.equal(result.status, 0, result.stderr);
   });
 
   it("accepts a full Competition database and rejects a schema-shaped subset", () => {
