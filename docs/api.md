@@ -346,10 +346,10 @@ There are no answer or memo version numbers. If `expectedValue` or `expectedMemo
 | DELETE | `/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |
 | GET | `/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge, sessions, lastEventId }` | 신선 로드용 종합 스냅샷. 각 session은 물리 초기화의 OFF 확인 대기 여부인 `reset_pending`을 포함 |
 | GET | `/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
-| POST | `/wireless/arm` | admin | `{ event_type, action: green\|red\|off\|reset, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. lease 점유자 있으면 그만(409). green은 기록 엔진 런 리셋, reset은 런 식별자와 저장 기록 포인터를 폐기. `wireless:session` 브로드캐스트 |
+| POST | `/wireless/arm` | admin | `{ event_type, action: green\|red\|off\|reset, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. lease 점유자 있으면 그만(409). green은 기록 엔진 런 리셋(물리 reset의 OFF 확인 대기 중이면 409), reset은 런 식별자와 저장 기록 포인터를 폐기. `wireless:session` 브로드캐스트 |
 | POST | `/wireless/select` | admin | `{ event_type, team?: { id, num, univ, team }\|null, event_name?: string\|null }` | `{ ...session }` | 경기 선택(팀·이벤트명) 공유 — 서버 기록 귀속. 안정적 팀 ID를 현재 활성 팀으로 재확인하며 오래되거나 유효하지 않으면 409, null=해제. lease 점유자만. `wireless:session` 브로드캐스트 |
 | POST | `/wireless/dnf` | admin | `{ event_type }` | `{ ok }` | 진행 경기 DNF(result -1) 저장(세션 선택으로 귀속). 미arm 400, 이미 기록된 런 409, 미선택 400. lease 점유자만 |
-| POST | `/wireless/command` | admin | `{ event_type, action: green\|red\|off\|reset }` | `{ ok, session? }` | 물리 신호등(SSR) 원격 제어 다운링크 — 서버→브리지(`wireless:command`)→시리얼. reset은 session의 `reset_pending`을 즉시 브로드캐스트하고, 마스터 OFF 보고에서 런 폐기를 확정. 물리 지정 경기+브리지 online+lease 필요(아니면 409) |
+| POST | `/wireless/command` | admin | `{ event_type, action: green\|red\|off\|reset }` | `{ ok, session? }` | 물리 신호등(SSR) 원격 제어 다운링크 — 서버→브리지(`wireless:command`)→시리얼. reset은 session의 `reset_pending`을 즉시 브로드캐스트하고, 마스터 OFF 보고에서 런 폐기를 확정하며 그 전의 green은 409. 물리 지정 경기+브리지 online+lease 필요(아니면 409) |
 | POST | `/wireless/lease/:event` | admin | — | `{ ...session }` | 경기 독점 제어 lease 획득/갱신(heartbeat). 타인 점유 시 409. 점유자 변경 시만 `wireless:session` 브로드캐스트(heartbeat는 조용히 만료 연장) |
 | DELETE | `/wireless/lease/:event` | admin | — | `{ ...session }` | lease 해제(보유자 또는 admin 강제 회수). `wireless:session` 브로드캐스트 |
 | GET | `/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |

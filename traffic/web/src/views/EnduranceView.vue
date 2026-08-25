@@ -259,7 +259,7 @@ onUnmounted(() => clearTimeout(selectTimer));
             </div>
           </div>
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
+            <button class="btn btn-success" :disabled="!lightReady || serial.green.active || resetInProgress" @click="handleGreen">
               녹색등
             </button>
             <button

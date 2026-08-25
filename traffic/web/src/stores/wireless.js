@@ -484,12 +484,9 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼 다운링크).
   async function commandPhysical(mode, action) {
     try {
-      const result = await commandWirelessPhysical(EVENT_TYPE[mode], action);
-      // 초기화 요청자는 SSE 전달이 지연되거나 재연결 중이어도 응답에 포함된 서버 권위
-      // pending 상태를 즉시 반영한다. 관찰자 화면은 같은 상태를 wireless:session으로 받는다.
-      if (result?.session?.event_type) {
-        sessions.value = { ...sessions.value, [result.session.event_type]: result.session };
-      }
+      // 세션 상태는 SSE만 반영한다. 명령 응답에는 요청 시점의 pending 스냅샷이 포함될 수
+      // 있어, 그 사이 OFF 확정 SSE가 먼저 도착한 경우 응답으로 이전 런을 되살리면 안 된다.
+      await commandWirelessPhysical(EVENT_TYPE[mode], action);
       return true;
     } catch (e) {
       notyf.error(e.message);
@@ -540,6 +537,10 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   async function greenFor(mode, team = null, eventName = null) {
     if (!requireControl(mode)) return false;
+    if (sessions.value?.[EVENT_TYPE[mode]]?.reset_pending) {
+      notyf.error("초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.");
+      return false;
+    }
     warnIfMasterOffline();
     const missing = missingRoles(mode);
     if (missing.length) {

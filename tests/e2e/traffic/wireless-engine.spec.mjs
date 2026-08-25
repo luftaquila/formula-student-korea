@@ -24,7 +24,6 @@ test.describe("Wireless record engine (ingest contract)", () => {
 
     try {
       await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("내구")}`).catch(() => {});
-      await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } });
       // 내구는 단일 센서 멀티랩(role=start). 매핑 등록.
       const mapRes = await page.request.put(`/competition/api/v1/traffic/wireless/mapping/${NODE}`, {
         data: { event_type: "내구", role: "start" },

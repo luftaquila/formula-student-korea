@@ -122,6 +122,14 @@ const {
   wireless: () => props.wireless,
   session: () => serial.session,
 });
+const recordResultDisplay = computed(() => {
+  if (displayRecord.value?.time) return displayRecord.value.time;
+  const result = recentRecord.value?.result;
+  if (result == null || result === "") return "—";
+  const milliseconds = Number(result);
+  if (!Number.isFinite(milliseconds)) return "—";
+  return milliseconds < 0 ? "DNF" : msToClockStr(milliseconds);
+});
 
 function handleConnect() {
   serial.connect();
@@ -262,7 +270,7 @@ onUnmounted(() => clearTimeout(selectTimer));
             </div>
           </div>
           <div class="btn-group">
-            <button class="btn btn-success" :disabled="!lightReady || serial.green.active" @click="handleGreen">
+            <button class="btn btn-success" :disabled="!lightReady || serial.green.active || resetInProgress" @click="handleGreen">
               녹색등
             </button>
             <button
@@ -381,7 +389,7 @@ onUnmounted(() => clearTimeout(selectTimer));
         </div>
       </div>
 
-      <div v-if="displayRecord" class="saved-section card">
+      <div v-if="displayRecord || recentRecord" class="saved-section card">
         <div class="card-header record-header">
           <h3>🏁 측정 기록</h3>
           <div v-if="recentRecord && quickEditSaveState === 'saved'" class="save-status" data-testid="quick-save-status" aria-live="polite">
@@ -400,13 +408,13 @@ onUnmounted(() => clearTimeout(selectTimer));
           >
             <template #summary>
               <div class="saved-item is-saved">
-                {{ displayRecord.time }}
+                {{ recordResultDisplay }}
                 <span class="save-badge">💾</span>
               </div>
             </template>
           </RecordQuickEdit>
           <div v-else class="saved-item" :class="{ 'is-saved': savedRecord }">
-            {{ displayRecord.time }}
+            {{ recordResultDisplay }}
             <span v-if="savedRecord" class="save-badge">💾</span>
           </div>
         </div>

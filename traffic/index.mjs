@@ -1682,10 +1682,21 @@ app.post("/api/wireless/light", (req, res) => {
     // 물리 지정 경기의 arm 상태를 세션에도 반영(green=arm). 전 클라가 wireless:session으로 공유.
     let session = null;
     let resetFinalized = false;
+    let pendingGreenIgnored = false;
     let openedRun = null;
     if (light.owner_event) {
       const cur = db.prepare("SELECT armed, light_color, green_tick, reset_pending FROM wireless_session WHERE event_type = ?").get(light.owner_event);
-      if (color === "green") {
+      if (color === "off" && cur?.reset_pending) {
+        // 물리 초기화는 마스터가 실제 OFF를 보고한 시점에만 확정한다. 이 세션 갱신이
+        // 모든 관찰자와 재접속 클라이언트에서 이전 편집 카드를 폐기하는 권위 신호다.
+        db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+          .run(light.owner_event);
+        resetFinalized = true;
+      } else if (color === "green" && cur?.reset_pending) {
+        // 초기화 요청 이후 지연되거나 예기치 않게 도착한 green 보고가 이전 런을 새 run_id로
+        // 바꾸지 못하게 한다. pending은 오직 실제 OFF 보고만 해제할 수 있다.
+        pendingGreenIgnored = true;
+      } else if (color === "green") {
         // 중복 L green 방어: 이미 같은 green(또는 tick 미동봉 재보고)으로 armed면 런을 리셋하지 않는다.
         // (마스터의 재전송/바운스가 진행 중 측정 런을 날리는 것을 막음.)
         const dup = cur && cur.armed && cur.light_color === "green" && (gtParam == null || cur.green_tick === gtParam);
@@ -1695,19 +1706,13 @@ app.post("/api/wireless/light", (req, res) => {
             .run(gtParam, new Date().toISOString(), runId, light.owner_event);
           openedRun = { eventType: light.owner_event, runId };
         }
-      } else if (color === "off" && cur?.reset_pending) {
-        // 물리 초기화는 마스터가 실제 OFF를 보고한 시점에만 확정한다. 이 세션 갱신이
-        // 모든 관찰자와 재접속 클라이언트에서 이전 편집 카드를 폐기하는 권위 신호다.
-        db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(light.owner_event);
-        resetFinalized = true;
       } else {
         db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
           .run(color === "red" ? "red" : "off", light.owner_event);
       }
       session = getSession(light.owner_event);
     }
-    return { bridge, light, session, resetFinalized, openedRun };
+    return { bridge, light, session, resetFinalized, pendingGreenIgnored, openedRun };
   })());
   if (!result.success) {
     logger.warn(req, "wireless.light", {
@@ -1723,6 +1728,14 @@ app.post("/api/wireless/light", (req, res) => {
   }
   if (result.result.openedRun) {
     resetEngineRun(result.result.openedRun.eventType, null, result.result.openedRun.runId);
+  }
+  if (result.result.pendingGreenIgnored) {
+    logger.warn(req, "wireless.light", {
+      error: "초기화 OFF 확인 대기 중 green 보고를 무시했습니다.",
+      reason: "reset_pending",
+      color,
+      reset_pending: true,
+    }, result.result.session?.event_type || "light");
   }
   logger.log(req, "wireless.light", { color, green_tick: gtParam }, "light");
   if (result.result.resetFinalized && result.result.session) engineRun.delete(result.result.session.event_type);
@@ -1834,6 +1847,14 @@ app.post("/api/wireless/arm", (req, res) => {
     return rejectMutation(req, res, {
       action: "wireless.arm", status: 409, message, target: event_type, operation: action,
       context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor },
+    });
+  }
+  if (action === "green" && sess?.reset_pending) {
+    return rejectMutation(req, res, {
+      action: "wireless.arm", status: 409,
+      message: "초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.",
+      target: event_type, operation: action,
+      context: { event_type, reset_pending: true, run_id: sess.run_id ?? null },
     });
   }
   let green_tick = null;
@@ -2081,6 +2102,14 @@ app.post("/api/wireless/command", (req, res) => {
     return rejectMutation(req, res, {
       action: "wireless.command", status: 409, message: "물리 신호등 지정 경기가 아닙니다.",
       target: event_type, operation: action, context: { event_type, owner_event: light.owner_event ?? null },
+    });
+  }
+  if (action === "green" && sess?.reset_pending) {
+    return rejectMutation(req, res, {
+      action: "wireless.command", status: 409,
+      message: "초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.",
+      target: event_type, operation: action,
+      context: { event_type, reset_pending: true, run_id: sess.run_id ?? null },
     });
   }
   if (!bridgeOnline) {
