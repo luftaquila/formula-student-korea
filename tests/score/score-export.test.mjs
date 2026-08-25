@@ -7,18 +7,18 @@ import {
 } from "../../score/web/src/lib/scoreExport.js";
 
 describe("score sheet event export", () => {
-  it("adds score, Best, and four valid-run columns for a dynamic event", () => {
+  it("adds score, best-record, and four run columns for a dynamic event", () => {
     assert.deepEqual(buildEventExportHeaders("가속"), [
       "가속 점수",
-      "가속 Best 기록",
-      "가속 유효 기록 1",
-      "가속 유효 기록 2",
-      "가속 유효 기록 3",
-      "가속 유효 기록 4",
+      "가속 최고기록",
+      "가속 기록 1",
+      "가속 기록 2",
+      "가속 기록 3",
+      "가속 기록 4",
     ]);
-    assert.deepEqual(buildEventExportHeaders("내구", { runLimit: 0 }), [
+    assert.deepEqual(buildEventExportHeaders("내구", { runLimit: 0, recordLabel: "기록" }), [
       "내구 점수",
-      "내구 Best 기록",
+      "내구 기록",
     ]);
   });
 

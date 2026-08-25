@@ -19,11 +19,14 @@ function adjustedResult(record, penalty = {}) {
     + (Number(record.oc) || 0) * (Number(penalty.oc_penalty) || 0) * 1000;
 }
 
-export function buildEventExportHeaders(eventType, { runLimit = SCORE_EXPORT_RUN_LIMIT } = {}) {
+export function buildEventExportHeaders(eventType, {
+  runLimit = SCORE_EXPORT_RUN_LIMIT,
+  recordLabel = "최고기록",
+} = {}) {
   return [
     `${eventType} 점수`,
-    `${eventType} Best 기록`,
-    ...Array.from({ length: runLimit }, (_, index) => `${eventType} 유효 기록 ${index + 1}`),
+    `${eventType} ${recordLabel}`,
+    ...Array.from({ length: runLimit }, (_, index) => `${eventType} 기록 ${index + 1}`),
   ];
 }
 

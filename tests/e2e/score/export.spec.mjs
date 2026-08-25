@@ -28,11 +28,11 @@ test.describe("Score export", () => {
     const csv = await readFile(await download.path(), "utf8");
     const [header] = csv.replace(/^\uFEFF/, "").split("\n");
     expect(header).toContain('"가속 점수"');
-    expect(header).toContain('"가속 Best 기록"');
-    expect(header).toContain('"가속 유효 기록 1"');
-    expect(header).toContain('"가속 유효 기록 4"');
+    expect(header).toContain('"가속 최고기록"');
+    expect(header).toContain('"가속 기록 1"');
+    expect(header).toContain('"가속 기록 4"');
     expect(header).toContain('"내구 점수"');
-    expect(header).toContain('"내구 Best 기록"');
+    expect(header).toContain('"내구 기록"');
   });
 
   test("XLSX export downloads a file from score dashboard", async ({ page }) => {

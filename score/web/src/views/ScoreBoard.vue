@@ -818,7 +818,7 @@ function exportData(format) {
   }
   headers.push("총점");
   for (const evt of dynamicEvents.value) headers.push(...buildEventExportHeaders(evt.type));
-  headers.push(...buildEventExportHeaders("내구", { runLimit: 0 }));
+  headers.push(...buildEventExportHeaders("내구", { runLimit: 0, recordLabel: "기록" }));
   headers.push("보고서", "에너지", "가점", "감점");
 
   const rows = entryList.value.map((entry) => {
