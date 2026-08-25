@@ -21,7 +21,7 @@ function adjustedResult(record, penalty = {}) {
 
 export function buildEventExportHeaders(eventType, {
   runLimit = SCORE_EXPORT_RUN_LIMIT,
-  recordLabel = "최고기록",
+  recordLabel = "최고 기록",
 } = {}) {
   return [
     `${eventType} 점수`,

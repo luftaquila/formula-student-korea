@@ -10,7 +10,7 @@ describe("score sheet event export", () => {
   it("adds score, best-record, and four run columns for a dynamic event", () => {
     assert.deepEqual(buildEventExportHeaders("가속"), [
       "가속 점수",
-      "가속 최고기록",
+      "가속 최고 기록",
       "가속 기록 1",
       "가속 기록 2",
       "가속 기록 3",
