@@ -17,6 +17,7 @@ export function createDocumentsApp(options = {}) {
 const enableNotificationScheduler = options.enableNotificationScheduler !== false;
 const notificationTasks = new Set();
 const removeDirectory = options.removeDirectory || ((dir) => fs.rmSync(dir, { recursive: true, force: true }));
+const createArchive = options.archiveFactory || archiver;
 
 const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "documents", express, Database, options,
@@ -1236,7 +1237,7 @@ app.get("/api/submissions/:subId/zip", async (req, res) => {
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(zipName)}`);
 
-  const archive = archiver("zip", { zlib: { level: 5 } });
+  const archive = createArchive("zip", { zlib: { level: 5 } });
   archive.on("error", (err) => {
     logger.warn(req, "file.zip", { error: err.message, year: sub.session_year, submission_id: sub.id }, `#${sub.team_num}`);
     if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
@@ -1583,7 +1584,7 @@ app.get("/api/admin/sessions/:id/archive", async (req, res) => {
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${sessionName}.zip`)}`);
 
-  const archive = archiver("zip", { zlib: { level: 5 } });
+  const archive = createArchive("zip", { zlib: { level: 5 } });
   archive.on("error", (err) => {
     logger.warn(req, "session.archive", { error: err.message, session_id: id }, session.name);
     if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
@@ -1642,9 +1643,13 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(zipName)}`);
 
-  const archive = archiver("zip", { zlib: { level: 5 } });
+  const archive = createArchive("zip", { zlib: { level: 5 } });
+  let archiveFailed = false;
   archive.on("error", (err) => {
-    logger.warn(req, "file.admin_zip", { error: err.message, submission_id: sub.id });
+    archiveFailed = true;
+    logger.warn(req, "file.admin_zip", {
+      error: err.message, year: session.year, submission_id: sub.id, team_num: sub.team_num,
+    }, `#${sub.team_num}`);
     if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");
   });
   archive.pipe(res);
@@ -1659,6 +1664,7 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
 
   // 스트리밍 중 archiver 에러가 나면 error 핸들러가 warn을 남기므로, 완료를 확인한 뒤에만 성공 로그를 남긴다
   await archive.finalize();
+  if (archiveFailed) return;
   logger.log(req, "file.admin_zip", { session_name: session?.name, year: session.year, team_num: sub.team_num, files: files.length }, `#${sub.team_num}`);
 });
 
@@ -1859,7 +1865,7 @@ app.get("/api/admin/years/:year/archive", async (req, res) => {
   res.setHeader("Content-Type", "application/zip");
   res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`FSK_${year}_documents.zip`)}`);
 
-  const archive = archiver("zip", { zlib: { level: 5 } });
+  const archive = createArchive("zip", { zlib: { level: 5 } });
   archive.on("error", (err) => {
     logger.warn(req, "year.archive", { error: err.message, year });
     if (!res.headersSent) res.status(500).send("압축 중 오류가 발생했습니다.");

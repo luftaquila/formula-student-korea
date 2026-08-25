@@ -54,6 +54,15 @@ function targetTeamReference(target, fallbackYear) {
   return match ? { year: fallbackYear, number: positiveInteger(match[1]) } : null;
 }
 
+function teamObjectReference(value, fallbackYear) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return {
+    id: value.id ?? value.teamId ?? value.team_id,
+    year: value.year ?? fallbackYear,
+    number: value.number ?? value.num ?? value.team_num,
+  };
+}
+
 function collectTeamReferences(detail, target) {
   const year = teamReferenceYear(detail);
   const refs = [];
@@ -65,22 +74,39 @@ function collectTeamReferences(detail, target) {
     };
     if (!normalized.id && !normalized.number) return;
     if (normalized.number && !normalized.year && !normalized.id) return;
-    if (refs.some((candidate) => (
-      normalized.id && candidate.id === normalized.id
-    ) || (
-      normalized.number && candidate.number === normalized.number && candidate.year === normalized.year
-    ))) return;
+    const existing = refs.find((candidate) => {
+      if (normalized.id && candidate.id) return candidate.id === normalized.id;
+      return normalized.number && candidate.number === normalized.number
+        && candidate.year === normalized.year;
+    });
+    if (existing) {
+      existing.id ??= normalized.id;
+      existing.year ??= normalized.year;
+      existing.number ??= normalized.number;
+      return;
+    }
     refs.push(normalized);
   };
 
-  add(targetTeamReference(target, year));
-  if (!detail || typeof detail !== "object" || Array.isArray(detail)) return refs;
+  const targetReference = targetTeamReference(target, year);
+  if (!detail || typeof detail !== "object" || Array.isArray(detail)) {
+    add(targetReference);
+    return refs;
+  }
 
+  const directId = detail.team_id ?? detail.teamId;
+  const directNumber = detail.team_num ?? detail.entry_num ?? detail.num ?? detail.number;
   add({
-    id: detail.team_id ?? detail.teamId,
+    id: directId,
     year,
-    number: detail.team_num ?? detail.entry_num ?? detail.num ?? detail.number,
+    number: directNumber ?? (directId ? targetReference?.number : null),
   });
+  for (const value of [detail.team, detail.entry]) add(teamObjectReference(value, year));
+  for (const state of [detail.before, detail.after]) {
+    if (!state || typeof state !== "object" || Array.isArray(state)) continue;
+    for (const value of [state.team, state.entry]) add(teamObjectReference(value, year));
+  }
+  add(targetReference);
   for (const key of ["sub_team", "my_team"]) add({ year, number: detail[key] });
   for (const key of ["before_teams", "after_teams", "team_numbers"]) {
     if (Array.isArray(detail[key])) {
@@ -96,22 +122,10 @@ function collectTeamReferences(detail, target) {
       });
     }
   }
-  for (const value of [detail.team, detail.entry]) {
-    if (!value || typeof value !== "object") continue;
-    add({
-      id: value.id ?? value.teamId ?? value.team_id,
-      year: value.year ?? year,
-      number: value.number ?? value.num ?? value.team_num,
-    });
-  }
   if (Array.isArray(detail.teams)) {
     for (const value of detail.teams) {
       if (typeof value === "object" && value) {
-        add({
-          id: value.id ?? value.teamId ?? value.team_id,
-          year: value.year ?? year,
-          number: value.number ?? value.num ?? value.team_num,
-        });
+        add(teamObjectReference(value, year));
       } else {
         add({ year, number: value });
       }
@@ -124,11 +138,11 @@ function resolveAuditTeam(teamSource, reference) {
   if (!teamSource || !reference) return null;
   try {
     let team = null;
-    if (reference.number && reference.year && typeof teamSource.getByNumber === "function") {
-      team = teamSource.getByNumber(reference.year, reference.number, { includeInactive: true });
-    }
-    if (!team && reference.id && typeof teamSource.getById === "function") {
+    if (reference.id && typeof teamSource.getById === "function") {
       team = teamSource.getById(reference.id);
+    }
+    if (!team && reference.number && reference.year && typeof teamSource.getByNumber === "function") {
+      team = teamSource.getByNumber(reference.year, reference.number, { includeInactive: true });
     }
     if (!team && reference.number && reference.year && typeof teamSource.moduleEntries === "function") {
       const entries = teamSource.moduleEntries(reference.year, { includeInactive: true });
@@ -150,22 +164,22 @@ function enrichTeamDetail(detail, target, teamSource) {
     : (typeof detail === "object" && !Array.isArray(detail) ? detail : null);
   if (!objectDetail) return detail;
 
-  const existing = normalizeAuditTeam(objectDetail.team);
   const resolved = collectTeamReferences(objectDetail, target)
     .map((reference) => resolveAuditTeam(teamSource, reference))
     .filter(Boolean);
   const teams = [];
-  for (const team of [...(existing ? [existing] : []), ...resolved]) {
+  for (const team of resolved) {
     if (teams.some((candidate) => (
       team.id && candidate.id === team.id
     ) || (candidate.year === team.year && candidate.number === team.number))) continue;
     teams.push(team);
   }
-  if (!teams.length || (existing && teams.length === 1)) return detail;
-  if (teams.length === 1 && !Object.hasOwn(objectDetail, "team")) {
+  if (!teams.length) return detail;
+  if (teams.length === 1) {
+    if (Object.hasOwn(objectDetail, "team")) return { ...objectDetail, team: teams[0] };
     return { team: teams[0], ...objectDetail };
   }
-  return { teams, ...objectDetail };
+  return { ...objectDetail, teams };
 }
 
 // logs 테이블 필터 쿼리 파라미터(level/action/actor/from/to/search)를 WHERE 절과

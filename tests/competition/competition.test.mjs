@@ -734,6 +734,19 @@ describe("Competition modular monolith", () => {
         },
       });
       assert.equal(armed.status, 200, await armed.clone().text());
+      const armAudit = created.db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'wireless.arm' AND level = 'info' AND target = '오토크로스'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.deepEqual(JSON.parse(armAudit.detail).team, {
+        id: currentTeam.id,
+        year: YEAR,
+        number: 7,
+        university: "Canonical University",
+        name: "Canonical Team",
+        active: true,
+      });
       await client.post("/competition/api/v1/traffic/wireless/ingest", {
         cookie: admin,
         body: { events: [{ node_id: "canonical-start", master_tick: "1600000000", ev_seq: 1 }] },

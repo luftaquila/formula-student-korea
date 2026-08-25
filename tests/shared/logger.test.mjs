@@ -133,6 +133,77 @@ describe('createLogger', () => {
     auditDb.close();
   });
 
+  it('prefers a stable team ID when a former entry number has been reused', () => {
+    const auditDb = new Database(':memory:');
+    const lookups = [];
+    const original = {
+      id: 107, year: 2025, number: 8,
+      university: '원래대학교', name: '원래팀', active: true,
+    };
+    const replacement = {
+      id: 207, year: 2025, number: 7,
+      university: '대체대학교', name: '대체팀', active: true,
+    };
+    const auditLogger = createLogger(auditDb, 'stable-team-audit', 50000, {
+      teamSource: {
+        getById: (id) => {
+          lookups.push(`id:${id}`);
+          return Number(id) === original.id ? original : null;
+        },
+        getByNumber: (year, number) => {
+          lookups.push(`number:${year}#${number}`);
+          return Number(year) === 2025 && Number(number) === 7 ? replacement : null;
+        },
+      },
+    });
+
+    auditLogger.log(mockReq(), 'entry.renumbered', {
+      year: 2025,
+      team_id: original.id,
+      team_num: 7,
+    }, '#7');
+
+    const row = auditDb.prepare(
+      "SELECT detail FROM logs WHERE module = 'stable-team-audit' AND action = 'entry.renumbered'",
+    ).get();
+    assert.deepEqual(JSON.parse(row.detail).team, original);
+    assert.deepEqual(lookups, [`id:${original.id}`]);
+    auditDb.close();
+  });
+
+  it('canonicalizes existing and nested Traffic team references', () => {
+    const auditDb = new Database(':memory:');
+    const teams = {
+      107: {
+        id: 107, year: 2026, number: 7,
+        university: '정식대학교', name: '정식팀', active: true,
+      },
+      108: {
+        id: 108, year: 2026, number: 8,
+        university: '다른대학교', name: '다른팀', active: true,
+      },
+    };
+    const auditLogger = createLogger(auditDb, 'traffic-audit', 50000, {
+      teamSource: { getById: (id) => teams[id] ?? null },
+    });
+
+    auditLogger.log(mockReq(), 'wireless.dnf', {
+      team: { id: 107, teamId: 107, num: 7, univ: 'stale', team: 'stale', active: true },
+      event_name: 'DNF',
+    }, '오토크로스');
+    auditLogger.log(mockReq(), 'wireless.select', {
+      before: { team: { id: 107, num: 7, univ: 'stale', team: 'stale' } },
+      after: { team: { id: 108, num: 8, univ: 'stale', team: 'stale' } },
+    }, '오토크로스');
+
+    const rows = auditDb.prepare(
+      "SELECT action, detail FROM logs WHERE module = 'traffic-audit' ORDER BY id",
+    ).all().map((row) => ({ ...row, detail: JSON.parse(row.detail) }));
+    assert.deepEqual(rows[0].detail.team, teams[107]);
+    assert.deepEqual(rows[1].detail.teams, [teams[107], teams[108]]);
+    auditDb.close();
+  });
+
   it('keeps the original audit writable when canonical team resolution fails', () => {
     const auditDb = new Database(':memory:');
     const auditLogger = createLogger(auditDb, 'team-audit-failure', 50000, {
