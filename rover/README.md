@@ -222,8 +222,13 @@ Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover d
 
 5. **Tailscale** (off-LAN):
    ```bash
-   ssh fsk@<rover-ip> sudo tailscale up --auth-key=tskey-…
+   ssh fsk@<rover-ip> sudo tailscale up --auth-key=tskey-… --accept-dns=true
    ```
+   The baked NetworkManager profile keeps `1.1.1.1` and `8.8.8.8` as the
+   system upstream resolvers. Tailscale preserves them as the public fallback
+   while serving MagicDNS names (including short tailnet hostnames) through
+   `100.100.100.100`. Chrony uses pinned NTP IPs before Tailscale starts, so a
+   cold boot does not depend on either DNS path.
 
 6. **Verify**:
    ```bash
@@ -249,6 +254,7 @@ Unreachable (no LAN, no Tailscale) → reflash SD. On-rover: `bootc rollback`.
 | `NTRIP_USERNAME` | podman secret `ntrip-username` | same pattern |
 | `SERVER_URL`, `ROS_DOMAIN_ID` | `/etc/pilot/pilot.conf` | `sudo $EDITOR /etc/pilot/pilot.conf` |
 | Wi-Fi | `/etc/NetworkManager/system-connections/fsk-default.nmconnection` | `sudo nmcli connection modify fsk-default …` |
+| Host DNS | public fallback in `fsk-default`; MagicDNS via Tailscale | `sudo tailscale set --accept-dns=true` |
 | Mission params | `pilot/config/rover_params.yaml` (baked) | new pilot build → push → auto-update |
 | OTA channel | `bootc status` (host); `pilot-run` `IMAGE=` (pilot) | `sudo bootc switch …:edge`; rebake host |
 | OTA freeze | both timers | `sudo systemctl disable --now <timer>` |
