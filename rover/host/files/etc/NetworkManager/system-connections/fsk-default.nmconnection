@@ -18,6 +18,13 @@ psk=password
 
 [ipv4]
 method=auto
+# Keep DHCP for the rover address, gateway, and routes, but make the host's
+# upstream resolvers deterministic. When Tailscale DNS is enabled it replaces
+# /etc/resolv.conf with MagicDNS and preserves these servers as its public-DNS
+# fallback. Without an explicit fallback MagicDNS returns SERVFAIL for public
+# names (for example ghcr.io) when the AP supplies no usable DNS server.
+ignore-auto-dns=true
+dns=1.1.1.1;8.8.8.8;
 
 [ipv6]
 method=ignore
