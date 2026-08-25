@@ -129,10 +129,13 @@ const entryList = computed(() => {
       const bRec = evt?.records[b.num];
       const aAdj = getAdjustedResult(eventType, aRec);
       const bAdj = getAdjustedResult(eventType, bRec);
-      // DNF(-1)는 완주 기록 뒤·미기록(null) 앞으로 정렬돼야 한다. Infinity-1은 IEEE754에서
-      // 그대로 Infinity라 DNF와 null이 동률이 됐다 — 유한 sentinel로 순서를 되살린다.
-      aVal = aAdj == null ? Infinity : aAdj === -1 ? Number.MAX_SAFE_INTEGER : Number(aAdj);
-      bVal = bAdj == null ? Infinity : bAdj === -1 ? Number.MAX_SAFE_INTEGER : Number(bAdj);
+      const sortValue = (rec, adjusted) => {
+        if (adjusted != null) return Number(adjusted);
+        if (rec?.status === "DNF" || rec?.status === "DSQ") return Number.MAX_SAFE_INTEGER;
+        return Infinity;
+      };
+      aVal = sortValue(aRec, aAdj);
+      bVal = sortValue(bRec, bAdj);
     } else {
       aVal = 0;
       bVal = 0;
@@ -261,7 +264,7 @@ function getTeamEvent(evt, num) {
 
 // 페널티 반영 기록 (ms)
 function getAdjustedResult(eventType, rec) {
-  if (!rec || rec.result == null || rec.result === -1) return rec?.result ?? null;
+  if (!rec || rec.status || rec.result == null) return null;
   const pen = penalties.value[eventType] || {};
   return rec.result + (rec.cones || 0) * (pen.cone_penalty || 0) * 1000 + (rec.oc || 0) * (pen.oc_penalty || 0) * 1000;
 }
@@ -292,9 +295,10 @@ const scoreCache = computed(() => {
     const cutoff = (s.cutoff ?? 0) / 100;
 
     for (const [num, rec] of Object.entries(evt.records)) {
+      if (rec.status === "DNF" || rec.status === "DSQ") { scores[num] = 0; continue; }
+      if (rec.status === "DNS") { scores[num] = null; continue; }
       const my = getAdjustedResult(evt.type, rec);
       if (my == null) { scores[num] = null; continue; }
-      if (my === -1) { scores[num] = 0; continue; }
       if (my <= 0) { scores[num] = finish; continue; }
       if (best == null || best <= 0 || cutoff <= 1) { scores[num] = null; continue; }
       if (my > best * cutoff) { scores[num] = finish; continue; }
@@ -763,7 +767,7 @@ function getAllRuns(eventType, num) {
 }
 
 function getRunAdjusted(eventType, run) {
-  if (!run || run.result == null || run.result < 0) return run?.result ?? null;
+  if (!run || run.status || run.result == null) return null;
   const pen = penalties.value[eventType] || {};
   return run.result + (run.cones || 0) * (pen.cone_penalty || 0) * 1000 + (run.oc || 0) * (pen.oc_penalty || 0) * 1000;
 }
@@ -775,8 +779,7 @@ function getBestRunIndex(eventType, num) {
   let bestAdj = Infinity;
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
-    if (r.invalidated) continue;
-    if (r.result == null || r.result < 0) continue;
+    if (r.status || r.result == null || r.result <= 0) continue;
     const adj = r.result + (r.cones || 0) * pen.cone_penalty * 1000 + (r.oc || 0) * pen.oc_penalty * 1000;
     if (adj < bestAdj) { bestAdj = adj; bestIdx = i; }
   }
@@ -789,10 +792,9 @@ function getSortedRuns(eventType, num) {
   if (detailSortMode.value === "score") {
     const pen = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0 };
     indexed.sort((a, b) => {
-      if (a.invalidated && !b.invalidated) return 1;
-      if (!a.invalidated && b.invalidated) return -1;
-      const aAdj = a.result != null && a.result >= 0 ? a.result + (a.cones || 0) * pen.cone_penalty * 1000 + (a.oc || 0) * pen.oc_penalty * 1000 : Infinity;
-      const bAdj = b.result != null && b.result >= 0 ? b.result + (b.cones || 0) * pen.cone_penalty * 1000 + (b.oc || 0) * pen.oc_penalty * 1000 : Infinity;
+      const aAdj = !a.status && a.result > 0 ? a.result + (a.cones || 0) * pen.cone_penalty * 1000 + (a.oc || 0) * pen.oc_penalty * 1000 : Infinity;
+      const bAdj = !b.status && b.result > 0 ? b.result + (b.cones || 0) * pen.cone_penalty * 1000 + (b.oc || 0) * pen.oc_penalty * 1000 : Infinity;
+      if (aAdj === bAdj) return String(a.status || "").localeCompare(String(b.status || ""));
       return aAdj - bAdj;
     });
   }
@@ -1041,10 +1043,10 @@ function exportData(format) {
                   >
                     <template v-if="displayMode === 'record'">
                       <span
-                        v-if="getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)) != null"
+                        v-if="getTeamEvent(evt, entry.num)?.status || getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)) != null"
                         class="record-value"
-                        :class="{ dnf: getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)) === -1 }"
-                      >{{ formatResult(getAdjustedResult(evt.type, getTeamEvent(evt, entry.num))) }}</span>
+                        :class="(getTeamEvent(evt, entry.num)?.status || '').toLowerCase()"
+                      >{{ formatResult(getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)), getTeamEvent(evt, entry.num)?.status) }}</span>
                       <span v-else class="record-value dns">-</span>
                     </template>
                     <template v-else>
@@ -1055,10 +1057,10 @@ function exportData(format) {
                   <td class="col-event">
                     <template v-if="displayMode === 'record'">
                       <span
-                        v-if="getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num)) != null"
+                        v-if="getTeamEvent(enduranceEvent, entry.num)?.status || getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num)) != null"
                         class="record-value"
-                        :class="{ dnf: getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num)) === -1 }"
-                      >{{ formatResult(getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num))) }}</span>
+                        :class="(getTeamEvent(enduranceEvent, entry.num)?.status || '').toLowerCase()"
+                      >{{ formatResult(getAdjustedResult('내구', getTeamEvent(enduranceEvent, entry.num)), getTeamEvent(enduranceEvent, entry.num)?.status) }}</span>
                       <span v-else class="record-value dns">-</span>
                     </template>
                     <template v-else>
@@ -1146,19 +1148,19 @@ function exportData(format) {
                             v-for="(run, idx) in getSortedRuns(evt.type, entry.num)"
                             :key="evt.type + '-' + idx"
                             :data-evt-group="entry.num + ':' + evt.type"
-                            :class="{ 'run-best': !run.invalidated && run.origIndex === getBestRunIndex(evt.type, entry.num), 'evt-first-row': idx === 0 }"
+                            :class="{ 'run-best': !run.status && run.origIndex === getBestRunIndex(evt.type, entry.num), 'evt-first-row': idx === 0 }"
                             @mouseenter="hoveredEvtGroup = entry.num + ':' + evt.type"
                             @mouseleave="hoveredEvtGroup = null"
                           >
                             <td v-if="idx === 0" class="col-evt-type" :class="{ 'evt-group-hover': hoveredEvtGroup === entry.num + ':' + evt.type }" :rowspan="getSortedRuns(evt.type, entry.num).length">{{ evt.type }}</td>
-                            <td :class="{ 'run-invalidated': run.invalidated }">{{ run.time ? formatTime(run.time) : '-' }}</td>
-                            <td class="run-time" :class="{ 'run-invalidated': run.invalidated, 'run-dnf': run.result === -1 }">{{ run.result != null && run.result >= 0 ? formatResult(run.result) : (run.result === -1 ? 'DNF' : '-') }}</td>
-                            <td :class="{ 'run-invalidated': run.invalidated }">{{ run.cones || 0 }}</td>
-                            <td :class="{ 'run-invalidated': run.invalidated }">{{ run.oc || 0 }}</td>
-                            <td class="run-time" :class="{ 'run-invalidated': run.invalidated }">{{ !run.invalidated && run.result != null && run.result >= 0 ? formatResult(getRunAdjusted(evt.type, run)) : '-' }}</td>
-                            <td :class="{ 'run-invalidated': run.invalidated }">
-                              <span v-if="!run.invalidated && run.origIndex === getBestRunIndex(evt.type, entry.num)" class="badge badge-success">최고</span>
-                              <span v-else-if="run.invalidated" class="badge badge-danger">무효</span>
+                            <td :class="{ 'run-classified': run.status }">{{ run.time ? formatTime(run.time) : '-' }}</td>
+                            <td class="run-time" :class="{ 'run-classified': run.status }">{{ run.result != null ? formatResult(run.result) : '-' }}</td>
+                            <td :class="{ 'run-classified': run.status }">{{ run.cones || 0 }}</td>
+                            <td :class="{ 'run-classified': run.status }">{{ run.oc || 0 }}</td>
+                            <td class="run-time" :class="{ 'run-classified': run.status }">{{ !run.status && run.result != null ? formatResult(getRunAdjusted(evt.type, run)) : '-' }}</td>
+                            <td :class="{ 'run-classified': run.status }">
+                              <span v-if="!run.status && run.origIndex === getBestRunIndex(evt.type, entry.num)" class="badge badge-success">최고</span>
+                              <span v-else-if="run.status" class="badge badge-danger">{{ run.status }}</span>
                             </td>
                           </tr>
                         </template>
@@ -1571,7 +1573,8 @@ function exportData(format) {
   color: var(--accent-success);
 }
 
-.record-value.dnf {
+.record-value.dnf,
+.record-value.dsq {
   color: var(--accent-danger);
 }
 
@@ -2033,14 +2036,8 @@ function exportData(format) {
   background: rgba(34, 197, 94, 0.08);
 }
 
-td.run-invalidated {
+td.run-classified {
   opacity: 0.45;
-  text-decoration: line-through;
-}
-
-td.run-dnf {
-  color: var(--accent-danger);
-  font-weight: 700;
 }
 
 .detail-empty {

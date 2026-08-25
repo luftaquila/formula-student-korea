@@ -160,7 +160,7 @@ const latestByType = computed(() => {
 const bestRecords = computed(() => {
   const best = {};
   availableTypes.value.forEach((type) => {
-    const valid = recordsByType.value[type]?.filter((r) => r.result > 0) || [];
+    const valid = recordsByType.value[type]?.filter((r) => r.status == null && r.result > 0) || [];
     if (valid.length) {
       best[type] = valid.reduce((a, b) => (a.result < b.result ? a : b));
     }
@@ -172,14 +172,15 @@ const topRecords = computed(() => {
   const top = {};
   availableTypes.value.forEach((type) => {
     const latest = latestByType.value[type];
-    const valid = recordsByType.value[type]?.filter((r) => r.result > 0 && r.rowid !== latest?.rowid) || [];
+    const valid = recordsByType.value[type]?.filter((r) => r.status == null && r.result > 0 && r.rowid !== latest?.rowid) || [];
     top[type] = [...valid].sort((a, b) => a.result - b.result).slice(0, 5);
   });
   return top;
 });
 
-function formatResult(ms) {
-  if (ms < 0) return "DNF";
+function formatResult(ms, status = null) {
+  if (status) return status;
+  if (!Number.isFinite(ms) || ms <= 0) return "--:--";
 
   const totalSeconds = ms / 1000;
   const minutes = Math.floor(totalSeconds / 60);
@@ -378,7 +379,7 @@ onDeactivated(() => {
                       <div class="current-time-box">
                         <div class="time-label">Current Record</div>
                         <span class="current-time" v-if="latestByType[type]">
-                          {{ formatResult(latestByType[type].result) }}<span class="unit">s</span>
+                          {{ formatResult(latestByType[type].result, latestByType[type].status) }}<span v-if="!latestByType[type].status" class="unit">s</span>
                         </span>
                         <span class="current-time" v-else>--:--<span class="unit">s</span></span>
                       </div>

@@ -317,8 +317,7 @@ function getPenaltyTime(num) {
 
 function getFinalTime(num) {
   const s = getStatus(num);
-  if (s === "DNS") return null;
-  if (s === "DNF" || s === "DSQ") return -1;
+  if (s) return null;
   const driving = getDrivingTime(num);
   if (driving == null) return null;
   return driving + (getPenaltyTime(num) || 0);
@@ -600,7 +599,7 @@ function exportData(format) {
     const pt = getPenaltyTime(num);
     return [
       num, entry.univ || "", entry.team || "",
-      ft === -1 ? (getStatus(num) || "DNF") : (ft != null ? formatResult(ft) : ""),
+      getStatus(num) || (ft != null ? formatResult(ft) : ""),
       dt != null ? formatResult(dt) : "",
       pt ? formatResult(pt) : "",
       formatResult(getField(num, "driver1_time")) || "",
@@ -751,7 +750,7 @@ function exportData(format) {
                 <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
                 <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
                 <td class="col-summary">
-                  <span v-if="getFinalTime(entry.num) === -1" class="record-value dnf">{{ getStatus(entry.num) }}</span>
+                  <span v-if="getStatus(entry.num)" class="record-value" :class="getStatus(entry.num).toLowerCase()">{{ getStatus(entry.num) }}</span>
                   <span v-else-if="getFinalTime(entry.num) != null" class="record-value">{{ formatResult(getFinalTime(entry.num)) }}</span>
                   <span v-else class="cell-display">-</span>
                 </td>
@@ -1158,9 +1157,12 @@ function exportData(format) {
   color: var(--accent-success);
 }
 
-.record-value.dnf {
+.record-value.dnf,
+.record-value.dsq {
   color: var(--accent-danger);
 }
+
+.record-value.dns { color: var(--text-tertiary); }
 
 .cell-display {
   font-family: "JetBrains Mono", monospace;

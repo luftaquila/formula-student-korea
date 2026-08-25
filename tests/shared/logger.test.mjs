@@ -187,7 +187,7 @@ describe('createLogger', () => {
       teamSource: { getById: (id) => teams[id] ?? null },
     });
 
-    auditLogger.log(mockReq(), 'wireless.dnf', {
+    auditLogger.log(mockReq(), 'wireless.status', {
       team: { id: 107, teamId: 107, num: 7, univ: 'stale', team: 'stale', active: true },
       event_name: 'DNF',
     }, '오토크로스');

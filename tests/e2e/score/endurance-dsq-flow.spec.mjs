@@ -50,10 +50,10 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
     }
 
     // Verify final record shows "DSQ"
-    await expect(row.locator(".record-value.dnf")).toContainText("DSQ");
+    await expect(row.locator(".record-value.dsq")).toContainText("DSQ");
   });
 
-  test("DSQ team shows DNF on score dashboard", async ({ page }) => {
+  test("DSQ team shows DSQ on score dashboard", async ({ page }) => {
     // Ensure DSQ is set via API (in case previous test ordering)
     await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 20, field: "status", value: "DSQ" },
@@ -68,21 +68,21 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
     const teamRow = table.locator("tr.team-row").filter({ hasText: "고려대학교" });
     await expect(teamRow).toBeVisible();
 
-    // Expand detail to check endurance — DSQ maps to result=-1 which shows "DNF"
+    // Expand detail to check endurance — the explicit status is preserved.
     await teamRow.click();
     const detailRow = teamRow.locator("+ tr.detail-row");
 
-    // The endurance column in the team row should show "DNF"
+    // The endurance column in the team row should show "DSQ".
     await expect(async () => {
       const rowText = await teamRow.textContent();
-      expect(rowText).toContain("DNF");
+      expect(rowText).toContain("DSQ");
     }).toPass({ timeout: 10000 });
 
     // Collapse
     await teamRow.click();
   });
 
-  test("clearing DSQ removes DNF from score dashboard", async ({ page }) => {
+  test("clearing DSQ removes DSQ from score dashboard", async ({ page }) => {
     // Clear DSQ
     await page.request.put("/competition/api/v1/score/score/endurance", {
       data: { year: YEAR, team_num: 20, field: "status", value: null },
@@ -97,10 +97,10 @@ test.describe("Endurance DSQ -> Score dashboard exclusion", () => {
     const teamRow = table.locator("tr.team-row").filter({ hasText: "고려대학교" });
     await expect(teamRow).toBeVisible();
 
-    // DNF should no longer appear for endurance; should show "-" or empty
+    // DSQ should no longer appear for endurance; it should show "-" or empty.
     await expect(async () => {
       const rowText = await teamRow.textContent();
-      expect(rowText).not.toContain("DNF");
+      expect(rowText).not.toContain("DSQ");
     }).toPass({ timeout: 10000 });
   });
 });

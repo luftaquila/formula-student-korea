@@ -575,6 +575,12 @@ describe("legacy database migration", () => {
       INSERT INTO 'FSK 2026 Accel'
       VALUES ('2026-01-01T00:00:02.000Z', 7, 'Fixture University', 'Fixture Team',
               '가속', 5678, NULL, 0, 1, 0, 0);
+      INSERT INTO 'FSK 2026 Accel'
+      VALUES ('2026-01-01T00:00:03.000Z', 7, 'Fixture University', 'Fixture Team',
+              '가속', 6789, NULL, 1, 1, 0, 0);
+      INSERT INTO 'FSK 2026 Accel'
+      VALUES ('2026-01-01T00:00:04.000Z', 7, 'Fixture University', 'Fixture Team',
+              '가속', -1, NULL, 0, 1, 0, 0);
       DELETE FROM 'FSK 2026 Accel' WHERE rowid = 2;
       CREATE TABLE wireless_session (
         event_type TEXT PRIMARY KEY,
@@ -591,10 +597,12 @@ describe("legacy database migration", () => {
       "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'FSK 2026 Accel'",
     ).get().count, 0);
     assert.deepEqual(db.prepare(
-      "SELECT name, legacy_rowid, num, result, team_id FROM record WHERE name = 'FSK 2026 Accel' ORDER BY legacy_rowid",
+      "SELECT name, legacy_rowid, num, result, status, team_id FROM record WHERE name = 'FSK 2026 Accel' ORDER BY legacy_rowid",
     ).all(), [
-      { name: "FSK 2026 Accel", legacy_rowid: 1, num: 7, result: 1234, team_id: 1 },
-      { name: "FSK 2026 Accel", legacy_rowid: 3, num: 7, result: 5678, team_id: 1 },
+      { name: "FSK 2026 Accel", legacy_rowid: 1, num: 7, result: 1234, status: null, team_id: 1 },
+      { name: "FSK 2026 Accel", legacy_rowid: 3, num: 7, result: 5678, status: null, team_id: 1 },
+      { name: "FSK 2026 Accel", legacy_rowid: 4, num: 7, result: 6789, status: "DSQ", team_id: 1 },
+      { name: "FSK 2026 Accel", legacy_rowid: 5, num: 7, result: null, status: "DNF", team_id: 1 },
     ]);
     assert.deepEqual(db.prepare(
       "SELECT saved_record_name, saved_record_rowid FROM wireless_session WHERE event_type = '가속'",

@@ -55,13 +55,11 @@ test.describe("Autocross manual mode measurement", () => {
     await setCustomEventName(page, "E2E-Autocross-DNF");
     await page.getByTestId("event-team").selectOption("2");
 
-    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
-
-    const dnfBtn = page.locator("button.btn-danger.btn-block", { hasText: "DNF" });
+    const dnfBtn = page.locator('.event-status-panel [data-status="DNF"]');
     await expect(dnfBtn).toBeEnabled();
     await dnfBtn.click();
 
-    await expectNotification(page, "success", "DNF 기록 저장");
+    await expectNotification(page, "success", "DNF 판정을 저장했습니다.");
   });
 
   test("resets and re-measures after reset", async ({ page }) => {

@@ -302,7 +302,8 @@ test.describe("Score endurance input", () => {
     const scoreData = await scoreResponse.json();
     const enduranceEvent = scoreData.events.find((event) => event.type === "내구");
     expect(enduranceEvent).toBeTruthy();
-    expect(enduranceEvent.records["2"]?.result).toBe(-1);
+    expect(enduranceEvent.records["2"]?.result).toBeNull();
+    expect(enduranceEvent.records["2"]?.status).toBe("DNF");
 
     // Clean up: toggle off
     await dnfBtn.click();

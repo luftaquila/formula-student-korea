@@ -22,19 +22,17 @@ describe("score sheet event export", () => {
     ]);
   });
 
-  it("exports the first four finished, non-invalidated runs with penalties applied", () => {
+  it("exports the first four attempts with explicit statuses and normal-run penalties", () => {
     const record = {
       result: 49_000,
       cones: 1,
       oc: 0,
       allRuns: [
-        { result: 49_000, cones: 1, oc: 0, invalidated: 0 },
-        { result: 47_000, cones: 0, oc: 0, invalidated: 1 },
-        { result: -1, cones: 0, oc: 0, invalidated: 0 },
-        { result: 50_000, cones: 0, oc: 1, invalidated: 0 },
-        { result: 52_000, cones: 0, oc: 0, invalidated: 0 },
-        { result: 53_000, cones: 2, oc: 0, invalidated: 0 },
-        { result: 54_000, cones: 0, oc: 0, invalidated: 0 },
+        { result: 49_000, status: null, cones: 1, oc: 0 },
+        { result: 47_000, status: "DSQ", cones: 0, oc: 0 },
+        { result: null, status: "DNF", cones: 0, oc: 0 },
+        { result: 50_000, status: null, cones: 0, oc: 1 },
+        { result: 52_000, status: null, cones: 0, oc: 0 },
       ],
     };
 
@@ -46,24 +44,25 @@ describe("score sheet event export", () => {
       72.5,
       "00:51.000",
       "00:51.000",
+      "DSQ",
+      "DNF",
       "01:00.000",
-      "00:52.000",
-      "00:57.000",
     ]);
   });
 
-  it("pads missing valid runs while preserving zero scores and DNF Best results", () => {
+  it("pads missing attempts while preserving zero scores and explicit DNF", () => {
     assert.deepEqual(buildEventExportCells({
       record: {
-        result: -1,
+        result: null,
+        status: "DNF",
         allRuns: [
-          { result: 61_234, cones: 0, oc: 0, invalidated: 0 },
-          { result: null, cones: 0, oc: 0, invalidated: 0 },
+          { result: 61_234, status: null, cones: 0, oc: 0 },
+          { result: null, status: "DNS", cones: 0, oc: 0 },
         ],
       },
       score: 0,
       penalty: {},
-    }), [0, "DNF", "01:01.234", "", "", ""]);
+    }), [0, "DNF", "01:01.234", "DNS", "", ""]);
   });
 
   it("formats rounded millisecond results consistently with the score board", () => {

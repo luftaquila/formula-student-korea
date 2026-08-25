@@ -7,7 +7,7 @@ import { trafficEntry } from "../helpers/traffic.mjs";
 const YEAR = currentCompetitionYear();
 const TABLE_NAME = `FSK ${YEAR} E2E-Invalidation-Score`;
 
-test.describe("Traffic record invalidation -> Score recalculation", () => {
+test.describe("Traffic record status -> Score recalculation", () => {
   test.use({ storageState: storageStatePath("admin") });
 
   let fastRowid;
@@ -63,7 +63,7 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
     await context.close();
   });
 
-  test("invalidating best record updates score dashboard via SSE", async ({ page }) => {
+  test("classifying the best record updates score dashboard via SSE", async ({ page }) => {
     // Open score dashboard
     await page.goto("/score");
     await waitForPageReady(page);
@@ -80,9 +80,9 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
       expect(text).toContain("04.000");
     }).toPass({ timeout: 10000 });
 
-    // Invalidate the fast record
+    // Classify the fast record as DSQ while preserving its raw measured time.
     await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${fastRowid}`, {
-      data: { field: "invalidated" },
+      data: { field: "status", value: "DSQ" },
     });
 
     // Score should update to show slow record (07.000)
@@ -91,9 +91,9 @@ test.describe("Traffic record invalidation -> Score recalculation", () => {
       expect(text).toContain("07.000");
     }).toPass({ timeout: 10000 });
 
-    // Un-invalidate the fast record
+    // Restore the timed record to normal.
     await page.request.patch(`/competition/api/v1/traffic/records/${TABLE_NAME}/${fastRowid}`, {
-      data: { field: "invalidated" },
+      data: { field: "status", value: null },
     });
 
     // Score should revert to fast record (04.000)

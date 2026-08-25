@@ -813,7 +813,8 @@ describe("Competition backup/restore artifact validation", () => {
 
     // A deployment snapshot taken before the upgrade must still validate: the
     // shipped contract is listed as upgradable, and the runtime rebuilds on boot.
-    assert.equal(validateDatabase(dbPath).status, 0);
+    const predecessor = validateDatabase(dbPath);
+    assert.equal(predecessor.status, 0, predecessor.stderr);
 
     created = boot();
     try {
@@ -967,7 +968,7 @@ describe("Competition backup/restore artifact validation", () => {
     const intermediate = new Database(dbPath, { readonly: true });
     assert.equal(
       competitionSchemaContractDigest(captureCompetitionSchemaContract(intermediate)),
-      "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
+      "bbfed20876a4642ecc6759441ac84d6c1c28e9b21689a8fafb2cfe4b44f400b4",
     );
     intermediate.close();
     const intermediateResult = validateDatabase(dbPath);

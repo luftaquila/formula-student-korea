@@ -31,7 +31,7 @@ export function calculateEnergyScores({ rows, entries, enduranceRecords, enduran
   // 내구 완주팀은 동일한 공식 랩 수를 주행하므로 평균 랩타임의 비율은
   // 페널티 반영 최종 기록의 비율과 같다: (Tmin / N) / (Tyours / N).
   for (const [num, record] of Object.entries(enduranceRecords || {})) {
-    if (record?.result == null || record.result < 0) continue;
+    if (record?.status || !Number.isFinite(record?.result) || record.result <= 0) continue;
     adjustedTimes[num] = record.result
       + (record.cones || 0) * (endurancePenalty?.cone_penalty || 0) * 1000
       + (record.oc || 0) * (endurancePenalty?.oc_penalty || 0) * 1000;

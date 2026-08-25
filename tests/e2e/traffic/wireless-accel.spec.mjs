@@ -173,11 +173,11 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     const resetClick = page.getByRole("button", { name: "초기화", exact: true }).click();
     await resetAccepted;
     await resetClick;
-    await expect(page.getByTestId("quick-invalidated")).toBeDisabled();
+    await expect(quickEdit.locator('[data-status="DSQ"]')).toBeDisabled();
     await expect(observerPage.getByText("마스터의 OFF 확인을 기다리는 중입니다.", { exact: false })).toBeVisible({ timeout: 5000 });
-    await expect(observerPage.getByTestId("quick-invalidated")).toBeDisabled();
+    await expect(observerPage.getByTestId("record-quick-edit").locator('[data-status="DSQ"]')).toBeDisabled();
     await expect(latePage.getByText("마스터의 OFF 확인을 기다리는 중입니다.", { exact: false })).toBeVisible({ timeout: 5000 });
-    await expect(latePage.getByTestId("quick-invalidated")).toBeDisabled();
+    await expect(latePage.getByTestId("record-quick-edit").locator('[data-status="DSQ"]')).toBeDisabled();
     await expect(page.getByRole("button", { name: "녹색등", exact: true })).toBeDisabled();
     const pendingState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
     const pendingSession = pendingState.sessions.find((session) => session.event_type === "가속");

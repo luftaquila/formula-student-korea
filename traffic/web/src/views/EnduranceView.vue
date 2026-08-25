@@ -9,6 +9,7 @@ import { addRecord, updateRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
 import EventNameField from "../components/EventNameField.vue";
 import RecordQuickEdit from "../components/RecordQuickEdit.vue";
+import EventStatusPanel from "../components/EventStatusPanel.vue";
 
 const { notyf } = useNotification();
 const entryStore = useEntryStore();
@@ -21,6 +22,7 @@ const targetLaps = ref(null); // 미리 정해진 목표 랩 수(표시용, 클�
 const lapTimes = ref([]);
 const lastTick = ref(null);
 const quickEditSaveState = ref("ready");
+const attemptFinalized = ref(false);
 
 // 유선: 랩을 기록 1건에 이어붙인다. 첫 랩 INSERT 시 받은 테이블명/rowid를 보관해 이후 랩마다 UPDATE.
 const recordName = ref(null);
@@ -33,7 +35,7 @@ function clearRun() {
   lastTick.value = null;
   recordName.value = null;
   recordRowid.value = null;
-  clearRecord();
+  attemptFinalized.value = false;
   persistChain = Promise.resolve();
 }
 
@@ -66,6 +68,7 @@ async function persistLap(entry, runToken) {
 }
 
 function onSensor({ sensor, tick, startTick }) {
+  if (attemptFinalized.value) return;
   if (sensor !== 1) return;
 
   const prevTick = lastTick.value ?? startTick;
@@ -118,7 +121,10 @@ watch(session, (s, previous) => {
     eventName.value = s.event_name || "";
     selectedTeam.value = s.team?.num ?? null;
   }
-  if (s.run_id !== previous?.run_id) clearRun();
+  if (s.run_id !== previous?.run_id) {
+    clearRun();
+    if (s.saved_record_name) attemptFinalized.value = true;
+  } else if (previous?.saved_record_name && !s.saved_record_name) attemptFinalized.value = false;
 }, { immediate: true });
 const entries = computed(() => entryStore.entries);
 const canSave = computed(() => eventName.value.trim() && selectedTeam.value);
@@ -131,6 +137,7 @@ const totalDisplay = computed(() => msToClockStr(totalMs.value));
 const {
   recentRecord,
   captureRecord,
+  adoptRecord,
   mergeRecord,
   clearRecord,
   beginRun,
@@ -159,9 +166,9 @@ function handleGreen() {
   if (!canSave.value) {
     notyf.open({ type: "warning", message: "테스트 모드 — 기록이 저장되지 않습니다" });
   }
+  clearRun();
   if (!props.wireless) {
     beginRun();
-    clearRun();
   }
   // 무선: arm 직전 현재 선택을 서버 세션에 flush(귀속 + 관찰자 미러). 가상 경기는 sendGreen 본문으로도 바인딩.
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
@@ -310,6 +317,19 @@ onUnmounted(() => clearTimeout(selectTimer));
             <label class="form-label">목표 랩 수</label>
             <input v-model.number="targetLaps" type="number" min="0" class="form-input" placeholder="예: 22" />
           </div>
+          <EventStatusPanel
+            :event-name="eventName"
+            :entry="selectedEntry"
+            event-type="내구"
+            :wireless="wireless"
+            :source="serial"
+            :record="recentRecord"
+            :disabled="!isController || resetInProgress"
+            @record="adoptRecord"
+            @update="mergeRecord"
+            @remove="clearRecord"
+            @finalize="attemptFinalized = $event"
+          />
           <button
             class="btn btn-warning btn-block mt-1"
             :disabled="!isController || resetSubmitting || (!lapTimes.length && !serial.green.active && !recentRecord)"
@@ -418,6 +438,8 @@ onUnmounted(() => clearTimeout(selectTimer));
             :disabled="resetInProgress"
             :disabled-message="resetInProgress ? '마스터의 OFF 확인을 기다리는 중입니다. 기록 편집은 확인 후 종료됩니다.' : ''"
             @update="mergeRecord"
+            @remove="clearRecord(); attemptFinalized = false"
+            @finalize="attemptFinalized = $event"
             @save-state="quickEditSaveState = $event"
           />
         </div>

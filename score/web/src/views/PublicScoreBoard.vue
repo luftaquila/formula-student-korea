@@ -78,16 +78,16 @@ useSSE();
 onMounted(loadData);
 onUnmounted(() => clearTimeout(refreshTimer));
 
-function resultFor(event, teamNum) {
-  return event?.records?.[teamNum]?.result ?? null;
+function recordFor(event, teamNum) {
+  return event?.records?.[teamNum] || null;
 }
 
 function getTypeColor(type) {
   return typeColorMap.value[type] || "blue";
 }
 
-function formatResult(result) {
-  if (result === -1) return "DNF";
+function formatResult(result, status = null) {
+  if (status) return status;
   if (result == null) return "-";
   const milliseconds = Number(result);
   if (!Number.isFinite(milliseconds)) return String(result);
@@ -117,9 +117,13 @@ const entryList = computed(() => {
     } else {
       const eventType = sortKey.value.slice(6);
       const event = events.value.find((item) => item.type === eventType);
-      const normalize = (value) => value == null ? Number.MAX_VALUE : value === -1 ? Number.MAX_SAFE_INTEGER : Number(value);
-      left = normalize(resultFor(event, a.num));
-      right = normalize(resultFor(event, b.num));
+      const normalize = (record) => {
+        if (record?.status === "DNF" || record?.status === "DSQ") return Number.MAX_SAFE_INTEGER;
+        if (record?.status === "DNS" || record?.result == null) return Number.MAX_VALUE;
+        return Number(record.result);
+      };
+      left = normalize(recordFor(event, a.num));
+      right = normalize(recordFor(event, b.num));
     }
     if (left < right) return sortOrder.value === "asc" ? -1 : 1;
     if (left > right) return sortOrder.value === "asc" ? 1 : -1;
@@ -191,8 +195,8 @@ function sortIcon(key) {
                   <td v-for="event in events" :key="event.type" class="col-event">
                     <span
                       class="record-value"
-                      :class="{ dnf: resultFor(event, entry.num) === -1, dns: resultFor(event, entry.num) == null }"
-                    >{{ formatResult(resultFor(event, entry.num)) }}</span>
+                      :class="(recordFor(event, entry.num)?.status || (recordFor(event, entry.num)?.result == null ? 'dns' : '')).toLowerCase()"
+                    >{{ formatResult(recordFor(event, entry.num)?.result, recordFor(event, entry.num)?.status) }}</span>
                   </td>
                 </tr>
                 <tr v-if="entryList.length === 0">
@@ -324,7 +328,8 @@ function sortIcon(key) {
   font-weight: 700;
 }
 
-.record-value.dnf {
+.record-value.dnf,
+.record-value.dsq {
   color: var(--accent-danger);
 }
 

@@ -1,24 +1,26 @@
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
-import { updateRecord } from "../composables/useApi";
+import { deleteRecordRow, updateRecord } from "../composables/useApi";
+import RecordStatusControl from "./RecordStatusControl.vue";
 
 const props = defineProps({
   record: { type: Object, required: true },
   disabled: { type: Boolean, default: false },
   disabledMessage: { type: String, default: "" },
 });
-const emit = defineEmits(["update", "save-state"]);
+const emit = defineEmits(["update", "remove", "save-state", "finalize"]);
 const { notyf } = useNotification();
 
 const state = reactive({
-  invalidated: 0,
+  status: null,
+  result: null,
   scoreboard: 1,
   cones: 0,
   oc: 0,
 });
 const pending = reactive({
-  invalidated: false,
+  status: false,
   scoreboard: false,
   cones: false,
   oc: false,
@@ -35,7 +37,8 @@ function normalizeCount(value) {
 }
 
 function syncRecord(record) {
-  state.invalidated = record?.invalidated ? 1 : 0;
+  state.status = record?.status ?? null;
+  state.result = Number.isInteger(record?.result) ? record.result : null;
   state.scoreboard = record?.scoreboard ? 1 : 0;
   state.cones = normalizeCount(record?.cones);
   state.oc = normalizeCount(record?.oc);
@@ -43,7 +46,7 @@ function syncRecord(record) {
 
 watch(() => props.record, syncRecord, { immediate: true, deep: true });
 
-const isStatusSaving = computed(() => pending.invalidated || pending.scoreboard);
+const isStatusSaving = computed(() => pending.status || pending.scoreboard);
 const recordLabel = computed(() => [
   Number.isInteger(Number(props.record?.num)) ? `#${props.record.num}` : null,
   props.record?.team || null,
@@ -79,7 +82,8 @@ function finishMutation(succeeded) {
 
 function mergeResult(result) {
   if (!result) return;
-  if ("invalidated" in result) state.invalidated = result.invalidated ? 1 : 0;
+  if ("status" in result) state.status = result.status ?? null;
+  if ("result" in result) state.result = result.result ?? null;
   if ("scoreboard" in result) state.scoreboard = result.scoreboard ? 1 : 0;
   if ("cones" in result) state.cones = normalizeCount(result.cones);
   if ("oc" in result) state.oc = normalizeCount(result.oc);
@@ -87,8 +91,6 @@ function mergeResult(result) {
 }
 
 async function toggle(field) {
-  // 두 필드는 서버에서 현재 값을 기준으로 토글되고 무효화↔전광판 연동도 있으므로
-  // 서로 다른 버튼이라도 동시에 보내지 않는다.
   if (props.disabled || isStatusSaving.value) return;
   pending[field] = true;
   beginMutation();
@@ -101,6 +103,45 @@ async function toggle(field) {
     notyf.error(`기록 수정 실패: ${e.message}`);
   } finally {
     pending[field] = false;
+    finishMutation(succeeded);
+  }
+}
+
+async function selectStatus(status) {
+  if (props.disabled || isStatusSaving.value) return;
+  pending.status = true;
+  beginMutation();
+  let succeeded = false;
+  try {
+    const result = await updateRecord(props.record.name, props.record.rowid, "status", status);
+    mergeResult(result);
+    // Quick edit always operates on a saved attempt. A classification change
+    // finalizes it; restoring a measured row to normal must not reopen sensors.
+    emit("finalize", true);
+    succeeded = true;
+  } catch (e) {
+    notyf.error(`판정 변경 실패: ${e.message}`);
+  } finally {
+    pending.status = false;
+    finishMutation(succeeded);
+  }
+}
+
+async function cancelStatus() {
+  if (props.disabled || isStatusSaving.value) return;
+  if (!window.confirm("측정시간이 없는 판정 기록을 삭제할까요?")) return;
+  pending.status = true;
+  beginMutation();
+  let succeeded = false;
+  try {
+    await deleteRecordRow(props.record.name, props.record.rowid);
+    succeeded = true;
+    emit("remove", { name: props.record.name, rowid: props.record.rowid });
+    notyf.success("판정 기록을 삭제했습니다.");
+  } catch (e) {
+    notyf.error(`판정 취소 실패: ${e.message}`);
+  } finally {
+    pending.status = false;
     finishMutation(succeeded);
   }
 }
@@ -164,32 +205,31 @@ onUnmounted(() => {
       <div v-if="disabled && disabledMessage" class="quick-edit-lock" role="status">
         {{ disabledMessage }}
       </div>
-      <div class="toggle-grid">
-        <button
-          type="button"
-          class="state-button"
-          :class="state.invalidated ? 'is-danger' : 'is-success'"
-          :aria-pressed="!!state.invalidated"
-          :disabled="disabled || isStatusSaving"
-          data-testid="quick-invalidated"
-          @click="toggle('invalidated')"
-        >
-          <span class="state-label">기록 상태</span>
-          <strong>{{ state.invalidated ? "무효" : "유효" }}</strong>
-          <span class="state-hint">눌러서 {{ state.invalidated ? "유효화" : "무효화" }}</span>
-        </button>
+      <div class="status-block">
+        <span class="state-label">기록 판정</span>
+        <RecordStatusControl
+          :status="state.status"
+          :result="state.result"
+          :disabled="disabled"
+          :busy="pending.status"
+          allow-cancel
+          @select="selectStatus"
+          @cancel="cancelStatus"
+        />
+      </div>
+      <div class="toggle-grid scoreboard-grid">
         <button
           type="button"
           class="state-button"
           :class="state.scoreboard ? 'is-success' : 'is-muted'"
           :aria-pressed="!!state.scoreboard"
-          :disabled="disabled || isStatusSaving || !!state.invalidated"
+          :disabled="disabled || isStatusSaving"
           data-testid="quick-scoreboard"
           @click="toggle('scoreboard')"
         >
           <span class="state-label">전광판</span>
           <strong>{{ state.scoreboard ? "표시" : "숨김" }}</strong>
-          <span class="state-hint">{{ state.invalidated ? "무효 기록은 표시 불가" : "눌러서 전환" }}</span>
+          <span class="state-hint">판정과 독립적으로 전환</span>
         </button>
       </div>
 
@@ -337,6 +377,14 @@ onUnmounted(() => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.75rem;
 }
+
+.status-block {
+  display: grid;
+  gap: 0.55rem;
+  margin-bottom: 0.75rem;
+}
+
+.scoreboard-grid { grid-template-columns: minmax(0, 1fr); }
 
 .state-button {
   display: grid;
