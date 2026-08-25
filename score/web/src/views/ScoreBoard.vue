@@ -7,6 +7,7 @@ import { useStickyColumns } from "@shared/useStickyColumns.js";
 import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { buildEventExportCells, buildEventExportHeaders, formatScoreResult as formatResult } from "../lib/scoreExport.js";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
@@ -362,18 +363,6 @@ function getTypeColor(type) {
 
 function formatTime(time) {
   return new Date(time).toLocaleString("ko-KR");
-}
-
-function formatResult(result) {
-  if (result === -1) return "DNF";
-  if (result == null) return "-";
-  const ms = Number(result);
-  if (isNaN(ms)) return String(result);
-  const totalRounded = Math.round(Math.abs(ms));
-  const millis = String(totalRounded % 1000).padStart(3, "0");
-  const secs = Math.floor(totalRounded / 1000) % 60;
-  const mins = Math.floor(totalRounded / 60000);
-  return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${millis}`;
 }
 
 // 수동 점수 저장
@@ -828,8 +817,9 @@ function exportData(format) {
     for (const cat of inspection.value.categories) headers.push(cat.name);
   }
   headers.push("총점");
-  for (const evt of dynamicEvents.value) headers.push(evt.type);
-  headers.push("내구", "보고서", "에너지", "가점", "감점");
+  for (const evt of dynamicEvents.value) headers.push(...buildEventExportHeaders(evt.type));
+  headers.push(...buildEventExportHeaders("내구", { runLimit: 0 }));
+  headers.push("보고서", "에너지", "가점", "감점");
 
   const rows = entryList.value.map((entry) => {
     const row = [entry.num, entry.univ || "", entry.team || "", entry.type || ""];
@@ -841,10 +831,19 @@ function exportData(format) {
     }
     row.push(getTotalScore(entry.num));
     for (const evt of dynamicEvents.value) {
-      row.push(displayMode.value === "score" ? (getEventScore(evt.type, entry.num) ?? "") : (formatResult(getAdjustedResult(evt.type, getTeamEvent(evt, entry.num)))));
+      row.push(...buildEventExportCells({
+        record: getTeamEvent(evt, entry.num),
+        score: getEventScore(evt.type, entry.num),
+        penalty: penalties.value[evt.type],
+      }));
     }
     const endRec = getTeamEvent(enduranceEvent.value, entry.num);
-    row.push(displayMode.value === "score" ? (getEventScore("내구", entry.num) ?? "") : formatResult(getAdjustedResult("내구", endRec)));
+    row.push(...buildEventExportCells({
+      record: endRec,
+      score: getEventScore("내구", entry.num),
+      penalty: penalties.value["내구"],
+      runLimit: 0,
+    }));
     const energyResult = getEnergyResult(entry.num);
     row.push(
       getManualScore(entry.num, "report") ?? "",
