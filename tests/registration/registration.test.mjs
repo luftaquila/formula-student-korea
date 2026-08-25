@@ -193,6 +193,12 @@ describe("Registration queue", () => {
     await openQueue(f);
     const created = await register(f, team);
     assert.equal(created.position, 1);
+    const registrationAudit = f.db.prepare(`
+      SELECT detail FROM logs
+      WHERE module = 'registration' AND action = 'registration.register' AND level = 'info'
+      ORDER BY id DESC LIMIT 1
+    `).get();
+    assert.equal(JSON.parse(registrationAudit.detail).phone, "01012345678");
     response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.official });
     await assertStatus(response, 200);
     const board = await response.json();
@@ -248,8 +254,16 @@ describe("Registration queue", () => {
       WHERE module = 'registration' AND action = 'registration.lookup' AND level = 'warn'
       ORDER BY id DESC LIMIT 1
     `).get();
-    assert.equal(JSON.parse(warning.detail).phone, "010****9999");
-    assert.equal(warning.detail.includes("01099999999"), false);
+    const warningDetail = JSON.parse(warning.detail);
+    assert.equal(warningDetail.phone, "01099999999");
+    assert.deepEqual(warningDetail.team, {
+      id: first.id,
+      year: YEAR,
+      number: first.number,
+      university: first.university,
+      name: first.name,
+      active: true,
+    });
   });
 
   it("logs only the first rejected lookup in each rate-limit window", async () => {

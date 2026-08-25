@@ -540,7 +540,12 @@ describe("Competition modular monolith", () => {
       `).all();
       assert.deepEqual(audits.map(({ target, detail }) => ({ target, ...JSON.parse(detail) })), [
         {
-          target: "#81", inspection: "battery", booth: 1,
+          target: "#81",
+          team: {
+            id: historicalWithReplacement, year: previousYear, number: 81,
+            university: "Historical University", name: "Historical Team", active: true,
+          },
+          inspection: "battery", booth: 1,
           team_id: historicalWithReplacement, team_num: 81,
           state_year: previousYear, current_year: YEAR,
           normalized_historical_state: true,
@@ -549,7 +554,12 @@ describe("Competition modular monolith", () => {
           open_log: { action: "deleted_incomplete", count: 1 },
         },
         {
-          target: "#82", inspection: "battery", booth: 2,
+          target: "#82",
+          team: {
+            id: historicalWithoutReplacement, year: previousYear, number: 82,
+            university: "Historical Only University", name: "Historical Only Team", active: true,
+          },
+          inspection: "battery", booth: 2,
           team_id: historicalWithoutReplacement, team_num: 82,
           state_year: previousYear, current_year: YEAR,
           normalized_historical_state: true,

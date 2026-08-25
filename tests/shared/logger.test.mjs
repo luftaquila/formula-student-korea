@@ -64,6 +64,103 @@ describe('createLogger', () => {
     assert.equal(row.detail, '{"key":"value"}');
   });
 
+  it('adds canonical school and team context to entry-number logs', () => {
+    const auditDb = new Database(':memory:');
+    const teams = {
+      7: { id: 107, num: 7, univ: '한국대학교', team: '포뮬러팀', active: true },
+      8: { id: 108, num: 8, univ: '테스트대학교', team: '레이싱팀', active: false },
+    };
+    const teamSource = {
+      getByNumber: (year, number) => year === 2025 ? teams[number] ?? null : null,
+    };
+    const auditLogger = createLogger(auditDb, 'team-audit', 50000, { teamSource });
+
+    auditLogger.log(mockReq(), 'entry.single', { year: 2025, phone: '01012345678' }, '#7');
+    auditLogger.warn(mockReq(), 'entry.multiple', {
+      year: 2025,
+      sub_team: 7,
+      my_team: 8,
+      error: 'wrong_team',
+    }, '#7');
+
+    const rows = auditDb.prepare(
+      "SELECT action, detail FROM logs WHERE module = 'team-audit' ORDER BY id",
+    ).all().map((row) => ({ ...row, detail: JSON.parse(row.detail) }));
+    assert.deepEqual(rows, [
+      {
+        action: 'entry.single',
+        detail: {
+          team: {
+            id: 107,
+            year: 2025,
+            number: 7,
+            university: '한국대학교',
+            name: '포뮬러팀',
+            active: true,
+          },
+          year: 2025,
+          phone: '01012345678',
+        },
+      },
+      {
+        action: 'entry.multiple',
+        detail: {
+          teams: [
+            {
+              id: 107,
+              year: 2025,
+              number: 7,
+              university: '한국대학교',
+              name: '포뮬러팀',
+              active: true,
+            },
+            {
+              id: 108,
+              year: 2025,
+              number: 8,
+              university: '테스트대학교',
+              name: '레이싱팀',
+              active: false,
+            },
+          ],
+          year: 2025,
+          sub_team: 7,
+          my_team: 8,
+          error: 'wrong_team',
+        },
+      },
+    ]);
+    auditDb.close();
+  });
+
+  it('keeps the original audit writable when canonical team resolution fails', () => {
+    const auditDb = new Database(':memory:');
+    const auditLogger = createLogger(auditDb, 'team-audit-failure', 50000, {
+      teamSource: { getByNumber: () => { throw new Error('lookup failed'); } },
+    });
+    auditLogger.warn(mockReq(), 'entry.lookup', { year: 2025, error: 'lookup failed' }, '#7');
+    const row = auditDb.prepare(
+      "SELECT detail FROM logs WHERE module = 'team-audit-failure' AND action = 'entry.lookup'",
+    ).get();
+    assert.deepEqual(JSON.parse(row.detail), { year: 2025, error: 'lookup failed' });
+    auditDb.close();
+  });
+
+  it('does not attribute an invalid explicit year to the current-year team', () => {
+    const auditDb = new Database(':memory:');
+    const auditLogger = createLogger(auditDb, 'invalid-year-audit', 50000, {
+      teamSource: {
+        getByNumber: () => ({ id: 7, num: 7, univ: '현재대학교', team: '현재팀', active: true }),
+      },
+    });
+    auditLogger.warn(mockReq(), 'entry.invalid_year', { year: 1900, error: 'invalid_year' }, '#7');
+    const row = auditDb.prepare(
+      "SELECT detail FROM logs WHERE module = 'invalid-year-audit' AND action = 'entry.invalid_year'",
+    ).get();
+    assert.deepEqual(JSON.parse(row.detail), { year: 1900, error: 'invalid_year' });
+    auditDb.close();
+  });
+
   it('queryHandler returns logs for admin user', () => {
     const req = mockReq({}, { email: 'admin@test.com', name: 'Admin', role: 'admin' });
     const res = mockRes();

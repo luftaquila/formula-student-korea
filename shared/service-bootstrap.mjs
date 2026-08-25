@@ -17,7 +17,9 @@ export function createServiceSkeleton({
   // Independently deployed supporting services own the connection they create.
   const ownsDb = !options.db;
   const db = options.db || createDatabase(Database, options.dbPath || `./data/${dbFile || `${name}.db`}`);
-  const logger = createLogger(db, name, maxLogRows);
+  const logger = createLogger(db, name, maxLogRows, {
+    teamSource: options.teamStore ?? options.competitionQueries?.teams,
+  });
   const deps = {
     express,
     logger,

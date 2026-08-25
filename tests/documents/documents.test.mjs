@@ -1561,6 +1561,22 @@ describe('Historical submission reads', () => {
       assert.equal(zipResponse.status, 200);
       const zip = Buffer.from(await zipResponse.arrayBuffer());
       assert.equal(zip.subarray(0, 2).toString('latin1'), 'PK');
+
+      const audit = db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'file.zip' AND level = 'info' AND target = '#10'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      const auditDetail = JSON.parse(audit.detail);
+      assert.equal(auditDetail.year, 2025);
+      assert.deepEqual(auditDetail.team, {
+        id: 10,
+        year: 2025,
+        number: 10,
+        university: '고려대',
+        name: '팀J',
+        active: true,
+      });
     } finally {
       db.prepare("DELETE FROM session WHERE id = ?").run(historicalSessionId);
       db.prepare("DELETE FROM student_team WHERE email = 'student1@test.com' AND year = 2025").run();
