@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   buildMissionCreatePayload,
   buildMissionCommandPayload,
+  buildMissionPresetDeletePayload,
   buildMissionPresetPayload,
   buildMissionRemainingPayload,
   hasDrawableMissionPath,
@@ -24,7 +25,9 @@ import {
   missionPathGeometry,
   missionPreflightCanConfirm,
   missionPreflightDistanceAllowed,
+  missionPreflightRouteCheck,
   missionPreflightTarget,
+  missionPresetReference,
   missionRestoreDecision,
   missionRouteSubmissionAllowed,
   presetResponseIsCurrent,
@@ -125,6 +128,43 @@ test("sends the reviewed cone geometry when creating a mission", () => {
   });
 });
 
+test("keeps preset attribution only while the reviewed route still matches", () => {
+  const preset = {
+    id: 4,
+    preset_revision: "preset-at-read",
+    finish_behavior: "stop",
+    stale: false,
+    items: [{ cone_id: 11 }, { cone_id: 12 }],
+  };
+  const items = [
+    { cone_id: 11, lat: 35.1, lng: 126.1, alt: null, side: "left" },
+    { cone_id: 12, lat: 35.2, lng: 126.2, alt: null, side: "right" },
+  ];
+  const reference = missionPresetReference({ preset, items, finishBehavior: "stop" });
+  assert.deepEqual(buildMissionCreatePayload({
+    courseId: 7,
+    finishBehavior: "stop",
+    items,
+    presetReference: reference,
+  }), {
+    course_id: 7,
+    finish_behavior: "stop",
+    items,
+    preset_id: 4,
+    expected_preset_revision: "preset-at-read",
+  });
+  assert.equal(missionPresetReference({
+    preset,
+    items: [...items].reverse(),
+    finishBehavior: "stop",
+  }), null);
+  assert.equal(missionPresetReference({
+    preset: { ...preset, stale: true },
+    items,
+    finishBehavior: "stop",
+  }), null);
+});
+
 test("persists held-mission Apply and Run while keeping new plans local until creation", () => {
   assert.deepEqual(missionBuilderSubmission({ editing: true, run: false }), {
     persist: true, next: "close", routeAlreadySynced: false,
@@ -203,6 +243,16 @@ test("allows only explicit uncertainty-resolution or return-only empty held rout
     waypoints: [{ state: "skipped", outcome: "dispense_outcome_uncertain" }],
   }), "resolve_uncertain");
   assert.equal(missionEmptyResumeMode({
+    finish_behavior: "stop",
+    empty_plan_mode: "resolve_uncertain",
+    waypoints: [],
+  }), "resolve_uncertain");
+  assert.equal(missionEmptyResumeMode({
+    finish_behavior: "stop",
+    empty_plan_mode: "uncertainty_resolved",
+    waypoints: [],
+  }), "resolve_uncertain");
+  assert.equal(missionEmptyResumeMode({
     finish_behavior: "return_to_start",
     start_position: missionStart,
     waypoints: [{ state: "skipped", outcome: null }],
@@ -253,6 +303,26 @@ test("draws zero-waypoint return-only motion from the rover to mission start", (
   assert.equal(missionPreflightDistanceAllowed({ kind: "waypoint", distance: 42 }), false);
   assert.equal(missionPreflightDistanceAllowed({ kind: "waypoint", distance: 4.9 }), true);
   assert.equal(missionPreflightDistanceAllowed({ kind: "return_only", distance: null }), false);
+});
+
+test("checks every internal and return leg against the server segment limit", () => {
+  const near = { lat: 35, lng: 126, state: "pending" };
+  const far = { lat: 35.001, lng: 126, state: "pending" };
+  assert.deepEqual(missionPreflightRouteCheck({
+    mode: "execute",
+    waypoints: [near, { lat: 35.0001, lng: 126 }],
+  }), { ok: true, reason: null, index: null, distance: null });
+  const segment = missionPreflightRouteCheck({ mode: "execute", waypoints: [near, far] });
+  assert.equal(segment.ok, false);
+  assert.equal(segment.reason, "segment_too_long");
+  assert.equal(segment.index, 1);
+  const resume = missionPreflightRouteCheck({
+    mode: "resume",
+    waypoints: [{ ...far, state: "completed" }, near],
+    finishBehavior: "return_to_start",
+    returnPoint: far,
+  });
+  assert.equal(resume.reason, "return_segment_too_long");
 });
 
 test("fails closed on an undelivered mission command and keeps its authority body", () => {
@@ -309,22 +379,26 @@ test("keeps snapshot-backed missions actionable without live cones and blocks E-
   assert.equal(missionPreflightCanConfirm([{ key: "estop", ok: true, blocking: true }], false), true);
 });
 
-test("puts the last-read preset revision on updates only", () => {
+test("puts reviewed geometry on preset writes and revision tokens on mutations", () => {
   const common = {
     courseId: 7,
     name: "Morning",
     finishBehavior: "stop",
-    items: [{ cone_id: 3 }],
+    items: [{ cone_id: 3, lat: 35.1, lng: 126.1, side: "left" }],
   };
   assert.deepEqual(buildMissionPresetPayload(common), {
     course_id: 7,
     name: "Morning",
     finish_behavior: "stop",
-    items: [{ cone_id: 3 }],
+    items: [{ cone_id: 3, lat: 35.1, lng: 126.1, alt: null, side: "left" }],
   });
   assert.equal(buildMissionPresetPayload({
     ...common,
     existing: { id: 4, preset_revision: "preset-at-read" },
   }).expected_preset_revision, "preset-at-read");
   assert.throws(() => buildMissionPresetPayload({ ...common, existing: { id: 4 } }), /기준 버전/);
+  assert.deepEqual(buildMissionPresetDeletePayload({ preset_revision: "preset-at-read" }), {
+    expected_preset_revision: "preset-at-read",
+  });
+  assert.throws(() => buildMissionPresetDeletePayload({ id: 4 }), /기준 버전/);
 });

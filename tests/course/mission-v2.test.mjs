@@ -224,13 +224,13 @@ describe("mission route presets", () => {
         fixture.store.savePreset({
           courseId: fixture.courseId,
           name: `bounded-${index}`,
-          items: [{ cone_id: coneId }],
+          items: coneSnapshotItems(fixture.db, [coneId]),
         });
       }
       assert.throws(() => fixture.store.savePreset({
         courseId: fixture.courseId,
         name: "one-too-many",
-        items: [{ cone_id: coneId }],
+        items: coneSnapshotItems(fixture.db, [coneId]),
       }), (error) => error?.reason === "preset_limit");
     } finally {
       fixture.close();
@@ -252,7 +252,7 @@ describe("mission route presets", () => {
       course_id: courseId,
       name: "reverse WITH repeat",
       finish_behavior: "stop",
-      items: [{ cone_id: coneIds[0] }],
+      items: coneSnapshotItems(db, [coneIds[0]]),
     });
     assert.equal(duplicateName.response.status, 409);
   });
@@ -262,7 +262,7 @@ describe("mission route presets", () => {
       course_id: courseId,
       name: "Will become stale",
       finish_behavior: "stop",
-      items: [{ cone_id: coneIds[1] }],
+      items: coneSnapshotItems(db, [coneIds[1]]),
     });
     assert.equal(created.response.status, 201);
     const deleted = await client.delete(`/api/cones/${coneIds[1]}`, { cookie: adminCookie });
@@ -280,7 +280,7 @@ describe("mission route presets", () => {
       course_id: courseId,
       name: "Preset CAS",
       finish_behavior: "stop",
-      items: [{ cone_id: coneIds[0] }],
+      items: coneSnapshotItems(db, [coneIds[0]]),
     });
     assert.equal(created.response.status, 201);
     assert.match(created.data.preset_revision, /^[a-f0-9]{64}$/);
@@ -288,7 +288,7 @@ describe("mission route presets", () => {
       course_id: courseId,
       name: "Preset CAS current",
       finish_behavior: "stop",
-      items: [{ cone_id: coneIds[2] }],
+      items: coneSnapshotItems(db, [coneIds[2]]),
       expected_preset_revision: created.data.preset_revision,
     });
     assert.equal(updated.response.status, 200);
@@ -296,7 +296,7 @@ describe("mission route presets", () => {
       course_id: courseId,
       name: "Preset CAS stale",
       finish_behavior: "stop",
-      items: [{ cone_id: coneIds[0] }],
+      items: coneSnapshotItems(db, [coneIds[0]]),
       expected_preset_revision: created.data.preset_revision,
     });
     assert.equal(stale.response.status, 409);
@@ -315,6 +315,59 @@ describe("mission route presets", () => {
       expected_preset_revision: updated.data.preset_revision,
     });
     assert.equal(currentDelete.response.status, 204);
+  });
+
+  it("requires reviewed cone values and an exact preset revision when creating", () => {
+    const fixture = createStoreFixture();
+    try {
+      const items = coneSnapshotItems(fixture.db, [fixture.coneIds[0], fixture.coneIds[2]]);
+      const preset = fixture.store.savePreset({
+        courseId: fixture.courseId,
+        name: "Reviewed preset",
+        finishBehavior: "stop",
+        items,
+      }).after;
+      assert.throws(() => fixture.store.createMission({
+        courseId: fixture.courseId,
+        presetId: preset.id,
+        expectedPresetRevision: "stale",
+        finishBehavior: "stop",
+        items,
+      }), (error) => error.reason === "preset_revision_mismatch");
+      assert.throws(() => fixture.store.createMission({
+        courseId: fixture.courseId,
+        presetId: preset.id,
+        expectedPresetRevision: preset.preset_revision,
+        finishBehavior: "stop",
+        items: [...items].reverse(),
+      }), (error) => error.reason === "preset_route_mismatch");
+      const missionFromPreset = fixture.store.createMission({
+        courseId: fixture.courseId,
+        presetId: preset.id,
+        expectedPresetRevision: preset.preset_revision,
+        finishBehavior: "stop",
+        items,
+      });
+      assert.equal(missionFromPreset.preset_id, preset.id);
+    } finally {
+      fixture.close();
+    }
+  });
+
+  it("rejects a preset snapshot after the live cone value changes", () => {
+    const fixture = createStoreFixture();
+    try {
+      const items = coneSnapshotItems(fixture.db, [fixture.coneIds[0]]);
+      fixture.db.prepare("UPDATE cone SET lat=lat+0.0001 WHERE id=?").run(fixture.coneIds[0]);
+      assert.throws(() => fixture.store.savePreset({
+        courseId: fixture.courseId,
+        name: "Stale geometry",
+        items,
+      }), (error) => error.reason === "cone_snapshot_mismatch");
+      assert.equal(fixture.store.listPresets(fixture.courseId).length, 0);
+    } finally {
+      fixture.close();
+    }
   });
 });
 
@@ -394,6 +447,8 @@ describe("durable mission protocol", () => {
     assert.equal(response.response.status, 200);
     response = await jsonRequest("post", "/api/rover/telemetry", { boot_id: rover.bootId, nav_state: "IDLE", fix_status: "rtk_fixed" }, { internal: true });
     assert.equal(response.response.status, 200);
+    assert.ok(db.prepare("SELECT COUNT(*) AS count FROM mission_telemetry WHERE mission_id=?")
+      .get(mission.id).count >= 2);
     const active = await client.get("/api/missions/active", { cookie: adminCookie });
     const body = await active.json();
     assert.equal(body.mission.id, mission.id);
@@ -443,7 +498,8 @@ describe("durable mission protocol", () => {
     mission = edited.data;
     assert.equal(mission.id, completed.data.mission.id);
     assert.equal(mission.waypoints.filter((waypoint) => waypoint.state === "completed").length, 1);
-    assert.equal(mission.waypoints.filter((waypoint) => waypoint.state === "skipped").length, 1);
+    assert.equal(mission.waypoints.filter((waypoint) => waypoint.state === "skipped").length, 0);
+    assert.equal(mission.skipped_waypoint_count, 1);
     assert.equal(mission.waypoints.filter((waypoint) => waypoint.state === "pending").length, 1);
 
     const staleEdit = await jsonRequest("put", `/api/missions/${mission.id}/remaining`, {
@@ -1049,6 +1105,32 @@ describe("mission v2 state-machine regressions", () => {
     }
   });
 
+  it("keeps skipped edit history out of operational mission snapshots", () => {
+    const fixture = createStoreFixture();
+    try {
+      let mission = fixture.store.createMission({
+        courseId: fixture.courseId,
+        items: coneSnapshotItems(fixture.db, [fixture.coneIds[0]]),
+      });
+      for (let index = 0; index < 25; index += 1) {
+        mission = fixture.store.editRemaining({
+          missionId: mission.id,
+          expectedPlanHash: mission.plan_hash,
+          expectedOccurrenceRevision: mission.occurrence_revision,
+          items: [{ cone_id: fixture.coneIds[(index + 1) % fixture.coneIds.length] }],
+        });
+        assert.equal(mission.waypoints.length, 1);
+      }
+      assert.equal(mission.skipped_waypoint_count, 25);
+      assert.equal(fixture.store.waypointRows(mission.id).length, 1);
+      assert.equal(fixture.store.waypointRows(mission.id, { includeSkipped: true }).length, 26);
+      assert.equal(mission.occurrence_revision,
+        fixture.store.missionPublic(mission.id).occurrence_revision);
+    } finally {
+      fixture.close();
+    }
+  });
+
   it("reconciles completed checkpoint ids on failed, held, and interrupted reports", () => {
     for (const event of ["waypoint_failed", "held", "interrupted"]) {
       const fixture = createStoreFixture();
@@ -1394,16 +1476,19 @@ describe("mission v2 state-machine regressions", () => {
       }), (error) => error.reason === "occurrence_revision_mismatch");
 
       const created = fixture.store.savePreset({
-        courseId: fixture.courseId, name: "CAS", items: [{ cone_id: fixture.coneIds[0] }],
+        courseId: fixture.courseId, name: "CAS",
+        items: coneSnapshotItems(fixture.db, [fixture.coneIds[0]]),
       }).after;
       const updated = fixture.store.savePreset({
         id: created.id, courseId: fixture.courseId, name: "CAS updated",
-        items: [{ cone_id: fixture.coneIds[1] }], expectedPresetRevision: created.preset_revision,
+        items: coneSnapshotItems(fixture.db, [fixture.coneIds[1]]),
+        expectedPresetRevision: created.preset_revision,
       }).after;
       assert.notEqual(updated.preset_revision, created.preset_revision);
       assert.throws(() => fixture.store.savePreset({
         id: created.id, courseId: fixture.courseId, name: "stale",
-        items: [{ cone_id: fixture.coneIds[2] }], expectedPresetRevision: created.preset_revision,
+        items: coneSnapshotItems(fixture.db, [fixture.coneIds[2]]),
+        expectedPresetRevision: created.preset_revision,
       }), (error) => error.reason === "preset_revision_mismatch");
     } finally {
       fixture.close();
