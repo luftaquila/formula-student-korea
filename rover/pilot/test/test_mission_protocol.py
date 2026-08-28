@@ -120,6 +120,9 @@ def test_emergency_stop_and_reboot_restore_held_until_explicit_resume(monkeypatc
     node._on_clear_emergency(None)
     assert node._state == State.PAUSED
     assert reports[-1]['event'] == 'held'
+    assert reports[-1]['emergency_stop_cleared'] is True
+    assert reports[-1]['motion_state'] == 'held'
+    assert reports[-1]['checkpoint_persisted'] is True
 
     rebooted = NavigatorNode()
     assert rebooted._state == State.PAUSED
@@ -747,6 +750,9 @@ def test_completion_checkpoint_survives_estop_and_clear(monkeypatch, tmp_path):
     assert node._state == State.PAUSED
     assert load_mission_checkpoint()['motion_state'] == 'completion_pending'
     assert reports[-1]['event'] == 'mission_completed'
+    assert reports[-1]['emergency_stop_cleared'] is True
+    assert reports[-1]['motion_state'] == 'held'
+    assert reports[-1]['checkpoint_persisted'] is True
 
 
 def test_corrupt_checkpoint_latches_across_reboots_until_correlated_reset(

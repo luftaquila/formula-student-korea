@@ -9,9 +9,11 @@ const { error: notifyError } = useNotification();
 
 const roverConnected = ref(false);
 const navState = ref(null);
+const roverStopRequested = ref(false);
 const stopping = ref(false);
 provide("roverConnected", roverConnected);
 provide("navState", navState);
+provide("roverStopRequested", roverStopRequested);
 // Visible to MapView (and any future descendant) via inject so the path-execute
 // button can surface "정지 요청 중..." in the same window the global e-stop
 // latch is held — both buttons need to reflect the same in-flight command.
@@ -66,10 +68,11 @@ async function globalEmergencyStop() {
   stopReleaseTimer = setTimeout(clearStopLatch, 5000);
 }
 
-watch(navState, (cur) => {
+watch([navState, roverStopRequested], ([cur, stopRequested]) => {
   if (!stopping.value) return;
   if (stopRequestedKind === "stop" && cur === "EMERGENCY_STOP") clearStopLatch();
-  else if (stopRequestedKind === "clear" && cur === "IDLE") clearStopLatch();
+  else if (stopRequestedKind === "clear"
+      && (cur === "IDLE" || (cur === "PAUSED" && stopRequested === false))) clearStopLatch();
 });
 
 async function fetchStatus() {
@@ -78,6 +81,7 @@ async function fetchStatus() {
     const data = await res.json();
     roverConnected.value = !!data.connected;
     navState.value = data.nav_state || null;
+    roverStopRequested.value = data.stop_requested === true;
   } catch { /* best-effort */ }
 }
 

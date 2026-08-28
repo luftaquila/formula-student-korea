@@ -11,11 +11,27 @@ import {
   buildMissionPresetDeletePayload,
   buildMissionPresetPayload,
   buildMissionRemainingPayload,
+  captureMissionAuthorityFence,
+  captureMissionAuthorityRequest,
+  captureMissionCreateRouteAuthority,
+  mergeMissionSummary,
+  missionAbsentSnapshotDecision,
+  missionAuthorityFenceMatches,
+  missionAuthorityKey,
+  missionAuthorityRequestCanApply,
   missionBuilderSubmission,
   missionCommandResponseDecision,
+  missionEndAwaitingState,
+  missionEndReconcileIsCurrent,
+  missionEndReconcileShouldRetry,
+  missionEndRequestFailureState,
+  missionEndResponseDecision,
+  missionCreateRouteAuthorityMatches,
+  missionHttpResponseAuthorityDecision,
   missionCommandToken,
   missionCommandTokenAfterSync,
   missionCourseId,
+  missionCreateSettlementDecision,
   missionDraftMatches,
   missionDraftToken,
   missionEmptyResumeMode,
@@ -28,7 +44,11 @@ import {
   missionPreflightRouteCheck,
   missionPreflightTarget,
   missionRestoreDecision,
+  missionSnapshotMatchesSummary,
+  missionSummaryRefreshDecision,
+  splitMissionStatusPayload,
   presetResponseIsCurrent,
+  reconcileMissionEndAuthorityRequest,
   shouldAbandonMissionForCourseSwitch,
   shouldConsumeLegacyMissionIndexEvent,
   trackManualControlRequest,
@@ -58,6 +78,7 @@ const stopping = inject("stopping", ref(false));
 const sseReconnecting = inject("sseReconnecting", ref(false));
 const appRoverConnected = inject("roverConnected", null);
 const appNavState = inject("navState", null);
+const appRoverStopRequested = inject("roverStopRequested", null);
 
 /* ── State ─────────────────────────────────────────── */
 const courses = ref([]);
@@ -178,6 +199,11 @@ const missionBuilderBusy = ref(false);
 const missionBuilderBase = ref(null);
 const missionPresets = ref([]);
 const missionPresetBusy = ref(false);
+const missionEndBusy = ref(false);
+const missionEndAwaitingAckId = ref(null);
+const missionEndAwaitingCommandId = ref(null);
+let missionEndReconcileTimer = null;
+let missionEndReconcileEpoch = 0;
 const pathPresetReference = ref(null);
 let missionPresetRequestSeq = 0;
 const executedIndex = ref(0);
@@ -229,6 +255,9 @@ function syncAppRoverStatus(data) {
   if (appNavState && typeof data.nav_state === "string") {
     appNavState.value = data.nav_state;
   }
+  if (appRoverStopRequested && typeof data.stop_requested === "boolean") {
+    appRoverStopRequested.value = data.stop_requested;
+  }
 }
 
 // Which device currently supplies the cone-capture position: the GPS receiver
@@ -258,6 +287,7 @@ const preflightMode = ref("execute"); // "execute" | "resume"
 const preflightRouteAlreadySynced = ref(false);
 const preflightMissionToken = ref(null);
 const preflightMissionDraft = ref(null);
+const preflightAuthorityToken = ref(null);
 const preflightEmptyRouteMode = ref(null);
 
 // Tick ref — bumps every second so time-ago computeds recalc even when no
@@ -1174,8 +1204,19 @@ let pathCumDist = []; // cumulative distance to each waypoint from start (length
 let pathTotalDist = 0; // total distance including return-to-start segment
 let executionStartIdx = 0; // global waypoint index the current execute/resume call started from
 let displayedMissionId = null;
+let displayedMissionAuthorityKey = null;
 let pathMissionBase = null;
 let localMissionCreatePending = false;
+let localMissionRouteGeneration = 0;
+let localMissionCreateRequestSeq = 0;
+let roverStatusMissionRequestSeq = 0;
+let activeMissionSnapshotRequestSeq = 0;
+let activeMissionSnapshotRequestKey = null;
+let missionMutationRequestSeq = 0;
+let missionAuthorityGeneration = 0;
+const activeMissionAuthority = ref(null);
+let observedMissionAuthorityKey = missionAuthorityKey(null);
+const terminalMissionIds = new Set();
 let eventSource = null;
 let controlInterval = null;
 const pendingManualControlRequests = new Set();
@@ -1247,7 +1288,99 @@ watch([inspectorWidth, sheetHeight, isMobile], () => {
 /* ── Computed ──────────────────────────────────────── */
 const activeCourse = computed(() => courses.value.find((c) => c.id === activeCourseId.value));
 const activeMission = computed(() => roverStatus.value.active_mission || null);
-const missionHeld = computed(() => missionMotionConfirmedHeld(activeMission.value));
+const missionHeld = computed(() => missionMotionConfirmedHeld(activeMissionAuthority.value));
+
+function rememberTerminalMission(id) {
+  if (!Number.isInteger(id)) return;
+  terminalMissionIds.add(id);
+  if (terminalMissionIds.size > 128) terminalMissionIds.delete(terminalMissionIds.values().next().value);
+}
+
+function observeMissionAuthority(mission, { advanceAuthority = true } = {}) {
+  const nextKey = missionAuthorityKey(mission);
+  if (nextKey == null) return false;
+  if (advanceAuthority && nextKey !== observedMissionAuthorityKey) missionAuthorityGeneration += 1;
+  activeMissionAuthority.value = mission;
+  observedMissionAuthorityKey = nextKey;
+  const awaiting = missionEndAwaitingState({
+    awaitingMissionId: missionEndAwaitingAckId.value,
+    awaitingCommandId: missionEndAwaitingCommandId.value,
+    authorityMission: mission,
+  });
+  missionEndAwaitingAckId.value = awaiting.missionId;
+  missionEndAwaitingCommandId.value = awaiting.commandId;
+  return true;
+}
+
+function beginMissionAuthorityRequest(mission = activeMissionAuthority.value) {
+  const token = captureMissionAuthorityRequest({
+    requestId: ++missionMutationRequestSeq,
+    authorityGeneration: missionAuthorityGeneration,
+    mission,
+  });
+  if (!token) {
+    throw Object.assign(new Error("현재 미션 권위를 확인할 수 없습니다. 최신 상태를 다시 불러오세요."), {
+      reason: "mission_authority_unavailable",
+    });
+  }
+  return token;
+}
+
+function missionAuthorityRequestIsCurrent(token) {
+  return missionAuthorityRequestCanApply({
+    token,
+    latestRequestId: missionMutationRequestSeq,
+    currentAuthorityGeneration: missionAuthorityGeneration,
+    currentMission: activeMissionAuthority.value,
+  });
+}
+
+function missionAuthorityFenceIsCurrent(token) {
+  return missionAuthorityFenceMatches({
+    token,
+    currentAuthorityGeneration: missionAuthorityGeneration,
+    currentMission: activeMissionAuthority.value,
+  });
+}
+
+function currentMissionAuthorityFence(mission = activeMissionAuthority.value) {
+  return captureMissionAuthorityFence({
+    authorityGeneration: missionAuthorityGeneration,
+    mission,
+  });
+}
+
+function resolveMissionHttpSnapshot(responseMission, token, options = {}) {
+  const decision = missionHttpResponseAuthorityDecision({
+    token,
+    latestRequestId: missionMutationRequestSeq,
+    currentAuthorityGeneration: missionAuthorityGeneration,
+    currentMission: activeMissionAuthority.value,
+    responseMission,
+    terminalMissionIds,
+  });
+  if (decision.installResponse) {
+    installActiveMissionSnapshot(responseMission, options);
+    return responseMission;
+  }
+  if (decision.responseMatchesCurrent
+      && missionAuthorityKey(activeMission.value) === missionAuthorityKey(responseMission)) {
+    return activeMission.value;
+  }
+  reconcileRoverMode(roverStatus.value);
+  return null;
+}
+
+function missionAuthorityAdvancedError(token) {
+  return Object.assign(new Error("요청 중 미션 상태가 변경되었습니다. 최신 상태를 확인하세요."), {
+    reason: "mission_authority_advanced",
+    missionAuthorityRequestToken: token,
+  });
+}
+
+function invalidateLocalMissionRouteAuthority() {
+  localMissionRouteGeneration += 1;
+}
 const emergencyStopLatched = computed(() =>
   roverStatus.value.nav_state === "EMERGENCY_STOP" || roverStatus.value.stop_requested === true);
 const pathButtonDisabled = computed(() => missionPathActionDisabled({
@@ -2106,6 +2239,10 @@ function alignCourseToMission(mission) {
   activeCourseId.value = nextCourseId;
 }
 
+watch(activeCourseId, (value, previous) => {
+  if (value !== previous) invalidateLocalMissionRouteAuthority();
+}, { flush: "sync" });
+
 watch(activeCourseId, async (v, prev) => {
   if (revertingCourseSwitch) { revertingCourseSwitch = false; return; }
   const missionAlignment = aligningMissionCourse;
@@ -2113,17 +2250,36 @@ watch(activeCourseId, async (v, prev) => {
   // 미션 진행(executing)·중단(stopped) 중의 코스 전환은 아래 clearPath() 가 서버
   // 미션까지 폐기하는 파괴적 작업 — abandonMission 과 동일하게 반드시 확인을 받고,
   // 취소하거나 서버 종료가 실패하면 전환 자체를 이전 코스로 되돌린다.
-  let missionEnded = false;
   if (shouldAbandonMissionForCourseSwitch({ missionAlignment, roverMode: roverMode.value })) {
     const revert = () => { revertingCourseSwitch = true; activeCourseId.value = prev; };
     if (!window.confirm("코스를 전환하면 진행 중인 미션을 종료하고 폐기합니다.\n'이어서 실행'할 수 없게 됩니다. 계속하시겠습니까?")) { revert(); return; }
-    // abandonMission 과 동일하게 서버 종료를 먼저 await 한다 — 응답 전에 로컬
-    // 정리를 하면 다음 status tick 의 reconcileRoverMode 가 "stopped" 로 되튕긴다.
-    if (activeMission.value?.id) {
-      try { await request(`/api/missions/${activeMission.value.id}/end`, { method: "POST" }); }
-      catch (err) { notifyWarn(`미션 종료 실패: ${err.message}`); revert(); return; }
+    const missionId = activeMissionAuthority.value?.id;
+    if (missionId) {
+      revert();
+      if (missionEndBusy.value || missionEndAwaitingAckId.value === missionId) {
+        notifyWarn("로버의 미션 종료 확인을 기다리고 있습니다.");
+        return;
+      }
+      missionEndBusy.value = true;
+      cancelMissionEndReconcile();
+      missionEndAwaitingAckId.value = missionId;
+      missionEndAwaitingCommandId.value = null;
+      let authorityToken = null;
+      try {
+        authorityToken = beginMissionAuthorityRequest(activeMissionAuthority.value);
+        const response = await request(`/api/missions/${missionId}/end`, { method: "POST" });
+        const data = await response.json();
+        if (applyMissionCommandResponse(data, "end", authorityToken)) {
+          notifyWarn("로버의 미션 종료 확인 후 코스를 다시 전환하세요.");
+        }
+      } catch (err) {
+        await reconcileMissionEndRequestFailure(missionId);
+        notifyWarn(`미션 종료 실패: ${err.message}`);
+      } finally {
+        missionEndBusy.value = false;
+      }
+      return;
     }
-    missionEnded = true;
   }
   if (rotateMode.value) exitRotateMode();
   if (toolMode.value !== "none") exitToolMode();
@@ -2139,7 +2295,7 @@ watch(activeCourseId, async (v, prev) => {
   // A server-active mission owns both route and course. Its internal course
   // alignment must refresh course-scoped UI without clearing or abandoning the
   // mission path that restoreActiveMission is installing in the same tick.
-  if (!missionAlignment) clearPath({ endMissionOnServer: !missionEnded });
+  if (!missionAlignment) clearPath();
   if (map) {
     rebuildAllMarkers();
     rebuildRouteMarkers();
@@ -3915,6 +4071,7 @@ function openMissionBuilder() {
 }
 
 function installMissionBuilderPayload({ items, finishBehavior, presetReference = null }) {
+  invalidateLocalMissionRouteAuthority();
   const editing = missionBuilderEditing.value;
   const completed = editing && activeMission.value
     ? activeMission.value.waypoints.filter((waypoint) => waypoint.state === "completed")
@@ -3973,6 +4130,11 @@ async function submitMissionBuilder(payload, { run = false } = {}) {
   } catch (error) {
     missionBuilderBase.value = null;
     notifyError(`남은 경로 저장 실패: ${error.message}`);
+    if (error.data?.reason === "cone_snapshot_mismatch") {
+      await fetchAll();
+      if (map && !isMissionsView.value) rebuildAllMarkers();
+      notifyWarn("변경된 콘 좌표를 다시 불러왔습니다. 최신 경로를 검토한 뒤 다시 적용하세요.");
+    }
     // A 409 response intentionally contains no route body. Fetch the current
     // authority before allowing any further start/resume action.
     await fetchRoverStatus();
@@ -4069,6 +4231,7 @@ function computePath(startLat, startLng) {
   pathStart = { lat: startLat, lng: startLng };
   pathReturnOrigin = null;
   pathPresetReference.value = null;
+  invalidateLocalMissionRouteAuthority();
   pathWaypoints.value = optimized;
   renderPath();
 
@@ -4149,6 +4312,7 @@ function moveWaypoint(idx, delta) {
   if (target < 0 || target >= pathWaypoints.value.length) return;
   const next = [...pathWaypoints.value];
   [next[idx], next[target]] = [next[target], next[idx]];
+  invalidateLocalMissionRouteAuthority();
   pathPresetReference.value = null;
   pathWaypoints.value = next;
   renderPath();
@@ -4158,6 +4322,7 @@ function clearPath({ endMissionOnServer = true } = {}) {
   // Local overlays are never allowed to destroy server mission state. Ending a
   // mission is only performed by the explicit, confirmed abandon action.
   void endMissionOnServer;
+  invalidateLocalMissionRouteAuthority();
   if (pathLine) { map.removeLayer(pathLine); pathLine = null; }
   if (pathStartMarker) { map.removeLayer(pathStartMarker); pathStartMarker = null; }
   if (pathEndMarker) { map.removeLayer(pathEndMarker); pathEndMarker = null; }
@@ -4169,6 +4334,7 @@ function clearPath({ endMissionOnServer = true } = {}) {
   pathTotalDist = 0;
   pathMissionBase = null;
   displayedMissionId = null;
+  displayedMissionAuthorityKey = null;
   executionStartIdx = 0;
   executedIndex.value = 0;
   pathProgress.value = 0;
@@ -4183,18 +4349,28 @@ function clearPath({ endMissionOnServer = true } = {}) {
 // "미션 종료" 버튼 핸들러. 보존된(비상정지·중단) 미션을 폐기하는 파괴적 작업이라
 // 반드시 확인을 받는다.
 async function abandonMission() {
+  if (missionEndBusy.value || missionEndAwaitingAckId.value === activeMissionAuthority.value?.id) return;
   if (!window.confirm("진행 중인 미션을 종료하고 폐기합니다.\n'이어서 실행'할 수 없게 됩니다. 계속하시겠습니까?")) return;
-  // 서버 미션 종료를 먼저 await 한다. 비상정지 래치가 걸려 있으면 nav_state 는
-  // 계속 EMERGENCY_STOP 이므로, reconcileRoverMode 가 mission_progress 가 비워진
-  // (hasMission=false) 상태를 확인하기 전에 로컬 정리를 하면 다음 status tick 에서
-  // 다시 "stopped" 로 튕겨, 미션이 비상정지 해제 후에야 종료되는 것처럼 보인다.
-  // 종료 응답을 받은 뒤 로컬 정리를 해야 그 즉시 종료가 반영된다.
-  if (activeMission.value?.id) {
-    try { await request(`/api/missions/${activeMission.value.id}/end`, { method: "POST" }); }
-    catch (err) { notifyWarn(`미션 종료 실패: ${err.message}`); return; }
+  const missionId = activeMissionAuthority.value?.id;
+  if (!missionId) return;
+  missionEndBusy.value = true;
+  cancelMissionEndReconcile();
+  missionEndAwaitingAckId.value = missionId;
+  missionEndAwaitingCommandId.value = null;
+  let authorityToken = null;
+  try {
+    authorityToken = beginMissionAuthorityRequest(activeMissionAuthority.value);
+    const response = await request(`/api/missions/${missionId}/end`, { method: "POST" });
+    const data = await response.json();
+    if (applyMissionCommandResponse(data, "end", authorityToken)) {
+      notifyWarn("미션 종료 요청을 등록했습니다. 로버의 정지 확인 전까지 경로와 제어 상태를 유지합니다.");
+    }
+  } catch (err) {
+    await reconcileMissionEndRequestFailure(missionId);
+    notifyWarn(`미션 종료 실패: ${err.message}`);
+  } finally {
+    missionEndBusy.value = false;
   }
-  roverStatus.value = { ...roverStatus.value, active_mission: null };
-  clearPath({ endMissionOnServer: false });
 }
 
 function onPathBtn() {
@@ -4213,6 +4389,7 @@ function openPreflight(mode, { routeAlreadySynced = false, emptyRouteMode = null
   preflightRouteAlreadySynced.value = routeAlreadySynced;
   preflightMissionToken.value = mode === "execute" ? null : missionCommandToken(activeMission.value);
   preflightMissionDraft.value = mode === "execute" ? null : missionDraftToken(activeMission.value);
+  preflightAuthorityToken.value = mode === "execute" ? null : currentMissionAuthorityFence();
   preflightEmptyRouteMode.value = emptyRouteMode || missionEmptyResumeMode(activeMission.value);
   preflightForce.value = false;
   showPreflight.value = true;
@@ -4222,6 +4399,7 @@ function cancelPreflight() {
   showPreflight.value = false;
   preflightMissionToken.value = null;
   preflightMissionDraft.value = null;
+  preflightAuthorityToken.value = null;
   preflightEmptyRouteMode.value = null;
 }
 
@@ -4232,18 +4410,26 @@ async function confirmPreflight() {
       : "점검 항목을 확인하거나 허용 가능한 경고를 명시적으로 승인하세요.");
     return;
   }
+  if (preflightMode.value !== "execute"
+      && !missionAuthorityFenceIsCurrent(preflightAuthorityToken.value)) {
+    cancelPreflight();
+    notifyError("점검 중 미션 상태가 변경되었습니다. 최신 상태로 다시 점검하세요.");
+    return;
+  }
   const force = preflightForce.value && !preflightAllOk.value;
   showPreflight.value = false;
   const commandToken = preflightMissionToken.value;
   const commandDraft = preflightMissionDraft.value;
+  const authorityFence = preflightAuthorityToken.value;
   const emptyRouteMode = preflightEmptyRouteMode.value;
   preflightMissionToken.value = null;
   preflightMissionDraft.value = null;
+  preflightAuthorityToken.value = null;
   preflightEmptyRouteMode.value = null;
   if (preflightMode.value === "resume") {
-    await resumePath({ force, routeAlreadySynced: preflightRouteAlreadySynced.value, commandToken, commandDraft, emptyRouteMode });
+    await resumePath({ force, routeAlreadySynced: preflightRouteAlreadySynced.value, commandToken, commandDraft, authorityFence, emptyRouteMode });
   } else if (preflightMode.value === "start-existing") {
-    await startExistingPath({ force, routeAlreadySynced: preflightRouteAlreadySynced.value, commandToken, commandDraft, emptyRouteMode });
+    await startExistingPath({ force, routeAlreadySynced: preflightRouteAlreadySynced.value, commandToken, commandDraft, authorityFence, emptyRouteMode });
   } else {
     await executePath({ force });
   }
@@ -4254,6 +4440,7 @@ async function syncMissionRemaining(mission, {
   items = null,
   finishBehavior = missionFinishBehavior.value,
 } = {}) {
+  const authorityToken = beginMissionAuthorityRequest(mission);
   const remaining = items || pathWaypoints.value.filter((waypoint) =>
     waypoint.state === "pending" || waypoint.state === "active");
   const body = buildMissionRemainingPayload({
@@ -4267,23 +4454,40 @@ async function syncMissionRemaining(mission, {
     body: JSON.stringify(body),
   });
   const edited = await response.json();
-  roverStatus.value = { ...roverStatus.value, active_mission: edited };
-  restoreActiveMission(edited);
-  return edited;
+  const authoritativeMission = resolveMissionHttpSnapshot(edited, authorityToken);
+  if (!authoritativeMission) throw missionAuthorityAdvancedError(authorityToken);
+  return authoritativeMission;
 }
 
 const MISSION_COMMAND_LABELS = {
   start: "미션 시작",
   resume: "미션 재개",
   pause: "미션 일시정지",
+  end: "미션 종료",
 };
 
-function applyMissionCommandResponse(data, action) {
-  const decision = missionCommandResponseDecision(data);
-  if (decision.mission) {
-    roverStatus.value = { ...roverStatus.value, active_mission: decision.mission };
-    restoreActiveMission(decision.mission);
-    reconcileRoverMode(roverStatus.value);
+function applyMissionCommandResponse(data, action, authorityToken) {
+  const decision = action === "end"
+    ? missionEndResponseDecision(data, terminalMissionIds)
+    : missionCommandResponseDecision(data);
+  if (decision.mission && decision.keepMission !== false) {
+    resolveMissionHttpSnapshot(decision.mission, authorityToken);
+  }
+  if (action === "end") {
+    const awaiting = missionEndAwaitingState({
+      awaitingMissionId: missionEndAwaitingAckId.value,
+      awaitingCommandId: missionEndAwaitingCommandId.value,
+      authorityMission: activeMissionAuthority.value,
+      responseDecision: decision,
+    });
+    missionEndAwaitingAckId.value = awaiting.missionId;
+    missionEndAwaitingCommandId.value = awaiting.commandId;
+    cancelMissionEndReconcile();
+    if (!decision.mission && decision.releaseAwaitingAcknowledgement
+        && missionAuthorityRequestIsCurrent(authorityToken)) {
+      missionEndAwaitingAckId.value = null;
+      missionEndAwaitingCommandId.value = null;
+    }
   }
   if (decision.failed) {
     notifyError(`${MISSION_COMMAND_LABELS[action] || "미션 명령"}이 로버에 전달되지 않았습니다. `
@@ -4294,10 +4498,90 @@ function applyMissionCommandResponse(data, action) {
   return true;
 }
 
+function applyMissionEndFailureAuthority(missionId, authorityMission) {
+  const awaiting = missionEndRequestFailureState({
+    awaitingMissionId: missionEndAwaitingAckId.value,
+    awaitingCommandId: missionEndAwaitingCommandId.value,
+    requestedMissionId: missionId,
+    authorityMission,
+  });
+  missionEndAwaitingAckId.value = awaiting.missionId;
+  missionEndAwaitingCommandId.value = awaiting.commandId;
+  cancelMissionEndReconcile();
+}
+
+function cancelMissionEndReconcile() {
+  missionEndReconcileEpoch += 1;
+  if (missionEndReconcileTimer != null) {
+    clearTimeout(missionEndReconcileTimer);
+    missionEndReconcileTimer = null;
+  }
+}
+
+function scheduleMissionEndReconcile(missionId) {
+  if (missionEndReconcileTimer != null || !missionEndReconcileShouldRetry({
+    awaitingMissionId: missionEndAwaitingAckId.value,
+    requestedMissionId: missionId,
+  })) return;
+  const expectedEpoch = missionEndReconcileEpoch;
+  missionEndReconcileTimer = setTimeout(() => {
+    missionEndReconcileTimer = null;
+    void reconcileMissionEndRequestFailure(missionId, expectedEpoch);
+  }, 1000);
+}
+
+async function reconcileMissionEndRequestFailure(
+  missionId,
+  expectedEpoch = missionEndReconcileEpoch,
+) {
+  const authorityGenerationAtStart = missionAuthorityGeneration;
+  const applyFailureAuthority = (authorityMission) => {
+    applyMissionEndFailureAuthority(missionId, authorityMission);
+    reconcileRoverMode(roverStatus.value);
+  };
+  const result = await reconcileMissionEndAuthorityRequest({
+    requestedMissionId: missionId,
+    expectedEpoch,
+    authorityGenerationAtStart,
+    getCurrentState: () => ({
+      epoch: missionEndReconcileEpoch,
+      awaitingMissionId: missionEndAwaitingAckId.value,
+      authorityGeneration: missionAuthorityGeneration,
+      authorityMission: activeMissionAuthority.value,
+    }),
+    fetchActiveMission: async () => {
+      const response = await request("/api/missions/active", { method: "GET" });
+      const data = await response.json();
+      return data.mission || null;
+    },
+  });
+  if (result.outcome === "stale") return;
+  if (result.outcome === "retry") {
+    // Keep the destructive-action lock until an authoritative active snapshot
+    // or terminal SSE resolves the uncertain End request.
+    scheduleMissionEndReconcile(missionId);
+    return;
+  }
+  if (result.installResponse) {
+    installActiveMissionSnapshot(result.authorityMission);
+    if (!missionEndReconcileIsCurrent({
+      expectedEpoch,
+      currentEpoch: missionEndReconcileEpoch,
+      awaitingMissionId: missionEndAwaitingAckId.value,
+      requestedMissionId: missionId,
+    })) return;
+  }
+  applyFailureAuthority(result.authorityMission);
+}
+
 async function startExistingPath(opts = {}) {
   const mission = activeMission.value;
   if (!mission) return;
+  let authorityToken = null;
   try {
+    if (!missionAuthorityFenceIsCurrent(opts.authorityFence)) {
+      throw missionAuthorityAdvancedError(opts.authorityFence);
+    }
     const preflightCommandBody = buildMissionCommandPayload({
       token: opts.commandToken,
       missionId: mission.id,
@@ -4305,6 +4589,9 @@ async function startExistingPath(opts = {}) {
     });
     roverMode.value = "executing";
     const edited = opts.routeAlreadySynced ? mission : await syncMissionRemaining(mission, { draft: opts.commandDraft });
+    const commandAuthorityFence = opts.routeAlreadySynced
+      ? opts.authorityFence
+      : currentMissionAuthorityFence(edited);
     const commandBody = opts.routeAlreadySynced ? preflightCommandBody : buildMissionCommandPayload({
       token: missionCommandTokenAfterSync({
         routeAlreadySynced: opts.routeAlreadySynced,
@@ -4314,14 +4601,20 @@ async function startExistingPath(opts = {}) {
       missionId: edited.id,
       force: opts.force,
     });
+    authorityToken = beginMissionAuthorityRequest(edited);
+    if (!missionAuthorityFenceIsCurrent(commandAuthorityFence)) {
+      throw missionAuthorityAdvancedError(authorityToken);
+    }
     const response = await request(`/api/missions/${edited.id}/start`, {
       method: "POST",
       body: JSON.stringify(commandBody),
     });
     const data = await response.json();
-    applyMissionCommandResponse(data, "start");
+    applyMissionCommandResponse(data, "start", authorityToken);
   } catch (error) {
-    roverMode.value = "stopped";
+    authorityToken = error.missionAuthorityRequestToken || authorityToken;
+    if (missionAuthorityRequestIsCurrent(authorityToken)) roverMode.value = "stopped";
+    else reconcileRoverMode(roverStatus.value);
     notifyError(error.message);
   }
 }
@@ -4333,8 +4626,16 @@ async function executePath(opts = {}) {
   pathProgress.value = 0;
   clearSprayMarkers();
   roverMode.value = "executing";
+  const createRequestId = ++localMissionCreateRequestSeq;
+  const routeToken = captureMissionCreateRouteAuthority({
+    requestId: createRequestId,
+    courseId: activeCourseId.value,
+    routeGeneration: localMissionRouteGeneration,
+  });
   localMissionCreatePending = true;
+  let authorityToken = null;
   try {
+    authorityToken = beginMissionAuthorityRequest(activeMissionAuthority.value);
     const createResponse = await request("/api/missions", {
       method: "POST",
       body: JSON.stringify(buildMissionCreatePayload({
@@ -4345,9 +4646,20 @@ async function executePath(opts = {}) {
           ? pathPresetReference.value : null,
       })),
     });
-    const mission = await createResponse.json();
-    roverStatus.value = { ...roverStatus.value, active_mission: mission };
-    restoreActiveMission(mission, { expectedLocalMission: true });
+    const created = await createResponse.json();
+    const mission = resolveMissionHttpSnapshot(created, authorityToken, { expectedLocalMission: true });
+    if (!mission) throw missionAuthorityAdvancedError(authorityToken);
+    if (!missionCreateRouteAuthorityMatches({
+      token: routeToken,
+      latestRequestId: localMissionCreateRequestSeq,
+      currentCourseId: activeCourseId.value,
+      currentRouteGeneration: localMissionRouteGeneration,
+    })) {
+      roverMode.value = "stopped";
+      notifyWarn("미션은 생성됐지만 검토한 코스 또는 경로가 변경되어 자동 시작하지 않았습니다. 최신 경로를 다시 확인하세요.");
+      return;
+    }
+    authorityToken = beginMissionAuthorityRequest(mission);
     const startResponse = await request(`/api/missions/${mission.id}/start`, {
       method: "POST",
       body: JSON.stringify(buildMissionCommandPayload({
@@ -4357,12 +4669,25 @@ async function executePath(opts = {}) {
       })),
     });
     const started = await startResponse.json();
-    applyMissionCommandResponse(started, "start");
+    applyMissionCommandResponse(started, "start", authorityToken);
   } catch (err) {
-    roverMode.value = activeMission.value ? "stopped" : "path-ready";
+    authorityToken = err.missionAuthorityRequestToken || authorityToken;
+    if (missionAuthorityRequestIsCurrent(authorityToken)) {
+      roverMode.value = activeMission.value ? "stopped" : "path-ready";
+    } else {
+      reconcileRoverMode(roverStatus.value);
+    }
     notifyError(err.message);
   } finally {
-    localMissionCreatePending = false;
+    const settlement = missionCreateSettlementDecision({
+      requestId: createRequestId,
+      latestRequestId: localMissionCreateRequestSeq,
+      authorityMission: activeMissionAuthority.value,
+      hasFullSnapshot: activeMission.value != null,
+    });
+    if (createRequestId === localMissionCreateRequestSeq) localMissionCreatePending = false;
+    if (settlement.clearLocalRoute) clearPath({ endMissionOnServer: false });
+    if (settlement.recoverSnapshot) void fetchActiveMissionSnapshot(activeMissionAuthority.value);
   }
 }
 
@@ -4372,7 +4697,11 @@ async function resumePath(opts = {}) {
     notifyError("이어갈 활성 미션이 없습니다.");
     return;
   }
+  let authorityToken = null;
   try {
+    if (!missionAuthorityFenceIsCurrent(opts.authorityFence)) {
+      throw missionAuthorityAdvancedError(opts.authorityFence);
+    }
     const preflightCommandBody = buildMissionCommandPayload({
       token: opts.commandToken,
       missionId: mission.id,
@@ -4384,6 +4713,9 @@ async function resumePath(opts = {}) {
     executedIndex.value = executionStartIdx;
     roverMode.value = "executing";
     const edited = opts.routeAlreadySynced ? mission : await syncMissionRemaining(mission, { draft: opts.commandDraft });
+    const commandAuthorityFence = opts.routeAlreadySynced
+      ? opts.authorityFence
+      : currentMissionAuthorityFence(edited);
     const commandBody = opts.routeAlreadySynced ? preflightCommandBody : buildMissionCommandPayload({
       token: missionCommandTokenAfterSync({
         routeAlreadySynced: opts.routeAlreadySynced,
@@ -4393,14 +4725,20 @@ async function resumePath(opts = {}) {
       missionId: edited.id,
       force: opts.force,
     });
+    authorityToken = beginMissionAuthorityRequest(edited);
+    if (!missionAuthorityFenceIsCurrent(commandAuthorityFence)) {
+      throw missionAuthorityAdvancedError(authorityToken);
+    }
     const resumeResponse = await request(`/api/missions/${edited.id}/resume`, {
       method: "POST",
       body: JSON.stringify(commandBody),
     });
     const resumed = await resumeResponse.json();
-    applyMissionCommandResponse(resumed, "resume");
+    applyMissionCommandResponse(resumed, "resume", authorityToken);
   } catch (err) {
-    roverMode.value = "stopped";
+    authorityToken = err.missionAuthorityRequestToken || authorityToken;
+    if (missionAuthorityRequestIsCurrent(authorityToken)) roverMode.value = "stopped";
+    else reconcileRoverMode(roverStatus.value);
     notifyError(err.message);
   }
 }
@@ -4451,9 +4789,10 @@ async function pauseMission() {
   if (!activeMission.value?.id) return;
   pauseBusy.value = true;
   try {
+    const authorityToken = beginMissionAuthorityRequest(activeMissionAuthority.value);
     const response = await request(`/api/missions/${activeMission.value.id}/pause`, { method: "POST" });
     const data = await response.json();
-    applyMissionCommandResponse(data, "pause");
+    applyMissionCommandResponse(data, "pause", authorityToken);
   } catch (err) {
     notifyError(`일시정지 실패: ${err.message}`);
   } finally {
@@ -4960,7 +5299,11 @@ function connectSSE() {
   eventSource.addEventListener("rover:status", (e) => {
     const data = parseSSE(e);
     if (!data) return;
-    roverStatus.value = { ...roverStatus.value, ...data };
+    const missionStatus = splitMissionStatusPayload(data);
+    roverStatus.value = { ...roverStatus.value, ...missionStatus.status };
+    if (missionStatus.hasActiveMissionSummary) {
+      applyActiveMissionSummary(missionStatus.activeMissionSummary);
+    }
     // Keep the proximity-detection toggle in sync with the server's stored truth
     // (covers another operator flipping it, or the initial snapshot), guarded
     // against a stale frame snapping the checkbox back mid-toggle.
@@ -4987,20 +5330,32 @@ function connectSSE() {
   eventSource.addEventListener("rover:mission", (e) => {
     const data = parseSSE(e);
     const mission = data?.mission;
-    if (!mission) return;
+    if (!mission) {
+      applyAuthoritativeMissionAbsence();
+      return;
+    }
     if (mission.status === "completed") {
+      rememberTerminalMission(mission.id);
+      if (missionEndAwaitingAckId.value === mission.id) {
+        missionEndAwaitingAckId.value = null;
+        missionEndAwaitingCommandId.value = null;
+        cancelMissionEndReconcile();
+      }
       notifySuccess("미션을 완료했습니다.");
-      roverStatus.value = { ...roverStatus.value, active_mission: null };
-      clearPath({ endMissionOnServer: false });
+      applyAuthoritativeMissionAbsence();
       return;
     }
     if (mission.status === "cancelled") {
-      roverStatus.value = { ...roverStatus.value, active_mission: null };
-      clearPath({ endMissionOnServer: false });
+      rememberTerminalMission(mission.id);
+      if (missionEndAwaitingAckId.value === mission.id) {
+        missionEndAwaitingAckId.value = null;
+        missionEndAwaitingCommandId.value = null;
+        cancelMissionEndReconcile();
+      }
+      applyAuthoritativeMissionAbsence();
       return;
     }
-    roverStatus.value = { ...roverStatus.value, active_mission: mission };
-    restoreActiveMission(mission);
+    installActiveMissionSnapshot(mission);
     reconcileRoverMode(roverStatus.value);
   });
 
@@ -5111,24 +5466,130 @@ function clearSprayMarkers() {
   sprayResults.value = new Map();
 }
 
+function applyAuthoritativeMissionAbsence(options = {}) {
+  const authorityMissionId = activeMissionAuthority.value?.id;
+  const decision = missionAbsentSnapshotDecision({
+    displayedMissionId,
+    authorityMissionId,
+    awaitingMissionId: missionEndAwaitingAckId.value,
+  });
+  observeMissionAuthority(null, options);
+  if (decision.terminalMissionId != null) rememberTerminalMission(decision.terminalMissionId);
+  activeMissionSnapshotRequestSeq += 1;
+  activeMissionSnapshotRequestKey = null;
+  roverStatus.value = { ...roverStatus.value, active_mission: null };
+  missionEndAwaitingAckId.value = null;
+  missionEndAwaitingCommandId.value = null;
+  cancelMissionEndReconcile();
+  if (decision.clearsDisplayedMission) clearPath({ endMissionOnServer: false });
+  reconcileRoverMode(roverStatus.value);
+}
+
+function installActiveMissionSnapshot(mission, options = {}) {
+  if (!mission) {
+    applyAuthoritativeMissionAbsence(options);
+    return;
+  }
+  if (["completed", "cancelled"].includes(mission.status)) {
+    rememberTerminalMission(mission.id);
+    applyAuthoritativeMissionAbsence(options);
+    return;
+  }
+  observeMissionAuthority(mission, options);
+  roverStatus.value = { ...roverStatus.value, active_mission: mission };
+  restoreActiveMission(mission, options);
+}
+
+async function fetchActiveMissionSnapshot(expectedSummary) {
+  const expectedKey = missionAuthorityKey(expectedSummary);
+  if (expectedKey == null || activeMissionSnapshotRequestKey === expectedKey) return;
+  const requestId = ++activeMissionSnapshotRequestSeq;
+  activeMissionSnapshotRequestKey = expectedKey;
+  try {
+    const response = await request("/api/missions/active", { method: "GET" });
+    const data = await response.json();
+    if (requestId !== activeMissionSnapshotRequestSeq
+        || missionAuthorityKey(activeMissionAuthority.value) !== expectedKey) return;
+    if (!data.mission) {
+      applyAuthoritativeMissionAbsence();
+      return;
+    }
+    if (!missionSnapshotMatchesSummary(data.mission, activeMissionAuthority.value)) return;
+    installActiveMissionSnapshot(data.mission);
+    reconcileRoverMode(roverStatus.value);
+  } catch { /* the next status summary retries recovery */ }
+  finally {
+    if (requestId === activeMissionSnapshotRequestSeq) activeMissionSnapshotRequestKey = null;
+  }
+}
+
+function applyActiveMissionSummary(summary) {
+  if (summary == null) {
+    applyAuthoritativeMissionAbsence();
+    return;
+  }
+  const refresh = missionSummaryRefreshDecision({
+    summary,
+    observedAuthorityKey: observedMissionAuthorityKey,
+    hasFullSnapshot: activeMission.value != null,
+  });
+  if (!refresh.valid) return;
+  if (refresh.unchanged) {
+    if (refresh.recoverSnapshot) void fetchActiveMissionSnapshot(summary);
+    return;
+  }
+  const merged = mergeMissionSummary(activeMission.value, summary);
+  if (merged) {
+    installActiveMissionSnapshot(merged);
+    reconcileRoverMode(roverStatus.value);
+    return;
+  }
+  observeMissionAuthority(summary);
+  alignCourseToMission(summary);
+  roverStatus.value = { ...roverStatus.value, active_mission: null };
+  if (displayedMissionId != null
+      || (pathWaypoints.value.length > 0 && !localMissionCreatePending)) {
+    clearPath({ endMissionOnServer: false });
+  }
+  void fetchActiveMissionSnapshot(summary);
+}
+
 async function fetchRoverStatus() {
+  const requestId = ++roverStatusMissionRequestSeq;
+  const authorityToken = captureMissionAuthorityRequest({
+    requestId,
+    authorityGeneration: missionAuthorityGeneration,
+    mission: activeMissionAuthority.value,
+  });
   try {
     const res = await request("/api/rover/status", { method: "GET" });
     const data = await res.json();
-    roverStatus.value = { ...roverStatus.value, ...data };
-    syncObstacleDetect(data);
-    syncAppRoverStatus(data);
+    const missionStatus = splitMissionStatusPayload(data);
+    roverStatus.value = { ...roverStatus.value, ...missionStatus.status };
+    syncObstacleDetect(missionStatus.status);
+    syncAppRoverStatus(missionStatus.status);
     // Draw both device markers from the cached server-side snapshot on first
     // load — without this the map only shows them after the next live SSE frame.
     syncDeviceMarkers(roverStatus.value);
     // Restore in-flight mission so a tab reload during a mission doesn't lose
     // the path overlay, waypoint counter, or spray markers.
-    restoreActiveMission(data.active_mission);
+    const missionSnapshotCurrent = missionAuthorityRequestCanApply({
+      token: authorityToken,
+      latestRequestId: roverStatusMissionRequestSeq,
+      currentAuthorityGeneration: missionAuthorityGeneration,
+      currentMission: activeMissionAuthority.value,
+    });
+    if (missionSnapshotCurrent && missionStatus.hasActiveMission) {
+      installActiveMissionSnapshot(missionStatus.activeMission);
+    }
     reconcileRoverMode(roverStatus.value);
   } catch { /* best-effort */ }
 }
 
 function restoreActiveMission(mission, { expectedLocalMission = false } = {}) {
+  const authorityKey = missionAuthorityKey(mission);
+  if (displayedMissionId === mission?.id
+      && displayedMissionAuthorityKey === authorityKey) return;
   const missionChanged = displayedMissionId !== mission?.id;
   const decision = missionRestoreDecision({
     mission,
@@ -5149,6 +5610,7 @@ function restoreActiveMission(mission, { expectedLocalMission = false } = {}) {
   }
 
   displayedMissionId = mission.id;
+  displayedMissionAuthorityKey = authorityKey;
   pathPresetReference.value = null;
   pathWaypoints.value = mission.waypoints
     .filter((waypoint) => waypoint.state !== "skipped")
@@ -5186,7 +5648,7 @@ function restoreActiveMission(mission, { expectedLocalMission = false } = {}) {
 // nav telemetry is deliberately ignored here: a delayed IDLE frame cannot
 // complete or restart a mission without a correlated protocol-v2 report.
 function reconcileRoverMode(s) {
-  const mission = s?.active_mission;
+  const mission = activeMissionAuthority.value;
   const held = missionMotionConfirmedHeld(mission);
   if (missionNeedsManualRelease({ roverMode: roverMode.value, mission, held })) {
     restoreActiveMission(mission);
@@ -5329,6 +5791,7 @@ onUnmounted(() => {
   document.removeEventListener("click", onGlobalClickForChips);
   document.removeEventListener("keydown", onGlobalKeyForChips);
   if (uiTickInterval) clearInterval(uiTickInterval);
+  cancelMissionEndReconcile();
   if (controlInterval) clearInterval(controlInterval);
   if (cameraStatusPoll) clearInterval(cameraStatusPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
@@ -6441,9 +6904,9 @@ onUnmounted(() => {
                     >남은 경로 편집</button>
                     <button
                       class="btn btn-lg-touch btn-danger btn-block"
-                      :disabled="stopping"
+                      :disabled="stopping || missionEndBusy || missionEndAwaitingAckId === activeMissionAuthority?.id"
                       @click="abandonMission"
-                    >미션 종료</button>
+                    >{{ missionEndBusy || missionEndAwaitingAckId === activeMissionAuthority?.id ? '정지 확인 대기…' : '미션 종료' }}</button>
                   </div>
 
                   <!-- Manual joystick -->

@@ -97,7 +97,13 @@ export function buildMissionRemainingPayload({ draft, mission, finishBehavior, i
     finish_behavior: finishBehavior,
     items: items.map((waypoint) => (waypoint.waypoint_id || typeof waypoint.id === "string")
       ? { waypoint_id: waypoint.waypoint_id || waypoint.id }
-      : { cone_id: waypoint.cone_id }),
+      : {
+          cone_id: waypoint.cone_id,
+          lat: waypoint.lat,
+          lng: waypoint.lng,
+          alt: waypoint.alt ?? null,
+          side: waypoint.side ?? null,
+        }),
   };
 }
 
@@ -256,6 +262,178 @@ export function missionCommandResponseDecision(data) {
   };
 }
 
+export function missionEndResponseDecision(data, terminalMissionIds = new Set()) {
+  const decision = missionCommandResponseDecision(data);
+  const missionId = Number.isInteger(decision.mission?.id) ? decision.mission.id : null;
+  const commandId = typeof data?.command_id === "string" ? data.command_id : null;
+  const terminalSeen = missionId != null && terminalMissionIds.has(missionId);
+  const commandPending = commandId != null
+    && decision.mission?.active_command_id === commandId;
+  const accepted = terminalSeen || commandPending;
+  return {
+    ...decision,
+    failed: !accepted,
+    commandId,
+    commandPending,
+    terminalSeen,
+    keepMission: decision.mission != null && !terminalSeen,
+    awaitAcknowledgement: commandPending && !terminalSeen,
+    releaseAwaitingAcknowledgement: !commandPending || terminalSeen,
+  };
+}
+
+export function missionEndAwaitingState({
+  awaitingMissionId,
+  awaitingCommandId = null,
+  authorityMission = null,
+  responseDecision = null,
+}) {
+  let missionId = awaitingMissionId;
+  let commandId = awaitingCommandId;
+  const responseMissionId = responseDecision?.mission?.id;
+  if (responseDecision?.releaseAwaitingAcknowledgement
+      && responseMissionId === missionId) {
+    return { missionId: null, commandId: null };
+  }
+  if (responseDecision?.awaitAcknowledgement && responseMissionId === missionId) {
+    return { missionId, commandId: responseDecision.commandId };
+  }
+  if (missionId != null && commandId != null
+      && authorityMission?.id === missionId
+      && authorityMission.active_command_id !== commandId) {
+    missionId = null;
+    commandId = null;
+  }
+  return { missionId, commandId };
+}
+
+export function missionEndRequestFailureState({
+  awaitingMissionId,
+  awaitingCommandId = null,
+  requestedMissionId,
+  authorityMission,
+}) {
+  if (awaitingMissionId !== requestedMissionId) {
+    return { missionId: awaitingMissionId, commandId: awaitingCommandId };
+  }
+  if (authorityMission?.id !== requestedMissionId) {
+    return { missionId: null, commandId: null };
+  }
+  const commandId = typeof authorityMission.active_command_id === "string"
+    ? authorityMission.active_command_id : null;
+  return commandId == null
+    ? { missionId: null, commandId: null }
+    : { missionId: requestedMissionId, commandId };
+}
+
+export function missionEndReconcileShouldRetry({ awaitingMissionId, requestedMissionId }) {
+  return Number.isInteger(requestedMissionId) && awaitingMissionId === requestedMissionId;
+}
+
+export function missionEndReconcileIsCurrent({
+  expectedEpoch,
+  currentEpoch,
+  awaitingMissionId,
+  requestedMissionId,
+}) {
+  return expectedEpoch === currentEpoch
+    && missionEndReconcileShouldRetry({ awaitingMissionId, requestedMissionId });
+}
+
+export function missionEndReconcileAuthorityDecision({
+  authorityChangedDuringRequest,
+  responseMission,
+  currentMission,
+}) {
+  if (!authorityChangedDuringRequest) {
+    return { resolve: true, authorityMission: responseMission ?? null };
+  }
+  const responseKey = missionAuthorityKey(responseMission ?? null);
+  const currentKey = missionAuthorityKey(currentMission ?? null);
+  if (responseKey != null && responseKey === currentKey) {
+    return { resolve: true, authorityMission: currentMission ?? null };
+  }
+  return { resolve: false, authorityMission: null };
+}
+
+export async function reconcileMissionEndAuthorityRequest({
+  requestedMissionId,
+  expectedEpoch,
+  authorityGenerationAtStart,
+  getCurrentState,
+  fetchActiveMission,
+}) {
+  const current = () => {
+    const state = getCurrentState();
+    return {
+      ...state,
+      valid: missionEndReconcileIsCurrent({
+        expectedEpoch,
+        currentEpoch: state.epoch,
+        awaitingMissionId: state.awaitingMissionId,
+        requestedMissionId,
+      }),
+    };
+  };
+  if (!current().valid) return { outcome: "stale", authorityMission: null, installResponse: false };
+  let responseMission;
+  try {
+    responseMission = await fetchActiveMission();
+  } catch {
+    return current().valid
+      ? { outcome: "retry", authorityMission: null, installResponse: false }
+      : { outcome: "stale", authorityMission: null, installResponse: false };
+  }
+  const latest = current();
+  if (!latest.valid) return { outcome: "stale", authorityMission: null, installResponse: false };
+  const authorityChangedDuringRequest = authorityGenerationAtStart !== latest.authorityGeneration;
+  const authority = missionEndReconcileAuthorityDecision({
+    authorityChangedDuringRequest,
+    responseMission,
+    currentMission: latest.authorityMission,
+  });
+  if (!authority.resolve) return { outcome: "retry", authorityMission: null, installResponse: false };
+  return {
+    outcome: "resolve",
+    authorityMission: authority.authorityMission,
+    installResponse: !authorityChangedDuringRequest,
+  };
+}
+
+export function missionSummaryRefreshDecision({
+  summary,
+  observedAuthorityKey,
+  hasFullSnapshot,
+}) {
+  const summaryKey = missionAuthorityKey(summary);
+  if (summaryKey == null) return { valid: false, unchanged: false, recoverSnapshot: false, summaryKey: null };
+  const unchanged = summaryKey === observedAuthorityKey;
+  return {
+    valid: true,
+    unchanged,
+    recoverSnapshot: unchanged && !hasFullSnapshot,
+    summaryKey,
+  };
+}
+
+export function captureMissionAuthorityFence({ authorityGeneration, mission }) {
+  const missionKey = missionAuthorityKey(mission);
+  if (!Number.isInteger(authorityGeneration) || missionKey == null
+      || !Number.isInteger(mission?.id)) return null;
+  return Object.freeze({
+    authorityGeneration,
+    missionId: mission.id,
+    missionKey,
+  });
+}
+
+export function missionAuthorityFenceMatches({ token, currentAuthorityGeneration, currentMission }) {
+  return !!token
+    && token.authorityGeneration === currentAuthorityGeneration
+    && token.missionId === currentMission?.id
+    && token.missionKey === missionAuthorityKey(currentMission);
+}
+
 export function missionNeedsManualRelease({ roverMode, mission, held }) {
   return roverMode === "manual" && !!mission && held !== true;
 }
@@ -347,6 +525,155 @@ export function missionRestoreDecision({ mission, displayedMissionId, localWaypo
     discardsLocalDraft: localWaypointCount > 0
       && displayedMissionId !== mission.id,
   };
+}
+
+export function missionAbsentSnapshotDecision({
+  displayedMissionId,
+  authorityMissionId = null,
+  awaitingMissionId = null,
+}) {
+  const terminalMissionId = Number.isInteger(displayedMissionId)
+    ? displayedMissionId
+    : (Number.isInteger(authorityMissionId) ? authorityMissionId : null);
+  const clearsDisplayedMission = terminalMissionId != null;
+  return {
+    clearsDisplayedMission,
+    preservesLocalPlan: !clearsDisplayedMission,
+    terminalMissionId,
+    acknowledgesPendingEnd: clearsDisplayedMission && awaitingMissionId === terminalMissionId,
+  };
+}
+
+export function missionAuthorityKey(mission) {
+  if (mission == null) return "absent";
+  if (!Number.isInteger(mission?.id)
+      || typeof mission?.plan_hash !== "string"
+      || typeof mission?.occurrence_revision !== "string"
+      || typeof mission?.status !== "string") return null;
+  return JSON.stringify([
+    mission.id,
+    mission.plan_hash,
+    mission.occurrence_revision,
+    mission.status,
+    mission.motion_confirmed_held ?? null,
+    mission.active_command_id ?? null,
+    mission.active_hold_id ?? null,
+    mission.hold_reason ?? null,
+    mission.empty_plan_mode ?? null,
+  ]);
+}
+
+export function missionSummaryKey(mission) {
+  if (!Number.isInteger(mission?.id) || typeof mission?.occurrence_revision !== "string") return null;
+  return `${mission.id}:${mission.occurrence_revision}`;
+}
+
+export function captureMissionAuthorityRequest({ requestId, authorityGeneration, mission }) {
+  const authorityKey = missionAuthorityKey(mission);
+  if (!Number.isInteger(requestId) || requestId <= 0
+      || !Number.isInteger(authorityGeneration) || authorityKey == null) return null;
+  return Object.freeze({
+    requestId,
+    authorityGenerationAtStart: authorityGeneration,
+    authorityKeyAtStart: authorityKey,
+    missionIdAtStart: Number.isInteger(mission?.id) ? mission.id : null,
+  });
+}
+
+export function missionAuthorityRequestCanApply({
+  token,
+  latestRequestId,
+  currentAuthorityGeneration,
+  currentMission,
+}) {
+  return !!token
+    && token.requestId === latestRequestId
+    && token.authorityGenerationAtStart === currentAuthorityGeneration
+    && token.authorityKeyAtStart === missionAuthorityKey(currentMission);
+}
+
+export function missionHttpResponseAuthorityDecision({
+  token,
+  latestRequestId,
+  currentAuthorityGeneration,
+  currentMission,
+  responseMission,
+  terminalMissionIds = new Set(),
+}) {
+  const requestCurrent = missionAuthorityRequestCanApply({
+    token, latestRequestId, currentAuthorityGeneration, currentMission,
+  });
+  const responseKey = missionAuthorityKey(responseMission);
+  const currentKey = missionAuthorityKey(currentMission);
+  const responseMissionId = Number.isInteger(responseMission?.id) ? responseMission.id : null;
+  const expectedMissionMatches = token?.missionIdAtStart == null
+    || token.missionIdAtStart === responseMissionId;
+  const terminalSeen = responseMissionId != null && terminalMissionIds.has(responseMissionId);
+  const validResponseMission = responseMission != null && responseKey != null
+    && expectedMissionMatches && !terminalSeen;
+  const responseMatchesCurrent = token?.requestId === latestRequestId
+    && validResponseMission && responseKey === currentKey;
+  return {
+    requestCurrent,
+    installResponse: validResponseMission && (requestCurrent || responseMatchesCurrent),
+    responseMatchesCurrent,
+    terminalSeen,
+  };
+}
+
+export function missionCreateSettlementDecision({
+  requestId,
+  latestRequestId,
+  authorityMission,
+  hasFullSnapshot,
+}) {
+  const summaryOnlyAuthority = Number.isInteger(authorityMission?.id) && !hasFullSnapshot;
+  const current = requestId === latestRequestId;
+  return {
+    clearLocalRoute: current && summaryOnlyAuthority,
+    recoverSnapshot: current && summaryOnlyAuthority,
+  };
+}
+
+export function splitMissionStatusPayload(payload) {
+  const status = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? { ...payload } : {};
+  const hasActiveMission = Object.hasOwn(status, "active_mission");
+  const activeMission = status.active_mission;
+  const hasActiveMissionSummary = Object.hasOwn(status, "active_mission_summary");
+  const activeMissionSummary = status.active_mission_summary;
+  delete status.active_mission;
+  delete status.active_mission_summary;
+  return { status, hasActiveMission, activeMission, hasActiveMissionSummary, activeMissionSummary };
+}
+
+export function missionSnapshotMatchesSummary(snapshot, summary) {
+  return Array.isArray(snapshot?.waypoints)
+    && missionSummaryKey(snapshot) !== null
+    && missionSummaryKey(snapshot) === missionSummaryKey(summary);
+}
+
+export function mergeMissionSummary(snapshot, summary) {
+  if (!missionSnapshotMatchesSummary(snapshot, summary)) return null;
+  return { ...snapshot, ...summary, waypoints: snapshot.waypoints };
+}
+
+export function captureMissionCreateRouteAuthority({ requestId, courseId, routeGeneration }) {
+  if (!Number.isInteger(requestId) || requestId <= 0
+      || !Number.isInteger(courseId) || !Number.isInteger(routeGeneration)) return null;
+  return Object.freeze({ requestId, courseId, routeGeneration });
+}
+
+export function missionCreateRouteAuthorityMatches({
+  token,
+  latestRequestId,
+  currentCourseId,
+  currentRouteGeneration,
+}) {
+  return !!token
+    && token.requestId === latestRequestId
+    && token.courseId === currentCourseId
+    && token.routeGeneration === currentRouteGeneration;
 }
 
 export function missionCourseId(activeCourseId, mission) {

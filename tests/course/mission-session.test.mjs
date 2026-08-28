@@ -7,13 +7,28 @@ import {
   buildMissionPresetDeletePayload,
   buildMissionPresetPayload,
   buildMissionRemainingPayload,
+  captureMissionAuthorityFence,
+  captureMissionAuthorityRequest,
+  captureMissionCreateRouteAuthority,
   hasDrawableMissionPath,
   MISSION_PREFLIGHT_MAX_RETURN_DISTANCE_M,
   missionBuilderSubmission,
   missionCommandResponseDecision,
+  missionEndAwaitingState,
+  missionEndReconcileShouldRetry,
+  missionEndReconcileIsCurrent,
+  missionEndReconcileAuthorityDecision,
+  missionEndRequestFailureState,
+  missionEndResponseDecision,
   missionCommandToken,
   missionCommandTokenAfterSync,
+  missionAuthorityKey,
+  missionAuthorityFenceMatches,
+  missionAbsentSnapshotDecision,
+  missionAuthorityRequestCanApply,
   missionCourseId,
+  missionCreateSettlementDecision,
+  missionCreateRouteAuthorityMatches,
   missionDraftMatches,
   missionDraftToken,
   missionEmptyResumeMode,
@@ -29,10 +44,15 @@ import {
   missionPreflightTarget,
   missionPresetReference,
   missionRestoreDecision,
+  missionSummaryRefreshDecision,
+  missionHttpResponseAuthorityDecision,
+  mergeMissionSummary,
   missionRouteSubmissionAllowed,
   presetResponseIsCurrent,
+  reconcileMissionEndAuthorityRequest,
   shouldAbandonMissionForCourseSwitch,
   shouldConsumeLegacyMissionIndexEvent,
+  splitMissionStatusPayload,
   trackManualControlRequest,
   uncertainMissionOccurrenceIds,
   waitForManualControlDrain,
@@ -56,7 +76,7 @@ test("binds a remaining-route draft to both plan and occurrence revisions", () =
     finishBehavior: "return_to_start",
     items: [
       { waypoint_id: "stable-occurrence" },
-      { cone_id: 92 },
+      { cone_id: 92, lat: 35.2, lng: 126.2, alt: null, side: "right" },
     ],
   });
 
@@ -64,7 +84,7 @@ test("binds a remaining-route draft to both plan and occurrence revisions", () =
   assert.equal(payload.expected_occurrence_revision, "occurrences-at-open");
   assert.deepEqual(payload.items, [
     { waypoint_id: "stable-occurrence" },
-    { cone_id: 92 },
+    { cone_id: 92, lat: 35.2, lng: 126.2, alt: null, side: "right" },
   ]);
   assert.equal(missionDraftMatches(draft, liveMission), false);
   assert.equal(missionDraftMatches(draft, {
@@ -188,6 +208,146 @@ test("always restores a server-active mission over a different displayed route",
   }), { restore: true, discardsLocalDraft: true });
   assert.equal(missionRestoreDecision({ mission, displayedMissionId: null, localWaypointCount: 300 }).discardsLocalDraft, true);
   assert.equal(missionRestoreDecision({ mission, displayedMissionId: 41, localWaypointCount: 300 }).restore, true);
+});
+
+test("fences delayed status and mutation snapshots behind newer mission authority", () => {
+  const ready = {
+    ...mission,
+    status: "ready",
+    motion_confirmed_held: true,
+    active_command_id: null,
+  };
+  const token = captureMissionAuthorityRequest({ requestId: 1, authorityGeneration: 3, mission: ready });
+  assert.equal(missionAuthorityRequestCanApply({
+    token,
+    latestRequestId: 1,
+    currentAuthorityGeneration: 3,
+    currentMission: ready,
+  }), true);
+  const running = {
+    ...ready,
+    status: "running",
+    motion_confirmed_held: false,
+    active_command_id: "start-1",
+  };
+  assert.notEqual(missionAuthorityKey(ready), missionAuthorityKey(running));
+  assert.equal(missionAuthorityRequestCanApply({
+    token,
+    latestRequestId: 1,
+    currentAuthorityGeneration: 4,
+    currentMission: running,
+  }), false);
+  assert.deepEqual(missionHttpResponseAuthorityDecision({
+    token,
+    latestRequestId: 1,
+    currentAuthorityGeneration: 4,
+    currentMission: running,
+    responseMission: ready,
+  }), {
+    requestCurrent: false,
+    installResponse: false,
+    responseMatchesCurrent: false,
+    terminalSeen: false,
+  });
+
+  assert.equal(missionHttpResponseAuthorityDecision({
+    token,
+    latestRequestId: 1,
+    currentAuthorityGeneration: 4,
+    currentMission: running,
+    responseMission: { ...running, waypoints: [] },
+  }).installResponse, true);
+
+  const split = splitMissionStatusPayload({
+    connected: true,
+    active_mission: ready,
+    active_mission_summary: running,
+  });
+  assert.deepEqual(split.status, { connected: true });
+  assert.equal(split.activeMission, ready);
+  assert.equal(split.activeMissionSummary, running);
+  assert.equal(mergeMissionSummary({ ...ready, waypoints: [] }, running).status, "running");
+});
+
+test("fences an open preflight against intervening mission authority even after ABA", () => {
+  const paused = {
+    ...mission,
+    status: "paused",
+    motion_confirmed_held: true,
+    active_command_id: null,
+  };
+  const token = captureMissionAuthorityFence({ authorityGeneration: 7, mission: paused });
+  assert.equal(missionAuthorityFenceMatches({
+    token,
+    currentAuthorityGeneration: 7,
+    currentMission: paused,
+  }), true);
+  assert.equal(missionAuthorityFenceMatches({
+    token,
+    currentAuthorityGeneration: 9,
+    currentMission: { ...paused },
+  }), false);
+});
+
+test("invalidates pending mission creation when its reviewed course or route changes", () => {
+  const token = captureMissionCreateRouteAuthority({
+    requestId: 4,
+    courseId: 7,
+    routeGeneration: 12,
+  });
+  const current = {
+    token,
+    latestRequestId: 4,
+    currentCourseId: 7,
+    currentRouteGeneration: 12,
+  };
+  assert.equal(missionCreateRouteAuthorityMatches(current), true);
+  assert.equal(missionCreateRouteAuthorityMatches({ ...current, currentCourseId: 8 }), false);
+  assert.equal(missionCreateRouteAuthorityMatches({ ...current, currentRouteGeneration: 13 }), false);
+  assert.equal(missionCreateRouteAuthorityMatches({ ...current, latestRequestId: 5 }), false);
+});
+
+test("clears a pending local route when only foreign summary authority remains", () => {
+  assert.deepEqual(missionCreateSettlementDecision({
+    requestId: 4,
+    latestRequestId: 4,
+    authorityMission: mission,
+    hasFullSnapshot: false,
+  }), { clearLocalRoute: true, recoverSnapshot: true });
+  assert.deepEqual(missionCreateSettlementDecision({
+    requestId: 4,
+    latestRequestId: 4,
+    authorityMission: mission,
+    hasFullSnapshot: true,
+  }), { clearLocalRoute: false, recoverSnapshot: false });
+  assert.deepEqual(missionCreateSettlementDecision({
+    requestId: 3,
+    latestRequestId: 4,
+    authorityMission: mission,
+    hasFullSnapshot: false,
+  }), { clearLocalRoute: false, recoverSnapshot: false });
+});
+
+test("treats summary-only mission absence as terminal server route authority", () => {
+  assert.deepEqual(missionAbsentSnapshotDecision({
+    displayedMissionId: null,
+    authorityMissionId: mission.id,
+    awaitingMissionId: mission.id,
+  }), {
+    clearsDisplayedMission: true,
+    preservesLocalPlan: false,
+    terminalMissionId: mission.id,
+    acknowledgesPendingEnd: true,
+  });
+  assert.deepEqual(missionAbsentSnapshotDecision({
+    displayedMissionId: null,
+    authorityMissionId: null,
+  }), {
+    clearsDisplayedMission: false,
+    preservesLocalPlan: true,
+    terminalMissionId: null,
+    acknowledgesPendingEnd: false,
+  });
 });
 
 test("selects an active mission's course without treating it as an operator switch", () => {
@@ -334,6 +494,202 @@ test("fails closed on an undelivered mission command and keeps its authority bod
   });
   assert.equal(missionCommandResponseDecision({ delivered: true, mission }).failed, false);
   assert.equal(missionCommandResponseDecision({ mission }).failed, true);
+});
+
+test("keeps an accepted End until terminal authority and fences a delayed response", () => {
+  const interrupted = { ...mission, status: "interrupted", active_command_id: "end-1" };
+  assert.deepEqual(missionEndResponseDecision({ delivered: true, command_id: "end-1", mission: interrupted }), {
+    mission: interrupted,
+    delivered: true,
+    failed: false,
+    commandId: "end-1",
+    commandPending: true,
+    terminalSeen: false,
+    keepMission: true,
+    awaitAcknowledgement: true,
+    releaseAwaitingAcknowledgement: false,
+  });
+  assert.equal(missionEndResponseDecision(
+    { delivered: true, command_id: "end-1", mission: interrupted },
+    new Set([mission.id]),
+  ).keepMission, false);
+  const offlinePending = missionEndResponseDecision({
+    delivered: false,
+    command_id: "end-1",
+    mission: interrupted,
+  });
+  assert.equal(offlinePending.failed, false);
+  assert.equal(offlinePending.awaitAcknowledgement, true);
+  const failed = missionEndResponseDecision({
+    delivered: false,
+    command_id: "end-1",
+    mission: { ...interrupted, active_command_id: null },
+  });
+  assert.equal(failed.keepMission, true);
+  assert.equal(failed.releaseAwaitingAcknowledgement, true);
+
+  const pending = missionEndAwaitingState({
+    awaitingMissionId: mission.id,
+    authorityMission: interrupted,
+    responseDecision: offlinePending,
+  });
+  assert.deepEqual(pending, { missionId: mission.id, commandId: "end-1" });
+  assert.deepEqual(missionEndAwaitingState({
+    awaitingMissionId: mission.id,
+    authorityMission: { ...interrupted, active_command_id: null },
+    responseDecision: offlinePending,
+  }), { missionId: mission.id, commandId: "end-1" });
+  assert.deepEqual(missionEndAwaitingState({
+    awaitingMissionId: pending.missionId,
+    awaitingCommandId: pending.commandId,
+    authorityMission: { ...interrupted, active_command_id: null, hold_reason: "rover_rebooted" },
+  }), { missionId: null, commandId: null });
+  assert.deepEqual(missionEndAwaitingState({
+    awaitingMissionId: mission.id,
+    authorityMission: { ...interrupted, hold_reason: "rover_rebooted" },
+    responseDecision: failed,
+  }), { missionId: null, commandId: null });
+});
+
+test("reconciles a lost End response from authoritative pending or failed state", () => {
+  const pending = { ...mission, status: "paused", active_command_id: "end-after-loss" };
+  assert.deepEqual(missionEndRequestFailureState({
+    awaitingMissionId: mission.id,
+    requestedMissionId: mission.id,
+    authorityMission: pending,
+  }), { missionId: mission.id, commandId: "end-after-loss" });
+  assert.deepEqual(missionEndRequestFailureState({
+    awaitingMissionId: mission.id,
+    requestedMissionId: mission.id,
+    authorityMission: { ...pending, status: "interrupted", active_command_id: null },
+  }), { missionId: null, commandId: null });
+  assert.deepEqual(missionEndRequestFailureState({
+    awaitingMissionId: mission.id,
+    requestedMissionId: mission.id,
+    authorityMission: null,
+  }), { missionId: null, commandId: null });
+  assert.equal(missionEndReconcileShouldRetry({
+    awaitingMissionId: mission.id,
+    requestedMissionId: mission.id,
+  }), true);
+  assert.equal(missionEndReconcileShouldRetry({
+    awaitingMissionId: null,
+    requestedMissionId: mission.id,
+  }), false);
+  assert.equal(missionEndReconcileIsCurrent({
+    expectedEpoch: 4,
+    currentEpoch: 4,
+    awaitingMissionId: mission.id,
+    requestedMissionId: mission.id,
+  }), true);
+  assert.equal(missionEndReconcileIsCurrent({
+    expectedEpoch: 4,
+    currentEpoch: 5,
+    awaitingMissionId: 99,
+    requestedMissionId: mission.id,
+  }), false);
+  assert.deepEqual(missionEndRequestFailureState({
+    awaitingMissionId: 99,
+    awaitingCommandId: "successor-end",
+    requestedMissionId: mission.id,
+    authorityMission: pending,
+  }), { missionId: 99, commandId: "successor-end" });
+  assert.deepEqual(missionEndReconcileAuthorityDecision({
+    authorityChangedDuringRequest: true,
+    responseMission: pending,
+    currentMission: { ...pending, active_command_id: null },
+  }), { resolve: false, authorityMission: null });
+  assert.deepEqual(missionEndReconcileAuthorityDecision({
+    authorityChangedDuringRequest: true,
+    responseMission: pending,
+    currentMission: { ...pending },
+  }), { resolve: true, authorityMission: { ...pending } });
+});
+
+test("orchestrates delayed End reconciliation without crossing mission epochs", async () => {
+  const pendingEnd = { ...mission, status: "paused", active_command_id: "end-delayed" };
+  let state = {
+    epoch: 1,
+    awaitingMissionId: mission.id,
+    authorityGeneration: 10,
+    authorityMission: { ...pendingEnd, active_command_id: null },
+  };
+  let releaseOld;
+  const oldFetch = new Promise((resolve) => { releaseOld = resolve; });
+  const oldRequest = reconcileMissionEndAuthorityRequest({
+    requestedMissionId: mission.id,
+    expectedEpoch: 1,
+    authorityGenerationAtStart: 10,
+    getCurrentState: () => state,
+    fetchActiveMission: () => oldFetch,
+  });
+  state = {
+    epoch: 2,
+    awaitingMissionId: 99,
+    authorityGeneration: 11,
+    authorityMission: { ...pendingEnd, id: 99, active_command_id: "successor-end" },
+  };
+  releaseOld(pendingEnd);
+  assert.deepEqual(await oldRequest, {
+    outcome: "stale",
+    authorityMission: null,
+    installResponse: false,
+  });
+  assert.equal(state.authorityMission.active_command_id, "successor-end");
+
+  state = {
+    epoch: 3,
+    awaitingMissionId: mission.id,
+    authorityGeneration: 20,
+    authorityMission: { ...pendingEnd, active_command_id: null },
+  };
+  let releaseCrossChannel;
+  const crossChannelFetch = new Promise((resolve) => { releaseCrossChannel = resolve; });
+  const crossChannel = reconcileMissionEndAuthorityRequest({
+    requestedMissionId: mission.id,
+    expectedEpoch: 3,
+    authorityGenerationAtStart: 20,
+    getCurrentState: () => state,
+    fetchActiveMission: () => crossChannelFetch,
+  });
+  state = { ...state, authorityGeneration: 21 };
+  releaseCrossChannel(pendingEnd);
+  assert.equal((await crossChannel).outcome, "retry");
+
+  state = { ...state, authorityMission: pendingEnd };
+  assert.deepEqual(await reconcileMissionEndAuthorityRequest({
+    requestedMissionId: mission.id,
+    expectedEpoch: 3,
+    authorityGenerationAtStart: 21,
+    getCurrentState: () => state,
+    fetchActiveMission: async () => pendingEnd,
+  }), {
+    outcome: "resolve",
+    authorityMission: pendingEnd,
+    installResponse: true,
+  });
+});
+
+test("deduplicates unchanged full summaries while retrying summary-only recovery", () => {
+  const summary = { ...mission, status: "running", motion_confirmed_held: false };
+  const key = missionAuthorityKey(summary);
+  for (let index = 0; index < 100; index += 1) {
+    assert.deepEqual(missionSummaryRefreshDecision({
+      summary,
+      observedAuthorityKey: key,
+      hasFullSnapshot: true,
+    }), {
+      valid: true,
+      unchanged: true,
+      recoverSnapshot: false,
+      summaryKey: key,
+    });
+  }
+  assert.equal(missionSummaryRefreshDecision({
+    summary,
+    observedAuthorityKey: key,
+    hasFullSnapshot: false,
+  }).recoverSnapshot, true);
 });
 
 test("releases manual mode only when a newer mission authority is moving", () => {
