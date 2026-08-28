@@ -19,21 +19,47 @@ export function missionDraftMatches(draft, mission) {
 }
 
 export function missionCommandToken(mission) {
-  if (!mission || !Number.isInteger(mission.id) || typeof mission.plan_hash !== "string") return null;
-  return Object.freeze({ missionId: mission.id, planHash: mission.plan_hash });
+  if (!mission || !Number.isInteger(mission.id)
+      || typeof mission.plan_hash !== "string"
+      || typeof mission.occurrence_revision !== "string") return null;
+  return Object.freeze({
+    missionId: mission.id,
+    planHash: mission.plan_hash,
+    occurrenceRevision: mission.occurrence_revision,
+  });
 }
 
 export function buildMissionCommandPayload({ token, missionId, force = false }) {
-  if (!token || token.missionId !== missionId || typeof token.planHash !== "string") {
+  if (!token || token.missionId !== missionId
+      || typeof token.planHash !== "string"
+      || typeof token.occurrenceRevision !== "string") {
     throw Object.assign(new Error("점검한 미션과 현재 미션이 다릅니다. 최신 미션을 다시 점검하세요."), {
       reason: "mission_preflight_mismatch",
     });
   }
-  return { force: force === true, expected_plan_hash: token.planHash };
+  return {
+    force: force === true,
+    expected_plan_hash: token.planHash,
+    expected_occurrence_revision: token.occurrenceRevision,
+  };
 }
 
 export function missionCommandTokenAfterSync({ routeAlreadySynced, preflightToken, editedMission }) {
   return routeAlreadySynced === true ? preflightToken : missionCommandToken(editedMission);
+}
+
+export function buildMissionCreatePayload({ courseId, finishBehavior, items }) {
+  return {
+    course_id: courseId,
+    finish_behavior: finishBehavior,
+    items: items.map((item) => ({
+      cone_id: item.cone_id,
+      lat: item.lat,
+      lng: item.lng,
+      alt: item.alt ?? null,
+      side: item.side ?? null,
+    })),
+  };
 }
 
 export function missionMotionConfirmedHeld(mission) {

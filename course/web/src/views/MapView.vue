@@ -6,6 +6,7 @@ import { request } from "../api.js";
 import MissionBuilder from "../components/MissionBuilder.vue";
 import { optimizeConeRoute } from "../lib/mission-route.mjs";
 import {
+  buildMissionCreatePayload,
   buildMissionCommandPayload,
   buildMissionPresetPayload,
   buildMissionRemainingPayload,
@@ -4306,11 +4307,11 @@ async function executePath(opts = {}) {
   try {
     const createResponse = await request("/api/missions", {
       method: "POST",
-      body: JSON.stringify({
-        course_id: activeCourseId.value,
-        finish_behavior: missionFinishBehavior.value,
-        items: pathWaypoints.value.map((waypoint) => ({ cone_id: waypoint.cone_id })),
-      }),
+      body: JSON.stringify(buildMissionCreatePayload({
+        courseId: activeCourseId.value,
+        finishBehavior: missionFinishBehavior.value,
+        items: pathWaypoints.value,
+      })),
     });
     const mission = await createResponse.json();
     roverStatus.value = { ...roverStatus.value, active_mission: mission };

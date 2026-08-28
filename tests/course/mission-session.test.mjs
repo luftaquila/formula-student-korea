@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildMissionCreatePayload,
   buildMissionCommandPayload,
   buildMissionPresetPayload,
   buildMissionRemainingPayload,
@@ -75,22 +76,53 @@ test("binds a remaining-route draft to both plan and occurrence revisions", () =
   }), /기준 버전/);
 });
 
-test("sends the plan hash captured at preflight even when the live hash changes", () => {
+test("sends the plan and occurrence revisions captured at preflight", () => {
   const token = missionCommandToken(mission);
   const payload = buildMissionCommandPayload({ token, missionId: mission.id, force: true });
-  assert.deepEqual(payload, { force: true, expected_plan_hash: "hash-at-open" });
+  assert.deepEqual(payload, {
+    force: true,
+    expected_plan_hash: "hash-at-open",
+    expected_occurrence_revision: "occurrences-at-open",
+  });
   assert.throws(() => buildMissionCommandPayload({ token, missionId: mission.id + 1 }), /현재 미션이 다릅니다/);
-  const edited = { ...mission, plan_hash: "hash-after-final-put" };
+  assert.equal(missionCommandToken({ ...mission, occurrence_revision: null }), null);
+  const edited = {
+    ...mission,
+    plan_hash: "hash-after-final-put",
+    occurrence_revision: "occurrences-after-final-put",
+  };
   assert.equal(missionCommandTokenAfterSync({
     routeAlreadySynced: true,
     preflightToken: token,
     editedMission: edited,
   }).planHash, "hash-at-open");
   assert.equal(missionCommandTokenAfterSync({
+    routeAlreadySynced: true,
+    preflightToken: token,
+    editedMission: edited,
+  }).occurrenceRevision, "occurrences-at-open");
+  assert.equal(missionCommandTokenAfterSync({
     routeAlreadySynced: false,
     preflightToken: token,
     editedMission: edited,
   }).planHash, "hash-after-final-put");
+  assert.equal(missionCommandTokenAfterSync({
+    routeAlreadySynced: false,
+    preflightToken: token,
+    editedMission: edited,
+  }).occurrenceRevision, "occurrences-after-final-put");
+});
+
+test("sends the reviewed cone geometry when creating a mission", () => {
+  assert.deepEqual(buildMissionCreatePayload({
+    courseId: 7,
+    finishBehavior: "return_to_start",
+    items: [{ cone_id: 11, lat: 35.1, lng: 126.1, side: "right" }],
+  }), {
+    course_id: 7,
+    finish_behavior: "return_to_start",
+    items: [{ cone_id: 11, lat: 35.1, lng: 126.1, alt: null, side: "right" }],
+  });
 });
 
 test("persists held-mission Apply and Run while keeping new plans local until creation", () => {
