@@ -232,8 +232,8 @@ function interruptMission() {
   }
 }
 
-function recordTelemetrySample() {
-  if (currentMissionId == null) return;
+function recordTelemetrySample(missionId = currentMissionId) {
+  if (missionId == null) return;
   const pos = roverState.last_position;
   const now = Date.now();
   // NTRIP link health at this sample. ntrip_connected===false zeroes
@@ -251,7 +251,7 @@ function recordTelemetrySample() {
   // 500으로 떨구지 않게 하고, 정책상 모든 CUD 실패를 구조화 로그로 남긴다.
   try {
     insertTelemetry.run(
-      currentMissionId,
+      missionId,
       now,
       pos ? pos.lat : null,
       pos ? pos.lng : null,
@@ -265,8 +265,12 @@ function recordTelemetrySample() {
       roverState.gps && typeof roverState.gps.v_acc === "number" ? roverState.gps.v_acc : null,
     );
   } catch (e) {
-    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: currentMissionId }, "rover", SYS);
+    logger.warn(null, "mission.telemetry_persist", { error: e.message || String(e), mission_id: missionId }, "rover", SYS);
   }
+}
+
+function recordActiveMissionTelemetrySample() {
+  recordTelemetrySample(currentMissionId ?? missionV2.activeMissionSummary()?.id ?? null);
 }
 const roverState = {
   last_seen: 0, // epoch ms of the last inbound signal (SSE connect / telemetry / position); drives the liveness watchdog
@@ -878,7 +882,7 @@ app.post("/api/rover/position", (req, res) => {
   }
 
   // Mission telemetry is a rover-only concern (the receiver never drives).
-  if (device === "rover" && currentMissionId != null) recordTelemetrySample();
+  if (device === "rover") recordActiveMissionTelemetrySample();
 
   // Drive the live map marker only from the ACTIVE source, so a rover heartbeat
   // can't yank the marker off the receiver (the preferred source) or vice-versa.
@@ -1073,7 +1077,7 @@ app.post("/api/rover/telemetry", (req, res) => {
       logger.warn(req, "mission.end.error", { mission_id: endedId, prevNav }, "rover");
     }
   }
-  if (currentMissionId != null) recordTelemetrySample();
+  recordActiveMissionTelemetrySample();
 
   broadcastRoverStatus();
   res.json({ ok: true });
@@ -1298,6 +1302,7 @@ app.post("/api/missions", (req, res) => {
     const mission = missionV2.createMission({
       courseId,
       presetId: Number.isInteger(presetId) ? presetId : null,
+      expectedPresetRevision: req.body?.expected_preset_revision,
       finishBehavior,
       items,
       actor: v2Actor(req),

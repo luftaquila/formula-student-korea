@@ -8,6 +8,7 @@ import { optimizeConeRoute } from "../lib/mission-route.mjs";
 import {
   buildMissionCreatePayload,
   buildMissionCommandPayload,
+  buildMissionPresetDeletePayload,
   buildMissionPresetPayload,
   buildMissionRemainingPayload,
   missionBuilderSubmission,
@@ -24,6 +25,7 @@ import {
   missionPathGeometry,
   missionPreflightCanConfirm,
   missionPreflightDistanceAllowed,
+  missionPreflightRouteCheck,
   missionPreflightTarget,
   missionRestoreDecision,
   presetResponseIsCurrent,
@@ -176,6 +178,7 @@ const missionBuilderBusy = ref(false);
 const missionBuilderBase = ref(null);
 const missionPresets = ref([]);
 const missionPresetBusy = ref(false);
+const pathPresetReference = ref(null);
 let missionPresetRequestSeq = 0;
 const executedIndex = ref(0);
 const pathProgress = ref(0);
@@ -1312,11 +1315,17 @@ const preflightChecks = computed(() => {
   const batteryOk = !s.battery || s.battery.percent == null || s.battery.percent > BATTERY_WARN_PERCENT;
   const resolvingUncertain = targetDecision.kind === "resolve_uncertain";
   const returningOnly = targetDecision.kind === "return_only";
+  const routeCheck = missionPreflightRouteCheck({
+    mode: preflightMode.value === "execute" ? "execute" : "resume",
+    waypoints: wps,
+    finishBehavior: missionFinishBehavior.value,
+    returnPoint: activeMission.value?.start_position || s.last_position,
+  });
   return [
-    { key: "connected", label: "로버 SSE 연결", ok: !!s.connected },
+    { key: "connected", label: "로버 SSE 연결", ok: !!s.connected, blocking: true },
     { key: "estop", label: "비상정지 해제", ok: !emergencyStopLatched.value, blocking: true,
       detail: emergencyStopLatched.value ? "비상정지가 래치되어 있습니다. 먼저 물리 상태를 확인하고 해제하세요." : "해제됨" },
-    { key: "protocol", label: "미션 프로토콜 v2", ok: s.mission_protocol?.compatible === true,
+    { key: "protocol", label: "미션 프로토콜 v2", ok: s.mission_protocol?.compatible === true, blocking: true,
       detail: s.mission_protocol?.connected == null
         ? "버전 미수신"
         : `rover v${s.mission_protocol.connected} / required v${s.mission_protocol.required}` },
@@ -1335,6 +1344,11 @@ const preflightChecks = computed(() => {
       ok: missionPreflightDistanceAllowed({ kind: targetDecision.kind, distance: firstDist }),
       detail: resolvingUncertain ? "추가 이동·재분사 없이 운영자가 결과 불확실성을 해소합니다."
         : (firstDist != null ? `${firstDist.toFixed(1)} m${returningOnly ? " · 최초 미션 시작점" : ""}` : "위치 미수신") },
+    { key: "route", label: "경로 구간 거리", ok: routeCheck.ok,
+      detail: routeCheck.ok ? "모든 구간 50 m 이내"
+        : (Number.isFinite(routeCheck.distance)
+          ? `${routeCheck.reason === "return_segment_too_long" ? "복귀 구간" : `${routeCheck.index + 1}번 콘까지`} ${routeCheck.distance.toFixed(1)} m`
+          : "경로 좌표 확인 필요") },
     { key: "battery", label: "배터리", ok: batteryOk,
       detail: s.battery && s.battery.percent != null ? `${s.battery.percent}%` : "미수신" },
   ];
@@ -3900,7 +3914,7 @@ function openMissionBuilder() {
   loadMissionPresets();
 }
 
-function installMissionBuilderPayload({ items, finishBehavior }) {
+function installMissionBuilderPayload({ items, finishBehavior, presetReference = null }) {
   const editing = missionBuilderEditing.value;
   const completed = editing && activeMission.value
     ? activeMission.value.waypoints.filter((waypoint) => waypoint.state === "completed")
@@ -3910,6 +3924,9 @@ function installMissionBuilderPayload({ items, finishBehavior }) {
     ...items.map((item) => ({ ...item, state: item.state === "active" ? "active" : "pending" })),
   ];
   missionFinishBehavior.value = finishBehavior;
+  pathPresetReference.value = presetReference
+    ? { ...presetReference, courseId: activeCourseId.value }
+    : null;
   const start = activeMission.value?.start_position || roverStatus.value.last_position || pathWaypoints.value[0];
   pathStart = start ? { lat: start.lat, lng: start.lng } : null;
   pathReturnOrigin = pathWaypoints.value.length === 0 && finishBehavior === "return_to_start"
@@ -4000,12 +4017,22 @@ async function saveMissionPreset({ name, items, finishBehavior }) {
 async function deleteMissionPreset(id) {
   if (missionPresetBusy.value) return;
   if (!window.confirm("이 미션 프리셋을 삭제할까요?")) return;
+  const preset = missionPresets.value.find((item) => item.id === id);
+  if (!preset) {
+    notifyWarn("프리셋 목록이 변경되었습니다. 최신 목록을 다시 불러옵니다.");
+    await loadMissionPresets();
+    return;
+  }
   missionPresetBusy.value = true;
   try {
-    await request(`/api/rover/mission-presets/${id}`, { method: "DELETE" });
+    await request(`/api/rover/mission-presets/${id}`, {
+      method: "DELETE",
+      body: JSON.stringify(buildMissionPresetDeletePayload(preset)),
+    });
     await loadMissionPresets();
   } catch (error) {
     notifyError(`프리셋 삭제 실패: ${error.message}`);
+    await loadMissionPresets();
   } finally {
     missionPresetBusy.value = false;
   }
@@ -4041,6 +4068,7 @@ function computePath(startLat, startLng) {
 
   pathStart = { lat: startLat, lng: startLng };
   pathReturnOrigin = null;
+  pathPresetReference.value = null;
   pathWaypoints.value = optimized;
   renderPath();
 
@@ -4121,6 +4149,7 @@ function moveWaypoint(idx, delta) {
   if (target < 0 || target >= pathWaypoints.value.length) return;
   const next = [...pathWaypoints.value];
   [next[idx], next[target]] = [next[target], next[idx]];
+  pathPresetReference.value = null;
   pathWaypoints.value = next;
   renderPath();
 }
@@ -4134,6 +4163,7 @@ function clearPath({ endMissionOnServer = true } = {}) {
   if (pathEndMarker) { map.removeLayer(pathEndMarker); pathEndMarker = null; }
   pathStart = null;
   pathReturnOrigin = null;
+  pathPresetReference.value = null;
   pathWaypoints.value = [];
   pathCumDist = [];
   pathTotalDist = 0;
@@ -4311,6 +4341,8 @@ async function executePath(opts = {}) {
         courseId: activeCourseId.value,
         finishBehavior: missionFinishBehavior.value,
         items: pathWaypoints.value,
+        presetReference: pathPresetReference.value?.courseId === activeCourseId.value
+          ? pathPresetReference.value : null,
       })),
     });
     const mission = await createResponse.json();
@@ -5117,6 +5149,7 @@ function restoreActiveMission(mission, { expectedLocalMission = false } = {}) {
   }
 
   displayedMissionId = mission.id;
+  pathPresetReference.value = null;
   pathWaypoints.value = mission.waypoints
     .filter((waypoint) => waypoint.state !== "skipped")
     .map((waypoint) => ({ ...waypoint, waypoint_id: waypoint.id }));

@@ -48,7 +48,15 @@ export function missionCommandTokenAfterSync({ routeAlreadySynced, preflightToke
   return routeAlreadySynced === true ? preflightToken : missionCommandToken(editedMission);
 }
 
-export function buildMissionCreatePayload({ courseId, finishBehavior, items }) {
+export function buildMissionCreatePayload({ courseId, finishBehavior, items, presetReference = null }) {
+  const coneIds = items.map((item) => item.cone_id);
+  const presetMatches = presetReference
+    && Number.isInteger(presetReference.id)
+    && typeof presetReference.revision === "string"
+    && presetReference.finishBehavior === finishBehavior
+    && Array.isArray(presetReference.coneIds)
+    && presetReference.coneIds.length === coneIds.length
+    && presetReference.coneIds.every((coneId, index) => coneId === coneIds[index]);
   return {
     course_id: courseId,
     finish_behavior: finishBehavior,
@@ -59,6 +67,10 @@ export function buildMissionCreatePayload({ courseId, finishBehavior, items }) {
       alt: item.alt ?? null,
       side: item.side ?? null,
     })),
+    ...(presetMatches ? {
+      preset_id: presetReference.id,
+      expected_preset_revision: presetReference.revision,
+    } : {}),
   };
 }
 
@@ -125,6 +137,9 @@ export function missionRouteSubmissionAllowed(options) {
 export function missionEmptyResumeMode(mission) {
   if (!mission || !Array.isArray(mission.waypoints)
       || mission.waypoints.some((item) => item?.state === "pending" || item?.state === "active")) return null;
+  if (mission.empty_plan_mode === "return_only") return "return_only";
+  if (mission.empty_plan_mode === "uncertainty_resolved"
+      || mission.empty_plan_mode === "resolve_uncertain") return "resolve_uncertain";
   if (mission.finish_behavior === "return_to_start"
       && Number.isFinite(mission.start_position?.lat) && Number.isFinite(mission.start_position?.lng)) {
     return "return_only";
@@ -158,6 +173,42 @@ export function missionPreflightTarget({
 }
 
 export const MISSION_PREFLIGHT_MAX_RETURN_DISTANCE_M = 200;
+export const MISSION_PREFLIGHT_MAX_SEGMENT_DISTANCE_M = 50;
+
+function missionGeoDistance(left, right) {
+  if (![left?.lat, left?.lng, right?.lat, right?.lng].every(Number.isFinite)) return null;
+  const radians = (value) => value * Math.PI / 180;
+  const deltaLat = radians(right.lat - left.lat);
+  const deltaLng = radians(right.lng - left.lng);
+  const a = Math.sin(deltaLat / 2) ** 2
+    + Math.cos(radians(left.lat)) * Math.cos(radians(right.lat))
+    * Math.sin(deltaLng / 2) ** 2;
+  return 6371000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+export function missionPreflightRouteCheck({
+  mode,
+  waypoints = [],
+  finishBehavior = "stop",
+  returnPoint = null,
+}) {
+  const route = (Array.isArray(waypoints) ? waypoints : [])
+    .filter((item) => mode === "execute"
+      || item?.state === "pending" || item?.state === "active");
+  for (let index = 1; index < route.length; index += 1) {
+    const distance = missionGeoDistance(route[index - 1], route[index]);
+    if (!Number.isFinite(distance) || distance > MISSION_PREFLIGHT_MAX_SEGMENT_DISTANCE_M) {
+      return { ok: false, reason: "segment_too_long", index, distance };
+    }
+  }
+  if (finishBehavior === "return_to_start" && route.length > 0) {
+    const distance = missionGeoDistance(route[route.length - 1], returnPoint);
+    if (!Number.isFinite(distance) || distance > MISSION_PREFLIGHT_MAX_SEGMENT_DISTANCE_M) {
+      return { ok: false, reason: "return_segment_too_long", index: route.length, distance };
+    }
+  }
+  return { ok: true, reason: null, index: null, distance: null };
+}
 
 export function missionPreflightDistanceAllowed({ kind, distance }) {
   if (kind === "resolve_uncertain") return true;
@@ -253,9 +304,40 @@ export function buildMissionPresetPayload({ courseId, name, finishBehavior, item
     course_id: courseId,
     name,
     finish_behavior: finishBehavior,
-    items: items.map((item) => ({ cone_id: item.cone_id })),
+    items: items.map((item) => ({
+      cone_id: item.cone_id,
+      lat: item.lat,
+      lng: item.lng,
+      alt: item.alt ?? null,
+      side: item.side ?? null,
+    })),
     ...(existing ? { expected_preset_revision: existing.preset_revision } : {}),
   };
+}
+
+export function buildMissionPresetDeletePayload(preset) {
+  if (!preset || typeof preset.preset_revision !== "string") {
+    throw Object.assign(new Error("프리셋의 기준 버전이 없습니다. 목록을 다시 불러오세요."), {
+      reason: "preset_revision_missing",
+    });
+  }
+  return { expected_preset_revision: preset.preset_revision };
+}
+
+export function missionPresetReference({ preset, items, finishBehavior }) {
+  if (!preset || preset.stale === true || !Number.isInteger(preset.id)
+      || typeof preset.preset_revision !== "string"
+      || preset.finish_behavior !== finishBehavior) return null;
+  const presetItems = Array.isArray(preset.items) ? preset.items : [];
+  const routeItems = Array.isArray(items) ? items : [];
+  if (presetItems.length !== routeItems.length
+      || presetItems.some((item, index) => item.cone_id !== routeItems[index]?.cone_id)) return null;
+  return Object.freeze({
+    id: preset.id,
+    revision: preset.preset_revision,
+    finishBehavior,
+    coneIds: Object.freeze(routeItems.map((item) => item.cone_id)),
+  });
 }
 
 export function missionRestoreDecision({ mission, displayedMissionId, localWaypointCount = 0 }) {

@@ -217,3 +217,26 @@ export function duplicateConeIds(items) {
   for (const item of items) counts.set(item.cone_id, (counts.get(item.cone_id) || 0) + 1);
   return [...counts.entries()].filter(([, count]) => count > 1).map(([coneId]) => coneId);
 }
+
+export function missionPresetRouteItems(preset) {
+  const items = Array.isArray(preset?.items) ? preset.items : [];
+  return items.map((item) => {
+    const liveConeId = Number.isInteger(item?.cone_id) ? item.cone_id : null;
+    const snapshotConeId = Number.isInteger(item?.cone_id_snapshot) ? item.cone_id_snapshot : null;
+    return {
+      ...item,
+      cone_id: liveConeId ?? snapshotConeId,
+      preset_snapshot_unavailable: item?.stale === true || liveConeId == null,
+    };
+  });
+}
+
+export function unavailableMissionRouteItems(items, cones, { includeStableOccurrences = false } = {}) {
+  const availableConeIds = new Set((Array.isArray(cones) ? cones : []).map((cone) => cone.id));
+  return (Array.isArray(items) ? items : []).filter((item) => {
+    if (item?.preset_snapshot_unavailable === true) return true;
+    const stableOccurrence = typeof item?.waypoint_id === "string" && item.waypoint_id.length > 0;
+    return (includeStableOccurrences || !stableOccurrence)
+      && (!Number.isInteger(item?.cone_id) || !availableConeIds.has(item.cone_id));
+  });
+}

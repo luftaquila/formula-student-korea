@@ -22,13 +22,16 @@ export function createApiClient(basePath) {
 
     if (!res.ok) {
       const message = await res.text();
-      const error = new Error(message || `요청 실패 (${res.status})`);
-      error.status = res.status;
+      let data = null;
       try {
-        error.data = JSON.parse(message);
+        data = JSON.parse(message);
       } catch {
-        error.data = null;
+        data = null;
       }
+      const error = new Error(data && typeof data.message === "string"
+        ? data.message : (message || `요청 실패 (${res.status})`));
+      error.status = res.status;
+      error.data = data;
       throw error;
     }
 

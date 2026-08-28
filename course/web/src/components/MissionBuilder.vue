@@ -10,13 +10,16 @@ import {
   missionConeShortName,
   missionRouteDirectionArrow,
   missionRouteMapSegments,
+  missionPresetRouteItems,
   moveRouteItem,
   optimizeConeRoute,
   renderMissionMapBearing,
+  unavailableMissionRouteItems,
 } from "../lib/mission-route.mjs";
 import {
   missionEmptyRouteMode,
   MISSION_MAX_OCCURRENCES,
+  missionPresetReference,
   missionRouteSubmissionAllowed,
   uncertainMissionOccurrenceIds,
 } from "../lib/mission-session.mjs";
@@ -87,6 +90,15 @@ const filteredCones = computed(() => filterCones(props.cones, { query: query.val
 const selectedIds = computed(() => new Set(route.value.map((item) => item.cone_id)));
 const duplicateIds = computed(() => new Set(duplicateConeIds(route.value)));
 const uncertainIds = computed(() => new Set(uncertainMissionOccurrenceIds(route.value)));
+const unavailableRouteItems = computed(() => unavailableMissionRouteItems(route.value, props.cones));
+const unavailableRouteKeys = computed(() => new Set(
+  unavailableRouteItems.value.map((item) => item.client_key),
+));
+const unavailablePresetItems = computed(() => unavailableMissionRouteItems(
+  route.value,
+  props.cones,
+  { includeStableOccurrences: true },
+));
 const routeSubmissionOptions = computed(() => ({
   editing: props.editing,
   routeLength: route.value.length,
@@ -98,6 +110,7 @@ const emptyRouteMode = computed(() => missionEmptyRouteMode(routeSubmissionOptio
 const availableOccurrences = computed(() => Math.max(0,
   MISSION_MAX_OCCURRENCES - Math.max(0, Number(props.completedCount) || 0)));
 const canSubmit = computed(() => route.value.length <= availableOccurrences.value
+  && unavailableRouteKeys.value.size === 0
   && missionRouteSubmissionAllowed(routeSubmissionOptions.value));
 const routeAtLimit = computed(() => route.value.length >= availableOccurrences.value);
 
@@ -188,8 +201,9 @@ function focusRouteItem(index, { pan = true, scroll = false } = {}) {
 
 function loadPreset() {
   const preset = props.presets.find((item) => item.id === Number(presetId.value));
-  if (!preset || preset.stale) return;
-  route.value = preset.items.map((item) => routeItem({ ...item, id: undefined, waypoint_id: null }));
+  if (!preset) return;
+  route.value = missionPresetRouteItems(preset)
+    .map((item) => routeItem({ ...item, id: undefined, waypoint_id: null }));
   finishBehavior.value = preset.finish_behavior;
   presetName.value = preset.name;
   activeRouteIndex.value = null;
@@ -197,16 +211,23 @@ function loadPreset() {
 }
 
 function payload() {
+  const preset = props.presets.find((item) => item.id === Number(presetId.value));
   return {
     items: route.value.map((item) => ({ ...item })),
     finishBehavior: finishBehavior.value,
     emptyRouteMode: emptyRouteMode.value,
+    presetReference: missionPresetReference({
+      preset,
+      items: route.value,
+      finishBehavior: finishBehavior.value,
+    }),
   };
 }
 
 function savePreset() {
   const name = presetName.value.trim();
-  if (props.presetBusy || !name || route.value.length === 0 || !canSubmit.value) return;
+  if (props.presetBusy || !name || route.value.length === 0
+      || unavailablePresetItems.value.length > 0 || !canSubmit.value) return;
   emit("save-preset", { ...payload(), name });
 }
 
@@ -458,7 +479,10 @@ function drop(index) {
           </option>
         </select>
         <input v-model="presetName" :disabled="presetBusy" maxlength="100" placeholder="프리셋 이름" @keyup.enter="savePreset" />
-        <button @click="savePreset" :disabled="presetBusy || !presetName.trim() || route.length === 0 || !canSubmit">
+        <button
+          @click="savePreset"
+          :disabled="presetBusy || !presetName.trim() || route.length === 0 || unavailablePresetItems.length > 0 || !canSubmit"
+        >
           {{ presetBusy ? '저장 중…' : '저장' }}
         </button>
         <button
@@ -555,6 +579,10 @@ function drop(index) {
             분사 결과를 확인할 수 없는 방문이 {{ uncertainIds.size }}개 있습니다.
             재분사하지 않으려면 해당 항목을 제거하고, 명시적으로 다시 분사하려면 제거 후 같은 콘을 새 방문으로 추가하세요.
           </div>
+          <div v-if="unavailableRouteItems.length" class="unavailable-warning">
+            현재 코스에서 삭제된 콘이 {{ unavailableRouteItems.length }}개 있습니다.
+            해당 항목을 제거하거나 현재 코스 콘으로 교체해야 적용·실행·저장할 수 있습니다.
+          </div>
           <div v-if="route.length === 0 && emptyRouteMode === 'return_only'" class="empty-route-notice">
             콘을 방문하지 않고 현재 위치에서 최초 미션 시작점으로 복귀합니다.
           </div>
@@ -567,7 +595,7 @@ function drop(index) {
           <div ref="routeListElement" class="route-list">
             <div
               v-for="(item, index) in route" :key="item.client_key"
-              class="route-row" :class="{ active: activeRouteIndex === index }"
+              class="route-row" :class="{ active: activeRouteIndex === index, unavailable: unavailableRouteKeys.has(item.client_key) }"
               :data-route-index="index" draggable="true"
               @click="focusRouteItem(index)"
               @dragstart="dragStart(index)" @dragover.prevent @drop="drop(index)"
@@ -587,6 +615,7 @@ function drop(index) {
                 <span class="route-badges">
                   <em v-if="duplicateIds.has(item.cone_id)" class="repeat">반복</em>
                   <em v-if="uncertainIds.has(item.waypoint_id || item.id)" class="uncertain">결과 확인</em>
+                  <em v-if="unavailableRouteKeys.has(item.client_key)" class="unavailable">삭제된 콘</em>
                 </span>
               </span>
               <span class="route-row-actions" @click.stop>
@@ -1015,6 +1044,7 @@ function drop(index) {
   background: rgba(124, 58, 237, .18);
   box-shadow: inset 3px 0 #a78bfa;
 }
+.route-row.unavailable { background: rgba(185, 28, 28, .13); }
 .drag { color: #94a3b8; font-size: .9rem; cursor: grab; user-select: none; }
 .route-position { display: block; }
 .mission-builder .route-position .position {
@@ -1043,6 +1073,7 @@ function drop(index) {
 }
 .route-badges .repeat { color: #fde68a; background: rgba(180, 83, 9, .42); }
 .route-badges .uncertain { color: #fecaca; background: rgba(185, 28, 28, .38); }
+.route-badges .unavailable { color: #fecaca; background: rgba(153, 27, 27, .48); }
 .route-row-actions {
   display: grid;
   grid-template-columns: repeat(4, 29px);
@@ -1058,6 +1089,7 @@ function drop(index) {
 
 .duplicate-warning,
 .uncertain-warning,
+.unavailable-warning,
 .empty-route-notice {
   flex: 0 0 auto;
   margin-bottom: .4rem;
@@ -1070,6 +1102,7 @@ function drop(index) {
   line-height: 1.4;
 }
 .uncertain-warning,
+.unavailable-warning,
 .empty-route-notice.uncertain-warning {
   color: #fecaca;
   background: rgba(185, 28, 28, .18);

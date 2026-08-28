@@ -439,7 +439,7 @@ export function createMissionV2Store(db) {
     );
   }
 
-  function waypointRows(missionId, { includeSkipped = true } = {}) {
+  function waypointRows(missionId, { includeSkipped = false } = {}) {
     return db.prepare(`SELECT * FROM mission_waypoint WHERE mission_id=?
       ${includeSkipped ? "" : "AND state <> 'skipped'"}
       ORDER BY CASE WHEN position IS NULL THEN 1 ELSE 0 END, position, created_at, id`).all(missionId);
@@ -479,6 +479,8 @@ export function createMissionV2Store(db) {
     const row = missionRow(id);
     if (!row) return null;
     const waypoints = waypointRows(id);
+    const skippedWaypointCount = db.prepare(`SELECT COUNT(*) AS count FROM mission_waypoint
+      WHERE mission_id=? AND state='skipped'`).get(id).count;
     const result = {
       id: row.id,
       course_id: row.course_id,
@@ -503,6 +505,7 @@ export function createMissionV2Store(db) {
       empty_plan_mode: row.empty_plan_mode,
       occurrence_revision: occurrenceRevision(row, waypoints),
       waypoints: waypoints.map(publicWaypoint),
+      skipped_waypoint_count: skippedWaypointCount,
     };
     if (ACTIVE_MISSION_STATES.includes(result.status)) {
       activeSummaryHydrated = true;
@@ -651,7 +654,7 @@ export function createMissionV2Store(db) {
     if (!FINISH_BEHAVIORS.has(finishBehavior)) {
       throw Object.assign(new Error("올바르지 않은 종료 동작입니다."), { status: 400 });
     }
-    const cones = resolveConeItems(courseId, items);
+    const cones = resolveConeItems(courseId, items, { requireSnapshots: true });
     const conflictingName = db.prepare(`SELECT id FROM mission_route_preset
       WHERE course_id=? AND name=? COLLATE NOCASE`).get(courseId, trimmedName);
     if (conflictingName && conflictingName.id !== id) {
@@ -723,18 +726,48 @@ export function createMissionV2Store(db) {
     })();
   }
 
-  function createMission({ courseId, presetId = null, finishBehavior = "stop", items, actor = null }) {
+  function createMission({
+    courseId,
+    presetId = null,
+    expectedPresetRevision = null,
+    finishBehavior = "stop",
+    items,
+    actor = null,
+  }) {
     if (!FINISH_BEHAVIORS.has(finishBehavior)) {
       throw Object.assign(new Error("올바르지 않은 종료 동작입니다."), { status: 400 });
     }
     if (activeMission()) {
       throw Object.assign(new Error("종료되지 않은 미션이 이미 있습니다."), { status: 409, reason: "active_mission" });
     }
-    const cones = resolveConeItems(courseId, items, { requireSnapshots: true });
     if (presetId != null) {
-      const preset = db.prepare("SELECT * FROM mission_route_preset WHERE id=? AND course_id=?").get(presetId, courseId);
+      const preset = listPresets(courseId).find((row) => row.id === presetId);
       if (!preset) throw Object.assign(new Error("해당 코스의 프리셋을 찾을 수 없습니다."), { status: 404 });
+      if (typeof expectedPresetRevision !== "string"
+          || expectedPresetRevision !== preset.preset_revision) {
+        throw Object.assign(new Error("프리셋이 변경되었습니다. 최신 프리셋을 다시 불러오세요."), {
+          status: 409,
+          reason: "preset_revision_mismatch",
+          current_preset_revision: preset.preset_revision,
+        });
+      }
+      if (preset.stale) {
+        throw Object.assign(new Error("삭제된 콘이 포함된 프리셋은 먼저 수정해야 합니다."), {
+          status: 409,
+          reason: "stale_preset",
+        });
+      }
+      const requestedItems = Array.isArray(items) ? items : [];
+      if (finishBehavior !== preset.finish_behavior
+          || preset.items.length !== requestedItems.length
+          || preset.items.some((item, index) => item.cone_id !== Number(requestedItems[index]?.cone_id))) {
+        throw Object.assign(new Error("선택한 프리셋과 실행 경로가 다릅니다. 경로를 다시 확인하세요."), {
+          status: 409,
+          reason: "preset_route_mismatch",
+        });
+      }
     }
+    const cones = resolveConeItems(courseId, items, { requireSnapshots: true });
     const now = Date.now();
     const waypoints = cones.map((cone, position) => ({
       id: crypto.randomUUID(), position, cone_id: cone.id, cone_id_snapshot: cone.id,
