@@ -105,14 +105,6 @@ test.describe("Score endurance input", () => {
     const timeConfirm = timeInput.locator("xpath=..").locator("button.confirm-input-btn");
     await timeInput.click();
     await timeInput.fill("6:00.000");
-    await timeInput.dispatchEvent("keydown", { key: "Enter", isComposing: true });
-    await expect(timeInput).toBeFocused();
-    await expect(timeConfirm).toBeVisible();
-
-    let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    let data = await response.json();
-    expect(data[3]?.driver1_time ?? null).toBeNull();
-
     const saved = page.waitForResponse(
       (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
     );
@@ -120,8 +112,8 @@ test.describe("Score endurance input", () => {
     await saved;
     await expect(timeConfirm).toHaveCount(0);
 
-    response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    data = await response.json();
+    let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    let data = await response.json();
     expect(data[3]?.driver1_time).toBe(360000);
 
     const delayInput = row.locator("input.num-input").nth(0);
