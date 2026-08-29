@@ -35,6 +35,12 @@ function confirm() {
   emit("confirm", inputRef.value);
 }
 
+function handleInputKeydown(event) {
+  if (event.key !== "Enter" || event.isComposing || event.keyCode === 229 || event.repeat) return;
+  event.preventDefault();
+  confirm();
+}
+
 function handleConfirmBlur(event) {
   if (!confirming) emit("blur", event);
 }
@@ -56,6 +62,7 @@ function handleConfirmBlur(event) {
       @input="emit('input', $event)"
       @focus="emit('focus', $event)"
       @blur="handleInputBlur"
+      @keydown="handleInputKeydown"
     />
     <button
       v-if="editing"

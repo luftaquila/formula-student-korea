@@ -575,16 +575,10 @@ async function toggleQualified(num, qualified) {
   await saveDirectField(num, "qualified", qualified ? 1 : 0);
 }
 
-// 키보드 네비게이션 (Enter, 화살표)
+// 키보드 네비게이션 (Enter 저장은 ConfirmableInput이 처리)
 function handleKeyNav(e) {
   const target = e.target;
   if (target.tagName !== "INPUT" || !target.classList.contains("cell-input") || target.disabled) return;
-
-  if (e.key === "Enter") {
-    e.preventDefault();
-    // 저장은 확인 버튼으로만 수행한다. Enter는 현재 편집값을 유지한다.
-    return;
-  }
 
   if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
 
