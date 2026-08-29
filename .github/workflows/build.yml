@@ -118,8 +118,9 @@ jobs:
           }
 
           if [ "$IS_DISPATCH" = "true" ]; then
-            for svc in "${STANDARD[@]}"; do add_service "$svc"; done
-            add_service "caddy"
+            # Operational hotfix dispatch: publish only the course image from
+            # this temporary branch. Avoid replacing unrelated service tags.
+            add_service "course"
           else
             competition_changed="$F_COMPETITION"
             for value in "$F_ENTRY" "$F_QUEUE" "$F_REGISTRATION" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
