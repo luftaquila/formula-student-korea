@@ -26,13 +26,13 @@ function handleInputBlur(event) {
   emit("blur", event);
 }
 
-function confirm() {
+function confirm(retainFocus = false) {
   if (document.activeElement === confirmRef.value) {
     confirming = true;
     inputRef.value?.focus({ preventScroll: true });
     confirming = false;
   }
-  emit("confirm", inputRef.value);
+  emit("confirm", { input: inputRef.value, retainFocus });
 }
 
 function handleConfirmBlur(event) {
@@ -56,7 +56,7 @@ function handleConfirmBlur(event) {
       @input="emit('input', $event)"
       @focus="emit('focus', $event)"
       @blur="handleInputBlur"
-      @keydown.enter.prevent="confirm"
+      @keydown.enter.prevent="confirm(true)"
     />
     <button
       v-if="editing"
@@ -67,7 +67,7 @@ function handleConfirmBlur(event) {
       :aria-label="confirmLabel"
       @mousedown.prevent
       @blur="handleConfirmBlur"
-      @click="confirm"
+      @click="confirm(false)"
     >
       <svg class="confirm-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true">
         <polyline points="5 12 10 17 19 7" />

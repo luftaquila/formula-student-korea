@@ -403,7 +403,7 @@ async function saveEnergySetting(key, rawValue) {
   }
 }
 
-async function confirmEnergySetting(input) {
+async function confirmEnergySetting({ input }) {
   const saved = await saveEnergySetting("distance_km", configEditingValue.value ?? "");
   if (!configEditing.value) return;
   if (saved) input?.blur();
@@ -473,7 +473,7 @@ async function toggleStatus(num, status) {
 }
 
 // 시간 필드 저장
-async function saveTimeField(num, field, input) {
+async function saveTimeField(num, field, { input, retainFocus }) {
   const rawValue = editingValue.value ?? input?.value ?? "";
   const parsed = parseTimeInput(rawValue);
   if (parsed === undefined) {
@@ -484,11 +484,12 @@ async function saveTimeField(num, field, input) {
 
   const oldValue = getField(num, field);
   if (parsed === oldValue) {
-    markCellConfirmed(num, field);
+    if (retainFocus) markCellConfirmed(num, field);
+    else if (isEditing(num, field)) input?.blur();
     return;
   }
   cellEdited = true;
-  markCellConfirmed(num, field);
+  if (retainFocus) markCellConfirmed(num, field);
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = parsed;
@@ -496,6 +497,7 @@ async function saveTimeField(num, field, input) {
   try {
     await updateEndurance(selectedYear.value, num, field, parsed);
     scheduleScoreRefresh();
+    if (!retainFocus && isEditing(num, field)) input?.blur();
   } catch {
     endurance.value[num][field] = oldValue;
     cellEdited = false;
@@ -506,7 +508,7 @@ async function saveTimeField(num, field, input) {
 }
 
 // 드라이버 이름 저장
-async function saveNameField(num, field, input) {
+async function saveNameField(num, field, { input, retainFocus }) {
   const newValue = String(editingValue.value ?? input?.value ?? "").trim() || null;
   if (newValue && newValue.length > 100) {
     error("드라이버 이름은 100자 이하여야 합니다.");
@@ -516,17 +518,19 @@ async function saveNameField(num, field, input) {
 
   const oldValue = getField(num, field);
   if (newValue === oldValue) {
-    markCellConfirmed(num, field);
+    if (retainFocus) markCellConfirmed(num, field);
+    else if (isEditing(num, field)) input?.blur();
     return;
   }
   cellEdited = true;
-  markCellConfirmed(num, field);
+  if (retainFocus) markCellConfirmed(num, field);
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = newValue;
 
   try {
     await updateEndurance(selectedYear.value, num, field, newValue);
+    if (!retainFocus && isEditing(num, field)) input?.blur();
   } catch {
     endurance.value[num][field] = oldValue;
     cellEdited = false;
@@ -537,7 +541,7 @@ async function saveNameField(num, field, input) {
 }
 
 // 숫자 필드 저장
-async function saveNumField(num, field, input, isInteger = false, allowNegative = false) {
+async function saveNumField(num, field, { input, retainFocus }, isInteger = false, allowNegative = false) {
   const rawValue = String(editingValue.value ?? input?.value ?? "").trim();
   let newValue = rawValue === "" ? null : Number(rawValue);
   if (newValue !== null && (isNaN(newValue) || (!allowNegative && newValue < 0) || (isInteger && !Number.isInteger(newValue)))) {
@@ -548,11 +552,12 @@ async function saveNumField(num, field, input, isInteger = false, allowNegative 
 
   const oldValue = getField(num, field);
   if (newValue === oldValue) {
-    markCellConfirmed(num, field);
+    if (retainFocus) markCellConfirmed(num, field);
+    else if (isEditing(num, field)) input?.blur();
     return;
   }
   cellEdited = true;
-  markCellConfirmed(num, field);
+  if (retainFocus) markCellConfirmed(num, field);
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = newValue;
@@ -560,6 +565,7 @@ async function saveNumField(num, field, input, isInteger = false, allowNegative 
   try {
     await updateEndurance(selectedYear.value, num, field, newValue);
     scheduleScoreRefresh();
+    if (!retainFocus && isEditing(num, field)) input?.blur();
   } catch {
     endurance.value[num][field] = oldValue;
     cellEdited = false;
