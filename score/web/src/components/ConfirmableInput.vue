@@ -62,6 +62,7 @@ function handleConfirmBlur(event) {
       v-if="editing"
       ref="confirmRef"
       type="button"
+      tabindex="-1"
       class="confirm-input-btn"
       :aria-label="confirmLabel"
       @mousedown.prevent

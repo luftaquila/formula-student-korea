@@ -97,7 +97,7 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 3, ["driver1_time"]);
   });
 
-  test("saves with Enter and discards keyboard navigation without confirmation", async ({ page }) => {
+  test("keeps arrow navigation after Enter and skips confirmation buttons with Tab", async ({ page }) => {
     await clearFields(page, 3, ["driver1_time", "driver1_start_delay", "driver1_cones"]);
 
     const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "성균관대학교" });
@@ -110,7 +110,8 @@ test.describe("Score endurance input", () => {
     );
     await timeInput.press("Enter");
     await saved;
-    await expect(timeConfirm).toHaveCount(0);
+    await expect(timeInput).toBeFocused();
+    await expect(timeConfirm).toBeVisible();
 
     let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     let data = await response.json();
@@ -118,7 +119,9 @@ test.describe("Score endurance input", () => {
 
     const delayInput = row.locator("input.num-input").nth(0);
     const delayConfirm = delayInput.locator("xpath=..").locator("button.confirm-input-btn");
-    await delayInput.click();
+    await timeInput.press("ArrowRight");
+    await expect(delayInput).toBeFocused();
+    await expect(timeConfirm).toHaveCount(0);
     await delayInput.fill("7");
     await delayInput.press("ArrowRight");
     await expect(delayConfirm).toHaveCount(0);
@@ -128,10 +131,10 @@ test.describe("Score endurance input", () => {
 
     const conesInput = row.locator("input.num-input").nth(1);
     const conesConfirm = conesInput.locator("xpath=..").locator("button.confirm-input-btn");
+    await expect(conesInput).toBeFocused();
     await conesInput.fill("8");
     await conesInput.press("Tab");
-    await expect(conesConfirm).toBeFocused();
-    await conesConfirm.press("Tab");
+    await expect(row.locator("input.num-input").nth(2)).toBeFocused();
     await expect(conesConfirm).toHaveCount(0);
     response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     data = await response.json();
