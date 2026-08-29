@@ -364,6 +364,22 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 3, ["driver1_time", "driver_change_time", "driver2_time"]);
   });
 
+  test("enter driver 1 and driver 2 names", async ({ page }) => {
+    await clearFields(page, 3, ["driver1_name", "driver2_name"]);
+    const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "성균관대학교" });
+    const names = row.locator("input.name-input");
+
+    await fillAndSave(page, names.nth(0), "홍길동");
+    await fillAndSave(page, names.nth(1), "김드라이버");
+
+    const response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    const data = await response.json();
+    expect(data[3]?.driver1_name).toBe("홍길동");
+    expect(data[3]?.driver2_name).toBe("김드라이버");
+
+    await clearFields(page, 3, ["driver1_name", "driver2_name"]);
+  });
+
   test("enter cone and off-course penalties and verify final time", async ({ page }) => {
     const table = enduranceTable(page);
     const row = table.locator("tbody tr").filter({ hasText: "KAIST" });

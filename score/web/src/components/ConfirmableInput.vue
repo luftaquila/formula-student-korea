@@ -10,6 +10,7 @@ defineProps({
   type: { type: String, default: "text" },
   min: { type: [String, Number], default: undefined },
   step: { type: [String, Number], default: undefined },
+  maxlength: { type: [String, Number], default: undefined },
   placeholder: { type: String, default: "" },
   field: { type: String, default: undefined },
   confirmLabel: { type: String, default: "입력 확인" },
@@ -48,6 +49,7 @@ function handleConfirmBlur(event) {
       :type="type"
       :min="min"
       :step="step"
+      :maxlength="maxlength"
       :value="value"
       :disabled="disabled"
       :placeholder="placeholder"
@@ -121,6 +123,10 @@ function handleConfirmBlur(event) {
 
 .num-input {
   width: 3.5rem;
+}
+
+.name-input {
+  width: 7rem;
 }
 
 .energy-input {

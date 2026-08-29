@@ -255,6 +255,15 @@ function removeRegistrationSchema(dbPath) {
   writer.close();
 }
 
+function removeEnduranceDriverNames(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    ALTER TABLE score_endurance DROP COLUMN driver2_name;
+    ALTER TABLE score_endurance DROP COLUMN driver1_name;
+  `);
+  writer.close();
+}
+
 function removeQualifiedCheckConstraint(dbPath) {
   const writer = new Database(dbPath);
   const tableSql = writer.prepare(
@@ -838,6 +847,7 @@ describe("Competition backup/restore artifact validation", () => {
     created.teams.createTeam(currentCompetitionYear(), { number: 41, university: "Upgrade University", name: "Upgrade Team" });
     created.close();
     restoreRetiredCalledStatus(dbPath);
+    removeEnduranceDriverNames(dbPath);
 
     // A deployment snapshot taken before the upgrade must still validate: the
     // shipped contract is listed as upgradable, and the runtime rebuilds on boot.
@@ -923,6 +933,60 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
+  it("accepts the exact pre-driver-name schema and adds both columns without validator writes", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-driver-name-schema-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    const seeded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    seeded.teams.createTeam(CURRENT_YEAR, {
+      number: 1,
+      university: "Driver University",
+      name: "Driver Team",
+    });
+    seeded.db.prepare("INSERT INTO score_endurance (year, team_num, driver1_time) VALUES (?, 1, 123456)")
+      .run(CURRENT_YEAR);
+    seeded.close();
+    removeEnduranceDriverNames(dbPath);
+
+    const predecessorResult = validateDatabase(dbPath);
+    assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
+    const unchanged = new Database(dbPath, { readonly: true });
+    assert.equal(
+      competitionSchemaContractDigest(captureCompetitionSchemaContract(unchanged)),
+      "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
+    );
+    assert.equal(
+      unchanged.pragma("table_info('score_endurance')").some(({ name }) => name === "driver1_name" || name === "driver2_name"),
+      false,
+    );
+    unchanged.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    assert.deepEqual(
+      upgraded.db.prepare("SELECT driver1_name, driver2_name, driver1_time FROM score_endurance WHERE year = ? AND team_num = 1")
+        .get(CURRENT_YEAR),
+      { driver1_name: null, driver2_name: null, driver1_time: 123456 },
+    );
+    upgraded.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    const contract = captureCompetitionSchemaContract(reader);
+    reader.close();
+    assert.equal(competitionSchemaContractDigest(contract), COMPETITION_SCHEMA_CONTRACT.sha256);
+    assert.equal(validateDatabase(dbPath).status, 0);
+  });
+
   it("accepts the exact pre-Registration schema and adds its tables at runtime without validator writes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-registration-schema-upgrade-"));
     roots.push(root);
@@ -930,6 +994,7 @@ describe("Competition backup/restore artifact validation", () => {
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
     removeRegistrationSchema(dbPath);
+    removeEnduranceDriverNames(dbPath);
 
     const predecessorResult = validateDatabase(dbPath);
     assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
@@ -964,6 +1029,7 @@ describe("Competition backup/restore artifact validation", () => {
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
     removeRegistrationSchema(dbPath);
+    removeEnduranceDriverNames(dbPath);
 
     const predecessor = new Database(dbPath);
     predecessor.exec("ALTER TABLE score_endurance DROP COLUMN qualified");
@@ -1022,6 +1088,7 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.close();
     removeRegistrationSchema(dbPath);
     removeQualifiedCheckConstraint(dbPath);
+    removeEnduranceDriverNames(dbPath);
 
     const intermediate = new Database(dbPath, { readonly: true });
     assert.equal(

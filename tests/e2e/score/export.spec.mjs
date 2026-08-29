@@ -69,6 +69,11 @@ test.describe("Score export", () => {
     // Verify the downloaded file name
     expect(download.suggestedFilename()).toContain(String(YEAR));
     expect(download.suggestedFilename()).toMatch(/\.csv$/);
+
+    const csv = await readFile(await download.path(), "utf8");
+    const [header] = csv.replace(/^\uFEFF/, "").split("\n");
+    expect(header).toContain('"D1 이름"');
+    expect(header).toContain('"D2 이름"');
   });
 
   test("XLSX export from endurance page downloads a file", async ({ page }) => {

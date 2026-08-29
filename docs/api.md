@@ -396,8 +396,8 @@ There are no answer or memo version numbers. If `expectedValue` or `expectedMemo
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_time, fuel_consumed, ... } }` | Endurance and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
-| PUT | `/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields, the `qualified` flag, or energy fields (C fuel/extra fuel, E net energy, official energy DSQ flag). Boolean flags accept `0` or `1`. Energy class cannot be written manually; negative values are accepted only for E net energy |
+| GET | `/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_name, driver1_time, driver2_name, ... } }` | Endurance driver names, results, and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
+| PUT | `/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields, including `driver1_name`/`driver2_name` (trimmed, up to 100 characters), the `qualified` flag, or energy fields (C fuel/extra fuel, E net energy, official energy DSQ flag). Boolean flags accept `0` or `1`. Energy class cannot be written manually; negative values are accepted only for E net energy |
 
 ## Documents module (Competition port 9200)
 
