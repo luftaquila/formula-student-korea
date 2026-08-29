@@ -19,6 +19,7 @@ defineProps({
 const emit = defineEmits(["input", "focus", "blur", "confirm"]);
 const inputRef = ref(null);
 const confirmRef = ref(null);
+const navigationRef = ref(null);
 let confirming = false;
 
 function handleInputBlur(event) {
@@ -26,13 +27,17 @@ function handleInputBlur(event) {
   emit("blur", event);
 }
 
-function confirm(retainFocus = false) {
+function confirm(enableNavigation = false) {
   if (document.activeElement === confirmRef.value) {
     confirming = true;
     inputRef.value?.focus({ preventScroll: true });
     confirming = false;
   }
-  emit("confirm", { input: inputRef.value, retainFocus });
+  emit("confirm", {
+    input: inputRef.value,
+    navigationAnchor: navigationRef.value,
+    enableNavigation,
+  });
 }
 
 function handleConfirmBlur(event) {
@@ -73,6 +78,7 @@ function handleConfirmBlur(event) {
         <polyline points="5 12 10 17 19 7" />
       </svg>
     </button>
+    <span ref="navigationRef" class="confirm-input-navigation-anchor" tabindex="-1"></span>
   </div>
 </template>
 
@@ -86,6 +92,14 @@ function handleConfirmBlur(event) {
 
 .confirmable-input.editing {
   z-index: 6;
+}
+
+.confirm-input-navigation-anchor {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+  outline: none;
 }
 
 .cell-input {

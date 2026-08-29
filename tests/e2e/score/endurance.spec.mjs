@@ -97,7 +97,7 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 3, ["driver1_time"]);
   });
 
-  test("keeps arrow navigation after Enter and skips confirmation buttons with Tab", async ({ page }) => {
+  test("completes Enter saves with arrow navigation and skips confirmation buttons with Tab", async ({ page }) => {
     await clearFields(page, 3, ["driver1_time", "driver1_start_delay", "driver1_cones"]);
 
     const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "성균관대학교" });
@@ -110,8 +110,9 @@ test.describe("Score endurance input", () => {
     );
     await timeInput.press("Enter");
     await saved;
-    await expect(timeInput).toBeFocused();
-    await expect(timeConfirm).toBeVisible();
+    await expect(timeInput).not.toBeFocused();
+    await expect(timeConfirm).toHaveCount(0);
+    await expect(timeInput.locator("xpath=../span[contains(@class, 'confirm-input-navigation-anchor')]")).toBeFocused();
 
     let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     let data = await response.json();
@@ -119,9 +120,8 @@ test.describe("Score endurance input", () => {
 
     const delayInput = row.locator("input.num-input").nth(0);
     const delayConfirm = delayInput.locator("xpath=..").locator("button.confirm-input-btn");
-    await timeInput.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
     await expect(delayInput).toBeFocused();
-    await expect(timeConfirm).toHaveCount(0);
     await delayInput.fill("7");
     await delayInput.press("ArrowRight");
     await expect(delayConfirm).toHaveCount(0);

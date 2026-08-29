@@ -39,7 +39,9 @@ const penalties = ref({});
 const settings = ref({});
 const energy = ref({ teams: {}, config: {}, references: {} });
 const focusedCell = ref(null); // { num, field }
-const confirmedCell = ref(null); // Enter/확인 버튼으로 저장된 뒤 화살표 이동을 기다리는 셀
+const confirmedCell = ref(null); // Enter 저장을 끝낸 뒤 화살표 이동의 기준이 되는 셀
+let confirmedInput = null;
+let confirmedNavigationAnchor = null;
 const deferredEnduranceUpdate = ref(null);
 const configEditing = ref(false);
 const configEditingValue = ref(null);
@@ -234,7 +236,7 @@ function handleCellBlur() {
   editingValue.value = null;
   if (prev) applyDeferredCell(prev);
   focusedCell.value = null;
-  confirmedCell.value = null;
+  clearConfirmedCell();
 }
 
 // 편집 중인 칸의 화면 값. Vue 3는 `value` prop만 특수 취급해서, 바인딩 결과가 그대로여도
@@ -259,26 +261,39 @@ function displayValue(num, field, stored) {
 function handleCellInput(num, field, event) {
   if (isEditing(num, field)) {
     editingValue.value = event.target.value;
-    confirmedCell.value = null;
+    clearConfirmedCell();
   }
 }
 
 function handleCellFocus(num, field, event) {
   focusedCell.value = { num, field };
-  confirmedCell.value = null;
+  clearConfirmedCell();
   editingValue.value = event.target.value;
   cellEdited = false;
   event.target.select();
 }
 
-function markCellConfirmed(num, field) {
-  if (isEditing(num, field)) confirmedCell.value = { num, field };
+function clearConfirmedCell() {
+  confirmedCell.value = null;
+  confirmedInput = null;
+  confirmedNavigationAnchor = null;
 }
 
 function clearCellConfirmed(num, field) {
   if (confirmedCell.value?.num === num && confirmedCell.value?.field === field) {
-    confirmedCell.value = null;
+    clearConfirmedCell();
   }
+}
+
+function completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation) {
+  if (!isEditing(num, field)) return;
+  input?.blur();
+  if (!enableNavigation || !input || !navigationAnchor) return;
+
+  confirmedCell.value = { num, field };
+  confirmedInput = input;
+  confirmedNavigationAnchor = navigationAnchor;
+  navigationAnchor.focus({ preventScroll: true });
 }
 
 function handleConfigFocus(event) {
@@ -473,7 +488,7 @@ async function toggleStatus(num, status) {
 }
 
 // 시간 필드 저장
-async function saveTimeField(num, field, { input, retainFocus }) {
+async function saveTimeField(num, field, { input, navigationAnchor, enableNavigation }) {
   const rawValue = editingValue.value ?? input?.value ?? "";
   const parsed = parseTimeInput(rawValue);
   if (parsed === undefined) {
@@ -484,12 +499,10 @@ async function saveTimeField(num, field, { input, retainFocus }) {
 
   const oldValue = getField(num, field);
   if (parsed === oldValue) {
-    if (retainFocus) markCellConfirmed(num, field);
-    else if (isEditing(num, field)) input?.blur();
+    completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation);
     return;
   }
   cellEdited = true;
-  if (retainFocus) markCellConfirmed(num, field);
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = parsed;
@@ -497,7 +510,7 @@ async function saveTimeField(num, field, { input, retainFocus }) {
   try {
     await updateEndurance(selectedYear.value, num, field, parsed);
     scheduleScoreRefresh();
-    if (!retainFocus && isEditing(num, field)) input?.blur();
+    completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation);
   } catch {
     endurance.value[num][field] = oldValue;
     cellEdited = false;
@@ -508,7 +521,7 @@ async function saveTimeField(num, field, { input, retainFocus }) {
 }
 
 // 드라이버 이름 저장
-async function saveNameField(num, field, { input, retainFocus }) {
+async function saveNameField(num, field, { input, navigationAnchor, enableNavigation }) {
   const newValue = String(editingValue.value ?? input?.value ?? "").trim() || null;
   if (newValue && newValue.length > 100) {
     error("드라이버 이름은 100자 이하여야 합니다.");
@@ -518,19 +531,17 @@ async function saveNameField(num, field, { input, retainFocus }) {
 
   const oldValue = getField(num, field);
   if (newValue === oldValue) {
-    if (retainFocus) markCellConfirmed(num, field);
-    else if (isEditing(num, field)) input?.blur();
+    completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation);
     return;
   }
   cellEdited = true;
-  if (retainFocus) markCellConfirmed(num, field);
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = newValue;
 
   try {
     await updateEndurance(selectedYear.value, num, field, newValue);
-    if (!retainFocus && isEditing(num, field)) input?.blur();
+    completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation);
   } catch {
     endurance.value[num][field] = oldValue;
     cellEdited = false;
@@ -541,7 +552,7 @@ async function saveNameField(num, field, { input, retainFocus }) {
 }
 
 // 숫자 필드 저장
-async function saveNumField(num, field, { input, retainFocus }, isInteger = false, allowNegative = false) {
+async function saveNumField(num, field, { input, navigationAnchor, enableNavigation }, isInteger = false, allowNegative = false) {
   const rawValue = String(editingValue.value ?? input?.value ?? "").trim();
   let newValue = rawValue === "" ? null : Number(rawValue);
   if (newValue !== null && (isNaN(newValue) || (!allowNegative && newValue < 0) || (isInteger && !Number.isInteger(newValue)))) {
@@ -552,12 +563,10 @@ async function saveNumField(num, field, { input, retainFocus }, isInteger = fals
 
   const oldValue = getField(num, field);
   if (newValue === oldValue) {
-    if (retainFocus) markCellConfirmed(num, field);
-    else if (isEditing(num, field)) input?.blur();
+    completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation);
     return;
   }
   cellEdited = true;
-  if (retainFocus) markCellConfirmed(num, field);
 
   if (!endurance.value[num]) endurance.value[num] = {};
   endurance.value[num][field] = newValue;
@@ -565,7 +574,7 @@ async function saveNumField(num, field, { input, retainFocus }, isInteger = fals
   try {
     await updateEndurance(selectedYear.value, num, field, newValue);
     scheduleScoreRefresh();
-    if (!retainFocus && isEditing(num, field)) input?.blur();
+    completeCellConfirmation(num, field, input, navigationAnchor, enableNavigation);
   } catch {
     endurance.value[num][field] = oldValue;
     cellEdited = false;
@@ -602,17 +611,19 @@ async function toggleQualified(num, qualified) {
 
 // 키보드 네비게이션 (Enter 저장은 ConfirmableInput이 처리)
 function handleKeyNav(e) {
-  const target = e.target;
-  if (target.tagName !== "INPUT" || !target.classList.contains("cell-input") || target.disabled) return;
+  const fromConfirmedCell = e.target === confirmedNavigationAnchor && confirmedInput?.isConnected;
+  const target = fromConfirmedCell ? confirmedInput : e.target;
+  if (target?.tagName !== "INPUT" || !target.classList.contains("cell-input")) return;
 
   if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  if (target.disabled) {
+    if (fromConfirmedCell) e.preventDefault();
+    return;
+  }
 
   // 편집 중에는 커서가 경계에 있을 때만 좌우 셀로 이동한다. 저장이 끝난 셀은
   // 마지막 입력 위치를 기준으로 모든 화살표를 즉시 셀 이동에 사용한다.
-  const navigationReady = confirmedCell.value
-    && confirmedCell.value.num === focusedCell.value?.num
-    && confirmedCell.value.field === focusedCell.value?.field;
-  if (!navigationReady) {
+  if (!fromConfirmedCell) {
     const noSelection = target.selectionStart === target.selectionEnd;
     if (e.key === "ArrowLeft" && target.type !== "number" && !(noSelection && target.selectionStart === 0)) return;
     if (e.key === "ArrowRight" && target.type !== "number" && !(noSelection && target.selectionEnd === target.value.length)) return;
