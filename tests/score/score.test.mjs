@@ -435,6 +435,43 @@ describe('PUT /api/score/endurance', () => {
     assert.equal(res.status, 200);
   });
 
+  it('persists trimmed driver names, clears blank names, and enforces the length limit', async () => {
+    for (const [field, value] of [
+      ['driver1_name', '  홍길동  '],
+      ['driver2_name', '김드라이버'],
+    ]) {
+      const res = await client.put('/api/score/endurance', {
+        body: { year: 2026, team_num: 1, field, value },
+        cookie: adminCookie,
+      });
+      assert.equal(res.status, 200);
+    }
+    assert.deepEqual(
+      db.prepare('SELECT driver1_name, driver2_name FROM score_endurance WHERE year = 2026 AND team_num = 1').get(),
+      { driver1_name: '홍길동', driver2_name: '김드라이버' },
+    );
+
+    const cleared = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'driver2_name', value: '   ' },
+      cookie: adminCookie,
+    });
+    assert.equal(cleared.status, 200);
+    assert.equal(
+      db.prepare('SELECT driver2_name FROM score_endurance WHERE year = 2026 AND team_num = 1').get().driver2_name,
+      null,
+    );
+
+    const tooLong = await client.put('/api/score/endurance', {
+      body: { year: 2026, team_num: 1, field: 'driver1_name', value: '가'.repeat(101) },
+      cookie: adminCookie,
+    });
+    assert.equal(tooLong.status, 400);
+    assert.equal(
+      db.prepare('SELECT driver1_name FROM score_endurance WHERE year = 2026 AND team_num = 1').get().driver1_name,
+      '홍길동',
+    );
+  });
+
   it('accepts every supported status and allows clearing it', async () => {
     for (const status of ['DNF', 'DNS', 'DSQ', null]) {
       const res = await client.put('/api/score/endurance', {
@@ -598,6 +635,8 @@ describe('GET /api/score/endurance (after writes)', () => {
     assert.ok(data['2']);
     assert.equal(data['1'].fuel_extra, null);
     assert.equal(data['1'].qualified, 1);
+    assert.equal(data['1'].driver1_name, '홍길동');
+    assert.equal(data['1'].driver2_name, null);
     assert.equal('energy_dsq_reason' in data['1'], false);
   });
 });

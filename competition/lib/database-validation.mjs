@@ -24,22 +24,33 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 131,
-  sha256: "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
+  sha256: "83a36e66e0d2786040e4b1cdfdc883fcc5ee64b3d90c3daf80c4669d1346e3f9",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
 // to apply its idempotent schema additions. Accept only the exact immediately
 // preceding contracts here; createRegistrationApp adds its two tables, while
-// createScoreApp adds the qualified column or rebuilds the endurance table with
-// its 0/1 constraint before serving. Any other schema still fails closed, and
-// the next validation must match the current contract.
+// createScoreApp adds driver names and the qualified column or rebuilds the
+// endurance table with its 0/1 constraint before serving. Any other schema
+// still fails closed, and the next validation must match the current contract.
+const MISSING_ENDURANCE_DRIVER_NAMES = Object.freeze(["driver1_name", "driver2_name"]);
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    // Previous release: endurance records did not store driver names.
+    objectCount: 131,
+    sha256: "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+  }),
   Object.freeze({
     // Previous release: Traffic used invalidated/result=-1 instead of status.
     objectCount: 131,
     sha256: "66e3d7c77e67e20986753a75d1aba69a614bb34130dcc4e31c1275011bbac8ad",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ record: Object.freeze(["status"]) }),
+    allowedMissingColumns: Object.freeze({
+      record: Object.freeze(["status"]),
+      score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+    }),
   }),
   Object.freeze({
     // registration_queue still carrying the retired 'called' status and its
@@ -47,40 +58,46 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 131,
     sha256: "14bcbdd8cd48d0d126f61d8e9a3aaa280326221e6692a989c00ddec8e9ffc216",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({}),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     // Same registration predecessor combined with the previous Traffic schema.
     objectCount: 131,
     sha256: "6f97860d38a0b4f04adda2f2d0e92d65feb029386540c12e24e38ab9be5c1ce8",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ record: Object.freeze(["status"]) }),
+    allowedMissingColumns: Object.freeze({
+      record: Object.freeze(["status"]),
+      score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+    }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "06bac65306e9aed00a94e9a96bfb4a6f3e0c9fe49cdf2b013f34e3fac6b8d394",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({}),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "d15402064ce944ff614933980223c52aaf33392f26b2d5d29776aae69967fd93",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
     allowedMissingColumns: Object.freeze({
-      score_endurance: Object.freeze(["qualified"]),
+      score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
     }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "bbfed20876a4642ecc6759441ac84d6c1c28e9b21689a8fafb2cfe4b44f400b4",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({}),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ record: Object.freeze(["status"]) }),
+    allowedMissingColumns: Object.freeze({
+      record: Object.freeze(["status"]),
+      score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+    }),
   }),
   Object.freeze({
     objectCount: 125,
@@ -88,14 +105,17 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
     allowedMissingColumns: Object.freeze({
       record: Object.freeze(["status"]),
-      score_endurance: Object.freeze(["qualified"]),
+      score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
     }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ record: Object.freeze(["status"]) }),
+    allowedMissingColumns: Object.freeze({
+      record: Object.freeze(["status"]),
+      score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+    }),
   }),
 ]);
 
@@ -112,7 +132,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
   record: ["name", "num", "univ", "team", "type", "result", "status", "team_id"],
   score_manual: ["year", "team_num", "score_type", "team_id"],
-  score_endurance: ["year", "team_num", "qualified", "team_id"],
+  score_endurance: ["year", "team_num", "qualified", "team_id", "driver1_name", "driver2_name"],
   session: ["id", "year"],
   submission: ["id", "session_id", "team_num", "storage_dir", "team_id"],
   submission_file: ["id", "submission_id", "stored_name"],

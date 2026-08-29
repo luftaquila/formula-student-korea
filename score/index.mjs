@@ -55,6 +55,7 @@ const ENDURANCE_COLUMNS = Object.freeze([
   "driver1_oc", "driver1_penalty", "driver_change_time", "driver2_time",
   "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
   "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "team_id", "qualified",
+  "driver1_name", "driver2_name",
 ]);
 
 function createEnduranceTable(db) {
@@ -79,6 +80,8 @@ function createEnduranceTable(db) {
     energy_dsq INTEGER NOT NULL DEFAULT 0,
     team_id INTEGER,
     qualified INTEGER NOT NULL DEFAULT 0 CHECK(qualified IN (0, 1)),
+    driver1_name TEXT,
+    driver2_name TEXT,
     PRIMARY KEY (year, team_num)
   )`);
 }
@@ -170,17 +173,21 @@ db.transaction(() => {
   addColumn(db, "score_endurance", "electric_net_energy REAL");
   addColumn(db, "score_endurance", "energy_dsq INTEGER NOT NULL DEFAULT 0");
   addColumn(db, "score_endurance", "qualified INTEGER NOT NULL DEFAULT 0 CHECK(qualified IN (0, 1))");
+  addColumn(db, "score_endurance", "driver1_name TEXT");
+  addColumn(db, "score_endurance", "driver2_name TEXT");
   ensureEnduranceQualifiedConstraint(db);
 })();
 
 const ENDURANCE_SQL = {
   status: "UPDATE score_endurance SET status = ? WHERE year = ? AND team_num = ?",
+  driver1_name: "UPDATE score_endurance SET driver1_name = ? WHERE year = ? AND team_num = ?",
   driver1_time: "UPDATE score_endurance SET driver1_time = ? WHERE year = ? AND team_num = ?",
   driver1_start_delay: "UPDATE score_endurance SET driver1_start_delay = ? WHERE year = ? AND team_num = ?",
   driver1_cones: "UPDATE score_endurance SET driver1_cones = ? WHERE year = ? AND team_num = ?",
   driver1_oc: "UPDATE score_endurance SET driver1_oc = ? WHERE year = ? AND team_num = ?",
   driver1_penalty: "UPDATE score_endurance SET driver1_penalty = ? WHERE year = ? AND team_num = ?",
   driver_change_time: "UPDATE score_endurance SET driver_change_time = ? WHERE year = ? AND team_num = ?",
+  driver2_name: "UPDATE score_endurance SET driver2_name = ? WHERE year = ? AND team_num = ?",
   driver2_time: "UPDATE score_endurance SET driver2_time = ? WHERE year = ? AND team_num = ?",
   driver2_start_delay: "UPDATE score_endurance SET driver2_start_delay = ? WHERE year = ? AND team_num = ?",
   driver2_cones: "UPDATE score_endurance SET driver2_cones = ? WHERE year = ? AND team_num = ?",
@@ -902,18 +909,24 @@ app.put("/api/score/endurance", (req, res) => {
   if (!Number.isInteger(numYear) || numYear < 2000 || numYear > 2099) return res.status(400).send("올바르지 않은 연도입니다.");
   if (!Number.isInteger(numTeamNum) || numTeamNum < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   const allowedFields = [
-    "status", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
-    "driver_change_time", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
+    "status", "driver1_name", "driver1_time", "driver1_start_delay", "driver1_cones", "driver1_oc", "driver1_penalty",
+    "driver_change_time", "driver2_name", "driver2_time", "driver2_start_delay", "driver2_cones", "driver2_oc", "driver2_penalty",
     "fuel_consumed", "fuel_extra", "electric_net_energy", "energy_dsq", "qualified",
   ];
   if (!allowedFields.includes(field)) {
     return res.status(400).send("허용되지 않는 필드입니다.");
   }
 
-  const textFields = new Set(["status"]);
-  const dbValue = value === null || value === "" ? null : (textFields.has(field) ? String(value).trim() : Number(value));
+  const textFields = new Set(["status", "driver1_name", "driver2_name"]);
+  const trimmedText = textFields.has(field) && value != null ? String(value).trim() : null;
+  const dbValue = value === null || value === "" || trimmedText === ""
+    ? null
+    : (textFields.has(field) ? trimmedText : Number(value));
   if (field === "status" && dbValue !== null && !["DNS", "DNF", "DSQ"].includes(dbValue)) {
     return res.status(400).send("올바르지 않은 상태값입니다. (DNS, DNF, DSQ 또는 비움)");
+  }
+  if (["driver1_name", "driver2_name"].includes(field) && dbValue !== null && dbValue.length > 100) {
+    return res.status(400).send("드라이버 이름은 100자 이하여야 합니다.");
   }
   if (!textFields.has(field) && dbValue !== null && !Number.isFinite(dbValue)) {
     return res.status(400).send("유효하지 않은 값입니다.");

@@ -488,6 +488,36 @@ async function saveTimeField(num, field, input) {
   }
 }
 
+// 드라이버 이름 저장
+async function saveNameField(num, field, input) {
+  const newValue = String(editingValue.value ?? input?.value ?? "").trim() || null;
+  if (newValue && newValue.length > 100) {
+    error("드라이버 이름은 100자 이하여야 합니다.");
+    input?.select();
+    return;
+  }
+
+  const oldValue = getField(num, field);
+  if (newValue === oldValue) {
+    input?.blur();
+    return;
+  }
+  cellEdited = true;
+
+  if (!endurance.value[num]) endurance.value[num] = {};
+  endurance.value[num][field] = newValue;
+
+  try {
+    await updateEndurance(selectedYear.value, num, field, newValue);
+    if (isEditing(num, field)) input?.blur();
+  } catch {
+    endurance.value[num][field] = oldValue;
+    cellEdited = false;
+    error("저장에 실패했습니다.");
+    if (isEditing(num, field)) input?.select();
+  }
+}
+
 // 숫자 필드 저장
 async function saveNumField(num, field, input, isInteger = false, allowNegative = false) {
   const rawValue = String(editingValue.value ?? input?.value ?? "").trim();
@@ -591,7 +621,7 @@ function getInputGrid(el) {
 }
 
 function exportData(format) {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수", "내구 진출"];
+  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 이름", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 이름", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수", "내구 진출"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -602,12 +632,14 @@ function exportData(format) {
       getStatus(num) || (ft != null ? formatResult(ft) : ""),
       dt != null ? formatResult(dt) : "",
       pt ? formatResult(pt) : "",
+      getField(num, "driver1_name") || "",
       formatResult(getField(num, "driver1_time")) || "",
       getField(num, "driver1_start_delay") ?? "",
       getField(num, "driver1_cones") ?? "",
       getField(num, "driver1_oc") ?? "",
       getField(num, "driver1_penalty") ?? "",
       formatResult(getField(num, "driver_change_time")) || "",
+      getField(num, "driver2_name") || "",
       formatResult(getField(num, "driver2_time")) || "",
       getField(num, "driver2_start_delay") ?? "",
       getField(num, "driver2_cones") ?? "",
@@ -718,19 +750,21 @@ function exportData(format) {
                 <th class="col-summary" rowspan="2">최종 기록</th>
                 <th class="col-summary" rowspan="2">주행시간</th>
                 <th class="col-summary" rowspan="2">페널티</th>
-                <th class="col-driver-group" colspan="5">드라이버 1</th>
+                <th class="col-driver-group" colspan="6">드라이버 1</th>
                 <th class="col-change" rowspan="2">교체<br>초과시간</th>
-                <th class="col-driver-group" colspan="5">드라이버 2</th>
+                <th class="col-driver-group" colspan="6">드라이버 2</th>
                 <th class="col-status" rowspan="2">상태</th>
                 <th class="col-energy-group" colspan="7">에너지 효율</th>
                 <th class="col-qualified" rowspan="2">내구<br>진출</th>
               </tr>
               <tr>
+                <th class="col-field">이름</th>
                 <th class="col-field">기록</th>
                 <th class="col-field">출발지연</th>
                 <th class="col-field">콘터치</th>
                 <th class="col-field">코스이탈</th>
                 <th class="col-field">페널티(초)</th>
+                <th class="col-field">이름</th>
                 <th class="col-field">기록</th>
                 <th class="col-field">출발지연</th>
                 <th class="col-field">콘터치</th>
@@ -763,6 +797,7 @@ function exportData(format) {
                   <span v-else class="cell-display">-</span>
                 </td>
                 <!-- Driver 1 -->
+                <td class="col-field"><ConfirmableInput input-class="name-input" maxlength="100" :value="displayValue(entry.num, 'driver1_name', getField(entry.num, 'driver1_name') ?? '')" :editing="isEditing(entry.num, 'driver1_name')" :disabled="isDisabled(entry.num)" placeholder="이름" confirm-label="드라이버 1 이름 입력 확인" @input="handleCellInput(entry.num, 'driver1_name', $event)" @focus="handleCellFocus(entry.num, 'driver1_name', $event)" @blur="handleCellBlur" @confirm="saveNameField(entry.num, 'driver1_name', $event)" /></td>
                 <td class="col-field"><ConfirmableInput input-class="time-input" :value="displayValue(entry.num, 'driver1_time', formatResult(getField(entry.num, 'driver1_time')))" :editing="isEditing(entry.num, 'driver1_time')" :disabled="isDisabled(entry.num)" placeholder="0:00.000" confirm-label="드라이버 1 기록 입력 확인" @input="handleCellInput(entry.num, 'driver1_time', $event)" @focus="handleCellFocus(entry.num, 'driver1_time', $event)" @blur="handleCellBlur" @confirm="saveTimeField(entry.num, 'driver1_time', $event)" /></td>
                 <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_start_delay', getField(entry.num, 'driver1_start_delay') ?? '')" :editing="isEditing(entry.num, 'driver1_start_delay')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 1 출발지연 입력 확인" @input="handleCellInput(entry.num, 'driver1_start_delay', $event)" @focus="handleCellFocus(entry.num, 'driver1_start_delay', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver1_start_delay', $event, true)" /></td>
                 <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver1_cones', getField(entry.num, 'driver1_cones') ?? '')" :editing="isEditing(entry.num, 'driver1_cones')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 1 콘터치 입력 확인" @input="handleCellInput(entry.num, 'driver1_cones', $event)" @focus="handleCellFocus(entry.num, 'driver1_cones', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver1_cones', $event, true)" /></td>
@@ -771,6 +806,7 @@ function exportData(format) {
                 <!-- Driver change -->
                 <td class="col-change"><ConfirmableInput input-class="time-input" :value="displayValue(entry.num, 'driver_change_time', formatResult(getField(entry.num, 'driver_change_time')))" :editing="isEditing(entry.num, 'driver_change_time')" :disabled="isDisabled(entry.num)" placeholder="0:00.000" confirm-label="교체 초과시간 입력 확인" @input="handleCellInput(entry.num, 'driver_change_time', $event)" @focus="handleCellFocus(entry.num, 'driver_change_time', $event)" @blur="handleCellBlur" @confirm="saveTimeField(entry.num, 'driver_change_time', $event)" /></td>
                 <!-- Driver 2 -->
+                <td class="col-field"><ConfirmableInput input-class="name-input" maxlength="100" :value="displayValue(entry.num, 'driver2_name', getField(entry.num, 'driver2_name') ?? '')" :editing="isEditing(entry.num, 'driver2_name')" :disabled="isDisabled(entry.num)" placeholder="이름" confirm-label="드라이버 2 이름 입력 확인" @input="handleCellInput(entry.num, 'driver2_name', $event)" @focus="handleCellFocus(entry.num, 'driver2_name', $event)" @blur="handleCellBlur" @confirm="saveNameField(entry.num, 'driver2_name', $event)" /></td>
                 <td class="col-field"><ConfirmableInput input-class="time-input" :value="displayValue(entry.num, 'driver2_time', formatResult(getField(entry.num, 'driver2_time')))" :editing="isEditing(entry.num, 'driver2_time')" :disabled="isDisabled(entry.num)" placeholder="0:00.000" confirm-label="드라이버 2 기록 입력 확인" @input="handleCellInput(entry.num, 'driver2_time', $event)" @focus="handleCellFocus(entry.num, 'driver2_time', $event)" @blur="handleCellBlur" @confirm="saveTimeField(entry.num, 'driver2_time', $event)" /></td>
                 <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_start_delay', getField(entry.num, 'driver2_start_delay') ?? '')" :editing="isEditing(entry.num, 'driver2_start_delay')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 2 출발지연 입력 확인" @input="handleCellInput(entry.num, 'driver2_start_delay', $event)" @focus="handleCellFocus(entry.num, 'driver2_start_delay', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver2_start_delay', $event, true)" /></td>
                 <td class="col-field"><ConfirmableInput input-class="num-input" type="number" min="0" step="1" :value="displayValue(entry.num, 'driver2_cones', getField(entry.num, 'driver2_cones') ?? '')" :editing="isEditing(entry.num, 'driver2_cones')" :disabled="isDisabled(entry.num)" placeholder="-" confirm-label="드라이버 2 콘터치 입력 확인" @input="handleCellInput(entry.num, 'driver2_cones', $event)" @focus="handleCellFocus(entry.num, 'driver2_cones', $event)" @blur="handleCellBlur" @confirm="saveNumField(entry.num, 'driver2_cones', $event, true)" /></td>
@@ -812,7 +848,7 @@ function exportData(format) {
                 </td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td colspan="25" class="empty-state">
+                <td colspan="27" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -996,7 +1032,7 @@ function exportData(format) {
 /* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
 
 .endurance-table {
-  min-width: 1980px;
+  min-width: 2160px;
 }
 
 .endurance-table th {
