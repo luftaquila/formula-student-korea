@@ -97,7 +97,7 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 3, ["driver1_time"]);
   });
 
-  test("supports keyboard confirmation and discards keyboard navigation without confirmation", async ({ page }) => {
+  test("completes Enter saves with arrow navigation and skips confirmation buttons with Tab", async ({ page }) => {
     await clearFields(page, 3, ["driver1_time", "driver1_start_delay", "driver1_cones"]);
 
     const row = enduranceTable(page).locator("tbody tr").filter({ hasText: "성균관대학교" });
@@ -105,30 +105,23 @@ test.describe("Score endurance input", () => {
     const timeConfirm = timeInput.locator("xpath=..").locator("button.confirm-input-btn");
     await timeInput.click();
     await timeInput.fill("6:00.000");
-    await timeInput.press("Enter");
-    await expect(timeInput).toBeFocused();
-    await expect(timeConfirm).toBeVisible();
-
-    let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    let data = await response.json();
-    expect(data[3]?.driver1_time ?? null).toBeNull();
-
-    await timeInput.press("Tab");
-    await expect(timeConfirm).toBeFocused();
     const saved = page.waitForResponse(
       (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
     );
-    await timeConfirm.press("Enter");
+    await timeInput.press("Enter");
     await saved;
+    await expect(timeInput).not.toBeFocused();
     await expect(timeConfirm).toHaveCount(0);
+    await expect(timeInput.locator("xpath=../span[contains(@class, 'confirm-input-navigation-anchor')]")).toBeFocused();
 
-    response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
-    data = await response.json();
+    let response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
+    let data = await response.json();
     expect(data[3]?.driver1_time).toBe(360000);
 
     const delayInput = row.locator("input.num-input").nth(0);
     const delayConfirm = delayInput.locator("xpath=..").locator("button.confirm-input-btn");
-    await delayInput.click();
+    await page.keyboard.press("ArrowRight");
+    await expect(delayInput).toBeFocused();
     await delayInput.fill("7");
     await delayInput.press("ArrowRight");
     await expect(delayConfirm).toHaveCount(0);
@@ -138,10 +131,10 @@ test.describe("Score endurance input", () => {
 
     const conesInput = row.locator("input.num-input").nth(1);
     const conesConfirm = conesInput.locator("xpath=..").locator("button.confirm-input-btn");
+    await expect(conesInput).toBeFocused();
     await conesInput.fill("8");
     await conesInput.press("Tab");
-    await expect(conesConfirm).toBeFocused();
-    await conesConfirm.press("Tab");
+    await expect(row.locator("input.num-input").nth(2)).toBeFocused();
     await expect(conesConfirm).toHaveCount(0);
     response = await page.request.get(`/competition/api/v1/score/score/endurance?year=${YEAR}`);
     data = await response.json();
@@ -150,7 +143,7 @@ test.describe("Score endurance input", () => {
     await clearFields(page, 3, ["driver1_time", "driver1_start_delay", "driver1_cones"]);
   });
 
-  test("saves endurance distance only through its confirmation button", async ({ page }) => {
+  test("saves endurance distance with Enter and discards unconfirmed changes", async ({ page }) => {
     const initialResponse = await page.request.get(`/competition/api/v1/score/score?year=${YEAR}`);
     const initialScore = await initialResponse.json();
     const initialDistance = initialScore.settings?.["에너지"]?.distance_km ?? null;
@@ -171,12 +164,10 @@ test.describe("Score endurance input", () => {
 
     await input.click();
     await input.fill(String(changedDistance));
-    await input.press("Tab");
-    await expect(confirm).toBeFocused();
     const saved = page.waitForResponse(
       (res) => res.url().includes("/competition/api/v1/score/score/setting") && res.request().method() === "PUT" && res.status() === 200,
     );
-    await confirm.press("Enter");
+    await input.press("Enter");
     await saved;
     await expect(confirm).toHaveCount(0);
 
