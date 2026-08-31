@@ -8,6 +8,7 @@ import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { buildEventExportCells, buildEventExportHeaders, formatScoreResult as formatResult } from "../lib/scoreExport.js";
+import { calculateAdjustedResult } from "../../../lib/adjusted-result.mjs";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
@@ -264,9 +265,8 @@ function getTeamEvent(evt, num) {
 
 // 페널티 반영 기록 (ms)
 function getAdjustedResult(eventType, rec) {
-  if (!rec || rec.status || rec.result == null) return null;
   const pen = penalties.value[eventType] || {};
-  return rec.result + (rec.cones || 0) * (pen.cone_penalty || 0) * 1000 + (rec.oc || 0) * (pen.oc_penalty || 0) * 1000;
+  return calculateAdjustedResult(eventType, rec, pen);
 }
 
 // 사전 계산된 점수 캐시 (events/penalties/settings 변경 시 자동 재계산)
@@ -767,9 +767,8 @@ function getAllRuns(eventType, num) {
 }
 
 function getRunAdjusted(eventType, run) {
-  if (!run || run.status || run.result == null) return null;
   const pen = penalties.value[eventType] || {};
-  return run.result + (run.cones || 0) * (pen.cone_penalty || 0) * 1000 + (run.oc || 0) * (pen.oc_penalty || 0) * 1000;
+  return calculateAdjustedResult(eventType, run, pen);
 }
 
 function getBestRunIndex(eventType, num) {
@@ -780,7 +779,7 @@ function getBestRunIndex(eventType, num) {
   for (let i = 0; i < runs.length; i++) {
     const r = runs[i];
     if (r.status || r.result == null || r.result <= 0) continue;
-    const adj = r.result + (r.cones || 0) * pen.cone_penalty * 1000 + (r.oc || 0) * pen.oc_penalty * 1000;
+    const adj = calculateAdjustedResult(eventType, r, pen);
     if (adj < bestAdj) { bestAdj = adj; bestIdx = i; }
   }
   return bestIdx;
@@ -792,8 +791,8 @@ function getSortedRuns(eventType, num) {
   if (detailSortMode.value === "score") {
     const pen = penalties.value[eventType] || { cone_penalty: 0, oc_penalty: 0 };
     indexed.sort((a, b) => {
-      const aAdj = !a.status && a.result > 0 ? a.result + (a.cones || 0) * pen.cone_penalty * 1000 + (a.oc || 0) * pen.oc_penalty * 1000 : Infinity;
-      const bAdj = !b.status && b.result > 0 ? b.result + (b.cones || 0) * pen.cone_penalty * 1000 + (b.oc || 0) * pen.oc_penalty * 1000 : Infinity;
+      const aAdj = !a.status && a.result > 0 ? calculateAdjustedResult(eventType, a, pen) : Infinity;
+      const bAdj = !b.status && b.result > 0 ? calculateAdjustedResult(eventType, b, pen) : Infinity;
       if (aAdj === bAdj) return String(a.status || "").localeCompare(String(b.status || ""));
       return aAdj - bAdj;
     });
@@ -834,6 +833,7 @@ function exportData(format) {
     row.push(getTotalScore(entry.num));
     for (const evt of dynamicEvents.value) {
       row.push(...buildEventExportCells({
+        eventType: evt.type,
         record: getTeamEvent(evt, entry.num),
         score: getEventScore(evt.type, entry.num),
         penalty: penalties.value[evt.type],
@@ -841,6 +841,7 @@ function exportData(format) {
     }
     const endRec = getTeamEvent(enduranceEvent.value, entry.num);
     row.push(...buildEventExportCells({
+      eventType: "내구",
       record: endRec,
       score: getEventScore("내구", entry.num),
       penalty: penalties.value["내구"],
