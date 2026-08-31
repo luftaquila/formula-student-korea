@@ -1,13 +1,13 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
-import { exportTable } from "../composables/exportTable";
-import { fetchEntryYears, fetchScore, fetchScorePublication, fetchVehicleTypes, updateManualScore, updatePenalty, updateScorePublication, updateSetting } from "../api";
+import { fetchEndurance, fetchEntryYears, fetchScore, fetchScorePublication, fetchVehicleTypes, updateManualScore, updatePenalty, updateScorePublication, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useStickyColumns } from "@shared/useStickyColumns.js";
 import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
-import { buildEventExportCells, buildEventExportHeaders, formatScoreResult as formatResult } from "../lib/scoreExport.js";
+import { formatScoreResult as formatResult } from "../lib/scoreExport.js";
+import { buildOfficialScoreWorkbookModel, downloadOfficialScoreWorkbook } from "../lib/officialScoreWorkbook.js";
 import { calculateAdjustedResult } from "../../../lib/adjusted-result.mjs";
 import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
@@ -18,6 +18,7 @@ const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastMan
 const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const loading = ref(true);
+const exportingXlsx = ref(false);
 const publicationLoading = ref(false);
 const publicEnabled = ref(false);
 const searchQuery = ref("");
@@ -812,52 +813,31 @@ function toggleCornerWeight(num) {
   }
 }
 
-function exportData(format) {
-  const headers = ["번호", "학교", "팀", "유형"];
-  if (showInspection.value) {
-    for (const cat of inspection.value.categories) headers.push(cat.name);
+async function exportXlsx() {
+  if (exportingXlsx.value) return;
+  exportingXlsx.value = true;
+  try {
+    const endurance = await fetchEndurance(selectedYear.value);
+    const model = buildOfficialScoreWorkbookModel({
+      score: {
+        year: selectedYear.value,
+        entries: entries.value,
+        inspection: inspection.value,
+        events: events.value,
+        manualScores: manualScores.value,
+        penalties: penalties.value,
+        settings: settings.value,
+        energy: energy.value,
+      },
+      endurance,
+      scoreCache: scoreCache.value,
+    });
+    await downloadOfficialScoreWorkbook(model);
+  } catch {
+    error("성적표 XLSX를 생성할 수 없습니다.");
+  } finally {
+    exportingXlsx.value = false;
   }
-  headers.push("총점");
-  for (const evt of dynamicEvents.value) headers.push(...buildEventExportHeaders(evt.type));
-  headers.push(...buildEventExportHeaders("내구", { runLimit: 0, recordLabel: "기록" }));
-  headers.push("보고서", "에너지", "가점", "감점");
-
-  const rows = entryList.value.map((entry) => {
-    const row = [entry.num, entry.univ || "", entry.team || "", entry.type || ""];
-    if (showInspection.value) {
-      for (const cat of inspection.value.categories) {
-        if (!categoryAppliesTo(cat, entry.type)) { row.push(""); continue; }
-        row.push(isOverriddenCategory(cat.id) ? (getCurbWeight(entry.num) ?? "") : (getInspectionResult(entry.num, cat.id) || ""));
-      }
-    }
-    row.push(getTotalScore(entry.num));
-    for (const evt of dynamicEvents.value) {
-      row.push(...buildEventExportCells({
-        eventType: evt.type,
-        record: getTeamEvent(evt, entry.num),
-        score: getEventScore(evt.type, entry.num),
-        penalty: penalties.value[evt.type],
-      }));
-    }
-    const endRec = getTeamEvent(enduranceEvent.value, entry.num);
-    row.push(...buildEventExportCells({
-      eventType: "내구",
-      record: endRec,
-      score: getEventScore("내구", entry.num),
-      penalty: penalties.value["내구"],
-      runLimit: 0,
-    }));
-    const energyResult = getEnergyResult(entry.num);
-    row.push(
-      getManualScore(entry.num, "report") ?? "",
-      energyResult?.status === "DSQ" ? `DSQ: ${energyResult.reason}` : (getEnergyScore(entry.num) ?? ""),
-      getManualScore(entry.num, "bonus") ?? "",
-      getManualScore(entry.num, "deduction") ?? "",
-    );
-    return row;
-  });
-
-  exportTable({ sheetName: "성적표", fileBase: `성적표_${selectedYear.value}`, headers, rows, format });
 }
 </script>
 
@@ -901,8 +881,7 @@ function exportData(format) {
         <div class="filter-group action-group">
           <label class="filter-label">&nbsp;</label>
           <div class="action-buttons">
-            <button class="action-link" @click="exportData('csv')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>CSV</button>
-            <button class="action-link" @click="exportData('xlsx')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>XLSX</button>
+            <button class="action-link" :disabled="exportingXlsx" @click="exportXlsx"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>{{ exportingXlsx ? "생성 중" : "XLSX" }}</button>
             <router-link to="/endurance" class="action-link nav-link">내구 입력</router-link>
           </div>
         </div>
