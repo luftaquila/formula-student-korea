@@ -656,7 +656,7 @@ function getInputGrid(el) {
   return rows.map(tr => Array.from(tr.querySelectorAll("input.cell-input:not([disabled])")));
 }
 
-function exportData(format) {
+function exportData() {
   const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 이름", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 이름", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수", "내구 진출"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
@@ -692,7 +692,7 @@ function exportData(format) {
       getField(num, "qualified") ? "진출" : "",
     ];
   });
-  exportTable({ sheetName: "내구 기록", fileBase: `내구기록_${selectedYear.value}`, headers, rows, format });
+  exportTable({ sheetName: "내구 기록", fileBase: `내구기록_${selectedYear.value}`, headers, rows });
 }
 </script>
 
@@ -756,8 +756,7 @@ function exportData(format) {
         <div class="filter-group action-group">
           <label class="filter-label">&nbsp;</label>
           <div class="action-buttons">
-            <button class="action-link" @click="exportData('csv')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>CSV</button>
-            <button class="action-link" @click="exportData('xlsx')"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>XLSX</button>
+            <button class="action-link" @click="exportData"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="action-icon"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>XLSX</button>
             <router-link to="/" class="action-link nav-link">성적표</router-link>
           </div>
         </div>
