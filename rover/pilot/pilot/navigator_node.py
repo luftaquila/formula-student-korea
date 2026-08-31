@@ -1404,12 +1404,18 @@ class NavigatorNode(Node):
             if self._has_v2_mission():
                 self._set_state(State.PAUSED)
                 checkpoint_state = self._held_checkpoint_state()
-                self._save_mission_checkpoint(checkpoint_state)
+                checkpoint_persisted = self._save_mission_checkpoint(checkpoint_state)
+                clear_evidence = {
+                    'emergency_stop_cleared': True,
+                    'motion_state': 'held',
+                    'checkpoint_persisted': checkpoint_persisted,
+                }
                 if self._mission_completion_pending:
                     self._publish_mission_report(
                         'mission_completed',
                         completed_waypoint_ids=sorted(self._mission_completed_ids),
                         start_position=self._mission_start_position,
+                        **clear_evidence,
                     )
                     return
                 self._publish_mission_report(
@@ -1418,6 +1424,7 @@ class NavigatorNode(Node):
                             if self._mission_dispense_uncertain_id is not None
                             else 'emergency_stop_cleared'),
                     completed_waypoint_ids=sorted(self._mission_completed_ids),
+                    **clear_evidence,
                 )
             else:
                 self._set_state(State.IDLE)

@@ -8,12 +8,14 @@ import {
   groupRouteMapVisits,
   missionConeDisplayName,
   missionConeShortName,
+  missionPresetRouteItems,
   missionRouteDirectionArrow,
   missionRouteMapSegments,
   missionRouteProgressColor,
   moveRouteItem,
   optimizeConeRoute,
   renderMissionMapBearing,
+  unavailableMissionRouteItems,
 } from "../../course/web/src/lib/mission-route.mjs";
 import { buildSideRanks } from "../../course/lib/cone-index.mjs";
 
@@ -121,4 +123,22 @@ test("keeps large-route optimization inside a deterministic evaluation budget", 
 
 test("moves an arbitrary occurrence directly to a requested position", () => {
   assert.deepEqual(moveRouteItem(["a", "b", "c", "d"], 3, 1), ["a", "d", "b", "c"]);
+});
+
+test("loads deleted preset snapshots for repair while keeping them unavailable", () => {
+  const route = missionPresetRouteItems({
+    items: [
+      { cone_id: 1, cone_id_snapshot: 1, lat: 35, lng: 126, stale: false },
+      { cone_id: null, cone_id_snapshot: 99, lat: 35.1, lng: 126.1, stale: true },
+    ],
+  });
+  assert.deepEqual(route.map((item) => item.cone_id), [1, 99]);
+  assert.equal(route[1].preset_snapshot_unavailable, true);
+  assert.deepEqual(unavailableMissionRouteItems(route, cones).map((item) => item.cone_id), [99]);
+  assert.deepEqual(unavailableMissionRouteItems([
+    { cone_id: 99, waypoint_id: "stable-snapshot" },
+  ], cones), []);
+  assert.deepEqual(unavailableMissionRouteItems([
+    { cone_id: 99, waypoint_id: "stable-snapshot" },
+  ], cones, { includeStableOccurrences: true }).map((item) => item.cone_id), [99]);
 });

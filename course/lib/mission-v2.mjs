@@ -166,8 +166,15 @@ export function setupMissionV2Schema(db, logger = null) {
       boot_id TEXT PRIMARY KEY,
       generation INTEGER NOT NULL UNIQUE,
       first_seen_at INTEGER NOT NULL,
-      last_seen_at INTEGER NOT NULL
+      last_seen_at INTEGER NOT NULL,
+      last_report_seq INTEGER NOT NULL DEFAULT -1
+        CHECK(last_report_seq BETWEEN -1 AND 9007199254740991)
     )`);
+    if (!hasColumn(db, "rover_boot_session", "last_report_seq")) {
+      addColumn(db, "rover_boot_session", "last_report_seq",
+        "INTEGER NOT NULL DEFAULT -1 CHECK(last_report_seq BETWEEN -1 AND 9007199254740991)");
+      changed.push("rover_boot_session.last_report_seq");
+    }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_rover_boot_session_generation
       ON rover_boot_session(generation DESC)`);
 
@@ -439,7 +446,7 @@ export function createMissionV2Store(db) {
     );
   }
 
-  function waypointRows(missionId, { includeSkipped = true } = {}) {
+  function waypointRows(missionId, { includeSkipped = false } = {}) {
     return db.prepare(`SELECT * FROM mission_waypoint WHERE mission_id=?
       ${includeSkipped ? "" : "AND state <> 'skipped'"}
       ORDER BY CASE WHEN position IS NULL THEN 1 ELSE 0 END, position, created_at, id`).all(missionId);
@@ -479,6 +486,8 @@ export function createMissionV2Store(db) {
     const row = missionRow(id);
     if (!row) return null;
     const waypoints = waypointRows(id);
+    const skippedWaypointCount = db.prepare(`SELECT COUNT(*) AS count FROM mission_waypoint
+      WHERE mission_id=? AND state='skipped'`).get(id).count;
     const result = {
       id: row.id,
       course_id: row.course_id,
@@ -503,6 +512,7 @@ export function createMissionV2Store(db) {
       empty_plan_mode: row.empty_plan_mode,
       occurrence_revision: occurrenceRevision(row, waypoints),
       waypoints: waypoints.map(publicWaypoint),
+      skipped_waypoint_count: skippedWaypointCount,
     };
     if (ACTIVE_MISSION_STATES.includes(result.status)) {
       activeSummaryHydrated = true;
@@ -558,6 +568,12 @@ export function createMissionV2Store(db) {
   function activeMissionSummary() {
     if (!activeSummaryHydrated) activeMission();
     return activeSummaryCache == null ? null : { ...activeSummaryCache };
+  }
+
+  function rehydrateActiveSummaryCache() {
+    activeSummaryHydrated = false;
+    activeSummaryCache = null;
+    activeMission();
   }
 
   function resolveConeItems(courseId, items, { requireSnapshots = false } = {}) {
@@ -651,7 +667,7 @@ export function createMissionV2Store(db) {
     if (!FINISH_BEHAVIORS.has(finishBehavior)) {
       throw Object.assign(new Error("올바르지 않은 종료 동작입니다."), { status: 400 });
     }
-    const cones = resolveConeItems(courseId, items);
+    const cones = resolveConeItems(courseId, items, { requireSnapshots: true });
     const conflictingName = db.prepare(`SELECT id FROM mission_route_preset
       WHERE course_id=? AND name=? COLLATE NOCASE`).get(courseId, trimmedName);
     if (conflictingName && conflictingName.id !== id) {
@@ -723,18 +739,48 @@ export function createMissionV2Store(db) {
     })();
   }
 
-  function createMission({ courseId, presetId = null, finishBehavior = "stop", items, actor = null }) {
+  function createMission({
+    courseId,
+    presetId = null,
+    expectedPresetRevision = null,
+    finishBehavior = "stop",
+    items,
+    actor = null,
+  }) {
     if (!FINISH_BEHAVIORS.has(finishBehavior)) {
       throw Object.assign(new Error("올바르지 않은 종료 동작입니다."), { status: 400 });
     }
     if (activeMission()) {
       throw Object.assign(new Error("종료되지 않은 미션이 이미 있습니다."), { status: 409, reason: "active_mission" });
     }
-    const cones = resolveConeItems(courseId, items, { requireSnapshots: true });
     if (presetId != null) {
-      const preset = db.prepare("SELECT * FROM mission_route_preset WHERE id=? AND course_id=?").get(presetId, courseId);
+      const preset = listPresets(courseId).find((row) => row.id === presetId);
       if (!preset) throw Object.assign(new Error("해당 코스의 프리셋을 찾을 수 없습니다."), { status: 404 });
+      if (typeof expectedPresetRevision !== "string"
+          || expectedPresetRevision !== preset.preset_revision) {
+        throw Object.assign(new Error("프리셋이 변경되었습니다. 최신 프리셋을 다시 불러오세요."), {
+          status: 409,
+          reason: "preset_revision_mismatch",
+          current_preset_revision: preset.preset_revision,
+        });
+      }
+      if (preset.stale) {
+        throw Object.assign(new Error("삭제된 콘이 포함된 프리셋은 먼저 수정해야 합니다."), {
+          status: 409,
+          reason: "stale_preset",
+        });
+      }
+      const requestedItems = Array.isArray(items) ? items : [];
+      if (finishBehavior !== preset.finish_behavior
+          || preset.items.length !== requestedItems.length
+          || preset.items.some((item, index) => item.cone_id !== Number(requestedItems[index]?.cone_id))) {
+        throw Object.assign(new Error("선택한 프리셋과 실행 경로가 다릅니다. 경로를 다시 확인하세요."), {
+          status: 409,
+          reason: "preset_route_mismatch",
+        });
+      }
     }
+    const cones = resolveConeItems(courseId, items, { requireSnapshots: true });
     const now = Date.now();
     const waypoints = cones.map((cone, position) => ({
       id: crypto.randomUUID(), position, cone_id: cone.id, cone_id_snapshot: cone.id,
@@ -804,8 +850,29 @@ export function createMissionV2Store(db) {
     const currentPending = pendingWaypoints(missionId);
     const pendingById = new Map(currentPending.map((w) => [w.id, w]));
     const used = new Set();
-    const newConeItems = items.filter((item) => !item?.waypoint_id);
-    const newCones = newConeItems.length > 0 ? resolveConeItems(mission.course_id, newConeItems) : [];
+    const newConeEntries = items
+      .map((item, position) => ({ item, position }))
+      .filter(({ item }) => !item?.waypoint_id);
+    let newCones = [];
+    if (newConeEntries.length > 0) {
+      try {
+        newCones = resolveConeItems(
+          mission.course_id,
+          newConeEntries.map(({ item }) => item),
+          { requireSnapshots: true },
+        );
+      } catch (error) {
+        if (Number.isInteger(error?.position) && newConeEntries[error.position]) {
+          error.position = newConeEntries[error.position].position;
+          if (error.reason === "cone_snapshot_mismatch") {
+            error.message = `${error.position + 1}번 콘이 사전 점검 이후 변경되었습니다. 최신 경로를 다시 확인하세요.`;
+          } else if (error.reason === "missing_cone") {
+            error.message = `${error.position + 1}번 항목의 콘이 현재 코스에 없습니다.`;
+          }
+        }
+        throw error;
+      }
+    }
     let newConeIndex = 0;
     const nextPending = items.map((item, position) => {
       if (item?.waypoint_id) {
@@ -1072,7 +1139,10 @@ export function createMissionV2Store(db) {
     const now = Date.now();
     return db.transaction(() => {
       const terminalAtReport = TERMINAL_MISSION_STATES.has(mission.lifecycle_state);
-      let pendingEndDuringSafetyAck = null;
+      const activeCommandAtReport = mission.active_command_id == null ? null : db.prepare(`SELECT id,action,state
+        FROM mission_command WHERE id=? AND mission_id=?`).get(mission.active_command_id, missionId);
+      const pendingEnd = activeCommandAtReport?.state === "pending"
+        && activeCommandAtReport.action === "end" ? activeCommandAtReport : null;
       if (mission.active_hold_id && ["held", "interrupted"].includes(report.event)) {
         if (report.hold_id !== mission.active_hold_id) {
           throw Object.assign(new Error("재부팅 안전 정지 ID가 현재 요청과 일치하지 않습니다."), {
@@ -1083,13 +1153,6 @@ export function createMissionV2Store(db) {
           throw Object.assign(new Error("로버의 정지 체크포인트가 아직 영구 저장되지 않았습니다."), {
             status: 409, reason: "checkpoint_not_persisted",
           });
-        }
-        if (mission.active_command_id) {
-          const activeCommand = db.prepare(`SELECT id,action,state FROM mission_command
-            WHERE id=? AND mission_id=?`).get(mission.active_command_id, missionId);
-          if (activeCommand?.state === "pending" && activeCommand.action === "end") {
-            pendingEndDuringSafetyAck = activeCommand;
-          }
         }
       }
       if (mission.active_hold_id
@@ -1398,7 +1461,7 @@ export function createMissionV2Store(db) {
       }
       if (report.event === "held") {
         db.prepare(`UPDATE mission_waypoint SET state='pending',updated_at=? WHERE mission_id=? AND state='active'`).run(now, missionId);
-        if (pendingEndDuringSafetyAck) {
+        if (pendingEnd) {
           const confirmedReason = `${ROVER_CONFIRMED_HOLD_PREFIX}${report.reason || "rover_held"}`;
           db.prepare(`UPDATE mission SET lifecycle_state='interrupted',status='interrupted',hold_reason=?,updated_at=?,
             last_rover_boot_id=?,active_hold_id=NULL WHERE id=?`)
@@ -1408,7 +1471,7 @@ export function createMissionV2Store(db) {
             last_rover_boot_id=?,active_hold_id=NULL,active_command_id=NULL WHERE id=?`)
             .run(report.reason || "rover_held", now, report.boot_id, missionId);
         }
-        if (mission.active_command_id && !pendingEndDuringSafetyAck) {
+        if (mission.active_command_id && !pendingEnd) {
           db.prepare(`UPDATE mission_command SET state='superseded',acknowledged_at=?,reject_reason='newer_held_report'
             WHERE id=? AND state='pending'`).run(now, mission.active_command_id);
         }
@@ -1416,15 +1479,15 @@ export function createMissionV2Store(db) {
           roverBootId: report.boot_id, actor,
           before: { state: mission.lifecycle_state, active_hold_id: mission.active_hold_id },
           after: {
-            state: pendingEndDuringSafetyAck ? "interrupted" : "paused",
+            state: pendingEnd ? "interrupted" : "paused",
             reason: report.reason || "rover_held",
             active_hold_id: null,
-            active_command_id: pendingEndDuringSafetyAck?.id || null,
+            active_command_id: pendingEnd?.id || null,
           },
           detail: {
             hold_id: report.hold_id || null,
             checkpoint_persisted: report.checkpoint_persisted === true,
-            pending_end_preserved: !!pendingEndDuringSafetyAck,
+            pending_end_preserved: !!pendingEnd,
           },
         });
       }
@@ -1434,8 +1497,8 @@ export function createMissionV2Store(db) {
         db.prepare(`UPDATE mission SET lifecycle_state='interrupted',status='interrupted',hold_reason=?,updated_at=?,
           last_rover_boot_id=?,active_hold_id=NULL,
           active_command_id=CASE WHEN ? THEN active_command_id ELSE NULL END WHERE id=?`)
-          .run(confirmedReason, now, report.boot_id, pendingEndDuringSafetyAck ? 1 : 0, missionId);
-        if (mission.active_command_id && !pendingEndDuringSafetyAck) {
+          .run(confirmedReason, now, report.boot_id, pendingEnd ? 1 : 0, missionId);
+        if (mission.active_command_id && !pendingEnd) {
           db.prepare(`UPDATE mission_command SET state='superseded',acknowledged_at=?,reject_reason='newer_interrupted_report'
             WHERE id=? AND state='pending'`).run(now, mission.active_command_id);
         }
@@ -1446,12 +1509,12 @@ export function createMissionV2Store(db) {
             state: "interrupted",
             reason: report.reason || "rover_interrupted",
             active_hold_id: null,
-            active_command_id: pendingEndDuringSafetyAck?.id || null,
+            active_command_id: pendingEnd?.id || null,
           },
           detail: {
             hold_id: report.hold_id || null,
             checkpoint_persisted: report.checkpoint_persisted === true,
-            pending_end_preserved: !!pendingEndDuringSafetyAck,
+            pending_end_preserved: !!pendingEnd,
           },
         });
       }
@@ -1491,17 +1554,22 @@ export function createMissionV2Store(db) {
   function markInterrupted(missionId, reason, roverBootId = null, { confirmed = false } = {}) {
     const mission = missionRow(missionId);
     if (!mission || TERMINAL_MISSION_STATES.has(mission.lifecycle_state)) return null;
+    const activeCommand = mission.active_command_id == null ? null : db.prepare(`SELECT id,action,state
+      FROM mission_command WHERE id=? AND mission_id=?`).get(mission.active_command_id, missionId);
+    const pendingEnd = activeCommand?.action === "end" && activeCommand.state === "pending"
+      ? activeCommand : null;
     const now = Date.now();
     db.transaction(() => {
       db.prepare(`UPDATE mission_waypoint SET state='pending',updated_at=? WHERE mission_id=? AND state='active'`).run(now, missionId);
       const persistedReason = confirmed
         ? `${ROVER_CONFIRMED_HOLD_PREFIX}${reason}`
         : (mission.active_hold_id ? "rover_rebooted" : reason);
-      db.prepare(`UPDATE mission SET lifecycle_state='interrupted',status='interrupted',hold_reason=?,updated_at=?,active_command_id=NULL,
+      db.prepare(`UPDATE mission SET lifecycle_state='interrupted',status='interrupted',hold_reason=?,updated_at=?,
+        active_command_id=CASE WHEN ? THEN active_command_id ELSE NULL END,
         active_hold_id=CASE WHEN ? THEN NULL ELSE active_hold_id END,
         last_rover_boot_id=COALESCE(?,last_rover_boot_id) WHERE id=?`)
-        .run(persistedReason, now, confirmed ? 1 : 0, roverBootId, missionId);
-      if (mission.active_command_id) {
+        .run(persistedReason, now, pendingEnd ? 1 : 0, confirmed ? 1 : 0, roverBootId, missionId);
+      if (mission.active_command_id && !pendingEnd) {
         db.prepare(`UPDATE mission_command SET state='superseded',acknowledged_at=?,reject_reason=? WHERE id=? AND state='pending'`)
           .run(now, reason, mission.active_command_id);
       }
@@ -1512,8 +1580,9 @@ export function createMissionV2Store(db) {
           state: "interrupted",
           reason: persistedReason,
           active_hold_id: confirmed ? null : mission.active_hold_id,
+          active_command_id: pendingEnd?.id || null,
         },
-        detail: { confirmed },
+        detail: { confirmed, pending_end_preserved: !!pendingEnd },
       });
     })();
     return missionPublic(missionId);
@@ -1562,6 +1631,9 @@ export function createMissionV2Store(db) {
       const latest = db.prepare("SELECT COALESCE(MAX(generation),0) AS generation FROM rover_boot_session").get().generation;
       const existing = db.prepare("SELECT * FROM rover_boot_session WHERE boot_id=?").get(bootId);
       if (existing) {
+        if (!Number.isSafeInteger(existing.last_report_seq) || existing.last_report_seq < -1) {
+          return { accepted: false, reason: "invalid_report_sequence" };
+        }
         if (existing.generation !== latest) {
           return {
             accepted: false,
@@ -1571,20 +1643,73 @@ export function createMissionV2Store(db) {
           };
         }
         db.prepare("UPDATE rover_boot_session SET last_seen_at=? WHERE boot_id=?").run(now, bootId);
-        return { accepted: true, generation: existing.generation, replay: true };
+        return {
+          accepted: true,
+          generation: existing.generation,
+          last_report_seq: existing.last_report_seq,
+          replay: true,
+        };
       }
       const generation = latest + 1;
       db.prepare(`INSERT INTO rover_boot_session
         (boot_id,generation,first_seen_at,last_seen_at) VALUES (?,?,?,?)`)
         .run(bootId, generation, now, now);
-      return { accepted: true, generation, replay: false };
+      return { accepted: true, generation, last_report_seq: -1, replay: false };
     })();
+  }
+
+  function processRoverReport(bootId, reportSeq, apply) {
+    if (typeof bootId !== "string" || !bootId || bootId.length > 128
+        || !Number.isSafeInteger(reportSeq) || reportSeq < 0
+        || typeof apply !== "function") {
+      throw Object.assign(new Error("올바르지 않은 로버 보고 순번입니다."), {
+        status: 400, reason: "invalid_report_sequence",
+      });
+    }
+    const now = Date.now();
+    try {
+      const result = db.transaction(() => {
+        const latestGeneration = db.prepare(
+          "SELECT COALESCE(MAX(generation),0) AS generation FROM rover_boot_session",
+        ).get().generation;
+        const session = db.prepare("SELECT * FROM rover_boot_session WHERE boot_id=?").get(bootId);
+        if (!session || session.generation !== latestGeneration) {
+          throw Object.assign(new Error("이미 교체된 이전 로버 부팅 세션의 보고입니다."), {
+            status: 409, reason: "stale_boot_session",
+          });
+        }
+        if (reportSeq <= session.last_report_seq) {
+          return { duplicate: true, last_report_seq: session.last_report_seq, value: null };
+        }
+        const value = apply();
+        const advanced = db.prepare(`UPDATE rover_boot_session
+          SET last_report_seq=?,last_seen_at=?
+          WHERE boot_id=? AND generation=? AND last_report_seq<?`)
+          .run(reportSeq, now, bootId, latestGeneration, reportSeq).changes;
+        if (advanced !== 1) {
+          throw Object.assign(new Error("로버 보고 순번 권위를 갱신하지 못했습니다."), {
+            status: 409, reason: "report_sequence_conflict",
+          });
+        }
+        return { duplicate: false, last_report_seq: reportSeq, value };
+      })();
+      rehydrateActiveSummaryCache();
+      return result;
+    } catch (error) {
+      // missionPublic() updates the hot summary cache inside applyReport's
+      // nested transaction. If the outer report-sequence write rolls back,
+      // rebuild the cache from committed rows before any safety gate reads it.
+      try { rehydrateActiveSummaryCache(); }
+      catch { activeSummaryHydrated = false; activeSummaryCache = null; }
+      throw error;
+    }
   }
 
   function reconcileRoverBoot(bootId) {
     const now = Date.now();
     const mismatched = db.prepare(`SELECT * FROM mission_command
-      WHERE state='pending' AND rover_boot_id IS NOT NULL AND rover_boot_id <> ?`).all(bootId);
+      WHERE state='pending' AND (rover_boot_id IS NULL OR rover_boot_id <> ?)`)
+      .all(bootId);
     const activeRow = db.prepare(`SELECT * FROM mission WHERE lifecycle_state IN
       ('ready','starting','running','pausing','paused','interrupted','resuming')
       ORDER BY id DESC LIMIT 1`).get();
@@ -1600,9 +1725,29 @@ export function createMissionV2Store(db) {
     return db.transaction(() => {
       const interruptedIds = new Set();
       for (const command of mismatched) {
+        const mission = missionRow(command.mission_id);
+        if (command.action === "end" && mission
+            && !TERMINAL_MISSION_STATES.has(mission.lifecycle_state)) {
+          const payload = parseJson(command.payload_json, {});
+          const retargetedPayload = { ...payload, target_boot_id: bootId };
+          const holdId = crypto.randomUUID();
+          db.prepare(`UPDATE mission_command SET rover_boot_id=?,payload_json=?
+            WHERE id=? AND state='pending'`).run(bootId, JSON.stringify(retargetedPayload), command.id);
+          db.prepare(`UPDATE mission SET lifecycle_state='interrupted',status='interrupted',
+            hold_reason='rover_rebooted',active_command_id=?,active_hold_id=?,updated_at=?,last_rover_boot_id=?
+            WHERE id=?`).run(command.id, holdId, now, bootId, mission.id);
+          recordEvent(mission.id, "command.end.retargeted", {
+            commandId: command.id,
+            roverBootId: bootId,
+            before: { state: mission.lifecycle_state, target_boot_id: command.rover_boot_id },
+            after: { state: "interrupted", target_boot_id: bootId },
+            detail: { reason: "rover_rebooted", hold_id: holdId },
+          });
+          interruptedIds.add(mission.id);
+          continue;
+        }
         db.prepare(`UPDATE mission_command SET state='superseded',acknowledged_at=?,reject_reason='rover_rebooted' WHERE id=?`)
           .run(now, command.id);
-        const mission = missionRow(command.mission_id);
         if (mission && !TERMINAL_MISSION_STATES.has(mission.lifecycle_state)) {
           const holdId = crypto.randomUUID();
           db.prepare(`UPDATE mission SET lifecycle_state='interrupted',status='interrupted',hold_reason='rover_rebooted',
@@ -1657,6 +1802,7 @@ export function createMissionV2Store(db) {
     motionConfirmedHeld,
     pendingCommands,
     pendingWaypoints,
+    processRoverReport,
     reconcileRoverBoot,
     recordEvent,
     savePreset,

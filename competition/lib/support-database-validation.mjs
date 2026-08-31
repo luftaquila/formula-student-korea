@@ -225,6 +225,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
         column("generation", "INTEGER", 1),
         column("first_seen_at", "INTEGER", 1),
         column("last_seen_at", "INTEGER", 1),
+        column("last_report_seq", "INTEGER", 1, 0, "-1"),
       ]),
       mission_route_preset: Object.freeze([
         column("id", "INTEGER", 0, 1),
@@ -378,7 +379,10 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
       mission: Object.freeze([
         "check(statusin('running','paused','interrupted','completed','stopped','error'))",
       ]),
-      rover_boot_session: Object.freeze(["generationintegernotnullunique"]),
+      rover_boot_session: Object.freeze([
+        "generationintegernotnullunique",
+        "check(last_report_seqbetween-1and9007199254740991)",
+      ]),
       mission_route_preset: Object.freeze([
         "check(finish_behaviorin('stop','return_to_start'))",
       ]),
@@ -750,14 +754,15 @@ export function validateSupportDatabase(db, service) {
       }
     }
 
-    const bootSessions = db.prepare(`SELECT boot_id,generation,first_seen_at,last_seen_at
+    const bootSessions = db.prepare(`SELECT boot_id,generation,first_seen_at,last_seen_at,last_report_seq
       FROM rover_boot_session ORDER BY generation`).all();
     for (const session of bootSessions) {
       if (typeof session.boot_id !== "string" || session.boot_id.length === 0
           || !Number.isInteger(session.generation) || session.generation < 1
           || !Number.isInteger(session.first_seen_at) || session.first_seen_at < 0
           || !Number.isInteger(session.last_seen_at)
-          || session.last_seen_at < session.first_seen_at) {
+          || session.last_seen_at < session.first_seen_at
+          || !Number.isSafeInteger(session.last_report_seq) || session.last_report_seq < -1) {
         invalid.push(`boot#${session.boot_id || "<empty>"}:session`);
       }
     }
