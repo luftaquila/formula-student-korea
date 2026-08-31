@@ -1204,6 +1204,78 @@ describe('Score aggregation business logic', () => {
   });
 });
 
+describe('Skidpad scoring time aggregation', () => {
+  let srv, url, cli, database, dp;
+  const cookie = adminCookie;
+  const YEAR = currentCompetitionYear();
+
+  before(async () => {
+    dp = tmpDbPath();
+    const competitionQueries = createCompetitionQueries({
+      records: (year) => [{
+        name: `FSK ${year} 스키드패드`,
+        records: [
+          { rowid: 1, time: '2026-01-01T10:00:00Z', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 20_000, status: null, cones: 2, oc: 0, scoreboard: 1 },
+          { rowid: 2, time: '2026-01-01T10:05:00Z', num: 1, univ: 'A', team: 'A', type: '스키드패드', result: 21_000, status: null, cones: 0, oc: 0, scoreboard: 1 },
+          { rowid: 3, time: '2026-01-01T10:10:00Z', num: 2, univ: 'B', team: 'B', type: '스키드패드', result: 18_000, status: null, cones: 0, oc: 0, scoreboard: 1 },
+        ],
+      }],
+      modes: [{ event_type: '스키드패드', enabled: 1 }],
+    });
+    const result = createScoreApp({
+      dbPath: dp,
+      skipSSESubscriptions: true,
+      validateUser: TRUST_JWT,
+      competitionQueries,
+    });
+    database = result.db;
+    const started = await startServer(result.app);
+    srv = started.server;
+    url = started.baseUrl;
+    cli = createClient(url);
+
+    const penalty = await cli.put('/api/score/penalty', {
+      cookie,
+      body: { year: YEAR, event_type: '스키드패드', cone_penalty: 0.3, oc_penalty: 0, start_delay: 0 },
+    });
+    assert.equal(penalty.status, 200);
+  });
+
+  after(async () => {
+    await stopServer(srv);
+    database.close();
+    cleanup(dp);
+  });
+
+  it('selects the best run from the lap average plus all cone penalties', async () => {
+    const res = await cli.get(`/api/score?year=${YEAR}`, { cookie });
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const skidpad = data.events.find((event) => event.type === '스키드패드');
+
+    // Run 1: 20,000 / 2 + 2 * 300 = 10,600 ms
+    // Run 2: 21,000 / 2 = 10,500 ms, so run 2 is the regulatory best.
+    assert.equal(skidpad.records[1].result, 21_000);
+    assert.equal(skidpad.records[1].cones, 0);
+  });
+
+  it('publishes the skidpad lap average instead of the measured lap sum', async () => {
+    const enabled = await cli.put('/api/score/publication', {
+      cookie,
+      body: { year: YEAR, enabled: true },
+    });
+    assert.equal(enabled.status, 200);
+
+    const res = await cli.get(`/api/score/public/${YEAR}`);
+    assert.equal(res.status, 200);
+    const data = await res.json();
+    const skidpad = data.events.find((event) => event.type === '스키드패드');
+
+    assert.deepEqual(skidpad.records['1'], { result: 10_500, status: null });
+    assert.deepEqual(skidpad.records['2'], { result: 9_000, status: null });
+  });
+});
+
 // ─── Record visibility filtering ──────────────────────────────────────
 
 // NOTE: record-visibility 제외 자체(숨긴 테이블을 빼는 것)는 이제 traffic

@@ -5,6 +5,7 @@ import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstr
 import { createSSEManager } from "../shared/sse.mjs";
 import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
 import { calculateEnergyScores } from "./lib/energy-score.mjs";
+import { calculateAdjustedResult } from "./lib/adjusted-result.mjs";
 
 export function createScoreApp(options = {}) {
 
@@ -411,8 +412,7 @@ function createPublicScorePayload(year, score) {
         let result = record?.result ?? null;
         const status = record?.status ?? null;
         if (status == null && result != null) {
-          result += (record.cones || 0) * (penalty.cone_penalty || 0) * 1000;
-          result += (record.oc || 0) * (penalty.oc_penalty || 0) * 1000;
+          result = calculateAdjustedResult(event.type, record, penalty);
         }
         records[num] = { result, status };
       }
@@ -631,10 +631,10 @@ async function computeScore(year) {
         }));
         const finished = runs.filter((r) => r.status == null && Number.isInteger(r.result) && r.result > 0);
         if (finished.length) {
-          // 페널티 반영 시간 기준으로 최고 기록 선택
+          // 종목 규정과 페널티를 반영한 시간 기준으로 최고 기록 선택
           const best = finished.reduce((a, b) => {
-            const aAdj = a.result + a.cones * pen.cone_penalty * 1000 + a.oc * pen.oc_penalty * 1000;
-            const bAdj = b.result + b.cones * pen.cone_penalty * 1000 + b.oc * pen.oc_penalty * 1000;
+            const aAdj = calculateAdjustedResult(eventType, a, pen);
+            const bAdj = calculateAdjustedResult(eventType, b, pen);
             return aAdj <= bAdj ? a : b;
           });
           records[num] = { result: best.result, status: null, cones: best.cones, oc: best.oc, allRuns };

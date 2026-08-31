@@ -1,3 +1,5 @@
+import { calculateAdjustedResult } from "../../../lib/adjusted-result.mjs";
+
 export const SCORE_EXPORT_RUN_LIMIT = 4;
 
 export function formatScoreResult(result, status = null) {
@@ -12,13 +14,6 @@ export function formatScoreResult(result, status = null) {
   return `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}.${millis}`;
 }
 
-function adjustedResult(record, penalty = {}) {
-  if (!record || record.status || record.result == null) return null;
-  return Number(record.result)
-    + (Number(record.cones) || 0) * (Number(penalty.cone_penalty) || 0) * 1000
-    + (Number(record.oc) || 0) * (Number(penalty.oc_penalty) || 0) * 1000;
-}
-
 export function buildEventExportHeaders(eventType, {
   runLimit = SCORE_EXPORT_RUN_LIMIT,
   recordLabel = "최고 기록",
@@ -30,15 +25,15 @@ export function buildEventExportHeaders(eventType, {
   ];
 }
 
-export function buildEventExportCells({ record, score, penalty, runLimit = SCORE_EXPORT_RUN_LIMIT }) {
-  const cells = [score ?? "", formatScoreResult(adjustedResult(record, penalty), record?.status)];
+export function buildEventExportCells({ eventType, record, score, penalty, runLimit = SCORE_EXPORT_RUN_LIMIT }) {
+  const cells = [score ?? "", formatScoreResult(calculateAdjustedResult(eventType, record, penalty), record?.status)];
   if (runLimit === 0) return cells;
 
   const runs = (record?.allRuns || []).slice(0, runLimit);
 
   for (let index = 0; index < runLimit; index++) {
     const run = runs[index];
-    cells.push(run ? formatScoreResult(adjustedResult(run, penalty), run.status) : "");
+    cells.push(run ? formatScoreResult(calculateAdjustedResult(eventType, run, penalty), run.status) : "");
   }
   return cells;
 }

@@ -65,6 +65,23 @@ describe("score sheet event export", () => {
     }), [0, "DNF", "01:01.234", "DNS", "", ""]);
   });
 
+  it("exports skidpad lap averages with all cone penalties", () => {
+    assert.deepEqual(buildEventExportCells({
+      eventType: "스키드패드",
+      record: {
+        result: 30_000,
+        status: null,
+        cones: 4,
+        oc: 0,
+        allRuns: [
+          { result: 30_000, status: null, cones: 4, oc: 0 },
+        ],
+      },
+      score: 80,
+      penalty: { cone_penalty: 0.3, oc_penalty: 0 },
+    }), [80, "00:16.200", "00:16.200", "", "", ""]);
+  });
+
   it("formats rounded millisecond results consistently with the score board", () => {
     assert.equal(formatScoreResult(62_999.6), "01:03.000");
     assert.equal(formatScoreResult(null), "-");
