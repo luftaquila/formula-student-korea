@@ -48,6 +48,7 @@ jobs:
             inspection/package-lock.json
             traffic/package-lock.json
             score/package-lock.json
+            score/web/package-lock.json
             documents/package-lock.json
             competition/package-lock.json
             course/package-lock.json
@@ -59,6 +60,7 @@ jobs:
           for dir in auth queue registration inspection traffic score documents competition course calendar email; do
             cd $dir && npm ci && cd ..
           done
+          npm --prefix score/web ci
 
       - name: Run tests
         run: |
