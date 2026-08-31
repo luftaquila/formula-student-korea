@@ -168,16 +168,6 @@ const bestRecords = computed(() => {
   return best;
 });
 
-const topRecords = computed(() => {
-  const top = {};
-  availableTypes.value.forEach((type) => {
-    const latest = latestByType.value[type];
-    const valid = recordsByType.value[type]?.filter((r) => r.status == null && r.result > 0 && r.rowid !== latest?.rowid) || [];
-    top[type] = [...valid].sort((a, b) => a.result - b.result).slice(0, 5);
-  });
-  return top;
-});
-
 function formatResult(ms, status = null) {
   if (status) return status;
   if (!Number.isFinite(ms) || ms <= 0) return "--:--";
@@ -193,6 +183,51 @@ function formatResult(ms, status = null) {
 }
 
 const displayArea = ref(null);
+const fitTextHandlers = new WeakMap();
+
+function scheduleTextFit(element) {
+  const state = fitTextHandlers.get(element);
+  if (!state) return;
+
+  cancelAnimationFrame(state.frame);
+  state.frame = requestAnimationFrame(() => {
+    if (!element.isConnected) return;
+
+    element.style.removeProperty("font-size");
+    const maximumSize = Number.parseFloat(getComputedStyle(element).fontSize);
+    let fittedSize = maximumSize;
+
+    for (let attempt = 0; attempt < 4 && element.scrollWidth > element.clientWidth; attempt += 1) {
+      const availableWidth = element.clientWidth;
+      if (availableWidth <= 0) break;
+      fittedSize *= (availableWidth - 2) / element.scrollWidth;
+      element.style.fontSize = `${fittedSize.toFixed(2)}px`;
+    }
+  });
+}
+
+const vFitText = {
+  mounted(element) {
+    const state = {
+      frame: 0,
+      resize: () => scheduleTextFit(element),
+    };
+    fitTextHandlers.set(element, state);
+    window.addEventListener("resize", state.resize);
+    scheduleTextFit(element);
+    document.fonts?.ready.then(state.resize);
+  },
+  updated(element) {
+    scheduleTextFit(element);
+  },
+  unmounted(element) {
+    const state = fitTextHandlers.get(element);
+    if (!state) return;
+    cancelAnimationFrame(state.frame);
+    window.removeEventListener("resize", state.resize);
+    fitTextHandlers.delete(element);
+  },
+};
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
@@ -320,7 +355,7 @@ onDeactivated(() => {
         </div>
       </div>
 
-      <!-- Display Area 3:4 ratio -->
+      <!-- Display Area 16:9 ratio -->
       <div class="display-wrapper">
         <div ref="displayArea" class="display-area" :data-scoreboard-theme="scoreboardTheme">
           <div v-if="!selectedFile" class="empty-state"></div>
@@ -351,71 +386,48 @@ onDeactivated(() => {
                 class="panel"
                 :style="{ '--panel-color': eventColors[type] }"
               >
-                <!-- Panel Title -->
-                <div class="panel-title">{{ EVENT_CONFIG[type].label }}</div>
-
-                <!-- Main Box -->
-                <div class="main-box">
-                  <div class="accent-bar"></div>
-                  <div class="box-content">
-                    <!-- Vehicle Info -->
-                    <div class="vehicle" v-if="latestByType[type]">
-                      <div class="vehicle-no">
-                        <span class="no-label">No.</span>
-                        <span class="no-value">{{ String(latestByType[type].num).padStart(2, "0") }}</span>
-                      </div>
-                      <div class="vehicle-team">{{ latestByType[type].univ }} {{ latestByType[type].team }}</div>
-                    </div>
-                    <div class="vehicle empty" v-else>
-                      <div class="vehicle-no">
-                        <span class="no-label">No.</span>
-                        <span class="no-value">--</span>
-                      </div>
-                      <div class="vehicle-team">-</div>
-                    </div>
-
-                    <!-- Current Time -->
-                    <div class="current-time-section">
-                      <div class="current-time-box">
-                        <div class="time-label">Current Record</div>
-                        <span class="current-time" v-if="latestByType[type]">
-                          {{ formatResult(latestByType[type].result, latestByType[type].status) }}<span v-if="!latestByType[type].status" class="unit">s</span>
-                        </span>
-                        <span class="current-time" v-else>--:--<span class="unit">s</span></span>
-                      </div>
-                    </div>
-                  </div>
+                <div class="event-heading">
+                  <span class="event-name">{{ EVENT_CONFIG[type].label }}</span>
                 </div>
 
-                <!-- Best Record (RED) -->
-                <div class="best-section">
-                  <div class="best-label">Best Record</div>
-                  <div class="best-row" v-if="bestRecords[type]">
-                    <span class="best-team">
-                      <span class="best-team-inner">
-                        <span class="best-num">{{ String(bestRecords[type].num).padStart(2, "0") }}</span>
-                        <span class="best-team-text">{{ bestRecords[type].univ }} {{ bestRecords[type].team }}</span>
-                      </span>
-                    </span>
-                    <span class="best-time">{{ formatResult(bestRecords[type].result) }}<span class="unit">s</span></span>
+                <section
+                  class="record-cell current-record"
+                  :class="{ empty: !latestByType[type] }"
+                  :data-testid="`current-record-${type}`"
+                >
+                  <div class="record-head">
+                    <span class="record-label">Current</span>
+                    <span class="entry-number">No. {{ latestByType[type] ? String(latestByType[type].num).padStart(2, "0") : "--" }}</span>
                   </div>
-                </div>
+                  <div class="record-result">
+                    <template v-if="latestByType[type]">
+                      {{ formatResult(latestByType[type].result, latestByType[type].status) }}<span v-if="!latestByType[type].status" class="unit">s</span>
+                    </template>
+                    <template v-else>--:--<span class="unit">s</span></template>
+                  </div>
+                  <div class="record-team record-team-name">
+                    <span v-fit-text class="university-name">{{ latestByType[type]?.univ || "-" }}</span>
+                    <span v-fit-text class="team-name-text">{{ latestByType[type]?.team || "-" }}</span>
+                  </div>
+                </section>
 
-                <!-- Recent Records -->
-                <div class="record-section">
-                  <div class="record-box">
-                    <div class="record-label">Top Records</div>
-                    <div class="record-list">
-                      <div v-for="record in topRecords[type]" :key="record.rowid" class="record-row">
-                        <span class="record-info">
-                          <span class="record-num">{{ String(record.num).padStart(2, "0") }}</span>
-                          <span class="record-team">{{ record.univ }} {{ record.team }}</span>
-                        </span>
-                        <span class="record-time">{{ formatResult(record.result) }}<span class="unit">s</span></span>
-                      </div>
-                    </div>
+                <section
+                  class="record-cell best-record"
+                  :class="{ empty: !bestRecords[type] }"
+                  :data-testid="`best-record-${type}`"
+                >
+                  <div class="record-head">
+                    <span class="record-label">Best</span>
+                    <span class="entry-number">No. {{ bestRecords[type] ? String(bestRecords[type].num).padStart(2, "0") : "--" }}</span>
                   </div>
-                </div>
+                  <div class="record-result">
+                    {{ bestRecords[type] ? formatResult(bestRecords[type].result) : "--:--" }}<span class="unit">s</span>
+                  </div>
+                  <div class="record-team record-team-name">
+                    <span v-fit-text class="university-name">{{ bestRecords[type]?.univ || "-" }}</span>
+                    <span v-fit-text class="team-name-text">{{ bestRecords[type]?.team || "-" }}</span>
+                  </div>
+                </section>
               </div>
             </div>
           </div>
@@ -449,7 +461,7 @@ onDeactivated(() => {
   min-height: 0;
 }
 
-/* 4:3 aspect ratio (landscape) */
+/* Competition display target: 16:9 landscape. */
 .display-area {
   --scoreboard-bg: #000;
   --scoreboard-text: #fff;
@@ -458,7 +470,7 @@ onDeactivated(() => {
   --scoreboard-live: #ef4444;
   --scoreboard-temp: #ff6b6b;
   width: 100%;
-  aspect-ratio: 4 / 3;
+  aspect-ratio: 16 / 9;
   background: var(--scoreboard-bg);
   border-radius: 12px;
   overflow: hidden;
@@ -502,48 +514,48 @@ onDeactivated(() => {
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: 2rem 2.5rem;
+  padding: clamp(1.25rem, 2vw, 2.5rem);
   background: var(--scoreboard-bg);
   color: var(--scoreboard-text);
   overflow: hidden;
 }
 
 :global(.scoreboard-fullscreen) .scoreboard {
-  padding: 3rem 5rem;
+  padding: clamp(2rem, 2.6vw, 3.5rem);
 }
 
 /* Header — override the app shell's globally dark .header surface. */
 .scoreboard > .header {
   display: flex;
   align-items: center;
-  gap: 2rem;
-  margin-bottom: 1.5rem;
+  gap: clamp(1rem, 1.6vw, 2rem);
+  margin-bottom: clamp(0.75rem, 1.4vh, 1.5rem);
   padding: 0;
   background: transparent;
   border: 0;
 }
 
 .title {
-  font-size: 2.5rem;
+  font-size: clamp(2rem, 2.6vw, 3.75rem);
   font-weight: 700;
   color: var(--scoreboard-text);
   margin: 0;
 }
 
 :global(.scoreboard-fullscreen) .title {
-  font-size: 4rem;
+  font-size: clamp(3rem, 3.2vw, 4.25rem);
 }
 
 .live {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  font-size: 1.4rem;
+  font-size: clamp(1.1rem, 1.4vw, 1.8rem);
   font-weight: 600;
 }
 
 :global(.scoreboard-fullscreen) .live {
-  font-size: 2rem;
+  font-size: clamp(1.5rem, 1.7vw, 2.25rem);
 }
 
 .live-dot {
@@ -563,12 +575,12 @@ onDeactivated(() => {
 }
 
 .temp {
-  font-size: 1.4rem;
+  font-size: clamp(1.1rem, 1.4vw, 1.8rem);
   margin-left: auto;
 }
 
 :global(.scoreboard-fullscreen) .temp {
-  font-size: 2rem;
+  font-size: clamp(1.5rem, 1.7vw, 2.25rem);
 }
 
 .temp-val {
@@ -580,356 +592,164 @@ onDeactivated(() => {
 .panels {
   flex: 1;
   display: grid;
-  gap: 2rem;
+  gap: clamp(1.25rem, 2.7vh, 2rem);
   min-height: 0;
 }
 
-.panels.cols-1 {
-  grid-template-columns: 1fr;
-}
-
-.panels.cols-2 {
-  grid-template-columns: repeat(2, 1fr);
-}
-
-.panels.cols-3 {
-  grid-template-columns: repeat(3, 1fr);
-}
-
-.panels.cols-4 {
-  grid-template-columns: repeat(4, 1fr);
-}
+.panels.cols-1 { grid-template-rows: minmax(0, 1fr); }
+.panels.cols-2 { grid-template-rows: repeat(2, minmax(0, 1fr)); }
+.panels.cols-3 { grid-template-rows: repeat(3, minmax(0, 1fr)); }
+.panels.cols-4 { grid-template-rows: repeat(4, minmax(0, 1fr)); }
 
 .panel {
   --panel-fg: var(--panel-color);
-  display: flex;
-  flex-direction: column;
-  gap: 0.8rem;
+  display: grid;
+  grid-template-columns: clamp(13.5rem, 17vw, 20rem) repeat(2, minmax(0, 1fr));
+  min-width: 0;
+  min-height: 0;
+  background: color-mix(in srgb, var(--panel-color) 4%, var(--scoreboard-bg));
+  border: 1px solid color-mix(in srgb, var(--panel-color) 35%, transparent);
+  border-radius: clamp(10px, 0.9vw, 18px);
+  overflow: hidden;
 }
 
 .display-area[data-scoreboard-theme="light"] .panel {
   --panel-fg: color-mix(in srgb, var(--panel-color) 68%, #000);
+  background: color-mix(in srgb, var(--panel-color) 5%, var(--scoreboard-bg));
 }
 
-/* Panel Title */
-.panel-title {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: var(--panel-fg);
-  letter-spacing: 0.08em;
-}
-
-:global(.scoreboard-fullscreen) .panel-title {
-  font-size: 2rem;
-}
-
-/* Main Box */
-.main-box {
-  border: 4px solid var(--panel-color);
-  border-radius: 12px;
-  display: flex;
-  overflow: hidden;
-}
-
-:global(.scoreboard-fullscreen) .main-box {
-  border-width: 6px;
-}
-
-.accent-bar {
-  width: 14px;
-  background: var(--panel-color);
-  flex-shrink: 0;
-}
-
-:global(.scoreboard-fullscreen) .accent-bar {
-  width: 20px;
-}
-
-.box-content {
-  flex: 1;
-  padding: 1rem 1.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.8rem;
-}
-
-:global(.scoreboard-fullscreen) .box-content {
-  padding: 1.5rem 2rem;
-  gap: 1.2rem;
-}
-
-/* Vehicle */
-.vehicle {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-
-.vehicle.empty {
-  opacity: 0.5;
-}
-
-.vehicle-no {
-  display: flex;
-  align-items: baseline;
-  gap: 0.3rem;
-}
-
-.no-label {
-  font-size: 1.8rem;
-  font-weight: 700;
-  color: var(--panel-fg);
-  font-style: italic;
-}
-
-:global(.scoreboard-fullscreen) .no-label {
-  font-size: 2.5rem;
-}
-
-.no-value {
-  font-size: 2.8rem;
-  font-weight: 800;
-  color: var(--scoreboard-text);
-  font-style: italic;
-}
-
-:global(.scoreboard-fullscreen) .no-value {
-  font-size: 4rem;
-}
-
-.vehicle-team {
-  font-size: 2.2rem;
-  color: var(--scoreboard-text);
-  font-weight: 600;
-  line-height: 1.6;
-  height: 3.2em;
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-}
-
-:global(.scoreboard-fullscreen) .vehicle-team {
-  font-size: 3.5rem;
-}
-
-/* Current Time */
-.current-time-section {
-  display: flex;
-  flex-direction: column;
-}
-
-.current-time-box {
-  border: 4px solid var(--panel-color);
-  border-radius: 14px;
-  padding: 0.3rem 1rem;
+.event-heading {
   display: flex;
   align-items: center;
   justify-content: center;
-  position: relative;
+  text-align: center;
+  padding: clamp(0.5rem, 1vw, 1.25rem);
+  background: color-mix(in srgb, var(--panel-color) 13%, var(--scoreboard-bg));
+  border-left: clamp(7px, 0.6vw, 12px) solid var(--panel-color);
 }
 
-:global(.scoreboard-fullscreen) .current-time-box {
-  border-width: 6px;
-  padding: 0.5rem 1.5rem;
-}
-
-.time-label {
-  position: absolute;
-  top: -2px;
-  left: 1rem;
-  font-size: 1.3rem;
-  color: var(--scoreboard-text);
-  font-weight: 500;
-  background: var(--scoreboard-bg);
-  padding: 0 0.5rem;
-  transform: translateY(-50%);
-}
-
-:global(.scoreboard-fullscreen) .time-label {
-  font-size: 1.8rem;
-  top: -3px;
-  left: 1.5rem;
-}
-
-.current-time {
-  font-size: 2.8rem;
+.event-name {
+  font-size: clamp(1.4rem, 1.75vw, 2.3rem);
+  line-height: 1;
   font-weight: 800;
   color: var(--panel-fg);
-  font-style: italic;
+  letter-spacing: 0.025em;
+  white-space: nowrap;
 }
 
-:global(.scoreboard-fullscreen) .current-time {
-  font-size: 4.5rem;
-}
-
-.unit {
-  font-size: 0.55em;
-  margin-left: 0.08em;
-}
-
-/* Best Record - RED */
-.best-section {
-  margin-top: 0.5rem;
-}
-
-.best-label {
-  font-size: 1.5rem;
-  color: var(--scoreboard-best);
-  font-style: italic;
-  font-weight: 600;
-  margin-bottom: 0.3rem;
-  line-height: 1;
-}
-
-:global(.scoreboard-fullscreen) .best-label {
-  font-size: 2.2rem;
-}
-
-.best-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.best-team {
-  font-size: 1.8rem;
-  line-height: 1.6;
-  height: 3.2em;
-  display: flex;
-  align-items: center;
-  overflow: hidden;
-  flex: 1;
-  min-width: 0;
-}
-
-:global(.scoreboard-fullscreen) .best-team {
-  font-size: 2.5rem;
-}
-
-.best-team-inner {
-  display: flex;
-  align-items: flex-start;
-  color: var(--scoreboard-text);
-  font-weight: 500;
-}
-
-.best-team-text {
-  flex: 1;
-  min-width: 0;
-}
-
-.best-num {
-  color: var(--scoreboard-best);
-  font-weight: 700;
-  margin-right: 0.6rem;
-}
-
-.best-time {
-  font-size: 2.5rem;
-  font-weight: 800;
-  line-height: 1.5;
-  color: var(--scoreboard-best);
-}
-
-:global(.scoreboard-fullscreen) .best-time {
-  font-size: 3.5rem;
-}
-
-/* Recent Records */
-.record-section {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
+.record-cell {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
-  margin-top: 0.8rem;
+  min-width: 0;
+  gap: clamp(0.15rem, 0.45vh, 0.45rem);
+  padding: clamp(0.35rem, 1vh, 1rem) clamp(0.65rem, 1.2vw, 1.5rem);
 }
 
-:global(.scoreboard-fullscreen) .record-section {
-  margin-top: 1.2rem;
+.record-cell + .record-cell {
+  border-left: 1px solid color-mix(in srgb, var(--scoreboard-text) 18%, transparent);
 }
 
-.record-box {
-  border: 3px solid var(--panel-color);
-  border-radius: 12px;
-  padding: 1.8rem 1rem 1.2rem;
-  flex: 1;
-  position: relative;
+.best-record {
+  background: color-mix(in srgb, var(--scoreboard-best) 3%, transparent);
+}
+
+.record-head {
   display: flex;
-  flex-direction: column;
-}
-
-:global(.scoreboard-fullscreen) .record-box {
-  border-width: 4px;
-  padding: 2.5rem 1.5rem 1.8rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
 .record-label {
-  position: absolute;
-  top: -1.5px;
-  left: 1rem;
-  font-size: 1.3rem;
-  color: var(--scoreboard-text);
-  font-style: italic;
-  font-weight: 500;
-  background: var(--scoreboard-bg);
-  padding: 0 0.5rem;
-  transform: translateY(-50%);
-}
-
-:global(.scoreboard-fullscreen) .record-label {
-  font-size: 1.8rem;
-  top: -2px;
-  left: 1.5rem;
-}
-
-.record-list {
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  gap: 0.8rem;
-  flex: 1;
-}
-
-:global(.scoreboard-fullscreen) .record-list {
-  gap: 1.2rem;
-}
-
-.record-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-}
-
-.record-info {
-  display: flex;
-  align-items: baseline;
-  gap: 0.5rem;
-  font-size: 1.5rem;
-}
-
-:global(.scoreboard-fullscreen) .record-info {
-  font-size: 2.2rem;
-}
-
-.record-num {
+  font-size: clamp(2.2rem, 3.1vw, 4rem);
+  line-height: 0.95;
   color: var(--panel-fg);
-  font-weight: 700;
+  font-weight: 900;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.best-record .record-label {
+  color: var(--scoreboard-best);
+}
+
+.record-result {
+  align-self: center;
+  text-align: center;
+  font-size: clamp(4rem, 7vw, 9rem);
+  line-height: 0.95;
+  font-weight: 900;
+  color: var(--panel-fg);
+  font-style: italic;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
+}
+
+.best-record .record-result {
+  color: var(--scoreboard-best);
+}
+
+.entry-number {
+  flex: 0 0 auto;
+  padding: 0;
+  background: transparent;
+  color: var(--panel-fg);
+  font-size: clamp(2.3rem, 3.1vw, 4rem);
+  line-height: 1;
+  font-weight: 900;
+  font-style: italic;
+  white-space: nowrap;
+}
+
+.best-record .entry-number {
+  background: transparent;
+  color: var(--scoreboard-best);
 }
 
 .record-team {
+  min-width: 0;
   color: var(--scoreboard-text);
-  font-weight: 500;
+  font-size: clamp(2.4rem, 3.25vw, 4.2rem);
+  line-height: 1;
+  font-weight: 850;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(0.3rem, 0.7vh, 0.6rem);
 }
 
-.record-time {
-  font-size: 1.5rem;
-  font-weight: 700;
-  color: var(--panel-fg);
-  font-style: italic;
+.university-name,
+.team-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-:global(.scoreboard-fullscreen) .record-time {
-  font-size: 2.2rem;
+.university-name {
+  width: 100%;
+  text-align: center;
+  font-size: 0.85em;
+  font-weight: 900;
+}
+
+.team-name-text {
+  width: 100%;
+  text-align: center;
+  font-size: 0.85em;
+  font-weight: 750;
+}
+
+.record-cell.empty .entry-number,
+.record-cell.empty .record-team {
+  opacity: 0.45;
+}
+
+.unit {
+  font-size: 0.4em;
+  margin-left: 0.1em;
 }
 
 /* Controls */
@@ -1097,22 +917,29 @@ onDeactivated(() => {
     border-left: 0;
   }
 
-  .panels.cols-4,
-  .panels.cols-3,
-  .panels.cols-2 {
-    grid-template-columns: 1fr;
-  }
-
   .scoreboard {
     padding: 1.5rem;
+  }
+
+  .display-area {
+    aspect-ratio: auto;
+    min-height: 900px;
   }
 
   .title {
     font-size: 1.8rem;
   }
 
-  .current-time {
-    font-size: 3rem;
+  .panel {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .event-heading {
+    grid-column: 1 / -1;
+  }
+
+  .record-result {
+    font-size: 3.5rem;
   }
 }
 </style>
