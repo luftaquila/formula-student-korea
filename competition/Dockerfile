@@ -17,6 +17,7 @@ RUN set -e; for service in entry queue registration inspection traffic score doc
 COPY shared shared/
 COPY inspection/lib inspection/lib/
 COPY traffic/lib traffic/lib/
+COPY score/lib score/lib/
 COPY entry/web entry/web/
 COPY queue/web queue/web/
 COPY registration/web registration/web/
