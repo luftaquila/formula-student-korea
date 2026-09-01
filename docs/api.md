@@ -286,7 +286,7 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 | GET | `/sheet/summary` | official | `?year=` | `{ categories: [{ id, name, excluded_types }], teams }` | All teams' category-level results and inspectors |
 | GET | `/sheet/bulk-answers` | official | `?year=&item_ids=1,2,3` | `{ team_num: { item_id: value } }` | Bulk answer values for specific items |
 | GET | `/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data, including stored values and update metadata |
-| PUT | `/sheet/answer` | official | `{ year, team_num, item_id, value, expectedValue }` | `{ value, updated_at, updated_by }` | Save only if the stored answer still equals the caller's last-read value |
+| PUT | `/sheet/answer` | official | `{ year, team_num, item_id, value, expectedValue }` | `{ value, updated_at, updated_by }` | Save only if the stored answer still equals the caller's last-read value; `passfail` items accept `PASS`, `FAIL`, `N/A`, or an empty value |
 | PUT | `/sheet/memo` | official | `{ year, team_num, item_id, memo, expectedMemo }` | `{ memo, updated_at, updated_by }` | Save only if the stored memo still equals the caller's last-read memo |
 | PUT | `/sheet/category-result` | official | `{ year, team_num, category_id, result }` | 200 | Upsert category PASS/FAIL (broadcasts SSE) |
 | PUT | `/sheet/inspector` | official | `{ year, team_num, category_id, inspector }` | 200 | Upsert inspector name (broadcasts SSE) |

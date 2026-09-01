@@ -871,8 +871,8 @@ app.put("/api/sheet/answer", (req, res) => {
   });
   if (!templateItem) return;
   const newValue = value ?? "";
-  if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL"].includes(newValue)) {
-    return res.status(400).send("PASS 또는 FAIL만 입력할 수 있습니다.");
+  if (templateItem.answer_type === "passfail" && !["", "PASS", "FAIL", "N/A"].includes(newValue)) {
+    return res.status(400).send("PASS, FAIL 또는 N/A만 입력할 수 있습니다.");
   }
   if (templateItem.answer_type === "counter" && newValue !== "" && !/^(0|[1-9]\d*)$/.test(String(newValue))) {
     return res.status(400).send("증감 숫자는 0 이상의 정수만 입력할 수 있습니다.");

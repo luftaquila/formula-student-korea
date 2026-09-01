@@ -145,6 +145,8 @@ test.describe("Inspection template management", () => {
     // Verify category data is rendered
     await expect(page.locator("body")).toContainText("전기 검차", { timeout: 15000 });
     await expect(page.locator("body")).toContainText("배터리", { timeout: 15000 });
+    const naHeaders = page.locator(".sheet-table > thead > tr > th").filter({ hasText: /^N\/A$/ });
+    await expect(naHeaders).toHaveCount(2, { timeout: 15000 });
   });
 
   test("exports template as JSON", async ({ page }) => {

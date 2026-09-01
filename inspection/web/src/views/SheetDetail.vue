@@ -402,12 +402,11 @@ import {
   grpNum,
   itemNum,
   getChecktableConfig,
-  hasCheckedChecktableCell,
   nextCounterValue,
   normalizeCounterInput,
   normalizeMemo,
   formatStopwatchElapsed,
-  isResponseItem,
+  buildInspectionStatusMap,
 } from "../utils/sheet-helpers";
 
 // 스톱워치는 검차 편의를 위한 로컬 도구이며 답변으로 저장하지 않는다.
@@ -489,98 +488,64 @@ function inline(t) {
   return t.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
 }
 
-// ---- Unanswered items ----
-const missingOpen = ref(false);
+// ---- Item status map ----
+const outlineOpen = ref(false);
+const inspectionStatusMap = computed(() => buildInspectionStatusMap(
+  currentCategory.value,
+  sheetData.value.answers,
+));
 
-const unansweredItems = computed(() => {
-  const cat = currentCategory.value;
-  if (!cat) return [];
-  const result = getCategoryResult(cat.id);
-  if (result !== "PASS") return [];
-  const items = [];
-  for (const [si, sub] of (cat.subcategories || []).entries()) {
-    for (const [gi, grp] of (sub.groups || []).entries()) {
-      for (const [ii, item] of (grp.items || []).entries()) {
-        if (!isResponseItem(item)) continue;
-        const itemNumber = `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`;
-        if (item.answer_type === "checktable") {
-          const val = getChecktableValue(item.id);
-          if (!hasCheckedChecktableCell(item, val)) {
-            items.push({ id: item.id, num: itemNumber, name: item.name, sub: sub.name, grp: grp.name });
-          }
-        } else if (!getAnswer(item.id)) {
-          items.push({ id: item.id, num: itemNumber, name: item.name, sub: sub.name, grp: grp.name });
-        }
-      }
-    }
-  }
-  return items;
-});
+const statusLegend = computed(() => [
+  { state: "pass", label: "PASS", count: inspectionStatusMap.value.counts.pass },
+  { state: "fail", label: "FAIL", count: inspectionStatusMap.value.counts.fail },
+  { state: "na", label: "N/A", count: inspectionStatusMap.value.counts.na },
+  { state: "answered", label: "입력", count: inspectionStatusMap.value.counts.answered },
+  { state: "unanswered", label: "미입력", count: inspectionStatusMap.value.counts.unanswered },
+]);
 
-// ---- Failed items ----
+function statusLabel(state) {
+  return statusLegend.value.find(entry => entry.state === state)?.label || state;
+}
+
+function statusItemLabel(sub, group, item) {
+  return `${sub.number}-${group.number} ${item.number} ${item.name}: ${statusLabel(item.state)}`;
+}
+
+function statusItems(state) {
+  return inspectionStatusMap.value.subcategories.flatMap(sub =>
+    sub.groups.flatMap(group => group.items
+      .filter(item => item.state === state)
+      .map(item => ({
+        id: item.id,
+        num: `${sub.number}-${group.number} ${item.number}`,
+        name: item.name,
+        sub: sub.name,
+        group: group.name,
+      }))),
+  );
+}
+
 const failedOpen = ref(false);
-
-const failedItems = computed(() => {
-  const cat = currentCategory.value;
-  if (!cat) return [];
-  const items = [];
-  for (const [si, sub] of (cat.subcategories || []).entries()) {
-    for (const [gi, grp] of (sub.groups || []).entries()) {
-      for (const [ii, item] of (grp.items || []).entries()) {
-        if (item.answer_type === "passfail" && getAnswer(item.id) === "FAIL") {
-          items.push({ id: item.id, num: `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`, name: item.name, sub: sub.name, grp: grp.name });
-        }
-      }
-    }
-  }
-  return items;
-});
-
-const inspectionProgress = computed(() => {
-  const cat = currentCategory.value;
-  let completed = 0;
-  let total = 0;
-  if (cat) {
-    for (const sub of cat.subcategories || []) {
-      for (const grp of sub.groups || []) {
-        for (const item of grp.items || []) {
-          if (!isResponseItem(item)) continue;
-          if (item.answer_type === "checktable") {
-            const value = getChecktableValue(item.id);
-            total += 1;
-            if (hasCheckedChecktableCell(item, value)) completed += 1;
-          } else {
-            total += 1;
-            if (getAnswer(item.id)) completed += 1;
-          }
-        }
-      }
-    }
-  }
-  return {
-    completed,
-    total,
-    percent: total ? Math.round((completed / total) * 100) : 0,
-  };
-});
+const missingOpen = ref(false);
+const failedItems = computed(() => statusItems("fail"));
+const unansweredItems = computed(() => statusItems("unanswered"));
 
 const memoOpen = ref(false);
 const memoItems = computed(() => {
+  const cat = currentCategory.value;
+  if (!cat) return [];
   const items = [];
-  for (const [ci, cat] of visibleCategories.value.entries()) {
-    for (const [si, sub] of (cat.subcategories || []).entries()) {
-      for (const [gi, grp] of (sub.groups || []).entries()) {
-        for (const [ii, item] of (grp.items || []).entries()) {
-          const memo = normalizeMemo(getMemo(item.id));
-          if (!memo) continue;
-          items.push({
-            id: item.id,
-            categoryIndex: ci,
-            path: `${catNumById.value[cat.id]}. ${cat.name} › ${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`,
-            name: item.name,
-            memo,
-          });
-        }
+  for (const [si, sub] of (cat.subcategories || []).entries()) {
+    for (const [gi, grp] of (sub.groups || []).entries()) {
+      for (const [ii, item] of (grp.items || []).entries()) {
+        const memo = normalizeMemo(getMemo(item.id));
+        if (!memo) continue;
+        items.push({
+          id: item.id,
+          path: `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)} · ${sub.name} › ${grp.name}`,
+          name: item.name,
+          memo,
+        });
       }
     }
   }
@@ -608,7 +573,7 @@ function scrollBelowProgress(element) {
 async function scrollToMemoItem(item) {
   const shouldWait = memoOpen.value;
   memoOpen.value = false;
-  activeTab.value = item.categoryIndex;
+  outlineOpen.value = false;
   await nextTick();
   await waitForSummaryCollapse(shouldWait);
   await scrollToItem(item.id);
@@ -622,11 +587,10 @@ function formatUpdatedAt(value) {
 }
 
 async function scrollToItem(itemId) {
-  const shouldWait = missingOpen.value || failedOpen.value;
-  missingOpen.value = false;
+  outlineOpen.value = false;
   failedOpen.value = false;
+  missingOpen.value = false;
   await nextTick();
-  await waitForSummaryCollapse(shouldWait);
   const el = document.getElementById(`item-${itemId}`);
   if (el) scrollBelowProgress(el);
 }
@@ -654,48 +618,23 @@ function onChecktableToggle(itemId, rowIdx, colIdx) {
   answerQueue.enqueue(itemId, jsonStr, { expected, immediate: true });
 }
 
-// ---- Quick navigation ----
-const navOpen = ref(false);
-const storedNavLevel = sessionStorage.getItem("inspectionQuickNavLevel");
-const navLevel = ref(storedNavLevel === "subcategory" ? "subcategory" : "group");
-const fabContainerRef = ref(null);
-
-watch(navLevel, (value) => {
-  sessionStorage.setItem("inspectionQuickNavLevel", value);
-});
-
-const quickNavGroups = computed(() => (
-  (currentCategory.value?.subcategories || []).flatMap((sub, si) =>
-    (sub.groups || []).map((group, gi) => ({
-      id: group.id,
-      label: `${subNum(si)}-${grpNum(gi)} ${group.name}`,
-    })),
-  )
-));
-
-function toggleNavLevel() {
-  navLevel.value = navLevel.value === "subcategory" ? "group" : "subcategory";
-}
-
-function scrollToSub(subId) {
-  navOpen.value = false;
+// ---- Outline navigation ----
+async function scrollToSub(subId) {
+  outlineOpen.value = false;
+  await nextTick();
   const el = document.getElementById(`sub-${subId}`);
   if (el) scrollBelowProgress(el);
 }
 
-function scrollToGroup(groupId) {
-  navOpen.value = false;
+async function scrollToGroup(groupId) {
+  outlineOpen.value = false;
+  await nextTick();
   const el = document.getElementById(`group-${groupId}`);
   if (el) scrollBelowProgress(el);
 }
 
-function closeNavOnOutsidePointer(event) {
-  const container = fabContainerRef.value;
-  if (navOpen.value && container && !container.contains(event.target)) navOpen.value = false;
-}
-
 function scrollToTop() {
-  navOpen.value = false;
+  outlineOpen.value = false;
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -714,12 +653,10 @@ function onScroll() {
 
 onMounted(() => {
   window.addEventListener("scroll", onScroll);
-  document.addEventListener("pointerdown", closeNavOnOutsidePointer);
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
-  document.removeEventListener("pointerdown", closeNavOnOutsidePointer);
   if (stopwatchInterval !== null) window.clearInterval(stopwatchInterval);
   for (const timer of saveStateTimers.values()) clearTimeout(timer);
   saveStateTimers.clear();
@@ -729,6 +666,10 @@ onBeforeUnmount(() => {
 });
 
 watch(activeTab, () => {
+  outlineOpen.value = false;
+  failedOpen.value = false;
+  missingOpen.value = false;
+  memoOpen.value = false;
   sessionStorage.setItem("inspectionScrollY", 0);
   window.scrollTo(0, 0);
 });
@@ -881,71 +822,146 @@ watch(reconnected, async () => {
         </button>
       </div>
 
-      <!-- Current category progress -->
-      <div
-        v-if="inspectionProgress.total"
+      <!-- Current category status and navigation -->
+      <section
+        v-if="inspectionStatusMap.total"
         class="inspection-progress"
-        role="progressbar"
-        :aria-valuenow="inspectionProgress.completed"
-        aria-valuemin="0"
-        :aria-valuemax="inspectionProgress.total"
+        aria-label="검차 문항 현황과 빠른 이동"
       >
-        <div class="inspection-progress-label">
-          <span>진행률</span>
-          <span>{{ inspectionProgress.completed }}/{{ inspectionProgress.total }} · {{ inspectionProgress.percent }}%</span>
+        <div class="inspection-overview-header">
+          <div
+            class="inspection-progress-label"
+            role="progressbar"
+            :aria-valuenow="inspectionStatusMap.completed"
+            aria-valuemin="0"
+            :aria-valuemax="inspectionStatusMap.total"
+            :aria-label="`검차 진행률 ${inspectionStatusMap.completed}/${inspectionStatusMap.total}`"
+          >
+            <strong>진행률</strong>
+            <span>{{ inspectionStatusMap.completed }}/{{ inspectionStatusMap.total }} · {{ inspectionStatusMap.percent }}%</span>
+          </div>
+          <div class="inspection-overview-actions">
+            <button
+              type="button"
+              class="inspection-outline-toggle"
+              :aria-expanded="outlineOpen"
+              @click="outlineOpen = !outlineOpen"
+            >소분류 목차</button>
+            <button type="button" class="inspection-top-button" @click="scrollToTop">맨 위로</button>
+          </div>
         </div>
-        <div class="inspection-progress-track">
-          <div class="inspection-progress-fill" :style="{ width: `${inspectionProgress.percent}%` }"></div>
-        </div>
-      </div>
 
-      <!-- Failed items warning -->
-      <div v-if="failedItems.length" class="failed-banner">
-        <button class="failed-toggle" @click="failedOpen = !failedOpen">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <circle cx="12" cy="12" r="10" />
-            <line x1="15" y1="9" x2="9" y2="15" />
-            <line x1="9" y1="9" x2="15" y2="15" />
-          </svg>
+        <div class="inspection-status-legend" aria-label="문항 상태 범례">
+          <span v-for="entry in statusLegend" :key="entry.state" class="status-legend-item">
+            <span class="status-swatch" :class="`status-${entry.state}`"></span>
+            {{ entry.label }} {{ entry.count }}
+          </span>
+        </div>
+
+        <div class="inspection-status-map" aria-label="문항 상태 맵">
+          <template v-for="sub in inspectionStatusMap.subcategories" :key="sub.id">
+            <div
+              v-for="group in sub.groups"
+              v-show="group.items.length"
+              :key="group.id"
+              class="status-map-group"
+              role="group"
+              :aria-label="`${sub.number}-${group.number} ${sub.name}, ${group.name}`"
+            >
+              <button
+                v-for="item in group.items"
+                :key="item.id"
+                type="button"
+                class="status-map-item"
+                :class="`status-${item.state}`"
+                :aria-label="statusItemLabel(sub, group, item)"
+                :title="statusItemLabel(sub, group, item)"
+                @click="scrollToItem(item.id)"
+              ></button>
+            </div>
+          </template>
+        </div>
+
+        <div v-if="outlineOpen" class="inspection-outline">
+          <div class="inspection-outline-heading">소분류와 그룹을 눌러 이동</div>
+          <div class="inspection-outline-list">
+            <div
+              v-for="(sub, si) in currentCategory.subcategories"
+              :key="sub.id"
+              class="inspection-outline-subcategory"
+            >
+              <button type="button" class="outline-subcategory-link" @click="scrollToSub(sub.id)">
+                <span>{{ subNum(si) }}</span>
+                <strong>{{ sub.name }}</strong>
+              </button>
+              <div class="inspection-outline-groups">
+                <button
+                  v-for="(group, gi) in sub.groups"
+                  :key="group.id"
+                  type="button"
+                  @click="scrollToGroup(group.id)"
+                >{{ subNum(si) }}-{{ grpNum(gi) }} {{ group.name }}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Failed items are shown as soon as an item is marked FAIL. -->
+      <div v-if="failedItems.length" class="status-summary failed-summary">
+        <button
+          type="button"
+          class="status-summary-toggle failed-summary-toggle"
+          :aria-expanded="failedOpen"
+          @click="failedOpen = !failedOpen"
+        >
           FAIL 항목 {{ failedItems.length }}개
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': failedOpen }">
             <path d="m6 9 6 6 6-6" />
           </svg>
         </button>
-        <Transition name="failed-list">
-          <div v-if="failedOpen" class="failed-list">
-            <button v-for="item in failedItems" :key="item.id" class="failed-item" @click="scrollToItem(item.id)">
-              <span class="failed-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
-              <span class="failed-item-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
-            </button>
-          </div>
-        </Transition>
+        <div v-if="failedOpen" class="status-summary-list failed-summary-list">
+          <button
+            v-for="item in failedItems"
+            :key="item.id"
+            type="button"
+            class="status-summary-item failed-summary-item"
+            @click="scrollToItem(item.id)"
+          >
+            <span class="memo-summary-path">{{ item.sub }} &rsaquo; {{ item.group }}</span>
+            <span class="memo-summary-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
+          </button>
+        </div>
       </div>
 
-      <!-- Unanswered warning -->
-      <div v-if="unansweredItems.length" class="missing-banner">
-        <button class="missing-toggle" @click="missingOpen = !missingOpen">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
-            <line x1="12" y1="9" x2="12" y2="13" />
-            <circle cx="12" cy="17" r="0.5" fill="currentColor" />
-          </svg>
+      <!-- Unanswered items are shown regardless of the category PASS/FAIL result. -->
+      <div v-if="unansweredItems.length" class="status-summary missing-summary">
+        <button
+          type="button"
+          class="status-summary-toggle missing-summary-toggle"
+          :aria-expanded="missingOpen"
+          @click="missingOpen = !missingOpen"
+        >
           미입력 항목 {{ unansweredItems.length }}개
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': missingOpen }">
             <path d="m6 9 6 6 6-6" />
           </svg>
         </button>
-        <Transition name="missing-list">
-          <div v-if="missingOpen" class="missing-list">
-            <button v-for="item in unansweredItems" :key="item.id" class="missing-item" @click="scrollToItem(item.id)">
-              <span class="missing-item-path">{{ item.sub }} &rsaquo; {{ item.grp }}</span>
-              <span class="missing-item-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
-            </button>
-          </div>
-        </Transition>
+        <div v-if="missingOpen" class="status-summary-list missing-summary-list">
+          <button
+            v-for="item in unansweredItems"
+            :key="item.id"
+            type="button"
+            class="status-summary-item missing-summary-item"
+            @click="scrollToItem(item.id)"
+          >
+            <span class="memo-summary-path">{{ item.sub }} &rsaquo; {{ item.group }}</span>
+            <span class="memo-summary-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
+          </button>
+        </div>
       </div>
 
-      <!-- Memos in this team sheet -->
+      <!-- Memos in the current category -->
       <div v-if="memoItems.length" class="memo-summary">
         <button class="memo-summary-toggle" @click="memoOpen = !memoOpen">
           메모 {{ memoItems.length }}개
@@ -1019,7 +1035,7 @@ watch(reconnected, async () => {
                     </div>
                   </div>
                   <div class="item-controls" :class="{ 'has-checktable': item.answer_type === 'checktable' }">
-                  <!-- PASS/FAIL toggle -->
+                  <!-- PASS/FAIL/N/A toggle -->
                   <div v-if="item.answer_type === 'passfail'" class="pf-toggle">
                     <button
                       class="btn btn-sm"
@@ -1033,6 +1049,12 @@ watch(reconnected, async () => {
                       :disabled="isReadOnly"
                       @click="onPassFailToggle(item.id, 'FAIL')"
                     >F</button>
+                    <button
+                      class="btn btn-sm"
+                      :class="getAnswer(item.id) === 'N/A' ? 'btn-na' : 'btn-ghost'"
+                      :disabled="isReadOnly"
+                      @click="onPassFailToggle(item.id, 'N/A')"
+                    >N/A</button>
                   </div>
                   <!-- Number input -->
                   <div v-else-if="item.answer_type === 'number' && item.calculation?.mode === 'computed'" class="calculated-control">
@@ -1237,46 +1259,6 @@ watch(reconnected, async () => {
       </div>
     </template>
 
-    <!-- Quick nav FAB -->
-    <div v-if="currentCategory?.subcategories?.length" ref="fabContainerRef" class="fab-container">
-      <Transition name="nav-menu">
-        <div v-if="navOpen" class="nav-menu">
-          <div class="nav-menu-actions">
-            <button class="nav-menu-item nav-menu-level-toggle" @click="toggleNavLevel">
-              {{ navLevel === "subcategory" ? "소분류 보기" : "그룹 보기" }}
-            </button>
-            <button class="nav-menu-item nav-menu-top" @click="scrollToTop">맨 위로</button>
-          </div>
-          <template v-if="navLevel === 'subcategory'">
-            <button
-              v-for="(sub, si) in currentCategory.subcategories"
-              :key="sub.id"
-              class="nav-menu-item"
-              @click="scrollToSub(sub.id)"
-            >{{ subNum(si) }} - {{ sub.name }}</button>
-          </template>
-          <template v-else>
-            <button
-              v-for="group in quickNavGroups"
-              :key="group.id"
-              class="nav-menu-item"
-              @click="scrollToGroup(group.id)"
-            >{{ group.label }}</button>
-          </template>
-        </div>
-      </Transition>
-      <button
-        class="fab"
-        :class="{ active: navOpen }"
-        :aria-expanded="navOpen"
-        aria-label="빠른 이동 메뉴"
-        @click="navOpen = !navOpen"
-      >
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="22" height="22">
-          <path d="M4 6h16M4 12h16M4 18h16" />
-        </svg>
-      </button>
-    </div>
   </div>
 </template>
 
@@ -1588,6 +1570,15 @@ watch(reconnected, async () => {
   min-height: 44px;
 }
 
+.pf-toggle .btn-na {
+  background: #64748b;
+  color: white;
+}
+
+.pf-toggle .btn-na:hover:not(:disabled) {
+  background: #475569;
+}
+
 .inline-input {
   width: auto;
   min-height: 44px;
@@ -1869,47 +1860,256 @@ watch(reconnected, async () => {
 .inspection-progress {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem;
-  padding: 0.5rem 0.125rem;
+  gap: 0.25rem;
+  padding: 0.375rem 0.5rem;
   position: sticky;
   top: 0;
   z-index: 20;
-  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow-card);
+}
+
+.inspection-overview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem;
 }
 
 .inspection-progress-label {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 0.375rem;
   color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 600;
+  white-space: nowrap;
 }
 
-.inspection-progress-track {
-  width: 100%;
-  height: 6px;
-  overflow: hidden;
-  border-radius: 999px;
+.inspection-progress-label strong {
+  color: var(--text-primary);
+  font-size: 0.75rem;
+}
+
+.inspection-overview-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.inspection-outline-toggle,
+.inspection-top-button {
+  min-height: 32px;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inspection-outline-toggle:hover,
+.inspection-top-button:hover,
+.inspection-outline-toggle[aria-expanded="true"] {
   background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.inspection-progress-fill {
-  height: 100%;
-  border-radius: inherit;
+.inspection-status-legend {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  min-width: 0;
+  overflow-x: auto;
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  scrollbar-width: none;
+}
+
+.inspection-status-legend::-webkit-scrollbar {
+  display: none;
+}
+
+.status-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.status-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+
+.inspection-status-map {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 10px);
+  grid-auto-rows: 10px;
+  gap: 2px;
+  min-width: 0;
+  padding-block: 0.125rem;
+}
+
+.status-map-group {
+  display: contents;
+}
+
+.status-map-item {
+  width: 10px;
+  height: 10px;
+  min-height: 10px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+.status-map-item:hover {
+  z-index: 1;
+  transform: scale(1.6);
+  box-shadow: var(--shadow-hover);
+}
+
+.status-pass {
   background: var(--accent-success);
-  transition: width 0.2s ease;
+}
+
+.status-fail {
+  background: var(--accent-danger);
+}
+
+.status-na {
+  background: #64748b;
+}
+
+.status-answered {
+  background: var(--accent-primary);
+}
+
+.status-unanswered {
+  border-color: var(--accent-warning);
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--accent-warning);
+}
+
+.inspection-outline {
+  max-height: 38vh;
+  overflow-y: auto;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--border-color);
+}
+
+.inspection-outline-heading {
+  margin-bottom: 0.5rem;
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.inspection-outline-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem;
+}
+
+.inspection-outline-subcategory {
+  min-width: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.outline-subcategory-link {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-height: 36px;
+  padding: 0.25rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.outline-subcategory-link span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-primary);
+  font-family: "JetBrains Mono", monospace;
+}
+
+.outline-subcategory-link strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspection-outline-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.25rem 0.25rem 0;
+}
+
+.inspection-outline-groups button {
+  min-height: 36px;
+  max-width: 100%;
+  padding: 0.375rem 0.5rem;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.inspection-outline-groups button:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 /* Team sheet memo index */
-.memo-summary {
+.memo-summary,
+.status-summary {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   background: var(--bg-card);
   overflow: hidden;
 }
 
-.memo-summary-toggle {
+.failed-summary {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.missing-summary {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.memo-summary-toggle,
+.status-summary-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1924,21 +2124,47 @@ watch(reconnected, async () => {
   cursor: pointer;
 }
 
-.memo-summary-toggle svg {
+.failed-summary-toggle,
+.missing-summary-toggle {
+  min-height: 36px;
+  padding: 0.375rem 0.75rem;
+}
+
+.failed-summary-toggle {
+  color: var(--accent-danger);
+}
+
+.missing-summary-toggle {
+  color: var(--accent-warning);
+}
+
+.memo-summary-toggle svg,
+.status-summary-toggle svg {
   transition: transform 0.2s;
 }
 
-.memo-summary-toggle .chevron-open {
+.memo-summary-toggle .chevron-open,
+.status-summary-toggle .chevron-open {
   transform: rotate(180deg);
 }
 
-.memo-summary-list {
+.memo-summary-list,
+.status-summary-list {
   max-height: 320px;
   overflow-y: auto;
   border-top: 1px solid var(--border-color);
 }
 
-.memo-summary-item {
+.failed-summary-list {
+  border-top-color: rgba(239, 68, 68, 0.25);
+}
+
+.missing-summary-list {
+  border-top-color: rgba(245, 158, 11, 0.25);
+}
+
+.memo-summary-item,
+.status-summary-item {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
@@ -1952,11 +2178,13 @@ watch(reconnected, async () => {
   cursor: pointer;
 }
 
-.memo-summary-item + .memo-summary-item {
+.memo-summary-item + .memo-summary-item,
+.status-summary-item + .status-summary-item {
   border-top: 1px solid var(--border-color);
 }
 
-.memo-summary-item:hover {
+.memo-summary-item:hover,
+.status-summary-item:hover {
   background: var(--bg-hover);
 }
 
@@ -1968,6 +2196,12 @@ watch(reconnected, async () => {
 .memo-summary-name {
   font-size: 0.8125rem;
   font-weight: 600;
+}
+
+.item-list-num {
+  margin-right: 0.25rem;
+  color: var(--text-tertiary);
+  font-family: "JetBrains Mono", monospace;
 }
 
 .memo-summary-preview {
@@ -1999,290 +2233,6 @@ watch(reconnected, async () => {
   flex-direction: column;
   align-items: center;
   gap: 1rem;
-}
-
-/* Missing items banner */
-.missing-banner {
-  background: rgba(245, 158, 11, 0.1);
-  border: 1px solid rgba(245, 158, 11, 0.3);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.missing-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  min-height: 44px;
-  padding: 0.625rem 1rem;
-  border: none;
-  background: none;
-  color: var(--accent-warning);
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.missing-toggle:hover {
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.missing-toggle .chevron-open {
-  transform: rotate(180deg);
-}
-
-.missing-toggle svg:last-child {
-  margin-left: auto;
-  transition: transform 0.2s;
-}
-
-.missing-list {
-  border-top: 1px solid rgba(245, 158, 11, 0.2);
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.missing-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  width: 100%;
-  padding: 0.5rem 1rem;
-  border: none;
-  background: none;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.missing-item:hover {
-  background: rgba(245, 158, 11, 0.08);
-}
-
-.missing-item + .missing-item {
-  border-top: 1px solid rgba(245, 158, 11, 0.1);
-}
-
-.missing-item-path {
-  font-size: 0.6875rem;
-  color: var(--text-tertiary);
-}
-
-.missing-item-name {
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.missing-list-enter-active,
-.missing-list-leave-active {
-  transition: max-height 0.2s ease, opacity 0.2s ease;
-  overflow: hidden;
-}
-
-.missing-list-enter-from,
-.missing-list-leave-to {
-  max-height: 0;
-  opacity: 0;
-}
-
-/* Failed items banner */
-.failed-banner {
-  background: rgba(239, 68, 68, 0.1);
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  border-radius: 10px;
-  overflow: hidden;
-}
-
-.failed-toggle {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  width: 100%;
-  min-height: 44px;
-  padding: 0.625rem 1rem;
-  border: none;
-  background: none;
-  color: var(--accent-danger);
-  font-size: 0.875rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.failed-toggle:hover {
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.failed-toggle .chevron-open {
-  transform: rotate(180deg);
-}
-
-.failed-toggle svg:last-child {
-  margin-left: auto;
-  transition: transform 0.2s;
-}
-
-.failed-list {
-  border-top: 1px solid rgba(239, 68, 68, 0.2);
-  max-height: 300px;
-  overflow-y: auto;
-}
-
-.failed-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-  width: 100%;
-  padding: 0.5rem 1rem;
-  border: none;
-  background: none;
-  text-align: left;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.failed-item:hover {
-  background: rgba(239, 68, 68, 0.08);
-}
-
-.failed-item + .failed-item {
-  border-top: 1px solid rgba(239, 68, 68, 0.1);
-}
-
-.failed-item-path {
-  font-size: 0.6875rem;
-  color: var(--text-tertiary);
-}
-
-.failed-item-name {
-  font-size: 0.8125rem;
-  color: var(--text-primary);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.item-list-num {
-  font-family: "JetBrains Mono", monospace;
-  color: var(--text-tertiary);
-  margin-right: 0.25rem;
-}
-
-.failed-list-enter-active,
-.failed-list-leave-active {
-  transition: max-height 0.2s ease, opacity 0.2s ease;
-  overflow: hidden;
-}
-
-.failed-list-enter-from,
-.failed-list-leave-to {
-  max-height: 0;
-  opacity: 0;
-}
-
-/* Quick nav FAB */
-.fab-container {
-  position: fixed;
-  bottom: 1.5rem;
-  right: 1.5rem;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 0.5rem;
-  z-index: 100;
-}
-
-.fab {
-  width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: none;
-  background: var(--accent-primary);
-  color: white;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-  transition: transform 0.2s, background 0.2s;
-}
-
-.fab:hover {
-  background: var(--accent-primary-hover, #5e6ad2);
-}
-
-.fab.active {
-  transform: rotate(90deg);
-}
-
-.nav-menu {
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
-  border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  overflow: hidden;
-  max-height: 60vh;
-  overflow-y: auto;
-  min-width: 180px;
-}
-
-.nav-menu-item {
-  display: block;
-  width: 100%;
-  min-height: 44px;
-  padding: 0.625rem 1rem;
-  border: none;
-  background: none;
-  text-align: left;
-  font-size: 0.8125rem;
-  font-weight: 500;
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: background 0.15s;
-  white-space: nowrap;
-}
-
-.nav-menu-item:hover {
-  background: var(--bg-hover);
-}
-
-.nav-menu-actions {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.nav-menu-actions .nav-menu-item {
-  color: var(--accent-primary);
-  font-weight: 600;
-  text-align: center;
-}
-
-.nav-menu-actions .nav-menu-item + .nav-menu-item {
-  border-top: 0;
-  border-left: 1px solid var(--border-color);
-}
-
-.nav-menu-item + .nav-menu-item {
-  border-top: 1px solid var(--border-color);
-}
-
-.nav-menu-enter-active,
-.nav-menu-leave-active {
-  transition: opacity 0.15s, transform 0.15s;
-}
-
-.nav-menu-enter-from,
-.nav-menu-leave-to {
-  opacity: 0;
-  transform: translateY(8px);
 }
 
 </style>

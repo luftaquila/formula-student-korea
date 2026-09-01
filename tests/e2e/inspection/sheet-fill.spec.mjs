@@ -85,46 +85,63 @@ test.describe("Inspection sheet filling", () => {
     }
   });
 
-  test("switches quick navigation depth and closes on outside click", async ({ page }) => {
-    const fab = page.locator(".fab");
-    const menu = page.locator(".fab-container .nav-menu");
-    const levelToggle = page.locator(".nav-menu-level-toggle");
-    const topButton = page.locator(".nav-menu-top");
+  test("integrates item and outline navigation into the status map", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const progress = page.locator(".inspection-progress");
+    await expect(progress).toBeVisible();
+    await expect(progress.locator(".inspection-status-map")).toBeVisible();
+    await expect(progress.locator(".inspection-status-legend")).toContainText("FAIL");
+    await expect(progress.locator(".inspection-status-legend")).toContainText("미입력");
+    await expect(page.locator(".fab-container")).toHaveCount(0);
+    const compactLayout = await progress.evaluate(element => {
+      const map = element.querySelector(".inspection-status-map");
+      return {
+        height: element.getBoundingClientRect().height,
+        mapDisplay: getComputedStyle(map).display,
+        mapOverflowX: getComputedStyle(map).overflowX,
+        mapScrollWidth: map.scrollWidth,
+        mapClientWidth: map.clientWidth,
+        itemSize: map.querySelector(".status-map-item").getBoundingClientRect().width,
+      };
+    });
+    expect(compactLayout.height).toBeLessThanOrEqual(160);
+    expect(compactLayout.mapDisplay).toBe("grid");
+    expect(compactLayout.mapOverflowX).toBe("visible");
+    expect(compactLayout.mapScrollWidth).toBeLessThanOrEqual(compactLayout.mapClientWidth);
+    expect(compactLayout.itemSize).toBeLessThanOrEqual(10);
+    const firstItemBox = await page.locator(".item-row").first().boundingBox();
+    expect(firstItemBox.y).toBeLessThan(844);
 
-    await fab.click();
-    await expect(menu).toBeVisible();
-    await expect(levelToggle).toHaveText("그룹 보기");
-    await expect(topButton).toHaveText("맨 위로");
-    const levelBox = await levelToggle.boundingBox();
-    const topBox = await topButton.boundingBox();
-    expect(topBox.x).toBeGreaterThan(levelBox.x);
-    const actionColors = await menu.locator(".nav-menu-actions button").evaluateAll(
-      (buttons) => buttons.map((button) => getComputedStyle(button).color),
-    );
-    expect(new Set(actionColors).size).toBe(1);
-    const groupNavItem = menu.locator(".nav-menu-item").filter({ hasText: "1-1 배터리 팩" });
-    await expect(groupNavItem).toBeVisible();
-    await groupNavItem.click();
-    await expect(menu).toBeHidden();
+    const initialScrollY = await page.evaluate(() => window.scrollY);
+    const itemLink = progress.locator('.status-map-item[aria-label*="전압 확인"]');
+    await expect(itemLink).toBeVisible();
+    await itemLink.click();
+    await expect.poll(async () => page.evaluate((startScrollY) => {
+      const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
+      const item = [...document.querySelectorAll(".item-row")].find(row => row.textContent.includes("전압 확인")).getBoundingClientRect();
+      return {
+        scrolled: window.scrollY > startScrollY,
+        belowProgress: item.top >= progress.bottom + 6,
+        withinViewport: item.bottom <= window.innerHeight,
+      };
+    }, initialScrollY)).toEqual({ scrolled: true, belowProgress: true, withinViewport: true });
+
+    const outlineToggle = progress.locator(".inspection-outline-toggle");
+    await outlineToggle.click();
+    const outline = progress.locator(".inspection-outline");
+    await expect(outline).toBeVisible();
+    await expect(outline.locator(".outline-subcategory-link").filter({ hasText: "배터리" })).toBeVisible();
+    const groupLink = outline.locator(".inspection-outline-groups button").filter({ hasText: "1-1 배터리 팩" });
+    await groupLink.click();
+    await expect(outline).toBeHidden();
     await expect.poll(async () => page.evaluate(() => {
       const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
       const group = document.querySelector(".group-section").getBoundingClientRect();
-      return Math.abs(group.top - progress.bottom - 8);
-    })).toBeLessThanOrEqual(2);
-
-    await fab.click();
-    await expect(menu).toBeVisible();
-    await levelToggle.click();
-    await expect(levelToggle).toHaveText("소분류 보기");
-    await expect(menu.locator(".nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
-    await page.locator(".group-title").first().click();
-    await expect(menu).toBeHidden();
-
-    await page.reload();
-    await waitForPageReady(page);
-    await page.locator(".fab").click();
-    await expect(page.locator(".nav-menu-level-toggle")).toHaveText("소분류 보기");
-    await expect(page.locator(".fab-container .nav-menu-item").filter({ hasText: "1 - 배터리" })).toBeVisible();
+      return {
+        belowProgress: group.top >= progress.bottom + 6,
+        withinViewport: group.top < window.innerHeight,
+      };
+    })).toEqual({ belowProgress: true, withinViewport: true });
   });
 
   test("shows the vehicle type chip between the team name and the year", async ({ page }) => {
@@ -193,6 +210,36 @@ test.describe("Inspection sheet filling", () => {
     // Clean up: toggle off
     await failBtn.click();
     await expect(failBtn).not.toHaveClass(/btn-danger/);
+  });
+
+  test("clicks N/A on a passfail item and counts it as complete", async ({ page }) => {
+    const templateResponse = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
+    const template = await templateResponse.json();
+    const item = template
+      .flatMap(category => category.subcategories)
+      .flatMap(subcategory => subcategory.groups)
+      .flatMap(group => group.items)
+      .find(candidate => candidate.name === "전압 확인");
+    await replaceAnswer(page, item.id, "");
+    await page.reload();
+    await waitForPageReady(page);
+
+    const progress = page.locator(".inspection-progress");
+    const progressValue = progress.locator(".inspection-progress-label");
+    const initialCompleted = Number(await progressValue.getAttribute("aria-valuenow"));
+    const itemRow = page.locator(".item-row").filter({ hasText: item.name });
+    const naButton = itemRow.locator(".pf-toggle button").filter({ hasText: /^N\/A$/ });
+    const saved = page.waitForResponse(response =>
+      response.url().includes("/competition/api/v1/inspection/sheet/answer") && response.status() === 200,
+    );
+    await naButton.click();
+    await saved;
+
+    await expect(naButton).toHaveClass(/btn-na/);
+    await expect.poll(async () => Number(await progressValue.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
+    await expect(progress.locator('.status-map-item[aria-label*="전압 확인"]')).toHaveClass(/status-na/);
+
+    await replaceAnswer(page, item.id, "");
   });
 
   test("enters a number for a number-type item", async ({ page }) => {

@@ -697,7 +697,7 @@ function goBack() {
                     @change="onAnswerTypeChange(item)"
                     :disabled="isReadOnly"
                   >
-                    <option value="passfail">PASS/FAIL</option>
+                    <option value="passfail">PASS/FAIL/N/A</option>
                     <option value="number">숫자</option>
                     <option value="counter">증감 숫자</option>
                     <option value="text">텍스트</option>
