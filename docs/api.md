@@ -283,15 +283,16 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/sheet/summary` | official | `?year=` | `{ categories: [{ id, name, excluded_types }], teams }` | All teams' category-level results and inspectors |
+| GET | `/sheet/summary` | official | `?year=` | `{ categories: [{ id, name, excluded_types }], teams }` | All teams' category-level results and automatic inspector-name arrays |
 | GET | `/sheet/bulk-answers` | official | `?year=&item_ids=1,2,3` | `{ team_num: { item_id: value } }` | Bulk answer values for specific items |
-| GET | `/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data, including stored values and update metadata |
+| GET | `/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data; `inspectors[category_id]` is an array of real names and each answer has independent answer/memo update metadata |
 | PUT | `/sheet/answer` | official | `{ year, team_num, item_id, value, expectedValue }` | `{ value, updated_at, updated_by }` | Save only if the stored answer still equals the caller's last-read value; `passfail` items accept `PASS`, `FAIL`, `N/A`, or an empty value |
 | PUT | `/sheet/memo` | official | `{ year, team_num, item_id, memo, expectedMemo }` | `{ memo, updated_at, updated_by }` | Save only if the stored memo still equals the caller's last-read memo |
 | PUT | `/sheet/category-result` | official | `{ year, team_num, category_id, result }` | 200 | Upsert category PASS/FAIL (broadcasts SSE) |
-| PUT | `/sheet/inspector` | official | `{ year, team_num, category_id, inspector }` | 200 | Upsert inspector name (broadcasts SSE) |
 
 There are no answer or memo version numbers. If `expectedValue` or `expectedMemo` differs from the stored value, the server returns `409 { code: "INSPECTION_STALE_WRITE", current }` and persists nothing. The browser discards the stale local value and instructs the operator to refresh and retry.
+
+A successful answer or memo change automatically adds the authenticated account's real name to that category's inspector list. Identical no-op saves do not add an inspector, and a real mutation is rejected if the authenticated session has no real name. Inspector names are append-only participation history; there is no manual inspector mutation endpoint. Each answer record exposes `answer_updated_by`, `answer_updated_at`, `memo_updated_by`, and `memo_updated_at`, so answer and memo editors remain independent.
 
 ## Traffic module (Competition port 9200)
 

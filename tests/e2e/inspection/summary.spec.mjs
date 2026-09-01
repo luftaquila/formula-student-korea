@@ -60,10 +60,20 @@ test.describe("Inspection summary dashboard", () => {
     const templateRes = await apiPage.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
     const firstCatId = template[0].id;
+    const firstItemId = template[0].subcategories[0].groups[0].items[0].id;
 
-    // Set inspector name (required for category result)
-    await apiPage.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "테스트관" },
+    const sheetData = await (await apiPage.request.get(
+      `/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`,
+    )).json();
+    const previousAnswer = sheetData.answers[firstItemId]?.value || "";
+    await apiPage.request.put("/competition/api/v1/inspection/sheet/answer", {
+      data: {
+        year: YEAR,
+        team_num: TEAM,
+        item_id: firstItemId,
+        value: previousAnswer === "42" ? "43" : "42",
+        expectedValue: previousAnswer,
+      },
     });
 
     // Set category result to PASS for the team
@@ -81,15 +91,25 @@ test.describe("Inspection summary dashboard", () => {
     const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: TEAM_UNIV });
     const passBadge = teamRow.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
+    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Official");
 
-    // Clean up: clear the result and inspector
+    // Clean up mutable values. Inspector participation intentionally remains as history.
     const cleanupCtx = await browser.newContext({ storageState: storageStatePath("official") });
     const cleanupPage = await cleanupCtx.newPage();
     await cleanupPage.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "" },
     });
-    await cleanupPage.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "" },
+    const currentData = await (await cleanupPage.request.get(
+      `/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`,
+    )).json();
+    await cleanupPage.request.put("/competition/api/v1/inspection/sheet/answer", {
+      data: {
+        year: YEAR,
+        team_num: TEAM,
+        item_id: firstItemId,
+        value: previousAnswer,
+        expectedValue: currentData.answers[firstItemId]?.value || "",
+      },
     });
     await cleanupCtx.close();
   });

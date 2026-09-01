@@ -54,7 +54,7 @@ function addInspectionYears(req, db, years) {
   }
   if (path === "/api/sheet/template"
     || path === "/api/sheet/template/import"
-    || /^\/api\/sheet\/(?:answer|memo|category-result|inspector)$/.test(path)) {
+    || /^\/api\/sheet\/(?:answer|memo|category-result)$/.test(path)) {
     addExplicitYear(years, req.body?.year);
     return;
   }

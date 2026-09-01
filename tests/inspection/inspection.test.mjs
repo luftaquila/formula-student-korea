@@ -27,6 +27,8 @@ const PREV_YEAR = CURRENT_YEAR - 1;
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+const secondOfficialCookie = makeAuthCookie({ email: 'second@test.com', name: 'Second Official', role: 'official' });
+const unnamedOfficialCookie = makeAuthCookie({ email: 'unnamed@test.com', role: 'official' });
 
 let server, baseUrl, client, db, dbPath;
 
@@ -100,13 +102,10 @@ describe('Inspection mutation preflight auditing', () => {
         () => isolated.put('/api/sheet/category-result', {
           body: { year: CURRENT_YEAR, team_num: 991, category_id: 1, result: 'PASS' }, cookie: officialCookie,
         }),
-        () => isolated.put('/api/sheet/inspector', {
-          body: { year: CURRENT_YEAR, team_num: 991, category_id: 1, inspector: 'Inspector' }, cookie: officialCookie,
-        }),
       ];
       const inactiveStatuses = [];
       for (const request of inactiveRequests) inactiveStatuses.push((await request()).status);
-      assert.deepEqual(inactiveStatuses, [409, 409, 409, 409]);
+      assert.deepEqual(inactiveStatuses, [409, 409, 409]);
 
       failCanonicalLookup = true;
       const failedLookup = await isolated.put('/api/sheet/memo', {
@@ -125,24 +124,24 @@ describe('Inspection mutation preflight auditing', () => {
       const logs = rawDb.prepare(`
         SELECT action, detail FROM logs
         WHERE level = 'warn' AND action IN (
-          'answer.update', 'memo.update', 'category_result.update', 'inspector.update',
+          'answer.update', 'memo.update', 'category_result.update',
           'template.update', 'template.delete'
         ) ORDER BY id
       `).all();
       assert.deepEqual(logs.map((row) => row.action), [
-        'answer.update', 'memo.update', 'category_result.update', 'inspector.update',
+        'answer.update', 'memo.update', 'category_result.update',
         'memo.update', 'template.update', 'template.delete',
       ]);
       const details = logs.map((row) => JSON.parse(row.detail));
-      for (const detail of details.slice(0, 4)) {
+      for (const detail of details.slice(0, 3)) {
         assert.equal(detail.error, 'inactive_or_missing_team');
         assert.equal(detail.phase, 'canonical_team_lookup');
         assert.equal(detail.year, CURRENT_YEAR);
         assert.equal(detail.team_num, 991);
       }
-      assert.equal(details[4].error, 'injected inspection team lookup failure');
-      assert.equal(details[4].phase, 'canonical_team_lookup');
-      assert.deepEqual(details.slice(5).map((detail) => detail.error), [
+      assert.equal(details[3].error, 'injected inspection team lookup failure');
+      assert.equal(details[3].phase, 'canonical_team_lookup');
+      assert.deepEqual(details.slice(4).map((detail) => detail.error), [
         'template_not_found', 'template_not_found',
       ]);
     } finally {
@@ -1171,9 +1170,9 @@ describe('Category Result', () => {
   });
 });
 
-// ─── Inspector ──────────────────────────────────────────────────────────
-describe('Inspector', () => {
-  let inspectorCategoryId;
+// ─── Automatic inspectors ───────────────────────────────────────────────
+describe('Automatic inspectors', () => {
+  let inspectorCategoryId, answerItemId, memoItemId;
 
   before(async () => {
     const catRes = await client.post('/api/sheet/template', {
@@ -1181,33 +1180,86 @@ describe('Inspector', () => {
       cookie: adminCookie,
     });
     inspectorCategoryId = Number((await catRes.json()).id);
+
+    const subRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'subcategory', parent_id: inspectorCategoryId, name: 'InspectorSub' },
+      cookie: adminCookie,
+    });
+    const subId = Number((await subRes.json()).id);
+    const groupRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'group', parent_id: subId, name: 'InspectorGroup' },
+      cookie: adminCookie,
+    });
+    const groupId = Number((await groupRes.json()).id);
+    const answerRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: groupId, name: 'InspectorAnswer', answer_type: 'passfail' },
+      cookie: adminCookie,
+    });
+    answerItemId = Number((await answerRes.json()).id);
+    const memoRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: groupId, name: 'InspectorMemo', answer_type: 'text' },
+      cookie: adminCookie,
+    });
+    memoItemId = Number((await memoRes.json()).id);
   });
 
-  it('PUT /api/sheet/inspector upserts inspector', async () => {
+  it('removes the manual inspector mutation endpoint', async () => {
     const res = await client.put('/api/sheet/inspector', {
       body: { year: CURRENT_YEAR, team_num: 1, category_id: inspectorCategoryId, inspector: 'John' },
       cookie: officialCookie,
     });
-    assert.equal(res.status, 200);
-    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
-    assert.equal(data.inspectors[inspectorCategoryId], 'John');
+    assert.equal(res.status, 404);
   });
 
-  it('PUT /api/sheet/inspector rejects previous year (409)', async () => {
-    // Insert a previous-year category directly for this test
-    const info = db.prepare(
-      "INSERT INTO sheet_template (year, level, name, sort_order) VALUES (?, 'category', 'OldInspCat', 0)"
-    ).run(PREV_YEAR);
-    const oldCatId = Number(info.lastInsertRowid);
-
-    const res = await client.put('/api/sheet/inspector', {
-      body: { year: PREV_YEAR, team_num: 1, category_id: oldCatId, inspector: 'Old' },
+  it('collects every real-name editor and keeps answer and memo metadata independent', async () => {
+    const answerRes = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 82, item_id: answerItemId, value: 'PASS', expectedValue: '' },
       cookie: officialCookie,
     });
-    assert.equal(res.status, 409);
+    assert.equal(answerRes.status, 200);
+    const memoRes = await client.put('/api/sheet/memo', {
+      body: { year: CURRENT_YEAR, team_num: 82, item_id: memoItemId, memo: 'reviewed', expectedMemo: '' },
+      cookie: secondOfficialCookie,
+    });
+    assert.equal(memoRes.status, 200);
 
-    // Clean up
-    db.prepare("DELETE FROM sheet_template WHERE id = ?").run(oldCatId);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/82`, {
+      cookie: officialCookie,
+    })).json();
+    assert.deepEqual(data.inspectors[inspectorCategoryId], ['Official', 'Second Official']);
+    assert.equal(data.answers[answerItemId].answer_updated_by, 'Official');
+    assert.match(data.answers[answerItemId].answer_updated_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(data.answers[memoItemId].memo_updated_by, 'Second Official');
+    assert.match(data.answers[memoItemId].memo_updated_at, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(data.answers[answerItemId].memo_updated_by, null);
+    assert.equal(data.answers[memoItemId].answer_updated_by, null);
+  });
+
+  it('does not add an account when an identical value causes no mutation', async () => {
+    const unchanged = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 82, item_id: answerItemId, value: 'PASS', expectedValue: 'PASS' },
+      cookie: adminCookie,
+    });
+    assert.equal(unchanged.status, 200);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/82`, {
+      cookie: officialCookie,
+    })).json();
+    assert.deepEqual(data.inspectors[inspectorCategoryId], ['Official', 'Second Official']);
+  });
+
+  it('rejects a real mutation when the authenticated account has no real name', async () => {
+    const res = await client.put('/api/sheet/answer', {
+      body: { year: CURRENT_YEAR, team_num: 83, item_id: answerItemId, value: 'PASS', expectedValue: '' },
+      cookie: unnamedOfficialCookie,
+    });
+    assert.equal(res.status, 409);
+    assert.match(await res.text(), /계정 실명/);
+
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/83`, {
+      cookie: officialCookie,
+    })).json();
+    assert.equal(data.answers[answerItemId], undefined);
+    assert.equal(data.inspectors[inspectorCategoryId], undefined);
   });
 });
 
@@ -1241,17 +1293,13 @@ describe('Data Queries', () => {
     });
     dataItemId = Number((await itemRes.json()).id);
 
-    // Populate answer, category-result, inspector
+    // Populating an answer also records the authenticated editor as inspector.
     await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 10, item_id: dataItemId, value: 'PASS' },
       cookie: officialCookie,
     });
     await client.put('/api/sheet/category-result', {
       body: { year: CURRENT_YEAR, team_num: 10, category_id: dataCategoryId, result: 'PASS' },
-      cookie: officialCookie,
-    });
-    await client.put('/api/sheet/inspector', {
-      body: { year: CURRENT_YEAR, team_num: 10, category_id: dataCategoryId, inspector: 'DataInspector' },
       cookie: officialCookie,
     });
   });
@@ -1265,7 +1313,7 @@ describe('Data Queries', () => {
     assert.ok(data.inspectors);
     assert.equal(data.answers[dataItemId].value, 'PASS');
     assert.equal(data.results[dataCategoryId], 'PASS');
-    assert.equal(data.inspectors[dataCategoryId], 'DataInspector');
+    assert.deepEqual(data.inspectors[dataCategoryId], ['Official']);
   });
 
   it('GET /api/sheet/summary returns team summaries', async () => {
@@ -1277,7 +1325,7 @@ describe('Data Queries', () => {
     assert.ok(data.teams);
     assert.ok(data.teams[10]);
     assert.equal(data.teams[10].results[dataCategoryId], 'PASS');
-    assert.equal(data.teams[10].inspectors[dataCategoryId], 'DataInspector');
+    assert.deepEqual(data.teams[10].inspectors[dataCategoryId], ['Official']);
   });
 
   it('GET /api/sheet/bulk-answers returns bulk answers for item_ids', async () => {

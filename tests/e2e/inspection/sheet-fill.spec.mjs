@@ -4,13 +4,6 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
-async function saveInspector(page, input, value) {
-  const p = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/inspector") && res.status() === 200);
-  await input.fill(value);
-  await input.blur();
-  await p;
-}
-
 async function replaceAnswer(page, itemId, value) {
   const current = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
   const data = await current.json();
@@ -274,79 +267,37 @@ test.describe("Inspection sheet filling", () => {
     await replaceAnswer(page, item.id, "");
   });
 
-  test("enters inspector name", async ({ page }) => {
-    // Switch to "샤시 검차" tab to avoid collision with realtime-sync tests on first tab
+  test("adds the response editor to inspectors and shows answer edit metadata", async ({ page }) => {
     const chassisTab = page.locator(".tab").filter({ hasText: "샤시 검차" });
     await chassisTab.click();
-
-    const inspectorInput = page.locator(".inspector-input");
-    await expect(inspectorInput).toBeVisible();
-
-    // Pick a value different from current to guarantee a save fires
-    const currentInspector = await inspectorInput.inputValue();
-    const newInspector = currentInspector === "홍길동" ? "김검사" : "홍길동";
-
-    // Enter inspector name and blur to trigger save
-    await inspectorInput.fill(newInspector);
-    await inspectorInput.blur();
-
-    // Verify via API poll (avoids waitForResponse race)
     const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
-    const chassisCatId = template.find((c) => c.name === "샤시 검차").id;
+    const chassis = template.find((c) => c.name === "샤시 검차");
+    const item = chassis.subcategories[0].groups[0].items.find((candidate) => candidate.name === "용접 상태");
+    const data = await (await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`)).json();
+    const current = data.answers[item.id]?.value || "";
+    const next = current === "PASS" ? "FAIL" : "PASS";
+    const row = page.locator(".item-row").filter({ hasText: item.name });
+    const button = row.locator(".pf-toggle button").filter({ hasText: next === "PASS" ? "P" : "F" });
+    await button.click();
 
     await expect.poll(async () => {
       const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
-      const data = await dataRes.json();
-      return data.inspectors[chassisCatId];
-    }, { timeout: 10000 }).toBe(newInspector);
+      return (await dataRes.json()).inspectors[chassis.id] || [];
+    }, { timeout: 10000 }).toContain("E2E Official");
+    await expect(page.locator(".inspector-list")).toContainText("E2E Official");
+    await expect(page.locator(".inspector-input")).toHaveCount(0);
+    await expect(page.locator(".inspector-fill-btn")).toHaveCount(0);
+    await expect(row.locator(".answer-edit-metadata")).toContainText("응답 · E2E Official");
+    await expect(row.locator(".answer-edit-metadata time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
 
-    // Clean up via API
-    await page.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: 1, category_id: chassisCatId, inspector: "" },
-    });
-
-    // Restore first tab so subsequent tests start on the correct category
-    await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
-  });
-
-  test("내 이름 button toggles the current user's name", async ({ page }) => {
-    // 샤시 검차 tab (owned by this file's serial tests) to avoid cross-file collision
-    await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
-    const input = page.locator(".inspector-input");
-    await expect(input).toBeVisible();
-    const fillBtn = page.locator(".inspector-fill-btn");
-
-    // Known start state: empty
-    await saveInspector(page, input, "");
-    await expect(input).toHaveValue("");
-
-    // Empty → adds my name
-    await fillBtn.click();
-    await expect(input).toHaveValue("E2E Official");
-
-    // Pressing again removes my name (toggle off)
-    await fillBtn.click();
-    await expect(input).toHaveValue("");
-
-    // With an existing name, mine appends/removes without leaving a dangling separator
-    await saveInspector(page, input, "홍길동");
-    await fillBtn.click();
-    await expect(input).toHaveValue("홍길동, E2E Official");
-    await fillBtn.click();
-    await expect(input).toHaveValue("홍길동");
-
-    // Cleanup + restore first tab for subsequent tests
-    await saveInspector(page, input, "");
+    await replaceAnswer(page, item.id, "");
     await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
   });
 
   test("sets category result to PASS", async ({ page }) => {
     // Switch to "샤시 검차" tab to avoid collision with summary tests on first tab
     await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
-
-    // First enter an inspector name (required for setting category result)
-    await saveInspector(page, page.locator(".inspector-input"), "테스트관");
 
     // Click the PASS button in the result toggle
     const resultPassBtn = page.locator(".result-toggle button").filter({ hasText: "PASS" });
@@ -363,9 +314,6 @@ test.describe("Inspection sheet filling", () => {
     await resultPassBtn.click();
     await expect(resultPassBtn).not.toHaveClass(/btn-success/);
 
-    // Clean up inspector name
-    await saveInspector(page, page.locator(".inspector-input"), "");
-
     // Restore first tab
     await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
   });
@@ -373,9 +321,6 @@ test.describe("Inspection sheet filling", () => {
   test("sets category result to FAIL", async ({ page }) => {
     // Switch to "샤시 검차" tab to avoid collision with summary tests on first tab
     await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
-
-    // Enter inspector name first
-    await saveInspector(page, page.locator(".inspector-input"), "테스트관");
 
     // Click the FAIL button
     const resultFailBtn = page.locator(".result-toggle button").filter({ hasText: "FAIL" });
@@ -390,7 +335,6 @@ test.describe("Inspection sheet filling", () => {
 
     // Clean up
     await resultFailBtn.click();
-    await saveInspector(page, page.locator(".inspector-input"), "");
 
     // Restore first tab
     await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
@@ -429,6 +373,8 @@ test.describe("Inspection sheet filling", () => {
       const data = await resp.json();
       return data.answers[firstItemId]?.memo === newMemo;
     }, { timeout: 10000 }).toBeTruthy();
+    await expect(itemRow.locator(".memo-edit-metadata")).toContainText("메모 · E2E Official");
+    await expect(itemRow.locator(".memo-edit-metadata time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
 
     // Clean up via API
     await replaceMemo(page, firstItemId, "");
@@ -462,19 +408,12 @@ test.describe("Inspection sheet filling", () => {
     }).toBe("");
   });
 
-  test("requires inspector name before setting category result", async ({ page }) => {
-    // Ensure inspector name is empty
-    await saveInspector(page, page.locator(".inspector-input"), "");
-
-    // Try to set PASS without inspector name
+  test("sets a category result without a manual inspector field", async ({ page }) => {
+    await expect(page.locator(".inspector-input")).toHaveCount(0);
     const resultPassBtn = page.locator(".result-toggle button").filter({ hasText: "PASS" });
     await resultPassBtn.click();
-
-    // Should show error notification
-    const errorToast = page.locator("[data-sonner-toast][data-type='error']");
-    await expect(errorToast.first()).toContainText("검차관 이름을 입력하세요", { timeout: 5000 });
-
-    // PASS button should not be active
+    await expect(resultPassBtn).toHaveClass(/btn-success/);
+    await resultPassBtn.click();
     await expect(resultPassBtn).not.toHaveClass(/btn-success/);
   });
 

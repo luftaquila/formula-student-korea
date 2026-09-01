@@ -103,7 +103,8 @@ function getResult(num, catId) {
 }
 
 function getInspector(num, catId) {
-  return summary.value.teams[num]?.inspectors?.[catId] || "";
+  const inspectors = summary.value.teams[num]?.inspectors?.[catId];
+  return Array.isArray(inspectors) ? inspectors.join(", ") : "";
 }
 
 // 카테고리 열은 여러 유형이 섞인 목록에서 공유되므로 열 자체는 남기고,
@@ -136,7 +137,7 @@ watch(lastUpdate, (update) => {
   summary.value.teams[team_num].results[category_id] = result;
 });
 
-// SSE로 검차관 이름 실시간 반영
+// 응답·메모 편집으로 자동 갱신된 검차관 목록을 실시간 반영
 watch(lastInspectorUpdate, (update) => {
   if (!update || update.year !== selectedYear.value) return;
   if (update.deleted) {
@@ -152,11 +153,11 @@ watch(lastInspectorUpdate, (update) => {
     scheduleLifecycleRefresh();
     return;
   }
-  const { team_num, category_id, inspector } = update;
+  const { team_num, category_id, inspectors } = update;
   if (!summary.value.teams[team_num]) {
     summary.value.teams[team_num] = { inspectors: {}, results: {} };
   }
-  summary.value.teams[team_num].inspectors[category_id] = inspector;
+  summary.value.teams[team_num].inspectors[category_id] = Array.isArray(inspectors) ? inspectors : [];
 });
 
 watch(lastEntriesUpdate, (update) => {

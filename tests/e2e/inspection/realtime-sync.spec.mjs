@@ -75,15 +75,6 @@ test.describe("Inspection real-time sync via SSE", () => {
     await sse1;
     await sse2;
 
-    // Set inspector name in context 1 (required for category result)
-    const inspector1 = page1.locator(".inspector-input");
-    const currentInspector = await inspector1.inputValue();
-    const newInspector = currentInspector === "동기화검사" ? "검차동기" : "동기화검사";
-    const inspectorSavePromise = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/inspector") && res.status() === 200);
-    await inspector1.fill(newInspector);
-    await inspector1.blur();
-    await inspectorSavePromise;
-
     // Set category result to FAIL in context 1
     const failBtn1 = page1.locator(".result-toggle button").filter({ hasText: "FAIL" });
     await failBtn1.click();
@@ -97,54 +88,47 @@ test.describe("Inspection real-time sync via SSE", () => {
     const failBtn2 = page2.locator(".result-toggle button").filter({ hasText: "FAIL" });
     await expect(failBtn2).toHaveClass(/btn-danger/, { timeout: 5000 });
 
-    // Clean up: remove result and inspector
+    // Clean up result
     await failBtn1.click();
-    const cleanupPromise = page1.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/inspector") && res.status() === 200);
-    await inspector1.fill("");
-    await inspector1.blur();
-    await cleanupPromise;
 
     await context1.close();
     await context2.close();
   });
 
-  test("syncs inspector name via API save to browser SSE", async ({ browser }) => {
-    // Use single context + API save to avoid slow dual-context setup
+  test("syncs automatic inspectors and answer edit metadata via SSE", async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const adminContext = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
+    const adminPage = await adminContext.newPage();
 
     const sse = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/events"));
     await page.goto(`/inspection/${YEAR}/10`);
     await waitForPageReady(page);
     await sse;
 
-    // Get category ID for API call
     const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
-    const categoryId = template[0].id;
-
-    const inspectorInput = page.locator(".inspector-input");
-    await expect(inspectorInput).toBeVisible();
-
-    // Read current DB value to pick a different one
+    const category = template.find((candidate) => candidate.name === "전기 검차");
+    const item = category.subcategories[0].groups[0].items.find((candidate) => candidate.name === "전압 확인");
+    const row = page.locator(".item-row").filter({ hasText: item.name });
     const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/10`);
     const data = await dataRes.json();
-    const currentInspector = data.inspectors[categoryId] || "";
-    const newInspector = currentInspector === "김검차" ? "이검사" : "김검차";
+    const currentValue = data.answers[item.id]?.value || "";
+    const newValue = currentValue === "PASS" ? "FAIL" : "PASS";
 
-    // Save via API (triggers SSE broadcast)
-    await page.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: 10, category_id: categoryId, inspector: newInspector },
+    const putRes = await adminPage.request.put("/competition/api/v1/inspection/sheet/answer", {
+      data: { year: YEAR, team_num: 10, item_id: item.id, value: newValue, expectedValue: currentValue },
+    });
+    expect(putRes.status()).toBe(200);
+
+    await expect(page.locator(".inspector-list")).toContainText("E2E Admin", { timeout: 15000 });
+    await expect(row.locator(".answer-edit-metadata")).toContainText("응답 · E2E Admin", { timeout: 15000 });
+
+    await adminPage.request.put("/competition/api/v1/inspection/sheet/answer", {
+      data: { year: YEAR, team_num: 10, item_id: item.id, value: "", expectedValue: newValue },
     });
 
-    // Verify SSE update
-    await expect(inspectorInput).toHaveValue(newInspector, { timeout: 15000 });
-
-    // Clean up
-    await page.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: 10, category_id: categoryId, inspector: "" },
-    });
-
+    await adminContext.close();
     await context.close();
   });
 

@@ -65,20 +65,14 @@ test.describe("Three concurrent inspection editors", () => {
       });
     }
 
-    // Clear inspector
-    await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/inspector`, {
-      method: "PUT",
-      headers,
-      body: JSON.stringify({ year: YEAR, team_num: 30, category_id: category.id, inspector: "" }),
-    });
-
     await context.close();
   });
 
   test("edits from 3 editors propagate to all via SSE", async ({ browser }) => {
-    // Create 3 independent contexts
-    const context1 = await browser.newContext({ storageState: storageStatePath("official") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("official") });
+    // Use three different authenticated accounts so the automatic inspector list
+    // proves that every editor is retained by real name.
+    const context1 = await browser.newContext({ storageState: storageStatePath("admin") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("chief") });
     const context3 = await browser.newContext({ storageState: storageStatePath("official") });
 
     const page1 = await context1.newPage();
@@ -141,6 +135,19 @@ test.describe("Three concurrent inspection editors", () => {
     // Context 1 and 2 should see the memo
     await expect(page1.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-text")).toContainText("3명 동시 편집 테스트", { timeout: 5000 });
     await expect(page2.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-text")).toContainText("3명 동시 편집 테스트", { timeout: 5000 });
+
+    for (const page of [page1, page2, page3]) {
+      const inspectors = page.locator(".inspector-list");
+      await expect(inspectors).toContainText("E2E Admin", { timeout: 5000 });
+      await expect(inspectors).toContainText("E2E Chief", { timeout: 5000 });
+      await expect(inspectors).toContainText("E2E Official", { timeout: 5000 });
+      await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".answer-edit-metadata"))
+        .toContainText("응답 · E2E Admin");
+      await expect(page.locator(".item-row").filter({ hasText: "절연 저항 측정" }).locator(".answer-edit-metadata"))
+        .toContainText("응답 · E2E Chief");
+      await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-edit-metadata"))
+        .toContainText("메모 · E2E Official");
+    }
 
     await context1.close();
     await context2.close();
