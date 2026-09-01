@@ -1,36 +1,57 @@
-# Competition Backup and Restore Runbook
+# Competition Backup and Restore Contract
 
-Competition data is one consistency unit: the SQLite database and Documents upload tree. Auth, Calendar, Course, and Email are required members of the coordinated database set. FileBrowser remains an external service; this procedure preserves its mounted file tree but does not inspect, quiesce, back up, or restore its private bbolt database. A migration report may be retained beside a backup as audit evidence, but backup and restore do not bind database identity to that report.
+Test and live run as separate k3s clusters managed by `/srv/k3s`. The scheduled jobs
+use the Competition image's `create-k3s-backup.mjs` to create and validate the FSK
+archive before publishing it:
 
-## Backup
+- `lufthafen` writes timestamped test archives below
+  `/mnt/hdd/backups/k3s/fsk/`.
+- `luftwolke` atomically publishes the live archive below the dated
+  `/srv/backups/` directory on `lufthafen`.
 
-```bash
-make backup
-make backup DEST=/mnt/nas
-```
+The Compose-oriented `make backup` and `make restore` commands here are not k3s
+procedures. There is no supported k3s restore until `/srv/k3s` implements and
+restore-tests every restore gate below for the target environment.
 
-`scripts/backup.sh` briefly stops `fsk-competition` while copying the database and uploads, then resumes it on every exit only when the script stopped it. If the Competition writer was stopped outside Podman, the operator must explicitly set `FSK_BACKUP_ASSUME_QUIESCED=1`. The FileBrowser file-tree copy is an external-service payload copy and does not claim database/tree point-in-time consistency.
+## Required backup unit
 
-Before publishing an archive, the script requires the fixed Competition/Auth/Calendar/Course/Email database manifest and performs read-only, fail-closed validation of their complete runtime schemas (columns, defaults, constraints, foreign keys, indexes, and triggers), `integrity_check`, `foreign_key_check`, canonical team references, and every file referenced by `submission_file`. Referenced paths must remain below the upload root and resolve to non-symlink regular files. Missing databases or unsafe references reject the backup. Unreferenced Documents files are not part of the logical dataset and startup cleanup removes them.
+A backup must contain exactly one coordinated application state:
 
-Retain command output, archive hash, creation time, source environment, and restore-test evidence.
+- `competition.db` and its Documents upload tree
+- Auth, Calendar, Course, and Email SQLite databases
+- an exact manifest identifying every required database
+- FileBrowser's mounted payload when present; its private database remains outside
+  the Competition consistency contract
 
-## Restore
+The Competition database and uploads are one consistency unit. Quiesce Competition
+or use another reviewed mechanism that prevents database metadata and copied files
+from diverging. Use SQLite's online backup API for live databases; do not copy only
+the main database file while WAL writes can continue.
 
-```bash
-make restore ZIP=backups/fsk-backup-YYYYMMDD-HHMMSS.zip
-```
+## Backup gates
 
-Restore extracts into a private staging directory and requires the exact database manifest before running the same Competition, support-service, and upload validation ahead of stopping any live service. Validation failure leaves live data untouched, and a missing required database can never retain a newer live database beside restored Competition state. After validation, it stops the stack and replaces each staged required database and included file tree. A failed staged rename restores the original live set from `.bak`.
+Before publishing an archive:
 
-## Post-restore verification
+1. Validate the exact database manifest and complete schemas.
+2. Run SQLite integrity and foreign-key checks.
+3. Validate canonical `competition_team` references.
+4. Reject missing, escaping, or symlinked referenced uploads.
+5. Verify the archive can be read and record its hash, source environment, and
+   creation time.
 
-1. Verify Competition starts and `/health/ready` succeeds.
-2. Check each module's flat `/health` endpoint.
-3. Run SQLite `integrity_check`, `foreign_key_check`, and the canonical-reference audit.
-4. Verify every referenced upload is readable.
-5. Verify historical years are readable and immutable.
-6. Verify a representative current KST-year write and authenticated document download.
-7. Record the restored archive and verification evidence.
+Any missing member or failed check rejects the backup. Never modify a source database
+to make validation pass.
 
-This runbook restores Competition backups. To return to the legacy application, use the rollback procedure in the cutover runbook: stop Competition, restore the coordinated pre-cutover legacy backup, and deploy the recorded legacy Git revision.
+## Restore gates
+
+1. Extract into a private staging directory without touching live data.
+2. Run all backup gates against the staged state.
+3. Stop the k3s writers only after staging passes.
+4. Replace the complete coordinated unit, with a reviewed rollback path for a
+   partial filesystem failure.
+5. Restart through the `/srv/k3s` workflow and verify readiness, authenticated
+   reads, a current KST-year mutation, historical read-only behavior, and referenced
+   uploads.
+
+Validation must fail closed before any live artifact is replaced. Never restore one
+Competition module or one supporting database independently.
