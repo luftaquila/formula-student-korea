@@ -507,10 +507,6 @@ function statusLabel(state) {
   return statusLegend.value.find(entry => entry.state === state)?.label || state;
 }
 
-function statusMark(state) {
-  return { pass: "P", fail: "F", na: "N", answered: "✓", unanswered: "?" }[state] || "";
-}
-
 function statusItemLabel(sub, group, item) {
   return `${sub.number}-${group.number} ${item.number} ${item.name}: ${statusLabel(item.state)}`;
 }
@@ -851,12 +847,6 @@ watch(reconnected, async () => {
               :aria-label="`${sub.number}-${group.number} ${sub.name}, ${group.name}`"
             >
               <button
-                type="button"
-                class="status-map-group-link"
-                :title="`${sub.number}-${group.number} ${sub.name} › ${group.name}`"
-                @click="scrollToGroup(group.id)"
-              >{{ sub.number }}-{{ group.number }}</button>
-              <button
                 v-for="item in group.items"
                 :key="item.id"
                 type="button"
@@ -865,10 +855,7 @@ watch(reconnected, async () => {
                 :aria-label="statusItemLabel(sub, group, item)"
                 :title="statusItemLabel(sub, group, item)"
                 @click="scrollToItem(item.id)"
-              >
-                <span class="status-map-item-number">{{ item.number }}</span>
-                <span class="status-map-item-mark" aria-hidden="true">{{ statusMark(item.state) }}</span>
-              </button>
+              ></button>
             </div>
           </template>
         </div>
@@ -1885,71 +1872,32 @@ watch(reconnected, async () => {
 }
 
 .inspection-status-map {
-  display: flex;
-  flex-wrap: nowrap;
-  gap: 0.5rem;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 10px);
+  grid-auto-rows: 10px;
+  gap: 2px;
   min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding-bottom: 0.125rem;
-  overscroll-behavior-x: contain;
-  touch-action: pan-x;
+  padding-block: 0.125rem;
 }
 
 .status-map-group {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  flex: 0 0 auto;
-}
-
-.status-map-group-link,
-.status-map-item {
-  min-height: 34px;
-  border-radius: 5px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-.status-map-group-link {
-  min-width: 34px;
-  padding: 0.25rem 0.375rem;
-  border: 1px solid var(--border-color);
-  background: var(--bg-secondary);
-  color: var(--text-secondary);
-}
-
-.status-map-group-link:hover {
-  background: var(--bg-hover);
-  color: var(--text-primary);
+  display: contents;
 }
 
 .status-map-item {
-  position: relative;
-  width: 34px;
+  width: 10px;
+  height: 10px;
+  min-height: 10px;
   padding: 0;
-  border: 2px solid transparent;
-  color: white;
+  border: 1px solid transparent;
+  border-radius: 2px;
+  cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-.status-map-item-number {
-  font-size: 0.75rem;
-}
-
-.status-map-item-mark {
-  position: absolute;
-  top: 2px;
-  right: 3px;
-  font-size: 0.5rem;
-  line-height: 1;
-}
-
 .status-map-item:hover {
-  transform: translateY(-1px);
+  z-index: 1;
+  transform: scale(1.6);
   box-shadow: var(--shadow-hover);
 }
 

@@ -97,13 +97,18 @@ test.describe("Inspection sheet filling", () => {
       const map = element.querySelector(".inspection-status-map");
       return {
         height: element.getBoundingClientRect().height,
-        mapFlexWrap: getComputedStyle(map).flexWrap,
+        mapDisplay: getComputedStyle(map).display,
         mapOverflowX: getComputedStyle(map).overflowX,
+        mapScrollWidth: map.scrollWidth,
+        mapClientWidth: map.clientWidth,
+        itemSize: map.querySelector(".status-map-item").getBoundingClientRect().width,
       };
     });
-    expect(compactLayout.height).toBeLessThanOrEqual(120);
-    expect(compactLayout.mapFlexWrap).toBe("nowrap");
-    expect(compactLayout.mapOverflowX).toBe("auto");
+    expect(compactLayout.height).toBeLessThanOrEqual(160);
+    expect(compactLayout.mapDisplay).toBe("grid");
+    expect(compactLayout.mapOverflowX).toBe("visible");
+    expect(compactLayout.mapScrollWidth).toBeLessThanOrEqual(compactLayout.mapClientWidth);
+    expect(compactLayout.itemSize).toBeLessThanOrEqual(10);
     const firstItemBox = await page.locator(".item-row").first().boundingBox();
     expect(firstItemBox.y).toBeLessThan(844);
 
