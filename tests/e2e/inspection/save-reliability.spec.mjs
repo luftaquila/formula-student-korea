@@ -185,7 +185,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     const { item, category } = await findItemContext(page, "점검 체크리스트");
     await replaceAnswer(page, item.id, JSON.stringify({ "99_99": "1" }));
     await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
-      data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "PASS" },
+      data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "" },
     });
 
     await page.setViewportSize({ width: 390, height: 844 });
@@ -198,6 +198,11 @@ test.describe("Inspection answer and memo save reliability", () => {
     const initialCompleted = Number(await progressValue.getAttribute("aria-valuenow"));
     const statusItem = progress.locator(`.status-map-item[aria-label*="${item.name}"]`);
     await expect(statusItem).toHaveClass(/status-unanswered/);
+    const missingSummary = page.locator(".missing-summary");
+    await expect(missingSummary).toBeVisible();
+    await missingSummary.locator(".missing-summary-toggle").click();
+    const missingItem = missingSummary.locator(".missing-summary-item").filter({ hasText: item.name });
+    await expect(missingItem).toBeVisible();
 
     const row = page.locator(".item-row").filter({ hasText: item.name });
     const cells = row.locator('.checktable-cell input[type="checkbox"]');
@@ -205,6 +210,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await cells.first().check();
     await expect.poll(async () => Number(await progressValue.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
     await expect(statusItem).toHaveClass(/status-answered/);
+    await expect(missingItem).toHaveCount(0);
 
     await cells.nth(1).check();
     await expect.poll(async () => Number(await progressValue.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
@@ -220,7 +226,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await replaceAnswer(page, item.id, "FAIL");
     await replaceMemo(page, item.id, "상단 순서 확인");
     await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
-      data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "PASS" },
+      data: { year: YEAR, team_num: TEAM, category_id: category.id, result: "" },
     });
 
     await page.setViewportSize({ width: 390, height: 844 });
@@ -232,6 +238,11 @@ test.describe("Inspection answer and memo save reliability", () => {
     await expect(progress).toBeVisible();
     await expect(progress.locator('.status-map-item[aria-label*="전압 확인"]')).toHaveClass(/status-fail/);
     await expect(progress.locator(".status-map-item.status-unanswered").first()).toBeVisible();
+    const failedSummary = page.locator(".failed-summary");
+    await expect(failedSummary).toBeVisible();
+    await expect(page.locator(".missing-summary")).toBeVisible();
+    await failedSummary.locator(".failed-summary-toggle").click();
+    await expect(failedSummary.locator(".failed-summary-item").filter({ hasText: item.name })).toBeVisible();
     await expect(page.locator(".memo-summary")).toBeVisible();
     const progressBox = await progress.boundingBox();
     const memoBox = await page.locator(".memo-summary").boundingBox();

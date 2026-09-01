@@ -511,6 +511,25 @@ function statusItemLabel(sub, group, item) {
   return `${sub.number}-${group.number} ${item.number} ${item.name}: ${statusLabel(item.state)}`;
 }
 
+function statusItems(state) {
+  return inspectionStatusMap.value.subcategories.flatMap(sub =>
+    sub.groups.flatMap(group => group.items
+      .filter(item => item.state === state)
+      .map(item => ({
+        id: item.id,
+        num: `${sub.number}-${group.number} ${item.number}`,
+        name: item.name,
+        sub: sub.name,
+        group: group.name,
+      }))),
+  );
+}
+
+const failedOpen = ref(false);
+const missingOpen = ref(false);
+const failedItems = computed(() => statusItems("fail"));
+const unansweredItems = computed(() => statusItems("unanswered"));
+
 const memoOpen = ref(false);
 const memoItems = computed(() => {
   const items = [];
@@ -571,6 +590,8 @@ function formatUpdatedAt(value) {
 
 async function scrollToItem(itemId) {
   outlineOpen.value = false;
+  failedOpen.value = false;
+  missingOpen.value = false;
   await nextTick();
   const el = document.getElementById(`item-${itemId}`);
   if (el) scrollBelowProgress(el);
@@ -648,6 +669,8 @@ onBeforeUnmount(() => {
 
 watch(activeTab, () => {
   outlineOpen.value = false;
+  failedOpen.value = false;
+  missingOpen.value = false;
   sessionStorage.setItem("inspectionScrollY", 0);
   window.scrollTo(0, 0);
 });
@@ -884,6 +907,60 @@ watch(reconnected, async () => {
           </div>
         </div>
       </section>
+
+      <!-- Failed items are shown as soon as an item is marked FAIL. -->
+      <div v-if="failedItems.length" class="status-summary failed-summary">
+        <button
+          type="button"
+          class="status-summary-toggle failed-summary-toggle"
+          :aria-expanded="failedOpen"
+          @click="failedOpen = !failedOpen"
+        >
+          FAIL 항목 {{ failedItems.length }}개
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': failedOpen }">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        <div v-if="failedOpen" class="status-summary-list failed-summary-list">
+          <button
+            v-for="item in failedItems"
+            :key="item.id"
+            type="button"
+            class="status-summary-item failed-summary-item"
+            @click="scrollToItem(item.id)"
+          >
+            <span class="memo-summary-path">{{ item.sub }} &rsaquo; {{ item.group }}</span>
+            <span class="memo-summary-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Unanswered items are shown regardless of the category PASS/FAIL result. -->
+      <div v-if="unansweredItems.length" class="status-summary missing-summary">
+        <button
+          type="button"
+          class="status-summary-toggle missing-summary-toggle"
+          :aria-expanded="missingOpen"
+          @click="missingOpen = !missingOpen"
+        >
+          미입력 항목 {{ unansweredItems.length }}개
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14" :class="{ 'chevron-open': missingOpen }">
+            <path d="m6 9 6 6 6-6" />
+          </svg>
+        </button>
+        <div v-if="missingOpen" class="status-summary-list missing-summary-list">
+          <button
+            v-for="item in unansweredItems"
+            :key="item.id"
+            type="button"
+            class="status-summary-item missing-summary-item"
+            @click="scrollToItem(item.id)"
+          >
+            <span class="memo-summary-path">{{ item.sub }} &rsaquo; {{ item.group }}</span>
+            <span class="memo-summary-name"><span class="item-list-num">{{ item.num }}</span> {{ item.name }}</span>
+          </button>
+        </div>
+      </div>
 
       <!-- Memos in this team sheet -->
       <div v-if="memoItems.length" class="memo-summary">
@@ -2014,14 +2091,26 @@ watch(reconnected, async () => {
 }
 
 /* Team sheet memo index */
-.memo-summary {
+.memo-summary,
+.status-summary {
   border: 1px solid var(--border-color);
   border-radius: 10px;
   background: var(--bg-card);
   overflow: hidden;
 }
 
-.memo-summary-toggle {
+.failed-summary {
+  border-color: rgba(239, 68, 68, 0.35);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.missing-summary {
+  border-color: rgba(245, 158, 11, 0.35);
+  background: rgba(245, 158, 11, 0.08);
+}
+
+.memo-summary-toggle,
+.status-summary-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2036,21 +2125,47 @@ watch(reconnected, async () => {
   cursor: pointer;
 }
 
-.memo-summary-toggle svg {
+.failed-summary-toggle,
+.missing-summary-toggle {
+  min-height: 36px;
+  padding: 0.375rem 0.75rem;
+}
+
+.failed-summary-toggle {
+  color: var(--accent-danger);
+}
+
+.missing-summary-toggle {
+  color: var(--accent-warning);
+}
+
+.memo-summary-toggle svg,
+.status-summary-toggle svg {
   transition: transform 0.2s;
 }
 
-.memo-summary-toggle .chevron-open {
+.memo-summary-toggle .chevron-open,
+.status-summary-toggle .chevron-open {
   transform: rotate(180deg);
 }
 
-.memo-summary-list {
+.memo-summary-list,
+.status-summary-list {
   max-height: 320px;
   overflow-y: auto;
   border-top: 1px solid var(--border-color);
 }
 
-.memo-summary-item {
+.failed-summary-list {
+  border-top-color: rgba(239, 68, 68, 0.25);
+}
+
+.missing-summary-list {
+  border-top-color: rgba(245, 158, 11, 0.25);
+}
+
+.memo-summary-item,
+.status-summary-item {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
@@ -2064,11 +2179,13 @@ watch(reconnected, async () => {
   cursor: pointer;
 }
 
-.memo-summary-item + .memo-summary-item {
+.memo-summary-item + .memo-summary-item,
+.status-summary-item + .status-summary-item {
   border-top: 1px solid var(--border-color);
 }
 
-.memo-summary-item:hover {
+.memo-summary-item:hover,
+.status-summary-item:hover {
   background: var(--bg-hover);
 }
 
@@ -2080,6 +2197,12 @@ watch(reconnected, async () => {
 .memo-summary-name {
   font-size: 0.8125rem;
   font-weight: 600;
+}
+
+.item-list-num {
+  margin-right: 0.25rem;
+  color: var(--text-tertiary);
+  font-family: "JetBrains Mono", monospace;
 }
 
 .memo-summary-preview {
