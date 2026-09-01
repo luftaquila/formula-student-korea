@@ -1,131 +1,167 @@
 # Contributing
 
-Read [the architecture](docs/architecture.md) before changing service boundaries or Competition data ownership, and [the API reference](docs/api.md) before changing public routes. Changes to competition-year writes, team identity, migration, upload cleanup, backup, or restore must preserve the invariants in the architecture document and include regression tests.
+This is the single source of truth for development, testing, review, and deployment
+workflow. Product behavior belongs in the [user guide](docs/user-guide.md), runtime
+boundaries in the [architecture](docs/architecture.md), and HTTP contracts in the
+[API reference](docs/api.md).
 
-## Tech Stack
+## Repository layout
 
-Frontend: Vue 3, Vite, Vue Router, Pinia (traffic/energymeter only) · Backend: Node.js 22, Express.js 5, Better-SQLite3 · Auth: Google OAuth 2.0, JWT (HMAC-SHA256) cookies, RBAC · Real-time: SSE (inspection, queue, score, traffic, course) + WebRTC (rover camera — WHIP/WHEP via mediamtx, `aiortc` on the rover, three.js/WebXR in the course `/vr` view) · Deploy: Docker Compose + Caddy · Testing: `node:test` + `node:assert`, Playwright (E2E)
+- `competition/` deploys Teams, Queue, Registration, Inspection, Traffic, Score, and
+  Documents as one process and database. Their top-level directories contain module
+  factories and web applications, not separate deployments.
+- `auth/`, `calendar/`, `course/`, and `email/` are supporting services; `shared/`
+  contains common server code and `tests/` mirrors service boundaries.
+- Hardware work is documented under `rover/` and `traffic/device/`.
 
-## Commands
+## Local development
+
+Use Node.js 22 and npm. Run `npm ci` at the root and in each backend or web package
+you touch. Service startup needs `.env` based on `.env.example`; tests inject their
+own dependencies where possible.
 
 ```bash
-# Frontend dev
-cd {service}/web && npm run dev|build
+npm test                         # all unit and integration tests
+npm run test:competition        # one service or domain
+npm run test:shared
 
-# Backend dev — supporting services export create*App(options)
-cd {service} && node index.mjs
-# Competition is the deployed owner of teams, queue, registration, inspection,
-# traffic, score, and documents. Their factories are composed in-process and used by tests;
-# they are not standalone deployment or rollback profiles.
-
-# Docker (Makefile wraps podman compose, auto-prunes)
-make deploy                    # Pull images + restart (production)
-make deploy SVC=competition    # Competition core
-make build                     # Build locally (dev)
-make restart                   # Restart only (no pull/build)
-make deploy PROFILE=local      # Local dev (localhost:9000)
-
-# Backup / Restore (scripts/ — requires sqlite3 CLI)
-make backup                    # → ./backups/fsk-backup-YYYYMMDD-HHMMSS.zip
-make backup DEST=/mnt/nas      # Custom destination
-make restore ZIP=backups/fsk-backup-20260323-120000.zip
-
-# Rover bring-up after a fresh image flash (reads .env, writes pilot.conf,
-# recreates podman secrets, restarts pilot/perception services; idempotent)
-scripts/provision-rover.sh <rover-ip> [--ntrip-username=<id>]
+npm --prefix entry/web run dev  # replace entry with the relevant SPA
+npm --prefix entry/web run build
+node competition/index.mjs      # replace competition for a supporting service
 ```
 
-Prerequisites: podman machine, `.env` from `.env.example` (min: `JWT_SECRET`, `INTERNAL_SECRET`).
+Competition is the deployed owner of its seven domains. Their application factories
+remain directly usable by tests, but do not run them as standalone services.
 
-## Auth and inter-service calls
+The root `Makefile` and `compose.yml` are not deployment interfaces for the k3s
+servers. Do not use `make deploy`, `make restart`, `make backup`, or `make restore`
+against the live k3s environment.
 
-**Roles**: `public < student < official < chief < admin`. `authRoleFn(req)` returns role or null. Non-API routes redirect to `/` on 401/403.
-
-Caddy strips `X-Internal-Service` and `Authuser` from external requests. Supporting-service calls use `X-Internal-Service` header (= `INTERNAL_SECRET`), auto-admin.
-
-All non-auth services validate through Auth and fail closed: only HTTP 200 confirms a user. There is no runtime switch that disables this. Tests inject `TRUST_JWT` through the application factory. Environment variables such as `<NAME>_SERVER` override supporting-service integrations; they cannot split the deployed Competition runtime.
-
-Inside Competition, Score consumes module query ports and receives Inspection/Traffic invalidations through an in-process event bridge; it does not loop back through HTTP/SSE. Teams are the sole shared roster source. There is no finalize boundary, standalone Competition-module runtime, lifecycle compatibility API, or reverse migration. Auth aggregates the seven logical module logs through their flat versioned Competition endpoints.
-
-**FileBrowser** (`/files/`, chief+): uses separate `X-Forward-Auth-Key` header. DB reset requires container recreate: `podman rm -f fsk-filebrowser && podman compose --profile production up -d filebrowser`.
+For rover work, follow [rover/README.md](rover/README.md).
 
 ## Testing
 
+- Add or update deterministic tests for every behavior change.
+- For a bug fix, first reproduce the defect and observe the test fail. Then apply the
+  fix and observe the same test pass.
+- Run the narrowest relevant test first. Run all affected suites before handoff.
+- Playwright E2E runs in CI only. Do not run it locally.
+- Register API response waits before the action that triggers them. Use Playwright
+  assertions or `expect.poll()` for eventual state; never synchronize API or SSE
+  behavior with `waitForTimeout` or another fixed sleep.
+- Keep parallel tests isolated with unique data. Do not assert a global exact count
+  when another shard can add records.
+
+CI is defined in [.github/workflows/test.yml](.github/workflows/test.yml). Inspect a
+failed run with `gh run view <run-id> --log-failed`.
+
+## Authentication and service calls
+
+- Roles are `public < student < official < chief < admin`.
+- Non-auth services revalidate through Auth and fail closed; only HTTP `200` confirms
+  a user. Tests may inject `TRUST_JWT` through an application factory. Production
+  has no authentication bypass.
+- Caddy removes external `X-Internal-Service` and `Authuser` headers. Internal calls
+  use `X-Internal-Service` with `INTERNAL_SECRET`.
+- Competition modules communicate in-process. Do not add HTTP calls between them or
+  split them into separate runtime profiles.
+
+## Logging
+
+Backends use `createLogger(db, serviceName)` from `shared/logger.mjs`.
+
+```js
+logger.log(req, "team.create", { before, after }, target);
+logger.warn(req, "team.create", { error, input }, target);
+```
+
+- Log every successful mutation with the affected target and meaningful change.
+- Log business, database, authentication, and integration failures before returning
+  the error. Simple input-shape `400` responses may omit a log.
+- Use dot-separated actions such as `team.create`. Put identifiers in `target` and
+  auditable before/after or failure context in `detail`.
+- Use `logger.warn`, not `console.*`, when the structured logger is trustworthy.
+  Console logging is limited to startup/migration code or failure of the logger's
+  own storage path; explain that exception in a comment.
+- Competition logs that mention a team number must retain its year and canonical
+  `competition_team` context because numbers can be reused.
+
+## k3s deployment
+
+The separate `/srv/k3s` repository manages two independent k3s environments. Each
+host runs its own Flux reconciliation against its own manifest path.
+
+| Host | Environment | URL | Manifest path |
+|---|---|---|---|
+| `lufthafen` | Test | `https://test.luftaquila.io` | `clusters/lufthafen/apps/fsk/` |
+| `luftwolke` | Live | `https://fsk.luftaquila.io` | `clusters/luftwolke/apps/fsk/` |
+
+Change one or both paths deliberately; do not assume their configuration is
+identical. A command run on one host affects only that host's cluster.
+
+Repository structure is part of the deployment contract. When a top-level service
+or module path, shared-code boundary, Dockerfile, or image owner changes, update and
+test all of these in the same coordinated change:
+
+- `.github/workflows/build.yml`
+- the affected application Dockerfile
+- `/srv/k3s/scripts/fsk-contract.sh` and `fsk-redeploy.sh`
+- both `clusters/{lufthafen,luftwolke}/apps/fsk/` manifest sets when applicable
+
+Do not preview or promote a change when the deployment script's `Changed services`
+output omits an image affected by the diff.
+
+Use an explicit kubeconfig on the server:
+
 ```bash
-npm test                    # All tests
-npm run test:{service}      # Specific service
-npm run test:shared         # Shared modules
+kubectl --kubeconfig /home/luftaquila/.kube/config get nodes
+flux get kustomizations
 ```
 
-Tests: `tests/<service>/<service>.test.mjs`, utils: `tests/helpers/test-utils.mjs`. **Always add/update tests for code changes.**
+### Preview a pull request on test
 
-### E2E (Playwright) — CI only, do NOT run locally
+Run PR previews on `lufthafen` unless the user explicitly authorizes a live preview.
+The command mutates the current host's cluster and suspends that host's Flux:
 
-Tests: `tests/e2e/{service}/*.spec.mjs` · CI: `.github/workflows/test.yml` (push/PR to main) · Check: `gh run list` → `gh run view <id> --log-failed`
-
-**Never use `waitForTimeout` for API saves.** Use deterministic waits:
-
-```js
-// Set up waitForResponse BEFORE the action, await AFTER
-const p = page.waitForResponse(res => res.url().includes("/api/...") && res.status() === 200);
-await input.blur();
-await p;
+```bash
+cd /srv/k3s
+./scripts/fsk-redeploy.sh <pull-request-number>
 ```
 
-Patterns: immediate → `waitForResponse` before action | debounced → before `fill()` | SSE → before `goto()` | cleanup (maybe no call) → `Promise.race([resp, timeout(1000)])` | inter-service sync → `expect.poll()` | client-only → Playwright auto-retry assertions.
+The script checks out the PR in a separate worktree, maps changed paths to deployed
+images, builds `:dev` images into k3s containerd, deploys them, waits for readiness,
+and verifies the running image. A Competition-domain change must appear as the
+single `competition` image in the script's `Changed services` output; stop if an
+expected image is missing. Flux remains suspended so it does not overwrite the
+preview.
 
-**Parallel isolation**: never assert exact counts; use `toBeGreaterThanOrEqual`, regex, or isolated test data.
+### Promote or restore main
 
-## Logging Policy
+1. Merge the application pull request and wait for the `Build Images` workflow.
+2. Merge any required manifest change in `/srv/k3s`.
+3. With operator approval, deploy and verify main on `lufthafen`:
 
-All backend services use `createLogger(db, serviceName)` from `shared/logger.mjs`. Logs are stored per-service in SQLite `logs` table and aggregated by auth service (`GET /api/admin/logs`).
-
-### API
-
-```js
-logger.log(req, action, detail, target, actorOverride)   // level: info (성공)
-logger.warn(req, action, detail, target, actorOverride)   // level: warn (실패·경고)
-```
-
-- `action`: dot-separated `resource.operation` (e.g., `team.create`, `rover.request`)
-- `target`: 영향받는 대상 식별자 (e.g., `#123`, `course-name`, `rover`)
-- `detail`: 객체면 자동 JSON.stringify, 문자열이면 그대로 저장. null 허용
-- `actorOverride`: 다른 사용자 대신 기록 시 `{ email, name, role }` 전달
-
-### 레벨 규칙
-
-| 상황 | 레벨 | 예시 |
-|------|------|------|
-| 작업 성공 | `logger.log` | `logger.log(req, "team.create", { year, university }, "123")` |
-| 작업 실패 (비즈니스 로직, DB 에러) | `logger.warn` | `logger.warn(req, "team.create", { error: result.error }, "123")` |
-| 보안 이벤트 (인증 실패, 권한 거부) | `logger.warn` | `logger.warn(req, "auth.forward_auth_denied", ...)` |
-
-### 필수 로깅 원칙
-
-1. **모든 쓰기 작업(CUD)의 실패는 반드시 로깅한다.** dbRun 실패 시 에러 응답 전에 `logger.warn`을 호출한다:
-   ```js
-   const result = dbRun(() => { ... });
-   if (!result.success) {
-     logger.warn(req, "resource.operation", { error: result.error }, target);
-     return res.status(result.status).send(result.error);
-   }
+   ```bash
+   cd /srv/k3s
+   ./scripts/fsk-redeploy.sh
    ```
-   단, 핸들러 진입부의 **단순 입력 검증 400**(형식/누락 등 비즈니스 로직 도달 전 조기 반환)의 로깅은 선택이다 — DB·비즈니스 로직·서비스 간 통신 실패가 필수 대상이다.
 
-2. **같은 액션의 성공/실패는 반드시 레벨로 구분한다.** 같은 action 문자열을 써도 성공은 `logger.log`, 실패는 `logger.warn`. 로그 뷰어에서 레벨 필터링으로 장애를 찾을 수 있어야 한다.
+4. With separate explicit approval, run the same command on `luftwolke` and verify
+   the live environment.
 
-3. **catch 블록에서 `console.error` 대신 `logger.warn`을 쓴다.** 구조화된 로그만 로그 뷰어에 노출되므로, `console.*`으로만 남기면 운영 중 확인 불가. `console.error`는 서버 시작·마이그레이션 등 logger 사용 불가 시점에만 허용.
+The script validates the current Competition data before resuming Flux, reconciles
+the GitOps state, restarts the declared application deployments, checks readiness,
+and verifies that running GHCR digests match `:latest`. It does not create or
+remigrate Competition data. Use `./scripts/fsk-redeploy.sh --check` to validate
+deployment without a Flux resume or workload rollout; it still creates a temporary
+validation pod.
 
-   예외 하나 더 — **로거의 저장소 자체가 실패 대상인 경로.** `shared/express-setup.mjs`의 인증 재검증 실패 분기가 이에 해당한다. `createLogger(db)`는 검증기가 조회하던 바로 그 DB에 `INSERT` 하고 로그 뷰어도 같은 DB를 읽으므로, 이 분기를 타게 만드는 대표 원인(auth의 `SQLITE_BUSY`/`IOERR`)에서는 DB 로깅이 무용하다. 이런 경로에서만 `console.warn`이 옳으며, 이유를 주석에 남긴다. "logger를 쓸 수 없어서"가 아니라 "logger가 못 미더운 상황이라서"가 기준이다.
+Secrets are imperative Kubernetes Secrets and never belong in Git. Follow
+`/srv/k3s/README.md` for per-cluster bootstrap, secrets, infrastructure, and recovery
+operations instead of copying those procedures here.
 
-4. **서비스 간 통신 실패는 반드시 로깅한다.** fetch 실패, 타임아웃 등을 `logger.warn`으로 기록하여 어떤 서비스가 왜 실패했는지 추적 가능하게 한다.
+## Handoff
 
-5. **파괴적 작업(cascade 삭제, 파일 정리)은 성공·실패 모두 반드시 로깅한다.** 감사 로그만으로 대상과 결과를 확인할 수 있어야 한다.
-
-6. **detail에는 사람이 이해할 수 있는 충분한 맥락을 누락 없이 포함한다.** 로그만 보고 무슨 일이 있었는지 완전히 파악할 수 있어야 한다. 실패 로그에는 `{ error: "..." }` 형태로 에러 원인을, 성공 로그에는 변경된 값·대상·조건 등 핵심 정보를 담는다. ID만 남기고 이름을 빠뜨리거나, 에러 객체를 그대로 던지는 등 맥락이 불충분한 로그를 남기지 않는다.
-
-7. **Competition 로그의 엔트리 번호에는 정식 팀 정보를 함께 남긴다.** 공통 로거는 `#번호`, `연도#번호`, `team_num`, `entry_num` 등으로 팀을 식별하는 로그를 `competition_team` 기준의 `{ id, year, number, university, name, active }` 컨텍스트로 보강한다. 연도별로 번호가 재사용될 수 있으므로 과거 데이터를 읽는 로그에는 반드시 해당 연도를 포함한다.
-
-## References
-
-See `docs/api.md` for endpoints, `docs/architecture.md` for runtime design, `docs/user-guide.md` for operator behavior, and `.env.example` for environment variables.
+- Review `git diff` and `git diff --check`.
+- Report files changed, tests run, deployment actions, and remaining risk.
+- Do not claim a behavior or deployment is verified if its check was not run.

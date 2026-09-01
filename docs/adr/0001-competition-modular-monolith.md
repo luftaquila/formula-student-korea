@@ -30,4 +30,3 @@ Keep Auth, Email/SMS, Calendar, Course/Rover, FileBrowser, the reverse proxy, an
 - Noncurrent years are readable but immutable.
 - There is no standalone legacy Competition profile, compatibility facade, background file-deletion queue, or reverse migration.
 - The Competition database and referenced upload tree must be backed up and restored as one quiesced unit.
-- Rollback restores the coordinated pre-cutover legacy backup and deploys the retained legacy Git revision, discarding post-cutover Competition writes.

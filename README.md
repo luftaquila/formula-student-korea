@@ -1,96 +1,54 @@
-# formula-student-korea
+# Formula Student Korea
 
-Formula Student Korea Service Hub
-
-Read the [user guide](docs/user-guide.md) to operate the system.
+Web services and rover software for Formula Student Korea operations.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md): runtime boundaries, ownership, and lifecycle invariants
-- [API reference](docs/api.md): current versioned and supporting-service HTTP contracts
-- [User guide](docs/user-guide.md): competition workflows and roles
-- [ADR 0001](docs/adr/0001-competition-modular-monolith.md): why the competition core is a modular monolith
-- [Competition cutover](docs/runbooks/competition-cutover.md): one-time migration and deployment gates
-- [Backup and restore](docs/runbooks/backup-restore.md): ongoing data-protection procedure
-- [Contributing](CONTRIBUTING.md): development, tests, and logging policy
+- [User guide](docs/user-guide.md): operator workflows and roles
+- [Architecture](docs/architecture.md): runtime boundaries and data ownership
+- [API reference](docs/api.md): public and supporting-service contracts
+- [Contributing](CONTRIBUTING.md): development, tests, review, and k3s deployment
+- [Backup and restore](docs/runbooks/backup-restore.md): data-safety contract
+- [ADR 0001](docs/adr/0001-competition-modular-monolith.md): Competition design
+- [Agent instructions](AGENTS.md): repository-specific coding-agent constraints
 
-## Services
+## Runtime
 
-| Service | Description | Port |
-|---------|-------------|------|
-| landing | Landing page & Caddy reverse proxy | 9000 |
-| auth | Authentication & user management | 9100 |
-| competition | Modular monolith: teams, queue, registration, inspection, traffic, score, documents | 9200 |
-| energymeter | Energy meter data viewer | 9800 |
-| email | Email/SMS management & Brevo integration | 9900 |
-| course | Course cone management with RTK GPS rover + WebRTC camera / WebXR VR teleop | 10000 |
-| calendar | Competition schedule management | 11000 |
-| files | Cloud file storage (chief+ only) | 8080 |
-| mediamtx | WebRTC relay for the rover camera (WHIP/WHEP). k3s-only — not in `compose.yml` | 8889 |
+The separate `/srv/k3s` repository manages two independent deployments of this
+application. Both use the `fsk` namespace, Flux, Traefik, and Caddy.
 
-## Authentication
+| Environment | Host | URL | GitOps path |
+|---|---|---|---|
+| Test | `lufthafen` | `https://test.luftaquila.io` | `clusters/lufthafen/apps/fsk/` |
+| Live | `luftwolke` | `https://fsk.luftaquila.io` | `clusters/luftwolke/apps/fsk/` |
 
-Google OAuth 2.0 + JWT cookie-based authentication.
+Each host reconciles only its own path. Application images come from this repository;
+environment manifests and Kubernetes secrets belong to `/srv/k3s` and the target
+cluster.
 
-### Roles
+| Workload | Responsibility | Port |
+|---|---|---:|
+| `caddy` | Application gateway | 9000 |
+| `auth` | Google OAuth, users, roles, and aggregated logs | 9100 |
+| `competition` | Teams, Queue, Registration, Inspection, Traffic, Score, Documents | 9200 |
+| `email` | Email and SMS integration | 9900 |
+| `course` | Course, rover, RTK GPS, camera, and teleoperation | 10000 |
+| `calendar` | Competition schedules | 11000 |
 
-| Role | Level | Access |
-|------|-------|--------|
-| Admin | 4 | All services |
-| Chief | 3 | Document management, file storage, etc. |
-| Official | 2 | Queue management, inspection sheets, etc. |
-| Student | 1 | Document submission, etc. |
+Energy Meter, FileBrowser, and mediamtx share the cluster but have independent image
+or data ownership. See the [architecture](docs/architecture.md) for the system
+boundary.
 
-## Getting Started
+## Development
 
-### Prerequisites
-
-- Podman & Podman Compose (or Docker & Docker Compose)
-- Google OAuth 2.0 credentials (Client ID & Secret)
-
-### Configuration
-
-1. Copy the example environment file and fill in the values:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-2. Configure the required environment variables in `.env`
-   - Note: Google OAuth redirect URI should be set to `{PUBLIC_URL}/auth/api/callback`.
-
-### Run
-
-#### Production (Traefik + Caddy)
-
-Set `DOMAIN_NAME` in `.env` file.
+Use Node.js 22 and npm.
 
 ```bash
-make deploy              # Pull images + deploy
-make deploy SVC=competition  # Pull Competition + deploy
-make build               # Build locally (dev)
-make build SVC=competition   # Build Competition locally
-make restart             # Restart only (no pull/build)
+npm test
+npm run test:competition
+npm --prefix entry/web run build
 ```
 
-#### Local Development
-
-```bash
-make deploy PROFILE=local              # Pull images + deploy
-make deploy PROFILE=local SVC=competition  # Pull Competition + deploy
-```
-
-Available at `http://localhost:9000`.
-
-## Testing
-
-### Unit / Integration Tests
-
-```bash
-npm test                          # Run all tests
-npm run test:auth                 # Auth service only (etc.)
-```
-
-### E2E Tests (Playwright)
-
-E2E tests run in CI for pushes and pull requests targeting `main`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for service commands, deterministic test
+rules, logging requirements, and the `/srv/k3s` PR-preview and promotion workflow.
+The root Compose and Make targets are not used to deploy the k3s environments.

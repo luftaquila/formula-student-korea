@@ -1,5 +1,12 @@
 # Architecture
 
+## Deployment topology
+
+`/srv/k3s` manages two independent clusters: `lufthafen` serves the test environment
+and `luftwolke` serves live. Each cluster reconciles its own
+`clusters/<hostname>/apps/fsk/` path and owns its own runtime state. Deployment and
+verification happen separately for each environment.
+
 ## System boundary
 
 Competition-critical domains run as modules in one `competition` process, one deployment, and one Better-SQLite3 database. Supporting services remain independent.
@@ -47,11 +54,20 @@ The one-shot legacy migrator copies only files referenced by `submission_file` m
 
 ## Migration, backup, and rollback
 
-The migrator is the only code that understands the six legacy databases. It opens sources read-only, verifies they do not change, binds operational data to stable team IDs, copies referenced uploads, validates the result, and publishes new artifacts create-if-absent. Its adjacent JSON report is audit evidence only and is not required for runtime, backup, or restore identity.
+The completed cutover used the only migrator that understands the six legacy
+databases. It opened sources read-only, verified they did not change, bound data to
+stable team IDs, copied referenced uploads, validated the result, and published new
+artifacts create-if-absent. Current k3s deployment never reruns this migration.
 
-Competition backup and restore require an exact manifest containing Competition, Auth, Calendar, Course, and Email, then validate the complete database schemas, SQLite integrity, foreign keys, canonical team references, and referenced uploads before publishing or replacing artifacts. Validation is read-only and fail-closed. FileBrowser remains an external service: its mounted file tree is copied when present, but its private database and lifecycle are not part of this coordinated state contract.
+Competition backup and restore require an exact manifest containing Competition,
+Auth, Calendar, Course, and Email. Validation covers complete schemas, SQLite
+integrity, foreign keys, canonical team references, and referenced uploads before
+publishing or replacing artifacts. FileBrowser's mounted payload may be copied, but
+its private database and lifecycle remain outside this coordinated state contract.
 
-Rollback does not translate Competition writes back into legacy schemas. Stop Competition, restore the coordinated pre-cutover legacy database/upload backup, and deploy the retained legacy Git revision.
+Rollback never translates Competition writes into legacy schemas or restarts the
+retired writers. Restore a validated coordinated Competition backup and deploy an
+application revision compatible with that state.
 
 ## Authentication and audit
 
@@ -59,4 +75,5 @@ Roles are `public < student < official < chief < admin`. Services revalidate thr
 
 All Competition module logs live in the shared database with a module discriminator. Every successful mutation and every business, database, or integration failure records enough before/after context to audit destructive changes.
 
-See the [cutover runbook](runbooks/competition-cutover.md), [backup/restore runbook](runbooks/backup-restore.md), and [ADR 0001](adr/0001-competition-modular-monolith.md).
+See the [backup/restore contract](runbooks/backup-restore.md) and
+[ADR 0001](adr/0001-competition-modular-monolith.md).
