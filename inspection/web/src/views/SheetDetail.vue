@@ -815,7 +815,7 @@ watch(reconnected, async () => {
             :aria-valuemax="inspectionStatusMap.total"
             :aria-label="`검차 진행률 ${inspectionStatusMap.completed}/${inspectionStatusMap.total}`"
           >
-            <strong>문항 현황</strong>
+            <strong>진행률</strong>
             <span>{{ inspectionStatusMap.completed }}/{{ inspectionStatusMap.total }} · {{ inspectionStatusMap.percent }}%</span>
           </div>
           <div class="inspection-overview-actions">
