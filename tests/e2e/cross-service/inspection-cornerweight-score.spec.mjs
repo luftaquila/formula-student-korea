@@ -161,7 +161,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     await expect(teamRow).toBeVisible({ timeout: 10000 });
 
     // Category order is sort_order-driven and parallel specs add and drop columns, so the
-    // header index, the body/header alignment, and the cell text are all read in ONE poll
+    // header index, the body/header alignment, and the cell contents are all read in ONE poll
     // attempt rather than captured across separate awaits. Misalignment means the body
     // loop skipped a category and every badge sits under the wrong header.
     await expect.poll(async () => {
@@ -170,7 +170,14 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
       if (cwIndex === -1) return "column-missing";
       const cells = teamRow.locator("td.col-result");
       if (await cells.count() !== headerTexts.length) return "header-body-misaligned";
-      return (await cells.nth(cwIndex).innerText()).trim();
-    }, { timeout: 10000 }).toBe("-"); // No PASS/FAIL recorded → empty placeholder.
+      const cell = cells.nth(cwIndex);
+      return {
+        result: (await cell.locator(".badge-empty").innerText()).trim(),
+        inspector: (await cell.locator(".inspector-name").innerText()).trim(),
+      };
+    }, { timeout: 10000 }).toEqual({
+      result: "-", // No PASS/FAIL recorded → empty placeholder.
+      inspector: "(E2E Admin)", // Answer edits automatically retain the real-name editor.
+    });
   });
 });
