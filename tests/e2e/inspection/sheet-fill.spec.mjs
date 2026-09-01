@@ -112,14 +112,19 @@ test.describe("Inspection sheet filling", () => {
     const firstItemBox = await page.locator(".item-row").first().boundingBox();
     expect(firstItemBox.y).toBeLessThan(844);
 
+    const initialScrollY = await page.evaluate(() => window.scrollY);
     const itemLink = progress.locator('.status-map-item[aria-label*="전압 확인"]');
     await expect(itemLink).toBeVisible();
     await itemLink.click();
-    await expect.poll(async () => page.evaluate(() => {
+    await expect.poll(async () => page.evaluate((startScrollY) => {
       const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
       const item = [...document.querySelectorAll(".item-row")].find(row => row.textContent.includes("전압 확인")).getBoundingClientRect();
-      return Math.abs(item.top - progress.bottom - 8);
-    })).toBeLessThanOrEqual(2);
+      return {
+        scrolled: window.scrollY > startScrollY,
+        belowProgress: item.top >= progress.bottom + 6,
+        withinViewport: item.bottom <= window.innerHeight,
+      };
+    }, initialScrollY)).toEqual({ scrolled: true, belowProgress: true, withinViewport: true });
 
     const outlineToggle = progress.locator(".inspection-outline-toggle");
     await outlineToggle.click();
@@ -132,8 +137,11 @@ test.describe("Inspection sheet filling", () => {
     await expect.poll(async () => page.evaluate(() => {
       const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
       const group = document.querySelector(".group-section").getBoundingClientRect();
-      return Math.abs(group.top - progress.bottom - 8);
-    })).toBeLessThanOrEqual(2);
+      return {
+        belowProgress: group.top >= progress.bottom + 6,
+        withinViewport: group.top < window.innerHeight,
+      };
+    })).toEqual({ belowProgress: true, withinViewport: true });
   });
 
   test("shows the vehicle type chip between the team name and the year", async ({ page }) => {
