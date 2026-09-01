@@ -532,21 +532,20 @@ const unansweredItems = computed(() => statusItems("unanswered"));
 
 const memoOpen = ref(false);
 const memoItems = computed(() => {
+  const cat = currentCategory.value;
+  if (!cat) return [];
   const items = [];
-  for (const [ci, cat] of visibleCategories.value.entries()) {
-    for (const [si, sub] of (cat.subcategories || []).entries()) {
-      for (const [gi, grp] of (sub.groups || []).entries()) {
-        for (const [ii, item] of (grp.items || []).entries()) {
-          const memo = normalizeMemo(getMemo(item.id));
-          if (!memo) continue;
-          items.push({
-            id: item.id,
-            categoryIndex: ci,
-            path: `${catNumById.value[cat.id]}. ${cat.name} › ${subNum(si)}-${grpNum(gi)} ${itemNum(ii)}`,
-            name: item.name,
-            memo,
-          });
-        }
+  for (const [si, sub] of (cat.subcategories || []).entries()) {
+    for (const [gi, grp] of (sub.groups || []).entries()) {
+      for (const [ii, item] of (grp.items || []).entries()) {
+        const memo = normalizeMemo(getMemo(item.id));
+        if (!memo) continue;
+        items.push({
+          id: item.id,
+          path: `${subNum(si)}-${grpNum(gi)} ${itemNum(ii)} · ${sub.name} › ${grp.name}`,
+          name: item.name,
+          memo,
+        });
       }
     }
   }
@@ -575,7 +574,6 @@ async function scrollToMemoItem(item) {
   const shouldWait = memoOpen.value;
   memoOpen.value = false;
   outlineOpen.value = false;
-  activeTab.value = item.categoryIndex;
   await nextTick();
   await waitForSummaryCollapse(shouldWait);
   await scrollToItem(item.id);
@@ -671,6 +669,7 @@ watch(activeTab, () => {
   outlineOpen.value = false;
   failedOpen.value = false;
   missingOpen.value = false;
+  memoOpen.value = false;
   sessionStorage.setItem("inspectionScrollY", 0);
   window.scrollTo(0, 0);
 });
@@ -962,7 +961,7 @@ watch(reconnected, async () => {
         </div>
       </div>
 
-      <!-- Memos in this team sheet -->
+      <!-- Memos in the current category -->
       <div v-if="memoItems.length" class="memo-summary">
         <button class="memo-summary-toggle" @click="memoOpen = !memoOpen">
           메모 {{ memoItems.length }}개

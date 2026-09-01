@@ -83,9 +83,11 @@ test.describe("Inspection answer and memo save reliability", () => {
     await replaceAnswer(page, item.id, "");
   });
 
-  test("shows and edits the full multiline memo without overlapping save state", async ({ page }) => {
+  test("shows, edits, and scopes full multiline memos to the active category", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
+    const otherCategoryItem = await findItem(page, "용접 상태");
     await replaceMemo(page, item.id, "");
+    await replaceMemo(page, otherCategoryItem.id, "다른 카테고리 메모");
 
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(`/inspection/${YEAR}/${TEAM}`);
@@ -118,8 +120,17 @@ test.describe("Inspection answer and memo save reliability", () => {
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(filledRowHeight);
     await summary.locator(".memo-summary-toggle").click();
     await expect(summary.locator(".memo-summary-preview")).toContainText("첫째 줄");
+    await expect(summary.locator(".memo-summary-preview")).not.toContainText("다른 카테고리 메모");
+
+    await page.locator(".tab").filter({ hasText: "샤시 검차" }).click();
+    await expect(summary.locator(".memo-summary-toggle")).toContainText("메모 1개");
+    await expect(summary.locator(".memo-summary-list")).toHaveCount(0);
+    await summary.locator(".memo-summary-toggle").click();
+    await expect(summary.locator(".memo-summary-preview")).toContainText("다른 카테고리 메모");
+    await expect(summary.locator(".memo-summary-preview")).not.toContainText("첫째 줄");
 
     await replaceMemo(page, item.id, "");
+    await replaceMemo(page, otherCategoryItem.id, "");
   });
 
   test("retains an optimistic answer after a failed save and retries it", async ({ page }) => {
