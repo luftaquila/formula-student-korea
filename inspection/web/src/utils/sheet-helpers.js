@@ -59,6 +59,66 @@ export function isResponseItem(item) {
   return item?.answer_type !== "stopwatch" && item?.calculation?.mode !== "computed";
 }
 
+function parseChecktableValue(value) {
+  if (value && typeof value === "object") return value;
+  try {
+    return JSON.parse(value) || {};
+  } catch {
+    return {};
+  }
+}
+
+export function getInspectionItemState(item, value) {
+  if (!isResponseItem(item)) return null;
+  if (item?.answer_type === "passfail") {
+    if (value === "PASS") return "pass";
+    if (value === "FAIL") return "fail";
+    if (value === "N/A") return "na";
+  }
+  if (item?.answer_type === "checktable") {
+    return hasCheckedChecktableCell(item, parseChecktableValue(value)) ? "answered" : "unanswered";
+  }
+  return String(value ?? "") ? "answered" : "unanswered";
+}
+
+export function buildInspectionStatusMap(category, answers = {}) {
+  const counts = { pass: 0, fail: 0, na: 0, answered: 0, unanswered: 0 };
+  const subcategories = (category?.subcategories || []).map((sub, subIndex) => ({
+    id: sub.id,
+    name: sub.name,
+    number: subNum(subIndex),
+    groups: (sub.groups || []).map((group, groupIndex) => {
+      const items = (group.items || []).flatMap((item, itemIndex) => {
+        const value = answers[item.id]?.value ?? "";
+        const state = getInspectionItemState(item, value);
+        if (!state) return [];
+        counts[state] += 1;
+        return [{
+          id: item.id,
+          name: item.name,
+          number: itemNum(itemIndex),
+          state,
+        }];
+      });
+      return {
+        id: group.id,
+        name: group.name,
+        number: grpNum(groupIndex),
+        items,
+      };
+    }),
+  }));
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
+  const completed = total - counts.unanswered;
+  return {
+    subcategories,
+    counts,
+    completed,
+    total,
+    percent: total ? Math.round((completed / total) * 100) : 0,
+  };
+}
+
 export function isPdfItem(item) {
   return item?.answer_type !== "stopwatch";
 }

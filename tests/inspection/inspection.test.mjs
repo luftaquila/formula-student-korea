@@ -900,7 +900,23 @@ describe('Answer CRUD', () => {
     assert.equal(data.answers[answerItemId].value, 'PASS');
   });
 
-  it('PUT /api/sheet/answer validates passfail type (only PASS/FAIL/"")', async () => {
+  it('PUT /api/sheet/answer accepts N/A for a passfail item', async () => {
+    const current = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    const res = await client.put('/api/sheet/answer', {
+      body: {
+        year: CURRENT_YEAR,
+        team_num: 1,
+        item_id: answerItemId,
+        value: 'N/A',
+        expectedValue: current.answers[answerItemId]?.value || '',
+      },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 200);
+    assert.equal((await res.json()).value, 'N/A');
+  });
+
+  it('PUT /api/sheet/answer validates passfail type (only PASS/FAIL/N/A/"")', async () => {
     const res = await client.put('/api/sheet/answer', {
       body: { year: CURRENT_YEAR, team_num: 1, item_id: answerItemId, value: 'INVALID' },
       cookie: officialCookie,

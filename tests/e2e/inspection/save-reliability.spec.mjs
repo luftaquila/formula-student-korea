@@ -194,20 +194,20 @@ test.describe("Inspection answer and memo save reliability", () => {
     await page.locator(".tab").filter({ hasText: category.name }).click();
 
     const progress = page.locator(".inspection-progress");
-    const initialCompleted = Number(await progress.getAttribute("aria-valuenow"));
-    await page.locator(".missing-toggle").click();
-    const missingItem = page.locator(".missing-item").filter({ hasText: item.name });
-    await expect(missingItem).toHaveCount(1);
+    const progressValue = progress.locator(".inspection-progress-label");
+    const initialCompleted = Number(await progressValue.getAttribute("aria-valuenow"));
+    const statusItem = progress.locator(`.status-map-item[aria-label*="${item.name}"]`);
+    await expect(statusItem).toHaveClass(/status-unanswered/);
 
     const row = page.locator(".item-row").filter({ hasText: item.name });
     const cells = row.locator('.checktable-cell input[type="checkbox"]');
     expect(await cells.count()).toBeGreaterThan(1);
     await cells.first().check();
-    await expect.poll(async () => Number(await progress.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
-    await expect(missingItem).toHaveCount(0);
+    await expect.poll(async () => Number(await progressValue.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
+    await expect(statusItem).toHaveClass(/status-answered/);
 
     await cells.nth(1).check();
-    await expect.poll(async () => Number(await progress.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
+    await expect.poll(async () => Number(await progressValue.getAttribute("aria-valuenow"))).toBe(initialCompleted + 1);
 
     await replaceAnswer(page, item.id, "");
     await page.request.put("/competition/api/v1/inspection/sheet/category-result", {
@@ -215,7 +215,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     });
   });
 
-  test("shows progress above FAIL, unanswered, and memo summaries in that order", async ({ page }) => {
+  test("shows a sticky status map for FAIL and unanswered items above memo summaries", async ({ page }) => {
     const { item, category } = await findItemContext(page, "전압 확인");
     await replaceAnswer(page, item.id, "FAIL");
     await replaceMemo(page, item.id, "상단 순서 확인");
@@ -228,43 +228,34 @@ test.describe("Inspection answer and memo save reliability", () => {
     await waitForPageReady(page);
 
     const progress = page.locator(".inspection-progress");
+    const progressValue = progress.locator(".inspection-progress-label");
     await expect(progress).toBeVisible();
-    await expect(page.locator(".failed-banner")).toBeVisible();
-    await expect(page.locator(".missing-banner")).toBeVisible();
+    await expect(progress.locator('.status-map-item[aria-label*="전압 확인"]')).toHaveClass(/status-fail/);
+    await expect(progress.locator(".status-map-item.status-unanswered").first()).toBeVisible();
     await expect(page.locator(".memo-summary")).toBeVisible();
-    const blockOrder = await page.locator(
-      ".inspection-progress, .failed-banner, .missing-banner, .memo-summary",
-    ).evaluateAll(elements => elements.map(element => element.classList[0]));
-    expect(blockOrder.slice(0, 4)).toEqual([
-      "inspection-progress",
-      "failed-banner",
-      "missing-banner",
-      "memo-summary",
-    ]);
-    expect(Number(await progress.getAttribute("aria-valuenow"))).toBeGreaterThan(0);
-    expect(Number(await progress.getAttribute("aria-valuemax"))).toBeGreaterThan(
-      Number(await progress.getAttribute("aria-valuenow")),
+    const progressBox = await progress.boundingBox();
+    const memoBox = await page.locator(".memo-summary").boundingBox();
+    expect(progressBox.y + progressBox.height).toBeLessThanOrEqual(memoBox.y);
+    expect(Number(await progressValue.getAttribute("aria-valuenow"))).toBeGreaterThan(0);
+    expect(Number(await progressValue.getAttribute("aria-valuemax"))).toBeGreaterThan(
+      Number(await progressValue.getAttribute("aria-valuenow")),
     );
 
     const progressStyles = await progress.evaluate(element => {
-      const fill = element.querySelector(".inspection-progress-fill");
-      const passButton = document.querySelector(".btn-success");
+      const failItem = element.querySelector(".status-map-item.status-fail");
+      const failButton = document.querySelector(".item-row .pf-toggle .btn-danger");
       return {
         position: getComputedStyle(element).position,
         top: getComputedStyle(element).top,
-        paddingTop: getComputedStyle(element).paddingTop,
-        paddingBottom: getComputedStyle(element).paddingBottom,
-        fillColor: getComputedStyle(fill).backgroundColor,
-        passColor: getComputedStyle(passButton).backgroundColor,
+        failColor: getComputedStyle(failItem).backgroundColor,
+        failButtonColor: getComputedStyle(failButton).backgroundColor,
       };
     });
     expect(progressStyles.position).toBe("sticky");
     expect(progressStyles.top).toBe("0px");
-    expect(progressStyles.paddingTop).toBe("8px");
-    expect(progressStyles.paddingBottom).toBe("8px");
-    expect(progressStyles.fillColor).toBe(progressStyles.passColor);
-    expect(await page.locator(".failed-banner, .missing-banner, .memo-summary").evaluateAll(
-      elements => elements.every(element => getComputedStyle(element).position !== "sticky"),
+    expect(progressStyles.failColor).toBe(progressStyles.failButtonColor);
+    expect(await page.locator(".memo-summary").evaluate(
+      element => getComputedStyle(element).position !== "sticky",
     )).toBe(true);
 
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));

@@ -72,19 +72,20 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
               <th class="col-item">항목</th>
               <th class="col-pf">PASS</th>
               <th class="col-pf">FAIL</th>
+              <th class="col-pf">N/A</th>
               <th class="col-remarks">비고</th>
             </tr>
           </thead>
           <template v-for="(sub, si) in cat.subcategories" :key="sub.id">
             <tbody>
               <tr class="sub-header-row">
-                <td colspan="4" class="td-sub-header">{{ subNum(si) }} - {{ sub.name }}<span v-if="sub.remarks" class="sub-remarks"> — {{ sub.remarks }}</span></td>
+                <td colspan="5" class="td-sub-header">{{ subNum(si) }} - {{ sub.name }}<span v-if="sub.remarks" class="sub-remarks"> — {{ sub.remarks }}</span></td>
               </tr>
             </tbody>
 
             <tbody v-for="(grp, gi) in sub.groups" :key="grp.id" class="grp-tbody">
               <tr class="grp-header-row">
-                <td colspan="4" class="td-grp-header">
+                <td colspan="5" class="td-grp-header">
                   {{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="grp-remarks"> — {{ grp.remarks }}</span>
                 </td>
               </tr>
@@ -92,7 +93,7 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
               <template v-for="(item, ii) in grp.items" :key="item.id">
                 <tr v-if="isPdfItem(item)" class="item-row">
                   <template v-if="item.answer_type === 'checktable'">
-                    <td :colspan="4" class="td-item-name td-checktable">
+                    <td :colspan="5" class="td-item-name td-checktable">
                       <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
                       <table class="checktable-print" v-if="getChecktableConfig(item).columns.length">
                         <thead>
@@ -117,9 +118,10 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
                     <template v-if="item.answer_type === 'passfail'">
                       <td class="td-pf"></td>
                       <td class="td-pf"></td>
+                      <td class="td-pf"></td>
                     </template>
                     <template v-else>
-                      <td class="td-value" colspan="2">
+                      <td class="td-value" colspan="3">
                         <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
                       </td>
                     </template>

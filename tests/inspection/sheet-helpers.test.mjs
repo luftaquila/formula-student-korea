@@ -8,6 +8,8 @@ import {
   normalizeMemo,
   formatStopwatchElapsed,
   isResponseItem,
+  getInspectionItemState,
+  buildInspectionStatusMap,
   isPdfItem,
   isMultiSourceCalculation,
   calculationForMode,
@@ -128,6 +130,56 @@ describe('Non-response field rules', () => {
     assert.equal(isPdfItem({ answer_type: 'counter' }), true);
   });
 
+});
+
+describe('Inspection status map', () => {
+  const category = {
+    subcategories: [{
+      id: 10,
+      name: 'Safety',
+      groups: [{
+        id: 20,
+        name: 'Battery',
+        items: [
+          { id: 1, name: 'Passed', answer_type: 'passfail' },
+          { id: 2, name: 'Failed', answer_type: 'passfail' },
+          { id: 3, name: 'Not applicable', answer_type: 'passfail' },
+          { id: 4, name: 'Missing', answer_type: 'number' },
+          { id: 5, name: 'Measured', answer_type: 'text' },
+          { id: 6, name: 'Checklist', answer_type: 'checktable', remarks: JSON.stringify({ rows: ['A'], columns: ['B'] }) },
+          { id: 7, name: 'Timer', answer_type: 'stopwatch' },
+        ],
+      }],
+    }],
+  };
+
+  it('distinguishes PASS, FAIL, N/A, answered, and unanswered items in template order', () => {
+    const status = buildInspectionStatusMap(category, {
+      1: { value: 'PASS' },
+      2: { value: 'FAIL' },
+      3: { value: 'N/A' },
+      5: { value: '42' },
+      6: { value: JSON.stringify({ '0_0': '1' }) },
+    });
+
+    assert.deepEqual(status.subcategories[0].groups[0].items.map(entry => entry.state), [
+      'pass', 'fail', 'na', 'unanswered', 'answered', 'answered',
+    ]);
+    assert.deepEqual(status.counts, { pass: 1, fail: 1, na: 1, answered: 2, unanswered: 1 });
+    assert.equal(status.completed, 5);
+    assert.equal(status.total, 6);
+    assert.equal(status.percent, 83);
+  });
+
+  it('counts N/A as complete and excludes non-response items', () => {
+    assert.equal(getInspectionItemState({ answer_type: 'passfail' }, 'N/A'), 'na');
+    assert.equal(getInspectionItemState({ answer_type: 'stopwatch' }, ''), null);
+  });
+
+  it('keeps a check table unanswered when only stale cells are stored', () => {
+    const checktable = category.subcategories[0].groups[0].items[5];
+    assert.equal(getInspectionItemState(checktable, JSON.stringify({ '9_9': '1' })), 'unanswered');
+  });
 });
 
 describe('Calculation editor transitions', () => {
