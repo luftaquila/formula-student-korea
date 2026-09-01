@@ -1797,8 +1797,8 @@ watch(reconnected, async () => {
 .inspection-progress {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
-  padding: 0.625rem;
+  gap: 0.25rem;
+  padding: 0.375rem 0.5rem;
   position: sticky;
   top: 0;
   z-index: 20;
@@ -1812,13 +1812,13 @@ watch(reconnected, async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
+  gap: 0.375rem;
 }
 
 .inspection-progress-label {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.375rem;
   color: var(--text-secondary);
   font-size: 0.75rem;
   font-weight: 600;
@@ -1827,18 +1827,19 @@ watch(reconnected, async () => {
 
 .inspection-progress-label strong {
   color: var(--text-primary);
-  font-size: 0.8125rem;
+  font-size: 0.75rem;
 }
 
 .inspection-overview-actions {
   display: flex;
-  gap: 0.375rem;
+  gap: 0.25rem;
+  flex-shrink: 0;
 }
 
 .inspection-outline-toggle,
 .inspection-top-button {
-  min-height: 36px;
-  padding: 0.375rem 0.625rem;
+  min-height: 32px;
+  padding: 0.25rem 0.5rem;
   border: 1px solid var(--border-color);
   border-radius: 6px;
   background: transparent;
@@ -1857,10 +1858,17 @@ watch(reconnected, async () => {
 
 .inspection-status-legend {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.25rem 0.625rem;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
+  min-width: 0;
+  overflow-x: auto;
   color: var(--text-secondary);
   font-size: 0.6875rem;
+  scrollbar-width: none;
+}
+
+.inspection-status-legend::-webkit-scrollbar {
+  display: none;
 }
 
 .status-legend-item {
@@ -1878,21 +1886,28 @@ watch(reconnected, async () => {
 
 .inspection-status-map {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem 0.75rem;
+  flex-wrap: nowrap;
+  gap: 0.5rem;
   align-items: center;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.125rem;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
 }
 
 .status-map-group {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
+  flex: 0 0 auto;
 }
 
 .status-map-group-link,
 .status-map-item {
-  min-height: 40px;
-  border-radius: 6px;
+  min-height: 34px;
+  border-radius: 5px;
   font-family: "JetBrains Mono", monospace;
   font-size: 0.6875rem;
   font-weight: 700;
@@ -1900,7 +1915,7 @@ watch(reconnected, async () => {
 }
 
 .status-map-group-link {
-  min-width: 40px;
+  min-width: 34px;
   padding: 0.25rem 0.375rem;
   border: 1px solid var(--border-color);
   background: var(--bg-secondary);
@@ -1914,7 +1929,7 @@ watch(reconnected, async () => {
 
 .status-map-item {
   position: relative;
-  width: 40px;
+  width: 34px;
   padding: 0;
   border: 2px solid transparent;
   color: white;

@@ -86,12 +86,26 @@ test.describe("Inspection sheet filling", () => {
   });
 
   test("integrates item and outline navigation into the status map", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
     const progress = page.locator(".inspection-progress");
     await expect(progress).toBeVisible();
     await expect(progress.locator(".inspection-status-map")).toBeVisible();
     await expect(progress.locator(".inspection-status-legend")).toContainText("FAIL");
     await expect(progress.locator(".inspection-status-legend")).toContainText("미입력");
     await expect(page.locator(".fab-container")).toHaveCount(0);
+    const compactLayout = await progress.evaluate(element => {
+      const map = element.querySelector(".inspection-status-map");
+      return {
+        height: element.getBoundingClientRect().height,
+        mapFlexWrap: getComputedStyle(map).flexWrap,
+        mapOverflowX: getComputedStyle(map).overflowX,
+      };
+    });
+    expect(compactLayout.height).toBeLessThanOrEqual(120);
+    expect(compactLayout.mapFlexWrap).toBe("nowrap");
+    expect(compactLayout.mapOverflowX).toBe("auto");
+    const firstItemBox = await page.locator(".item-row").first().boundingBox();
+    expect(firstItemBox.y).toBeLessThan(844);
 
     const itemLink = progress.locator('.status-map-item[aria-label*="전압 확인"]');
     await expect(itemLink).toBeVisible();
