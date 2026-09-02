@@ -30,7 +30,12 @@ async function simEvent() {
   await ingestWireless({ events: [{ node_id: simNode.value, master_tick: String(Date.now() * 16000), ev_seq: simSeq++, rssi: -62, snr: 9.5, link_state: "online" }] });
 }
 async function simTelemetry() {
-  await ingestWireless({ telemetry: [{ node_id: simNode.value, rssi: -68, snr: 8.5, offset_us: 120, skew_ppm: 4, latency_ms: 22, rx_miss: 0, beacon_gap: 0, link_state: "online" }] });
+  await ingestWireless({ telemetry: [{
+    node_id: simNode.value, rssi: -68, snr: 8.5, offset_us: 120, skew_ppm: 4,
+    latency_ms: 22, rx_miss: 0, beacon_gap: 0, link_state: "online",
+    provisioned: 1, sync_valid: 1, skew_valid: 1, clock_source: "xtal",
+    sync_age_ms: 80, capture_overflow: 0, event_drop: 0,
+  }] });
 }
 </script>
 

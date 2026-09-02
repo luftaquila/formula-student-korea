@@ -70,14 +70,17 @@ void usb_task(void)
     tud_task();
 }
 
-void usb_write(const char *s)
+int usb_write(const char *s)
 {
-    /* Unconditional best-effort write: TinyUSB sends over the bulk-IN endpoint
-     * whenever a host is draining and drops otherwise. Gating on
-     * tud_cdc_connected() (DTR) silently swallowed everything when the host
-     * didn't assert DTR the way we expected. */
-    tud_cdc_write(s, strlen(s));
+    /* Queue a whole line or none of it. The reliable EVENT path retries the
+     * line from the master queue; diagnostics may remain best-effort. Gating on
+     * tud_cdc_connected() (DTR) would still be wrong because some hosts do not
+     * assert DTR. */
+    size_t len = strlen(s);
+    if (tud_cdc_write_available() < len) { return 0; }
+    uint32_t written = tud_cdc_write(s, len);
     tud_cdc_write_flush();
+    return written == len;
 }
 
 int usb_connected(void)

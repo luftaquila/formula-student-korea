@@ -16,6 +16,13 @@
  * forces HFXO on; previously only the USB-connected master got HFXO for free
  * (TinyUSB starts it on VBUS), leaving battery sensors on RC. Start it here so
  * every role's timebase is crystal-disciplined (±40 ppm) regardless of USB. */
+static int hfclk_is_xtal(void)
+{
+    return (NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_STATE_Msk) &&
+           (((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_SRC_Msk) >> CLOCK_HFCLKSTAT_SRC_Pos)
+                == CLOCK_HFCLKSTAT_SRC_Xtal);
+}
+
 static void hfclk_init(void)
 {
     /* The nice!nano/Adafruit bootloader uses USB, so it hands off with HFXO
@@ -24,16 +31,19 @@ static void hfclk_init(void)
      * hangs before USB ever comes up. Guard: if HFCLK is already sourced from the
      * crystal, there's nothing to do; otherwise start it with a bounded wait that
      * can never hang (HFXO normally settles in <1 ms). */
-    if ((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_STATE_Msk) &&
-        (((NRF_CLOCK->HFCLKSTAT & CLOCK_HFCLKSTAT_SRC_Msk) >> CLOCK_HFCLKSTAT_SRC_Pos)
-            == CLOCK_HFCLKSTAT_SRC_Xtal)) {
+    if (hfclk_is_xtal()) {
         return;
     }
     NRF_CLOCK->EVENTS_HFCLKSTARTED = 0;
     NRF_CLOCK->TASKS_HFCLKSTART = 1;
     for (volatile uint32_t i = 0; i < 1000000u && NRF_CLOCK->EVENTS_HFCLKSTARTED == 0; i++) {
-        /* bounded — proceed even if it never signals (TinyUSB will start it too) */
+        /* bounded so a failed crystal cannot hang provisioning over USB */
     }
+}
+
+int board_hfclk_xtal(void)
+{
+    return hfclk_is_xtal();
 }
 
 static void timebase_init(void)

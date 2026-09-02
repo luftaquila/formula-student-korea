@@ -13,9 +13,10 @@ void usb_init(void);
 /* Pump the TinyUSB device stack. Call frequently from the main loop. */
 void usb_task(void);
 
-/* Best-effort write of a NUL-terminated string to the CDC port (dropped if no
- * host is attached). */
-void usb_write(const char *s);
+/* Queue one complete NUL-terminated line when the CDC FIFO has room. Returns 1
+ * only when every byte was queued. Callers that need delivery retain and retry
+ * until an application-level acknowledgement arrives. */
+int usb_write(const char *s);
 
 /* Read one byte from the CDC port; returns the byte (0-255) or -1 if none. */
 int usb_read_byte(void);

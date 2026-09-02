@@ -10,14 +10,38 @@
 #define CAP_GPIOTE_SENS 1
 #define CAP_PPI_DIO1    0
 #define CAP_PPI_SENS    1
+#define CAP_PPI_USB_SOF 2
 #define CAP_CC_DIO1     0 /* TIMER1->CC[] holding DIO1 captures */
 #define CAP_CC_NOW      1 /* TIMER1->CC[] for on-demand reads */
 #define CAP_CC_SENS     2 /* TIMER1->CC[] holding SENSOR captures */
+#define CAP_CC_USB_SOF  3 /* TIMER1->CC[] holding the latest USB SOF */
+#define SENSOR_QUEUE_LEN 16u
 
 #define DIO1_PIN (PIN_LORA_DIO1 % 32u) /* 6 */
 #define DIO1_PRT (PIN_LORA_DIO1 / 32u) /* 1 */
 #define SENS_PIN (PIN_SENSOR_IN % 32u) /* 11 */
 #define SENS_PRT (PIN_SENSOR_IN / 32u) /* 1 */
+
+static volatile uint32_t s_sensor_queue[SENSOR_QUEUE_LEN];
+static volatile uint8_t s_sensor_head;
+static volatile uint8_t s_sensor_tail;
+static volatile uint16_t s_sensor_overflow;
+
+void GPIOTE_IRQHandler(void)
+{
+    if (NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS]) {
+        NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS] = 0;
+        uint8_t head = s_sensor_head;
+        uint8_t next = (uint8_t)((head + 1u) & (SENSOR_QUEUE_LEN - 1u));
+        if (next == s_sensor_tail) {
+            if (s_sensor_overflow != UINT16_MAX) { s_sensor_overflow++; }
+        } else {
+            s_sensor_queue[head] = NRF_TIMER1->CC[CAP_CC_SENS];
+            __DMB();
+            s_sensor_head = next;
+        }
+    }
+}
 
 void capture_init(void)
 {
@@ -50,6 +74,11 @@ void capture_init(void)
     NRF_PPI->CH[CAP_PPI_SENS].TEP = (uint32_t)&NRF_TIMER1->TASKS_CAPTURE[CAP_CC_SENS];
 
     NRF_PPI->CHENSET = (1UL << CAP_PPI_DIO1) | (1UL << CAP_PPI_SENS);
+
+    NRF_GPIOTE->INTENSET = (1UL << (GPIOTE_INTENSET_IN0_Pos + CAP_GPIOTE_SENS));
+    NVIC_ClearPendingIRQ(GPIOTE_IRQn);
+    NVIC_SetPriority(GPIOTE_IRQn, 3);
+    NVIC_EnableIRQ(GPIOTE_IRQn);
 }
 
 /* 32->64-bit extension. capture_now64() polls the 32-bit counter and bumps the
@@ -93,10 +122,39 @@ int capture_dio1_get(uint64_t *tick)
 
 int capture_sensor_get(uint64_t *tick)
 {
-    if (NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS] == 0) {
-        return 0;
-    }
-    NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS] = 0;
-    *tick = widen(NRF_TIMER1->CC[CAP_CC_SENS]);
+    uint8_t tail = s_sensor_tail;
+    if (tail == s_sensor_head) { return 0; }
+    uint32_t low = s_sensor_queue[tail];
+    __DMB();
+    s_sensor_tail = (uint8_t)((tail + 1u) & (SENSOR_QUEUE_LEN - 1u));
+    *tick = widen(low);
+    return 1;
+}
+
+uint16_t capture_sensor_overflow(void)
+{
+    return s_sensor_overflow;
+}
+
+void capture_usb_sof_enable(void)
+{
+    NRF_PPI->CH[CAP_PPI_USB_SOF].EEP = (uint32_t)&NRF_USBD->EVENTS_SOF;
+    NRF_PPI->CH[CAP_PPI_USB_SOF].TEP = (uint32_t)&NRF_TIMER1->TASKS_CAPTURE[CAP_CC_USB_SOF];
+    NRF_PPI->CHENSET = (1UL << CAP_PPI_USB_SOF);
+}
+
+int capture_usb_sof_sample(uint64_t *tick, uint16_t *frame)
+{
+    if (!(NRF_USBD->ENABLE & USBD_ENABLE_ENABLE_Msk)) { return 0; }
+    uint16_t first;
+    uint16_t second;
+    uint32_t low;
+    do {
+        first = (uint16_t)NRF_USBD->FRAMECNTR;
+        low = NRF_TIMER1->CC[CAP_CC_USB_SOF];
+        second = (uint16_t)NRF_USBD->FRAMECNTR;
+    } while (first != second);
+    *frame = first;
+    *tick = widen(low);
     return 1;
 }

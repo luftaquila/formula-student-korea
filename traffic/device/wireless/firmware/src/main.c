@@ -90,59 +90,42 @@ static void provision_key(void)
 
 /* ===== sensor =========================================================== */
 
-/* Send an EVENT reliably: listen-before-talk, transmit, wait for the master's
- * ACK; retransmit (same ev_seq, so the master dedups) up to 4 times. The event
- * time is preserved across retransmits (DESIGN §2.8). Backoff is keyed by our id
- * so two sensors firing at once de-correlate. */
-static void sensor_send_event(uint64_t ev_master_t, uint32_t id,
-                              uint32_t master_boot_id, uint16_t *ev_seq)
+/* Perform one EVENT delivery attempt. The caller-owned pending queue preserves
+ * the payload and schedules retries until ACK or bounded expiry. */
+static int sensor_try_send_event(const event_pl_t *e, uint32_t id)
 {
-    event_pl_t e;
-    e.ev_seq = (*ev_seq)++;
-    e.ev_master_t = ev_master_t; /* caller converts local→master time (offset + skew) */
-    e.master_boot_id = (uint16_t)master_boot_id; /* low 16 bits bind to the master session */
-    e.flags = 0;
-    uint16_t this_seq = e.ev_seq;
+    if (!radio_lbt_clear()) { return 0; }
+    uint8_t tx[WIRE_EVENT];
+    int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_EVENT, id, e, sizeof(*e));
+    if (wlen < 0) { return 0; }
+    radio_transmit(tx, wlen);
+    radio_start_rx();
 
-    for (int attempt = 0; attempt < 4; attempt++) {
-        if (attempt > 0) {
-            board_delay_ms(60u + (uint32_t)((this_seq * 7u + id * 11u) & 63u));
-        }
-        /* LBT (KR920): transmit only on a clear channel. Busy → back off into the
-         * next attempt rather than transmit. */
-        if (!radio_lbt_clear()) { continue; }
-        /* Re-seal each attempt: same ev_seq (master dedups), fresh ctr so every
-         * retransmit is a distinct authenticated message the master's replay
-         * window accepts (a verbatim resend would be dropped as a replay). */
-        uint8_t tx[WIRE_EVENT];
-        int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_EVENT, id, &e, sizeof(e));
-        if (wlen < 0) { break; } /* tx counter exhausted (unreachable in a session) */
-        radio_transmit(tx, wlen);
-        radio_start_rx();
-
-        uint32_t t0 = board_millis();
-        while ((uint32_t)(board_millis() - t0) < 120u) {
-            uint8_t b[WIRE_MAX];
-            int n = radio_receive(b, sizeof(b));
-            if (n >= WIRE_ACK && SEC_VT_TYPE(b[0]) == PKT_TYPE_ACK) {
-                sec_meta_t m;
-                ack_pl_t a;
-                if (sec_unseal(b, n, &m, &a, sizeof(a)) == 0 &&
-                    m.node_id == NODE_MASTER &&
-                    a.node_id == id && a.ev_seq == this_seq) {
-                    return; /* acked */
-                }
+    uint32_t t0 = board_millis();
+    while ((uint32_t)(board_millis() - t0) < 120u) {
+        uint8_t b[WIRE_MAX];
+        int n = radio_receive(b, sizeof(b));
+        if (n >= WIRE_ACK && SEC_VT_TYPE(b[0]) == PKT_TYPE_ACK) {
+            sec_meta_t m;
+            ack_pl_t a;
+            if (sec_unseal(b, n, &m, &a, sizeof(a)) == 0 &&
+                m.node_id == NODE_MASTER &&
+                a.node_id == id && a.ev_seq == e->ev_seq) {
+                return 1;
             }
         }
     }
-    radio_start_rx(); /* gave up after retries */
+    radio_start_rx();
+    return 0;
 }
 
 /* Fire-and-forget diagnostics uplink. The LBT sense just before TX turns a near-
  * overlap with another sensor's STATUS into a short deferral rather than a
  * collision (DESIGN §2.8). */
 static void sensor_send_status(uint32_t id, uint8_t *sseq, uint64_t off, int32_t skew,
-                               uint16_t rx_miss, uint16_t gap)
+                               uint16_t rx_miss, uint16_t gap, uint16_t sync_age_ms,
+                               uint16_t capture_overflow, uint16_t event_drop,
+                               uint8_t health_flags)
 {
     status_pl_t s;
     s.seq = (*sseq)++;
@@ -154,6 +137,10 @@ static void sensor_send_status(uint32_t id, uint8_t *sseq, uint64_t off, int32_t
      * right before TX, so VDDH reflects near-peak load. */
     s.batt_mv = (uint16_t)(meas_vddh_mv() + BATT_DIODE_DROP_MV);
     s.temp_c10 = meas_temp_c10();
+    s.sync_age_ms = sync_age_ms;
+    s.capture_overflow = capture_overflow;
+    s.event_drop = event_drop;
+    s.flags = health_flags;
     uint8_t tx[WIRE_STATUS];
     int wlen = sec_seal(tx, sizeof(tx), PKT_TYPE_STATUS, id, &s, sizeof(s));
     if (wlen < 0) { radio_start_rx(); return; } /* tx counter exhausted */
@@ -196,6 +183,37 @@ static uint64_t ev_to_master_t(uint64_t ev_tick, uint64_t cur_off, uint64_t sync
     return mt;
 }
 
+typedef struct {
+    event_pl_t event;
+    uint32_t first_ms;
+    uint32_t retry_ms;
+} sensor_pending_t;
+
+static uint16_t sensor_sync_age_ms(int have_off, uint64_t sync_ref_tick, uint64_t now_tick)
+{
+    if (!have_off || now_tick < sync_ref_tick) { return UINT16_MAX; }
+    uint64_t age = (now_tick - sync_ref_tick) / TICKS_PER_MS;
+    return age > UINT16_MAX ? UINT16_MAX : (uint16_t)age;
+}
+
+static uint8_t sensor_health(int have_off, int skew_valid, uint64_t sync_ref_tick,
+                             uint64_t now_tick, uint16_t capture_overflow,
+                             uint16_t event_drop)
+{
+    uint8_t flags = 0;
+    uint16_t age = sensor_sync_age_ms(have_off, sync_ref_tick, now_tick);
+    if (age <= SYNC_TTL_MS) { flags |= HEALTH_SYNC_VALID; }
+    if (skew_valid) { flags |= HEALTH_SKEW_VALID; }
+    if (board_hfclk_xtal()) { flags |= HEALTH_CLOCK_XTAL; }
+    if (capture_overflow == 0u && event_drop == 0u) { flags |= HEALTH_CAPTURE_OK; }
+    return flags;
+}
+
+static void sat_inc_u16(uint16_t *value)
+{
+    if (*value != UINT16_MAX) { (*value)++; }
+}
+
 static void run_sensor(int st)
 {
     uint64_t prev_l_rx = 0, cur_off = 0;
@@ -203,6 +221,9 @@ static void run_sensor(int st)
     const uint32_t my_id = node_sender_id(); /* our 32-bit on-air identity (chip id low word) */
     int have_prev = 0, have_off = 0;
     uint16_t ev_seq = 0;
+    sensor_pending_t pending[SENSOR_EVENT_QUEUE_LEN];
+    unsigned pending_head = 0, pending_tail = 0, pending_n = 0;
+    uint16_t event_drop = 0;
 
     int64_t off_hist[OFF_HIST];
     uint64_t lrx_hist[OFF_HIST];
@@ -312,9 +333,48 @@ static void run_sensor(int st)
         }
 
         uint64_t ev_tick;
-        if (capture_sensor_get(&ev_tick) && have_off) {
-            sensor_send_event(ev_to_master_t(ev_tick, cur_off, sync_ref_tick, cur_skew, skew_valid),
-                              my_id, master_boot_id, &ev_seq);
+        while (capture_sensor_get(&ev_tick)) {
+            uint16_t overflow = capture_sensor_overflow();
+            uint16_t age = sensor_sync_age_ms(have_off, sync_ref_tick, ev_tick);
+            uint8_t flags = sensor_health(have_off, skew_valid, sync_ref_tick,
+                                          ev_tick, overflow, event_drop);
+            if (flags != HEALTH_EVENT_REQUIRED || pending_n >= SENSOR_EVENT_QUEUE_LEN) {
+                /* Ignore harmless boot-time edges before the first sync. Once
+                 * this sensor has had an offset, an edge rejected by health or
+                 * capacity is a real delivery fault and remains sticky. */
+                if (have_off) { sat_inc_u16(&event_drop); }
+                continue;
+            }
+            sensor_pending_t *p = &pending[pending_head];
+            p->event.ev_seq = ev_seq++;
+            p->event.ev_master_t = ev_to_master_t(ev_tick, cur_off, sync_ref_tick,
+                                                   cur_skew, skew_valid);
+            p->event.master_boot_id = (uint16_t)master_boot_id;
+            p->event.sync_age_ms = age;
+            p->event.flags = flags;
+            p->first_ms = board_millis();
+            p->retry_ms = p->first_ms;
+            pending_head = (pending_head + 1u) % SENSOR_EVENT_QUEUE_LEN;
+            pending_n++;
+        }
+
+        if (pending_n) {
+            uint32_t now_ms = board_millis();
+            sensor_pending_t *p = &pending[pending_tail];
+            if ((uint32_t)(now_ms - p->first_ms) >= SENSOR_EVENT_MAX_AGE_MS) {
+                sat_inc_u16(&event_drop);
+                pending_tail = (pending_tail + 1u) % SENSOR_EVENT_QUEUE_LEN;
+                pending_n--;
+            } else if (capture_sensor_overflow() == 0u && event_drop == 0u &&
+                       (int32_t)(now_ms - p->retry_ms) >= 0) {
+                if (sensor_try_send_event(&p->event, my_id)) {
+                    pending_tail = (pending_tail + 1u) % SENSOR_EVENT_QUEUE_LEN;
+                    pending_n--;
+                } else {
+                    p->retry_ms = board_millis() + SENSOR_EVENT_RETRY_MS +
+                                  ((p->event.ev_seq * 7u + my_id * 11u) & 31u);
+                }
+            }
         }
 
         /* STATUS: once per STATUS_PERIOD_S beacons, at a hash-chosen offset measured
@@ -339,7 +399,13 @@ static void run_sensor(int st)
             uint32_t within = STATUS_GAP_GUARD_MS + hash32(my_id, period) % STATUS_GAP_SPAN_MS;
             uint64_t status_tick = prev_l_rx + (uint64_t)within * TICKS_PER_MS;
             if (capture_now64() >= status_tick) {
-                sensor_send_status(my_id, &status_seq, cur_off, cur_skew, rx_miss, beacon_gap);
+                uint64_t status_now = capture_now64();
+                uint16_t overflow = capture_sensor_overflow();
+                uint16_t age = sensor_sync_age_ms(have_off, sync_ref_tick, status_now);
+                uint8_t health = sensor_health(have_off, skew_valid, sync_ref_tick,
+                                               status_now, overflow, event_drop);
+                sensor_send_status(my_id, &status_seq, cur_off, cur_skew, rx_miss,
+                                   beacon_gap, age, overflow, event_drop, health);
                 sent_status = 1;
             }
         }
@@ -349,8 +415,22 @@ static void run_sensor(int st)
         if (have_off && (uint32_t)(board_millis() - sim_last) >= 3000u) {
             sim_last = board_millis();
             uint64_t sim_tick = capture_now64();
-            sensor_send_event(ev_to_master_t(sim_tick, cur_off, sync_ref_tick, cur_skew, skew_valid),
-                              my_id, master_boot_id, &ev_seq);
+            uint16_t overflow = capture_sensor_overflow();
+            uint8_t flags = sensor_health(have_off, skew_valid, sync_ref_tick,
+                                          sim_tick, overflow, event_drop);
+            if (flags == HEALTH_EVENT_REQUIRED && pending_n < SENSOR_EVENT_QUEUE_LEN) {
+                sensor_pending_t *p = &pending[pending_head];
+                p->event.ev_seq = ev_seq++;
+                p->event.ev_master_t = ev_to_master_t(sim_tick, cur_off, sync_ref_tick,
+                                                       cur_skew, skew_valid);
+                p->event.master_boot_id = (uint16_t)master_boot_id;
+                p->event.sync_age_ms = sensor_sync_age_ms(have_off, sync_ref_tick, sim_tick);
+                p->event.flags = flags;
+                p->first_ms = board_millis();
+                p->retry_ms = p->first_ms;
+                pending_head = (pending_head + 1u) % SENSOR_EVENT_QUEUE_LEN;
+                pending_n++;
+            }
         }
 #endif
     }
@@ -362,13 +442,16 @@ typedef struct {
     int      used;         /* registry entry in use */
     uint32_t id;           /* the sensor's 32-bit id (low word of its chip id) */
     int      seen;
-    uint16_t last_ev_seq;  int have_ev;
     uint8_t  last_status_seq; int have_status; uint16_t status_miss;
-    uint32_t last_seen_ms;
+    uint32_t last_status_ms;
     float    rssi, snr;
     int64_t  offset_tick;
     int32_t  skew_ppm;
     uint16_t rx_miss, beacon_gap;
+    uint16_t sync_age_ms;
+    uint16_t capture_overflow;
+    uint16_t event_drop;
+    uint8_t  health_flags;
     uint16_t batt_mv;
     int16_t  temp_c10;
     uint32_t last_lat_ms;
@@ -394,8 +477,8 @@ static int node_count_seen(void)
 
 static int link_state_of(uint32_t now, const node_stat_t *s)
 {
-    if (!s->seen) { return PU_STATE_LOST; }
-    uint32_t age = now - s->last_seen_ms;
+    if (!s->have_status) { return PU_STATE_LOST; }
+    uint32_t age = now - s->last_status_ms;
     /* STATUS arrives every STATUS_PERIOD_S; with beacon-anchored STATUS it should
      * not be missed, so keep this tight — one missed STATUS already means something
      * is wrong and should surface, not be hidden behind a lenient window. */
@@ -430,15 +513,154 @@ static node_stat_t *node_find_or_add(uint32_t id)
     return &g_node[slot];
 }
 
+typedef struct {
+    uint32_t node_id;
+    uint16_t ev_seq;
+    uint64_t ev_master_t;
+    uint8_t flags;
+    float rssi, snr;
+    uint32_t last_emit_ms;
+} master_event_t;
+
+static master_event_t g_event_queue[MASTER_EVENT_QUEUE_LEN];
+static unsigned g_event_head;
+static unsigned g_event_tail;
+static unsigned g_event_count;
+static uint16_t g_event_overflow;
+
+static int event_key_eq(const master_event_t *q, uint32_t node_id,
+                        uint16_t ev_seq, uint64_t ev_master_t)
+{
+    return q->node_id == node_id && q->ev_seq == ev_seq &&
+           q->ev_master_t == ev_master_t;
+}
+
+static int master_event_queued(uint32_t node_id, uint16_t ev_seq,
+                               uint64_t ev_master_t)
+{
+    unsigned at = g_event_tail;
+    for (unsigned i = 0; i < g_event_count; i++) {
+        if (event_key_eq(&g_event_queue[at], node_id, ev_seq, ev_master_t)) { return 1; }
+        at = (at + 1u) % MASTER_EVENT_QUEUE_LEN;
+    }
+    return 0;
+}
+
+static int master_event_enqueue(uint32_t node_id, const event_pl_t *event,
+                                float rssi, float snr)
+{
+    if (master_event_queued(node_id, event->ev_seq, event->ev_master_t)) { return 1; }
+    if (g_event_count >= MASTER_EVENT_QUEUE_LEN) {
+        sat_inc_u16(&g_event_overflow);
+        return 0;
+    }
+    master_event_t *q = &g_event_queue[g_event_head];
+    q->node_id = node_id;
+    q->ev_seq = event->ev_seq;
+    q->ev_master_t = event->ev_master_t;
+    q->flags = event->flags;
+    q->rssi = rssi;
+    q->snr = snr;
+    q->last_emit_ms = board_millis() - MASTER_USB_RETRY_MS;
+    g_event_head = (g_event_head + 1u) % MASTER_EVENT_QUEUE_LEN;
+    g_event_count++;
+    return 1;
+}
+
+static void master_event_host_ack(uint32_t node_id, uint16_t ev_seq,
+                                  uint64_t ev_master_t)
+{
+    if (!g_event_count) { return; }
+    master_event_t *q = &g_event_queue[g_event_tail];
+    if (!event_key_eq(q, node_id, ev_seq, ev_master_t)) { return; }
+    g_event_tail = (g_event_tail + 1u) % MASTER_EVENT_QUEUE_LEN;
+    g_event_count--;
+}
+
+static void master_event_pump(void)
+{
+    if (!g_event_count) { return; }
+    master_event_t *q = &g_event_queue[g_event_tail];
+    uint32_t now = board_millis();
+    if ((uint32_t)(now - q->last_emit_ms) < MASTER_USB_RETRY_MS) { return; }
+    q->last_emit_ms = now;
+    pu_emit_event(q->node_id, q->ev_seq, q->ev_master_t, q->flags, q->rssi, q->snr);
+}
+
+typedef struct {
+    int started;
+    int valid;
+    uint16_t last_frame;
+    uint32_t frames;
+    uint64_t start_tick;
+    uint32_t last_sof_ms;
+    int32_t ppm;
+} usb_clock_t;
+
+static void usb_clock_poll(usb_clock_t *clock)
+{
+    uint64_t tick;
+    uint16_t frame;
+    uint32_t now = board_millis();
+    if (!capture_usb_sof_sample(&tick, &frame)) {
+        if ((uint32_t)(now - clock->last_sof_ms) > 100u) {
+            clock->started = 0;
+            clock->valid = 0;
+        }
+        return;
+    }
+    frame &= 0x07ffu;
+    if (!clock->started) {
+        clock->started = 1;
+        clock->last_frame = frame;
+        clock->frames = 0;
+        clock->start_tick = tick;
+        clock->last_sof_ms = now;
+        return;
+    }
+    uint16_t delta = (uint16_t)((frame - clock->last_frame) & 0x07ffu);
+    if (delta == 0u) {
+        if ((uint32_t)(now - clock->last_sof_ms) > 100u) {
+            clock->started = 0;
+            clock->valid = 0;
+        }
+        return;
+    }
+    if (delta > USB_CLOCK_MAX_GAP_FRAMES) {
+        clock->started = 0;
+        clock->valid = 0;
+        return;
+    }
+    clock->last_frame = frame;
+    clock->last_sof_ms = now;
+    clock->frames += delta;
+    if (clock->frames >= USB_CLOCK_WINDOW_FRAMES) {
+        uint64_t expected = (uint64_t)clock->frames * TICKS_PER_MS;
+        int64_t error = (int64_t)(tick - clock->start_tick) - (int64_t)expected;
+        int64_t expected_i = (int64_t)expected;
+        int64_t ppm = (error / expected_i) * 1000000 +
+                      (error % expected_i) * 1000000 / expected_i;
+        clock->ppm = (int32_t)(ppm > INT32_MAX ? INT32_MAX :
+                               (ppm < INT32_MIN ? INT32_MIN : ppm));
+        clock->valid = 1;
+        clock->frames = 0;
+        clock->start_tick = tick;
+    }
+}
+
 static void master_emit_diag(const node_stat_t *s, int state, uint32_t now)
 {
     pu_emit_diag(s->id, 0,
                  state, s->offset_tick, s->skew_ppm,
                  s->rx_miss, s->beacon_gap,
-                 (uint32_t)(now - s->last_seen_ms),
+                 (uint32_t)(now - s->last_status_ms),
                  s->rssi, s->snr, s->last_lat_ms,
                  s->temp_c10, s->batt_mv,
-                 s->sec_drop, sec_provisioned());
+                 s->sec_drop, 1,
+                 !!(s->health_flags & HEALTH_SYNC_VALID),
+                 !!(s->health_flags & HEALTH_SKEW_VALID),
+                 !!(s->health_flags & HEALTH_CLOCK_XTAL), s->sync_age_ms,
+                 s->capture_overflow, s->event_drop, 0, 0, 0, 0);
 }
 
 static void run_master(int st)
@@ -450,6 +672,7 @@ static void run_master(int st)
     uint64_t green_tick = 0;
     uint32_t last = board_millis();
     uint8_t buf[WIRE_MAX];
+    usb_clock_t usb_clock = {0};
 
     pu_emit_identity(node_devid_hi(), node_devid_lo());
 
@@ -460,8 +683,9 @@ static void run_master(int st)
         while ((c = usb_read_byte()) >= 0) {
             switch (pu_feed(c)) {
             case PU_CMD_GREEN:
+                if (st != 0) { pu_emit_err("clock"); break; }
                 lights_set(LIGHTS_GREEN);
-                green_tick = (st == 0) ? capture_now64() : 0;
+                green_tick = capture_now64();
                 pu_emit_light(PU_LIGHT_GREEN, green_tick);
                 pu_emit_ack("G");
                 break;
@@ -485,6 +709,13 @@ static void run_master(int st)
                 for (unsigned i = 0; i < MAX_NODES; i++) {
                     if (g_node[i].used && g_node[i].seen) { master_emit_diag(&g_node[i], link_state_of(now, &g_node[i]), now); }
                 }
+                pu_emit_diag(0, 1, st == 0 ? PU_STATE_OK : PU_STATE_LOST,
+                             0, 0, 0, 0, 0, 0.0f, 0.0f, 0,
+                             meas_temp_c10(), meas_vddh_mv(), g_auth_drop,
+                             sec_provisioned(), st == 0, st == 0,
+                             board_hfclk_xtal(), st == 0 ? 0 : UINT16_MAX,
+                             0, 0, (uint16_t)g_event_count, g_event_overflow,
+                             usb_clock.valid, usb_clock.ppm);
                 pu_emit_ack("STATUS");
                 break;
             }
@@ -494,6 +725,10 @@ static void run_master(int st)
             case PU_CMD_SETKEY:
                 provision_key();
                 break;
+            case PU_CMD_EVENT_ACK:
+                master_event_host_ack(pu_event_ack_node(), pu_event_ack_seq(),
+                                      pu_event_ack_tick());
+                break;
             case PU_CMD_BAD:
                 pu_emit_err("badcmd");
                 break;
@@ -501,11 +736,27 @@ static void run_master(int st)
                 break;
             }
         }
+        master_event_pump();
 #if defined(NODE_DEBUG)
         debug_id("master");
 #endif
-        if (st != 0) { continue; }
+        if (st != 0) {
+            uint32_t now = board_millis();
+            if ((uint32_t)(now - last) >= 1000u) {
+                last = now;
+                pu_emit_heartbeat(0, now, seq++, node_count_seen());
+                if ((uint8_t)(seq % STATUS_PERIOD_S) == 0u) {
+                    pu_emit_diag(0, 1, PU_STATE_LOST, 0, 0, 0, 0, 0,
+                                 0.0f, 0.0f, 0, meas_temp_c10(), meas_vddh_mv(),
+                                 g_auth_drop, sec_provisioned(), 0, 0,
+                                 board_hfclk_xtal(), UINT16_MAX, 0, 0,
+                                 (uint16_t)g_event_count, g_event_overflow, 0, 0);
+                }
+            }
+            continue;
+        }
         capture_now64();
+        usb_clock_poll(&usb_clock);
 
         uint32_t now = board_millis();
         if ((uint32_t)(now - last) >= 1000u) {
@@ -555,7 +806,10 @@ static void run_master(int st)
             if ((uint8_t)(seq % STATUS_PERIOD_S) == 0u) {
                 pu_emit_diag(0, 1, PU_STATE_OK, 0, 0, 0, 0, 0, 0.0f, 0.0f, 0,
                              meas_temp_c10(), meas_vddh_mv(),
-                             g_auth_drop, sec_provisioned());
+                             g_auth_drop, sec_provisioned(), 1, 1,
+                             board_hfclk_xtal(), 0, 0, 0,
+                             (uint16_t)g_event_count, g_event_overflow,
+                             usb_clock.valid, usb_clock.ppm);
             }
             continue;
         }
@@ -578,7 +832,20 @@ static void run_master(int st)
              * (DESIGN §2.11). A sensor learns the current id from live beacons, so
              * after a master swap its events re-bind as soon as it re-syncs. */
             if (e.master_boot_id != (uint16_t)sec_boot_id()) { ns->sec_drop++; continue; }
+            /* Queue capacity is checked before advancing the replay window. If
+             * the queue is full we deliberately withhold the radio ACK and let
+             * a freshly sealed retry arrive after the host drains capacity. */
+            if (!master_event_queued(m.node_id, e.ev_seq, e.ev_master_t) &&
+                g_event_count >= MASTER_EVENT_QUEUE_LEN) {
+                sat_inc_u16(&g_event_overflow);
+                continue;
+            }
             if (!sec_replay(&ns->rx, m.boot_id, m.ctr)) { ns->sec_drop++; continue; }
+            if ((e.flags & HEALTH_EVENT_REQUIRED) != HEALTH_EVENT_REQUIRED ||
+                e.sync_age_ms > SYNC_TTL_MS) {
+                ns->sec_drop++;
+                continue;
+            }
             /* Freshness backstop: reject a timestamp too far in the past (stale
              * replay) or implausibly in the future. Asymmetric — a real event is
              * at most a few ms ahead of master time (sync error). dt = now - ev. */
@@ -591,15 +858,11 @@ static void run_master(int st)
             ns->seen = 1;
             ns->rssi = rssi;
             ns->snr = snr;
-            ns->last_seen_ms = board_millis();
             ns->last_lat_ms = (uint32_t)((dt < 0 ? 0 : dt) / TICKS_PER_MS);
-            /* Report only the first copy; retransmits share the ev_seq. */
-            if (!(ns->have_ev && ns->last_ev_seq == e.ev_seq)) {
-                ns->have_ev = 1;
-                ns->last_ev_seq = e.ev_seq;
-                pu_emit_event(ns->id, e.ev_seq, e.ev_master_t, e.flags, rssi, snr);
-            }
-            /* ACK every copy so the sensor stops retransmitting. */
+            /* The radio ACK is legal only after the event is resident in the
+             * master's host-acknowledged queue. USB output is retried from that
+             * queue until the server confirms the exact event key. */
+            if (!master_event_enqueue(ns->id, &e, rssi, snr)) { continue; }
             ack_pl_t a;
             a.node_id = m.node_id;
             a.ev_seq = e.ev_seq;
@@ -625,11 +888,15 @@ static void run_master(int st)
             ns->seen = 1;
             ns->rssi = rssi;
             ns->snr = snr;
-            ns->last_seen_ms = board_millis();
+            ns->last_status_ms = board_millis();
             ns->offset_tick = s.offset_tick;
             ns->skew_ppm = s.skew_ppm;
             ns->rx_miss = s.rx_miss;
             ns->beacon_gap = s.beacon_gap;
+            ns->sync_age_ms = s.sync_age_ms;
+            ns->capture_overflow = s.capture_overflow;
+            ns->event_drop = s.event_drop;
+            ns->health_flags = s.flags;
             ns->batt_mv = s.batt_mv;
             ns->temp_c10 = s.temp_c10;
             int ls = link_state_of(board_millis(), ns);
@@ -644,18 +911,25 @@ int main(void)
     board_init();
     node_init();
     sec_init(); /* seed boot_id (RNG) + reset tx counter before any sealed TX */
-
-    int st = radio_begin(node_freq_mhz());
-    if (st == 0) {
-        capture_init();
-    }
-
     usb_init();
 
     /* Role by USB (DESIGN §8): master if a PC host enumerates us within the
-     * settle window, else sensor. Re-checked live inside each loop, which resets
-     * the MCU to re-pick if USB presence later contradicts the choice. */
-    if (role_decide_master()) {
+     * settle window, else sensor. Decide once; a role change requires reboot. */
+    int master = role_decide_master();
+
+    /* USB may have started HFXO while the role was being resolved. Inspect the
+     * actual source only after that window, then fail closed: TIMER1/radio work
+     * is never started on HFINT. Provisioning and RC diagnostics remain usable. */
+    int st = -1;
+    if (board_hfclk_xtal()) {
+        st = radio_begin(node_freq_mhz());
+        if (st == 0) {
+            capture_init();
+            if (master) { capture_usb_sof_enable(); }
+        }
+    }
+
+    if (master) {
         run_master(st);
     } else {
         run_sensor(st);

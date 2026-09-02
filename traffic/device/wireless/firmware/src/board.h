@@ -12,10 +12,14 @@
 extern "C" {
 #endif
 
-/* Relocate the vector table to the app base (0x1000), drive EXT_POWER (P0.13)
+/* Relocate the vector table to the app base (0x26000), drive EXT_POWER (P0.13)
  * HIGH to enable the external VCC/12V rail (DESIGN.md §8), and bring up the LED.
  * Call once at the top of main(). */
 void board_init(void);
+
+/* Non-zero only while the 16 MHz peripheral clock is sourced from HFXO. Radio
+ * timing and event capture must fail closed when this is false. */
+int board_hfclk_xtal(void);
 
 /* EXT_POWER gate (P0.13) — enables the 12V boost / sensor & light rails. */
 void board_ext_power_on(void);

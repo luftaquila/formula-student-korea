@@ -40,7 +40,9 @@ import {
 const TICKS_PER_MS = 16000;
 const DEFAULT_DEBOUNCE_MS = 300;
 const TYPE_TO_KEY = Object.fromEntries(Object.entries(EVENT_TYPE).map(([k, v]) => [v, k]));
-const tickToMs = (t) => Math.round(Number(t || 0) / TICKS_PER_MS);
+// Keep fractional milliseconds until an interval is complete. Rounding absolute
+// endpoints independently can move a single interval by a full millisecond.
+const tickToMs = (t) => Number(t || 0) / TICKS_PER_MS;
 
 function makeSlot() {
   return {
@@ -287,32 +289,45 @@ export const useWirelessStore = defineStore("wireless", () => {
   let serialPort = null;
   let serialReader = null;
   let intentionalClose = false; // closeSerial()로 끊는 중인지 — read 루프 종료가 분리인지 구분
-  const eventBuf = [];
+  const eventBuf = new Map();
   const telemetryBuf = new Map();
-  const MAX_EVENT_BUF = 2000; // 재시도 누적 폭주 방지(타이밍 이벤트가 수천 개면 이미 비정상)
   let flushScheduled = false;
   let flushInFlight = false;
   let hbTimer = null;
 
   function stateMap(s) { return s === "OK" ? "online" : s === "STALE" ? "degraded" : "lost"; }
+  function eventKey(event) { return `${event.node_id}:${event.ev_seq}:${event.master_tick}`; }
 
   async function flushIngest() {
     if (flushInFlight) return; // 직렬화: 동시 flush로 같은 events 중복 전송/순서 꼬임 방지
-    if (!eventBuf.length && !telemetryBuf.size) return;
+    if (!eventBuf.size && !telemetryBuf.size) return;
     flushInFlight = true;
-    const events = eventBuf.splice(0, eventBuf.length);
+    const events = [...eventBuf.values()];
+    for (const event of events) eventBuf.delete(eventKey(event));
     const tel = [...telemetryBuf.values()];
     telemetryBuf.clear();
     try {
-      await ingestWireless({ events, telemetry: tel });
+      const result = await ingestWireless({ events, telemetry: tel });
+      const acknowledged = new Set((result?.acknowledged || []).map(eventKey));
+      for (const event of events) {
+        if (acknowledged.has(eventKey(event))) {
+          // The server has durably inserted or deduplicated this exact tuple.
+          // Only now may the master evict it from its RAM delivery queue.
+          if (await transmitLine(`C ${event.node_id} ${event.ev_seq} ${event.master_tick}`)) {
+            eventBuf.delete(eventKey(event));
+          } else {
+            eventBuf.set(eventKey(event), event);
+          }
+        } else {
+          eventBuf.set(eventKey(event), event);
+        }
+      }
+      if (result?.rejected) notyf.error(`서버가 무선 이벤트 ${result.rejected}건을 거부했습니다.`);
     } catch (e) {
       // 전송 실패(네트워크 끊김·서버 재배포·503 등) 시 이벤트를 유실하면 안 되므로 버퍼
       // 앞으로 되돌려 다음 flush(≤2s heartbeat)에서 재시도. 텔레메트리는 최신값만 의미
       // 있어 재시도하지 않는다.
-      if (events.length) {
-        eventBuf.unshift(...events);
-        if (eventBuf.length > MAX_EVENT_BUF) eventBuf.splice(0, eventBuf.length - MAX_EVENT_BUF);
-      }
+      for (const event of events) eventBuf.set(eventKey(event), event);
       notyf.error(`서버 전송 실패(재시도 예정): ${e.message}`);
     } finally {
       flushInFlight = false;
@@ -329,14 +344,17 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (!t[0]) return;
     switch (t[0]) {
       case "E": // E node ev_seq tmaster flags rssi snr
-        eventBuf.push({ node_id: t[1], ev_seq: Number(t[2]), master_tick: t[3], rssi: Number(t[5]), snr: Number(t[6]), link_state: "online" });
+        {
+          const event = { node_id: t[1], ev_seq: Number(t[2]), master_tick: t[3], flags: Number(t[4]), rssi: Number(t[5]), snr: Number(t[6]), link_state: "online" };
+          eventBuf.set(eventKey(event), event);
+        }
         scheduleEventFlush();
         break;
       case "H": // H now_tick uptime_ms beacon_seq nseen — 마스터 시계 추적
         lastMasterMs = Number(t[1]) / TICKS_PER_MS;
         lastWall = Date.now();
         break;
-      case "D": // D node state offset skew rx_miss gap last_seen rssi snr lat temp_c10 batt_mv
+      case "D": // D ... provisioned sync/skew/clock/capture/queue/USB clock health
         telemetryBuf.set(t[1], {
           node_id: t[1], rssi: Number(t[8]), snr: Number(t[9]),
           offset_us: Math.round(Number(t[3]) / 16), skew_ppm: Number(t[4]),
@@ -346,11 +364,21 @@ export const useWirelessStore = defineStore("wireless", () => {
           latency_ms: Number(t[10]),
           // t[11] = 다이 온도(deci-°C), t[12] = 배터리/충전레일(mV). 마스터(node 0)는 자기 값.
           temp_c10: Number(t[11]), batt_mv: Number(t[12]),
+          sec_drop: Number(t[13]), provisioned: Number(t[14]),
+          sync_valid: Number(t[15]), skew_valid: Number(t[16]),
+          clock_source: t[17] === "XTAL" ? "xtal" : "rc",
+          sync_age_ms: Number(t[18]), capture_overflow: Number(t[19]),
+          event_drop: Number(t[20]), queue_depth: Number(t[21]),
+          queue_overflow: Number(t[22]), usb_ref_valid: Number(t[23]),
+          usb_ref_ppm: Number(t[24]),
           link_state: stateMap(t[2]),
         });
         break;
       case "L": // L state tick → 물리 신호등 상태를 서버에 보고
-        reportLight({ color: (t[1] || "off").toLowerCase(), green_tick: t[2] || "0" }).catch(() => {});
+        reportLight({ color: (t[1] || "off").toLowerCase(), green_tick: t[2] || "0" }).catch(async (error) => {
+          if (t[1] === "GREEN") await transmitLine("O");
+          notyf.error(`신호등 상태 반영 실패: ${error.message}`);
+        });
         break;
       case "I": // I FSK-WL <fw> <devid16hex> <freq> <sf> <bw> <ticks> — 마스터 자기 ID (표시 안 함)
         break;
@@ -358,15 +386,20 @@ export const useWirelessStore = defineStore("wireless", () => {
     }
   }
 
-  async function transmitLine(s) {
-    if (!serialPort?.writable) return false;
-    const writer = serialPort.writable.getWriter();
-    try {
-      await writer.write(new TextEncoder().encode(s + "\n"));
-      return true;
-    }
-    catch (e) { notyf.error(`전송 실패: ${e}`); return false; }
-    finally { writer.releaseLock(); }
+  let serialWriteChain = Promise.resolve(true);
+  function transmitLine(s) {
+    const write = async () => {
+      if (!serialPort?.writable) return false;
+      const writer = serialPort.writable.getWriter();
+      try {
+        await writer.write(new TextEncoder().encode(s + "\n"));
+        return true;
+      }
+      catch (e) { notyf.error(`전송 실패: ${e}`); return false; }
+      finally { writer.releaseLock(); }
+    };
+    serialWriteChain = serialWriteChain.then(write, write);
+    return serialWriteChain;
   }
 
   async function bridgeReadLoop() {
@@ -430,7 +463,7 @@ export const useWirelessStore = defineStore("wireless", () => {
       bridgeIsSelf.value = true;
       serialConnected.value = true;
       acquireWakeLock(); // 브리지 동작 중 화면 sleep 방지
-      transmitLine("?ID");
+      transmitLine("?STATUS");
       hbTimer = setInterval(flushIngest, 2000);
       bridgeReadLoop();
       notyf.success("마스터 연결 완료");
@@ -442,6 +475,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     const wasBridge = bridgeIsSelf.value;
     intentionalClose = true; // read 루프가 이 종료를 분리로 오인하지 않도록
     if (hbTimer) { clearInterval(hbTimer); hbTimer = null; }
+    if (wasBridge) { try { await transmitLine("O"); } catch { /* ignore */ } }
     try { await serialReader?.cancel(); } catch { /* ignore */ }
     try { await serialPort?.close(); } catch { /* ignore */ }
     serialPort = null; serialReader = null;
@@ -572,21 +606,13 @@ export const useWirelessStore = defineStore("wireless", () => {
       return false;
     }
   }
-  async function physicalControl(mode, action, serialCmd) {
+  async function physicalControl(mode, action) {
     // 초기화는 브리지 자신이 제어하더라도 서버를 경유해 pending 상태를 남긴다. 이후
     // 마스터의 실제 OFF 보고에서 런 식별자가 폐기되어 모든 클라이언트가 함께 초기화된다.
     if (action === "reset") return commandPhysical(mode, action);
-    if (bridgeIsSelf.value) {
-      // 브리지: 직접 시리얼. 분리된 포트면 transmitLine이 조용히 무시되던 것을 막고
-      // 경고 + 상태 정리(끊김을 read 루프/disconnect가 아직 못 잡은 경우도 여기서 드러난다).
-      if (!serialConnected.value || !serialPort?.writable) {
-        notyf.error("마스터에 연결되어 있지 않습니다.");
-        closeSerial();
-        return false;
-      }
-      return transmitLine(serialCmd);
-    }
-    return commandPhysical(mode, action); // 비-브리지: 서버→브리지 다운링크(브리지 없으면 서버가 409 경고)
+    // 브리지 자신도 서버 preflight를 우회하지 않는다. 서버가 green을 승인한 뒤
+    // wireless:command SSE가 돌아오면 위 공통 핸들러가 시리얼 명령을 전송한다.
+    return commandPhysical(mode, action);
   }
   async function greenFor(mode, team = null, eventName = null) {
     if (!requireControl(mode)) return false;
@@ -599,7 +625,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (missing.length) {
       notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")}` });
     }
-    if (isPhysical(mode)) return physicalControl(mode, "green", "G");
+    if (isPhysical(mode)) return physicalControl(mode, "green");
     // 가상: 클릭 즉시 arm을 낙관 반영(green.active=true → 녹색등 버튼 즉시 잠금, 전처럼).
     // applySession이 같은 green_tick으로 reconcile(재활성 안 함). POST 실패 시 롤백.
     // team·event_name을 arm 본문에 실어 bind-at-arm: /select POST와의 도착 순서 레이스와
@@ -620,18 +646,18 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
   function redFor(mode) {
     if (!requireControl(mode)) return false;
-    if (isPhysical(mode)) return physicalControl(mode, "red", "R");
+    if (isPhysical(mode)) return physicalControl(mode, "red");
     return armAction(mode, "red");
   }
   function offFor(mode) {
     if (!requireControl(mode)) return false;
-    if (isPhysical(mode)) return physicalControl(mode, "off", "O");
+    if (isPhysical(mode)) return physicalControl(mode, "off");
     return armAction(mode, "off");
   }
   async function resetFor(mode) {
     if (!holdsLease(mode)) return false;
     return isPhysical(mode)
-      ? await physicalControl(mode, "reset", "O")
+      ? await physicalControl(mode, "reset")
       : await armAction(mode, "reset");
   }
 

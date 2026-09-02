@@ -18,6 +18,7 @@ const wirelessMapping = ref([]);
 const wirelessTelemetry = ref({}); // node_id -> { rssi, snr, offset_us, skew_ppm, latency_ms, link_state, last_seen }
 const wirelessBridge = ref({ online: false, last_seen: null });
 const wirelessSessions = ref({}); // event_type -> { armed, light_color, green_tick, team, event_name, controller, ... }
+const wirelessQualityFaults = ref({}); // event_type -> 마지막 자동 중단 원인
 // wireless:event는 last-value ref로 모으면 빠른 연속 이벤트가 합쳐지므로 fan-out 사용
 const wirelessEventSubs = new Set();
 export function onWirelessEvent(fn) {
@@ -30,7 +31,14 @@ export function onWirelessCommand(fn) {
   wirelessCommandSubs.add(fn);
   return () => wirelessCommandSubs.delete(fn);
 }
-export { wirelessLight, wirelessMapping, wirelessTelemetry, wirelessBridge, wirelessSessions };
+export {
+  wirelessLight,
+  wirelessMapping,
+  wirelessTelemetry,
+  wirelessBridge,
+  wirelessSessions,
+  wirelessQualityFaults,
+};
 
 // ── 무선 이벤트 디스패치 + 재연결 백필 ──────────────────────────────────────
 // SSE가 잠깐 끊기면 그동안 broadcast된 wireless:event를 놓친다(브라우저 EventSource는
@@ -109,6 +117,11 @@ on("init", (e) => {
     const smap = {};
     for (const s of data.wireless.sessions || []) smap[s.event_type] = s;
     wirelessSessions.value = smap;
+    const fmap = {};
+    for (const fault of data.wireless.qualityFaults || []) {
+      if (fault?.event_type && fault?.fault_id) fmap[fault.event_type] = fault;
+    }
+    wirelessQualityFaults.value = fmap;
     // 첫 연결: 현재 위치만 기준점으로 잡고 백필 안 함. 재연결: init이 다시 와도 기준점은
     // 유지하고, 끊긴 동안 누락분을 백필. (mapping은 위에서 이미 갱신돼 라우팅이 최신값 사용.)
     if (lastWirelessEventId == null) {
@@ -163,6 +176,15 @@ on("wireless:session", (e) => {
   wirelessSessions.value = { ...wirelessSessions.value, [data.event_type]: data };
 });
 
+on("wireless:quality-fault", (e) => {
+  const data = parseSSEData(e);
+  if (!data?.event_type) return;
+  const next = { ...wirelessQualityFaults.value };
+  if (data.cleared) delete next[data.event_type];
+  else if (data.fault_id) next[data.event_type] = data;
+  wirelessQualityFaults.value = next;
+});
+
 on("wireless:command", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
@@ -215,5 +237,6 @@ export function useSSE() {
     wirelessTelemetry,
     wirelessBridge,
     wirelessSessions,
+    wirelessQualityFaults,
   };
 }

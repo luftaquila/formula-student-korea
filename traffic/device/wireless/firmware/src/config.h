@@ -114,6 +114,27 @@
 #define EVENT_FRESH_MS  3000u /* max age (past) accepted */
 #define EVENT_FUTURE_MS 250u  /* max future skew accepted (sync error headroom) */
 
+/* A sensor may stamp/send only while its last offset anchor is this fresh. This
+ * is an accuracy gate, unlike EVENT_FRESH_MS (transport/replay age). Seven
+ * seconds covers the 5 s STATUS cadence without a healthy-link dead band and,
+ * at the design's worst-case 80 ppm relative drift, contributes <=0.56 ms. */
+#define SYNC_TTL_MS 7000u
+
+/* Reliable event handoff is finite-buffered and fail-closed. The sensor keeps a
+ * pending event until the master ACKs it, while the master keeps an accepted
+ * event until the host confirms server storage. Any overflow/expiry is sticky
+ * health state and blocks later timing rather than silently continuing. */
+#define SENSOR_EVENT_QUEUE_LEN 8u
+#define SENSOR_EVENT_RETRY_MS  80u
+#define SENSOR_EVENT_MAX_AGE_MS 2500u
+#define MASTER_EVENT_QUEUE_LEN 16u
+#define MASTER_USB_RETRY_MS    100u
+
+/* USB SOF is a gross HFXO monitor only. USB 2.0 permits +-500 ppm SOF error, so
+ * this value is reported but never used to calibrate ticks. */
+#define USB_CLOCK_WINDOW_FRAMES 10000u
+#define USB_CLOCK_MAX_GAP_FRAMES 500u
+
 /* Event-timestamp skew correction (DESIGN §2.5). The sensor's offset is measured at a
  * beacon (sync_ref_tick); applying the measured clock skew to the drift since that anchor
  * removes the ~drift·Δt error in an event's master timestamp (≈18 ppm ⇒ ~18 µs/s, growing
@@ -126,7 +147,7 @@
 #define SKEW_CLAMP_PPM      100      /* max plausible XO drift to apply; a real XO is < ±40 ppm */
 #define SKEW_MIN_SAMPLES    4u       /* offset-ring samples required before trusting the slope */
 #define SKEW_MIN_DL_TICKS   8000000u /* min local-tick span for a skew sample (~0.5 s @ 16 MHz) */
-#define SKEW_MAX_EXTRAP_MS  3000u    /* max extrapolation past the sync anchor (× TICKS_PER_MS in main.c) */
+#define SKEW_MAX_EXTRAP_MS  SYNC_TTL_MS /* never extrapolate beyond the valid-sync window */
 
 /* Role (master/sensor) is decided ONCE at boot from USB host enumeration
  * (DESIGN §8): the master is the board a PC enumerates over USB-CDC. At boot we
