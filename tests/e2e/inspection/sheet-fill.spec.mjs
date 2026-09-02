@@ -102,7 +102,7 @@ test.describe("Inspection sheet filling", () => {
     expect(compactLayout.mapDisplay).toBe("grid");
     expect(compactLayout.mapOverflowX).toBe("visible");
     expect(compactLayout.mapScrollWidth).toBeLessThanOrEqual(compactLayout.mapClientWidth);
-    expect(compactLayout.itemSize).toBeLessThanOrEqual(10);
+    expect(compactLayout.itemSize).toBeCloseTo(12.5, 1);
     const firstItemBox = await page.locator(".item-row").first().boundingBox();
     expect(firstItemBox.y).toBeLessThan(844);
 
@@ -111,8 +111,8 @@ test.describe("Inspection sheet filling", () => {
     await expect(itemLink).toBeVisible();
     const regularWidth = (await itemLink.boundingBox()).width;
     await itemLink.hover();
-    await expect.poll(async () => (await itemLink.boundingBox()).width).toBeGreaterThan(regularWidth * 1.15);
-    expect((await itemLink.boundingBox()).width).toBeLessThanOrEqual(regularWidth * 1.35);
+    await expect.poll(async () => (await itemLink.boundingBox()).width).toBeGreaterThan(regularWidth * 1.2);
+    expect((await itemLink.boundingBox()).width).toBeLessThanOrEqual(regularWidth * 1.3);
     await itemLink.click();
     await expect.poll(async () => page.evaluate((startScrollY) => {
       const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
@@ -285,6 +285,8 @@ test.describe("Inspection sheet filling", () => {
     const row = page.locator(".item-row").filter({ hasText: item.name });
     const button = row.locator(".pf-toggle button").filter({ hasText: next === "PASS" ? "P" : "F" });
     await button.click();
+    const answerMetadata = row.locator(".answer-edit-metadata");
+    await expect(answerMetadata).toContainText("응답 저장됨");
 
     await expect.poll(async () => {
       const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
@@ -293,7 +295,6 @@ test.describe("Inspection sheet filling", () => {
     await expect(page.locator(".inspector-list")).toContainText("E2E Official");
     await expect(page.locator(".inspector-input")).toHaveCount(0);
     await expect(page.locator(".inspector-fill-btn")).toHaveCount(0);
-    const answerMetadata = row.locator(".answer-edit-metadata");
     await expect(answerMetadata).toContainText("E2E Official");
     await expect(answerMetadata).not.toContainText("응답 ·");
     await expect(answerMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
@@ -396,6 +397,8 @@ test.describe("Inspection sheet filling", () => {
     // Type a memo and blur to trigger save
     await memoInput.fill(newMemo);
     await memoInput.blur();
+    const memoMetadata = itemRow.locator(".memo-edit-metadata");
+    await expect(memoMetadata).toContainText("메모 저장됨");
 
     // Get template to find item ID for API verification
     const templateRes = await page.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
@@ -408,7 +411,6 @@ test.describe("Inspection sheet filling", () => {
       const data = await resp.json();
       return data.answers[firstItemId]?.memo === newMemo;
     }, { timeout: 10000 }).toBeTruthy();
-    const memoMetadata = itemRow.locator(".memo-edit-metadata");
     await expect(memoMetadata).toContainText("E2E Official");
     await expect(memoMetadata).not.toContainText("메모 ·");
     await expect(memoMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);

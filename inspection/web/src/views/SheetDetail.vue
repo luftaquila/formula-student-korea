@@ -1158,12 +1158,11 @@ watch(reconnected, async () => {
                   </div>
                   <div class="item-status-slot" aria-live="polite">
                     <div
-                      v-if="answerSaveStates[item.id]?.state && answerSaveStates[item.id].state !== 'idle'"
+                      v-if="['pending', 'saving', 'error'].includes(answerSaveStates[item.id]?.state)"
                       class="save-feedback"
                       :class="`save-${answerSaveStates[item.id].state}`"
                     >
                       <span v-if="answerSaveStates[item.id].state === 'pending' || answerSaveStates[item.id].state === 'saving'">응답 저장 중…</span>
-                      <span v-else-if="answerSaveStates[item.id].state === 'saved'">응답 저장됨</span>
                       <template v-else-if="answerSaveStates[item.id].state === 'error'">
                         <span>응답 저장 실패</span>
                         <button type="button" @click="retryAnswer(item.id)">재시도</button>
@@ -1171,12 +1170,11 @@ watch(reconnected, async () => {
                     </div>
 
                     <div
-                      v-if="memoSaveStates[item.id]?.state && memoSaveStates[item.id].state !== 'idle'"
+                      v-if="['pending', 'saving', 'error'].includes(memoSaveStates[item.id]?.state)"
                       class="save-feedback"
                       :class="`save-${memoSaveStates[item.id].state}`"
                     >
                       <span v-if="memoSaveStates[item.id].state === 'pending' || memoSaveStates[item.id].state === 'saving'">메모 저장 중…</span>
-                      <span v-else-if="memoSaveStates[item.id].state === 'saved'">메모 저장됨</span>
                       <template v-else-if="memoSaveStates[item.id].state === 'error'">
                         <span>메모 저장 실패</span>
                         <button type="button" @click="retryMemo(item.id)">재시도</button>
@@ -1186,9 +1184,11 @@ watch(reconnected, async () => {
                   <div
                     v-if="getAnswerUpdatedAt(item.id)"
                     class="edit-metadata answer-edit-metadata"
+                    aria-live="polite"
                   >
                     {{ getAnswerUpdatedBy(item.id) || "알 수 없음" }} ·
                     <time :datetime="getAnswerUpdatedAt(item.id)">{{ formatUpdatedAt(getAnswerUpdatedAt(item.id)) }}</time>
+                    <span v-if="answerSaveStates[item.id]?.state === 'saved'" class="save-saved"> · 응답 저장됨</span>
                   </div>
                   </div>
 
@@ -1222,9 +1222,11 @@ watch(reconnected, async () => {
                     <div
                       v-if="getMemoUpdatedAt(item.id)"
                       class="edit-metadata memo-edit-metadata"
+                      aria-live="polite"
                     >
                       {{ getMemoUpdatedBy(item.id) || "알 수 없음" }} ·
                       <time :datetime="getMemoUpdatedAt(item.id)">{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</time>
+                      <span v-if="memoSaveStates[item.id]?.state === 'saved'" class="save-saved"> · 메모 저장됨</span>
                     </div>
                   </div>
                 </div>
@@ -1974,8 +1976,8 @@ watch(reconnected, async () => {
 
 .inspection-status-map {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 10px);
-  grid-auto-rows: 10px;
+  grid-template-columns: repeat(auto-fill, 12.5px);
+  grid-auto-rows: 12.5px;
   gap: 2px;
   min-width: 0;
   padding-block: 0.125rem;
@@ -1986,9 +1988,9 @@ watch(reconnected, async () => {
 }
 
 .status-map-item {
-  width: 10px;
-  height: 10px;
-  min-height: 10px;
+  width: 12.5px;
+  height: 12.5px;
+  min-height: 12.5px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 2px;

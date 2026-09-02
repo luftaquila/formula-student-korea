@@ -102,7 +102,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await textarea.fill("첫째 줄\n둘째 줄");
     const filledRowHeight = await row.evaluate(element => element.getBoundingClientRect().height);
     expect(filledRowHeight).toBeGreaterThan(initialRowHeight);
-    const memoSaved = row.locator(".save-saved").filter({ hasText: "메모 저장됨" });
+    const memoSaved = row.locator(".memo-edit-metadata .save-saved").filter({ hasText: "메모 저장됨" });
     await expect(memoSaved).toBeVisible({ timeout: 10000 });
     const [textareaBox, statusBox] = await Promise.all([textarea.boundingBox(), memoSaved.boundingBox()]);
     expect(statusBox.y + statusBox.height <= textareaBox.y || textareaBox.y + textareaBox.height <= statusBox.y).toBe(true);
