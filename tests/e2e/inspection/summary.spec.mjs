@@ -133,6 +133,34 @@ test.describe("Inspection summary dashboard", () => {
     await expect(passRate).toHaveText("0% (0/1)");
   });
 
+  test("hides a category column when the active filters leave no applicable teams", async ({ page }) => {
+    let hiddenCategoryId;
+    let remainingCategoryId;
+    await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      hiddenCategoryId = body.categories[0].id;
+      remainingCategoryId = body.categories[1].id;
+      body.categories[0].excluded_types = ["CV"];
+      body.categories[1].excluded_types = [];
+      await route.fulfill({ response, json: body });
+    });
+
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const table = page.locator(".sheet-table");
+    const hiddenHeader = table.locator(`thead th.col-result[data-category-id="${hiddenCategoryId}"]`);
+    await expect(hiddenHeader).toHaveCount(1);
+
+    await page.getByTestId("inspection-team-type-filter").locator('input[value="EV"]').uncheck();
+    await expect(table.locator("tbody tr.clickable-row")).not.toHaveCount(0);
+    await expect(hiddenHeader).toHaveCount(0);
+    await expect(table.locator(`tbody td.col-result[data-category-id="${hiddenCategoryId}"]`)).toHaveCount(0);
+    await expect(table.locator(`thead th.col-result[data-category-id="${remainingCategoryId}"]`)).toHaveCount(1);
+    await expect(page.getByTestId("inspection-team-sticky-header").locator(`[data-category-id="${hiddenCategoryId}"]`)).toHaveCount(0);
+  });
+
   test("keeps the table header fixed while the page scrolls", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 520 });
     await page.goto("/inspection");

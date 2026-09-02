@@ -49,7 +49,7 @@ const MOBILE_ENTRY_COLUMN_WIDTH = 148;
 const MOBILE_RESULT_COLUMN_WIDTH = 104;
 
 const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
-const mobileTableWidth = computed(() => `${MOBILE_ENTRY_COLUMN_WIDTH + summary.value.categories.length * MOBILE_RESULT_COLUMN_WIDTH}px`);
+const mobileTableWidth = computed(() => `${MOBILE_ENTRY_COLUMN_WIDTH + visibleCategories.value.length * MOBILE_RESULT_COLUMN_WIDTH}px`);
 const stickyHeaderHostStyle = computed(() => {
   const height = stickyHeaderMetrics.value.height;
   return {
@@ -91,6 +91,9 @@ const categoryPassRates = computed(() => Object.fromEntries(
       percentage: total ? Math.round((passed / total) * 100) : 0,
     }];
   }),
+));
+const visibleCategories = computed(() => summary.value.categories.filter(
+  category => categoryPassRates.value[category.id]?.total > 0,
 ));
 
 watch(typeFilters, (filters) => {
@@ -359,8 +362,12 @@ watch(lastEntriesUpdate, (update) => {
                 <div class="sticky-header-cell col-num" :style="getStickyHeaderCellStyle(0)">엔트리</div>
                 <div class="sticky-header-cell col-team" :style="getStickyHeaderCellStyle(1)">학교 / 팀</div>
                 <div class="sticky-header-cell col-type" :style="getStickyHeaderCellStyle(2)">유형</div>
-                <template v-for="(cat, index) in summary.categories" :key="'sticky-r'+cat.id">
-                  <div class="sticky-header-cell col-result" :style="getStickyHeaderCellStyle(index + 3)">
+                <template v-for="(cat, index) in visibleCategories" :key="'sticky-r'+cat.id">
+                  <div
+                    class="sticky-header-cell col-result"
+                    :data-category-id="cat.id"
+                    :style="getStickyHeaderCellStyle(index + 3)"
+                  >
                     <span class="category-header-name">{{ cat.name }}</span>
                     <span class="category-pass-rate">{{ formatCategoryPassRate(cat.id) }}</span>
                   </div>
@@ -383,8 +390,8 @@ watch(lastEntriesUpdate, (update) => {
                 <th class="col-num">엔트리</th>
                 <th class="col-team">학교 / 팀</th>
                 <th class="col-type">유형</th>
-                <template v-for="cat in summary.categories" :key="'r'+cat.id">
-                  <th class="col-result">
+                <template v-for="cat in visibleCategories" :key="'r'+cat.id">
+                  <th class="col-result" :data-category-id="cat.id">
                     <span class="category-header-name">{{ cat.name }}</span>
                     <span class="category-pass-rate" :data-category-id="cat.id">{{ formatCategoryPassRate(cat.id) }}</span>
                   </th>
@@ -416,7 +423,7 @@ watch(lastEntriesUpdate, (update) => {
                 <td class="col-type">
                   <span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
                 </td>
-                <template v-for="cat in summary.categories" :key="'r'+cat.id+'-'+entry.num">
+                <template v-for="cat in visibleCategories" :key="'r'+cat.id+'-'+entry.num">
                   <td
                     class="col-result"
                     :class="{ 'category-cell-link': appliesToTeam(cat, entry.type) }"
@@ -461,7 +468,7 @@ watch(lastEntriesUpdate, (update) => {
                 </template>
               </tr>
               <tr v-if="filteredEntries.length === 0">
-                <td :colspan="3 + summary.categories.length" class="empty-state">
+                <td :colspan="3 + visibleCategories.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
