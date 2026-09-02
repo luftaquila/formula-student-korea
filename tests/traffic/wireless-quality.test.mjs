@@ -10,6 +10,7 @@ import {
   tmpDbPath,
   TRUST_JWT,
 } from "../helpers/test-utils.mjs";
+import { healthyWirelessTelemetry as healthy } from "../helpers/wireless-fixtures.mjs";
 
 setupTestEnv();
 
@@ -47,29 +48,6 @@ async function mapAccel() {
   await client.put("/api/wireless/mapping/quality-finish", {
     body: { event_type: "가속", role: "finish" }, cookie,
   });
-}
-
-function healthy(node_id, extra = {}) {
-  return {
-    node_id,
-    link_state: "online",
-    last_seen_ms: 0,
-    skew_ppm: 12,
-    beacon_gap: 0,
-    sec_drop: 0,
-    provisioned: 1,
-    sync_valid: 1,
-    skew_valid: 1,
-    clock_source: "xtal",
-    sync_age_ms: 100,
-    capture_overflow: 0,
-    event_drop: 0,
-    queue_depth: 0,
-    queue_overflow: 0,
-    usb_ref_valid: 1,
-    usb_ref_ppm: 25,
-    ...extra,
-  };
 }
 
 describe("wireless quality gate", () => {
@@ -193,6 +171,59 @@ describe("wireless quality gate", () => {
       ORDER BY id DESC LIMIT 1
     `).get();
     assert.equal(JSON.parse(audit.detail).duration_ms, 500);
+  });
+
+  it("keeps the engine live when measurement disarm persistence fails", async () => {
+    await client.post("/api/wireless/ingest", {
+      body: { telemetry: [healthy("0", { skew_ppm: 0, sync_age_ms: 0 }), healthy("quality-start"), healthy("quality-finish")] },
+      cookie,
+    });
+    assert.equal((await client.post("/api/wireless/arm", {
+      body: { event_type: "가속", action: "green", green_tick: "3200000000" }, cookie,
+    })).status, 200);
+    assert.equal((await client.post("/api/wireless/ingest", {
+      body: { events: [{ node_id: "quality-start", master_tick: "3200000000", ev_seq: 401 }] }, cookie,
+    })).status, 200);
+
+    appState.db.exec(`
+      CREATE TEMP TRIGGER inject_measurement_disarm_failure
+      BEFORE UPDATE OF armed, light_color ON wireless_session
+      WHEN OLD.event_type = '가속' AND NEW.armed = 0 AND NEW.light_color = 'red'
+      BEGIN SELECT RAISE(ABORT, 'injected measurement disarm failure'); END
+    `);
+    emittedEvents.length = 0;
+    try {
+      assert.equal((await client.post("/api/wireless/ingest", {
+        body: { events: [{ node_id: "quality-finish", master_tick: "3208000000", ev_seq: 402 }] }, cookie,
+      })).status, 200);
+      const failedState = await (await client.get("/api/wireless/state", { cookie })).json();
+      const failedSession = failedState.sessions.find((item) => item.event_type === "가속");
+      assert.equal(failedSession.armed, true);
+      assert.equal(failedSession.light_color, "green");
+      assert.deepEqual(failedState.qualityFaults, []);
+      assert.ok(!emittedEvents.some((item) => item.event === "wireless:quality-fault" && !item.data.cleared));
+      const failedAudit = appState.db.prepare(`
+        SELECT detail FROM logs
+        WHERE action = 'wireless.measurement_fault' AND target = '가속'
+        ORDER BY id DESC LIMIT 1
+      `).get();
+      const detail = JSON.parse(failedAudit.detail);
+      assert.equal(detail.phase, "database_mutation");
+      assert.match(detail.error, /injected measurement disarm failure/);
+    } finally {
+      appState.db.exec("DROP TRIGGER IF EXISTS inject_measurement_disarm_failure");
+    }
+
+    // The failed transition must not latch run.saved. A later accepted finish
+    // still reaches the same fault path and can close the session successfully.
+    assert.equal((await client.post("/api/wireless/ingest", {
+      body: { events: [{ node_id: "quality-finish", master_tick: "3214400000", ev_seq: 403 }] }, cookie,
+    })).status, 200);
+    const recoveredState = await (await client.get("/api/wireless/state", { cookie })).json();
+    const recoveredSession = recoveredState.sessions.find((item) => item.event_type === "가속");
+    assert.equal(recoveredSession.armed, false);
+    assert.equal(recoveredSession.light_color, "red");
+    assert.equal(recoveredState.qualityFaults[0].kind, "measurement");
   });
 });
 

@@ -910,7 +910,6 @@ function enduranceUpsertRecord(eventType, binding, run) {
 
 function failWirelessMeasurement(eventType, run, durationMs, phase) {
   if (run.saved) return;
-  run.saved = true;
   const result = dbRun(() => {
     db.prepare(`
       UPDATE wireless_session
@@ -919,6 +918,21 @@ function failWirelessMeasurement(eventType, run, durationMs, phase) {
     `).run(eventType);
     return { session: getSession(eventType), light: getLightState() };
   });
+  if (!result.success) {
+    logger.warn(null, "wireless.measurement_fault", {
+      event_type: eventType,
+      run_id: run.runId ?? null,
+      duration_ms: durationMs,
+      measurement_phase: phase,
+      phase: "database_mutation",
+      error: result.internalError || result.error,
+      reason: "측정 이상 처리 중 세션을 중단하지 못했습니다.",
+    }, eventType, SYS_ACTOR);
+    return;
+  }
+  // 세션이 실제로 red/disarm된 뒤에만 엔진 런을 닫는다. DB 실패 때 먼저
+  // saved를 세우면 UI는 green인데 이후 이벤트만 영구 무시하는 split-brain이 된다.
+  run.saved = true;
   logger.warn(null, "wireless.measurement_fault", {
     event_type: eventType,
     run_id: run.runId ?? null,
@@ -926,7 +940,6 @@ function failWirelessMeasurement(eventType, run, durationMs, phase) {
     phase,
     error: "측정 구간이 허용된 물리 범위를 벗어났습니다.",
   }, eventType, SYS_ACTOR);
-  if (!result.success) return;
   broadcastEvent("wireless:session", result.result.session);
   publishWirelessQualityFault(eventType, run.runId, [{
     node_id: null,

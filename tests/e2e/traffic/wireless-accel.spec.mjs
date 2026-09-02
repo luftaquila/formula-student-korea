@@ -2,6 +2,7 @@ import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
+import { healthyWirelessBatch } from "../../helpers/wireless-fixtures.mjs";
 
 const YEAR = currentCompetitionYear();
 const EVENT = "E2E-WL-Accel";
@@ -33,7 +34,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
   test("server engine saves and reliably reconnects the matching accel record", async ({ page, browser }) => {
     // 재시도도 별도 센서 이벤트가 되도록 매 실행마다 고유 tick/sequence를 사용한다.
     const tickBase = BigInt(Date.now()) * 16000n;
-    const finishTick = tickBase + 160000n;
+    const finishTick = tickBase + 160000000n;
     const eventSequence = Date.now() % 1_000_000_000;
 
     // 매핑: 출발=NODE_S, 도착=NODE_F (goto 전에 설정 → init SSE에 포함)
@@ -52,9 +53,16 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.request.post("/competition/api/v1/traffic/wireless/select", {
       data: { event_type: "가속", team: await trafficEntry(1), event_name: EVENT },
     });
+    const health = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
+      data: healthyWirelessBatch([NODE_S, NODE_F]),
+    });
+    expect(health.status()).toBe(200);
     // 가속을 물리 경기로 지정 + green(=arm). 서버가 세션에 arm 미러.
     await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "가속" } });
-    await page.request.post("/competition/api/v1/traffic/wireless/light", { data: { color: "green", green_tick: tickBase.toString() } });
+    const green = await page.request.post("/competition/api/v1/traffic/wireless/light", {
+      data: { color: "green", green_tick: tickBase.toString() },
+    });
+    expect(green.status()).toBe(200);
 
     // 클라이언트가 SSE로 green 반영
     await expect(page.locator(".traffic-light.green")).toBeVisible({ timeout: 8000 });
@@ -91,7 +99,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await waitForPageReady(latePage);
     const lateQuickEdit = latePage.locator(".saved-section").getByTestId("record-quick-edit");
     await expect(lateQuickEdit).toBeVisible({ timeout: 5000 });
-    await expect(latePage.locator(".saved-section")).toContainText("00:00.010");
+    await expect(latePage.locator(".saved-section")).toContainText("00:10.000");
     await expect(latePage.locator(".records-section .record-item")).toHaveCount(0);
 
     // 도착 후 적색등으로 전환되어도 현재 런의 편집 카드는 유지된다.
@@ -99,7 +107,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
 
     const beforeManual = await (await page.request.get(`/competition/api/v1/traffic/records/FSK ${YEAR} ${EVENT}`)).json();
-    const engineRecord = beforeManual.find((record) => record.type === "가속" && record.result === 10);
+    const engineRecord = beforeManual.find((record) => record.type === "가속" && record.result === 10000);
     expect(engineRecord).toBeTruthy();
 
     // 같은 팀·종목·결과의 수동 기록을 뒤에 추가해도 현재 런의 편집 rowid가 바뀌면 안 된다.
@@ -110,7 +118,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
           time: new Date().toISOString(),
           type: "가속",
           entry: await trafficEntry(1),
-          result: 10,
+          result: 10000,
         },
       },
     });
