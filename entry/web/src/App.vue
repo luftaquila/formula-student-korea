@@ -9,6 +9,7 @@ import SonnerToaster from "@shared/SonnerToaster.vue";
 import { fetchYears, fetchEntries, addEntry, updateEntry, setEntryActive, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "@shared/useNotification.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
 
 const { success, error } = useNotification();
 const entries = ref({});
@@ -26,10 +27,18 @@ const refreshNotice = " 열려 있는 Queue·Inspection·Traffic 화면을 새�
 const errorMessage = (e) => e?.data?.message || e?.message || "요청을 처리할 수 없습니다.";
 const entriesArray = computed(() => Object.entries(entries.value)
   .map(([num, data]) => ({ num: Number(num), ...data })).sort((a, b) => a.num - b.num));
+const availableTypes = computed(() => [...new Set([
+  ...vehicleTypes.value.map((type) => type.name),
+  ...entriesArray.value.map((entry) => entry.type),
+].filter(Boolean))]);
+const typeFilters = usePersistentTypeFilters("entry-team-type-filter", availableTypes);
 const filteredEntries = computed(() => {
-  if (!searchQuery.value.trim()) return entriesArray.value;
+  const typeFiltered = entriesArray.value.filter(
+    (entry) => !entry.type || typeFilters.value[entry.type] !== false,
+  );
+  if (!searchQuery.value.trim()) return typeFiltered;
   const query = searchQuery.value.toLowerCase();
-  return entriesArray.value.filter((entry) => entry.num.toString().includes(query)
+  return typeFiltered.filter((entry) => entry.num.toString().includes(query)
     || entry.univ.toLowerCase().includes(query) || entry.team.toLowerCase().includes(query)
     || entry.type?.toLowerCase().includes(query));
 });
@@ -44,6 +53,9 @@ const typeCounts = computed(() => {
   return vehicleTypes.value.filter((type) => counts[type.name])
     .map((type) => ({ name: type.name, color: type.color, count: counts[type.name] }));
 });
+function getTypeColor(type) {
+  return vehicleTypes.value.find((candidate) => candidate.name === type)?.color || "blue";
+}
 
 async function loadYears() {
   try {
@@ -159,7 +171,7 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
         </fieldset>
       </aside>
 
-      <section class="content">
+      <section class="content team-table-card">
         <div class="table-header">
           <div class="table-title-area">
             <div class="title-row">
@@ -170,10 +182,14 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
               <span class="entry-count" title="활성 엔트리">{{ activeCount }}대</span>
               <span v-if="rosterReadOnly" class="roster-badge">읽기 전용</span>
               <span v-if="inactiveCount" class="inactive-count">비활성 {{ inactiveCount }}대</span>
-              <span v-for="tc in typeCounts" :key="tc.name" class="type-count desktop-only" :class="'badge-type-' + tc.color">{{ tc.name }} {{ tc.count }}대</span>
             </div>
-            <div v-if="typeCounts.length" class="type-counts-row mobile-only">
-              <span v-for="tc in typeCounts" :key="tc.name" class="type-count" :class="'badge-type-' + tc.color">{{ tc.name }} {{ tc.count }}대</span>
+            <div v-if="availableTypes.length" class="team-type-filter" data-testid="entry-team-type-filter">
+              <label v-for="type in availableTypes" :key="type" class="team-type-filter-label">
+                <input v-model="typeFilters[type]" type="checkbox" :value="type" />
+                <span class="type-count" :class="'badge-type-' + getTypeColor(type)">
+                  {{ type }} {{ typeCounts.find((item) => item.name === type)?.count || 0 }}대
+                </span>
+              </label>
             </div>
           </div>
           <div class="search-box">
@@ -181,7 +197,7 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.35-4.35" />
             </svg>
-            <input v-model="searchQuery" type="text" placeholder="검색..." class="search-input" />
+            <input v-model="searchQuery" type="text" placeholder="엔트리 / 학교 / 팀명" class="search-input" />
           </div>
         </div>
 
@@ -385,8 +401,55 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
 @media (max-width: 640px) {
   .table-header {
     flex-direction: column;
-    gap: 1rem;
+    gap: 0.75rem;
     align-items: stretch;
+    padding: 0.875rem;
+  }
+
+  .table-title-area {
+    min-width: 0;
+  }
+
+  .title-row,
+  .team-type-filter {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .title-row::-webkit-scrollbar,
+  .team-type-filter::-webkit-scrollbar {
+    display: none;
+  }
+
+  .title-row {
+    gap: 0.375rem;
+  }
+
+  .title-row > *,
+  .team-type-filter-label {
+    flex: 0 0 auto;
+  }
+
+  .table-title-area h2 {
+    font-size: 1rem;
+    white-space: nowrap;
+  }
+
+  .year-select,
+  .entry-count,
+  .inactive-count,
+  .roster-badge {
+    font-size: 0.6875rem;
+    padding: 0.1875rem 0.375rem;
+  }
+
+  .team-type-filter {
+    gap: 0.375rem;
+  }
+
+  .team-type-filter-label {
+    min-height: 1.75rem;
   }
 
   .desktop-only { display: none; }

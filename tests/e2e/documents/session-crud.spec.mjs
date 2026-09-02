@@ -96,6 +96,6 @@ test.describe("Documents session CRUD", () => {
     await expect(page).toHaveURL(/\/documents\/admin/);
 
     // Verify the deleted session is no longer visible
-    await expect(page.locator(".session-link").filter({ hasText: "E2E CRUD 수정된 세션" })).not.toBeVisible();
+    await expect(page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: "E2E CRUD 수정된 세션" })).not.toBeVisible();
   });
 });

@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { completeInspectionCategory, restoreInspectionAnswers } from "../helpers/inspection.mjs";
 
 const YEAR = currentCompetitionYear();
@@ -41,7 +41,7 @@ test.describe("Inspection summary dashboard", () => {
     const table = page.locator(".sheet-table");
     const headers = table.locator("thead th");
 
-    // Should have: 엔트리, 학교/팀, 유형, + visible category columns
+    // Should have: compact 엔트리 identity + visible category columns
     // Seeded categories are "전기 검차" and "샤시 검차"
     await expect(headers.filter({ hasText: /^엔트리$/ })).toBeVisible();
     await expect(headers.filter({ hasText: "전기 검차" })).toBeVisible();
@@ -56,14 +56,12 @@ test.describe("Inspection summary dashboard", () => {
 
     const table = page.locator(".sheet-table");
     const chassisHeader = table.locator("thead .col-result").filter({ hasText: "샤시 검차" });
-    const categoryIndex = await table.locator("thead .col-result").allTextContents()
-      .then(headers => headers.findIndex(header => header.includes("샤시 검차")));
-    expect(categoryIndex).toBeGreaterThanOrEqual(0);
     await expect(chassisHeader).toBeVisible();
 
     const row = table.locator("tbody tr.clickable-row").filter({ hasText: "서울대학교" });
-    const cell = row.locator(".col-result").nth(categoryIndex);
-    const categoryId = await cell.getAttribute("data-category-id");
+    const categoryId = await chassisHeader.getAttribute("data-category-id");
+    const cell = row.locator(`.col-result[data-category-id="${categoryId}"]`);
+    await expect(cell).toBeVisible();
     await cell.click();
 
     await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/1\\?category=${categoryId}$`));
@@ -77,8 +75,8 @@ test.describe("Inspection summary dashboard", () => {
     const filter = page.getByTestId("inspection-team-type-filter");
     const checkboxes = filter.locator('input[type="checkbox"]');
     const rows = page.locator(".sheet-table tbody tr.clickable-row");
-    const evCount = await rows.locator(".col-type").allTextContents()
-      .then(types => types.filter(type => type.trim() === "EV").length);
+    await expect(rows.first()).toBeVisible();
+    const evCount = await rows.evaluateAll(elements => elements.filter(row => row.dataset.teamType === "EV").length);
     expect(evCount).toBeGreaterThan(0);
     await expect(checkboxes).not.toHaveCount(0);
     await expect(filter.locator('input[value="EV"]')).toBeChecked();
@@ -87,7 +85,7 @@ test.describe("Inspection summary dashboard", () => {
       if (await checkbox.getAttribute("value") !== "EV") await checkbox.uncheck();
     }
     await expect(rows).toHaveCount(evCount);
-    await expect(rows.locator(".col-type")).toHaveText(Array(evCount).fill("EV"));
+    expect(await rows.evaluateAll(elements => elements.map(row => row.dataset.teamType))).toEqual(Array(evCount).fill("EV"));
     expect(JSON.parse(await page.evaluate(() => localStorage.getItem("inspection-team-type-filter")))).toMatchObject({ EV: true });
 
     await page.reload();
@@ -118,11 +116,11 @@ test.describe("Inspection summary dashboard", () => {
 
     const rows = page.locator(".sheet-table tbody tr.clickable-row");
     const passRate = page.locator(".sheet-table thead .category-pass-rate").first();
+    await expect(rows.first()).toBeVisible();
     const initialCount = await rows.count();
     await expect(passRate).toHaveText(`${Math.round(100 / initialCount)}% (1/${initialCount})`);
 
-    const evCount = await rows.locator(".col-type").allTextContents()
-      .then(types => types.filter(type => type.trim() === "EV").length);
+    const evCount = await rows.evaluateAll(elements => elements.filter(row => row.dataset.teamType === "EV").length);
     await page.getByTestId("inspection-team-type-filter").locator('input[value="CV"]').uncheck();
     expect(evCount).toBeLessThan(initialCount);
     await expect(rows).toHaveCount(evCount);
@@ -134,13 +132,9 @@ test.describe("Inspection summary dashboard", () => {
   });
 
   test("hides a category column when the active filters leave no applicable teams", async ({ page }) => {
-    let hiddenCategoryId;
-    let remainingCategoryId;
     await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
       const response = await route.fetch();
       const body = await response.json();
-      hiddenCategoryId = body.categories[0].id;
-      remainingCategoryId = body.categories[1].id;
       body.categories[0].excluded_types = ["CV"];
       body.categories[1].excluded_types = [];
       await route.fulfill({ response, json: body });
@@ -150,6 +144,10 @@ test.describe("Inspection summary dashboard", () => {
     await waitForPageReady(page);
 
     const table = page.locator(".sheet-table");
+    const headers = table.locator("thead th.col-result");
+    await expect(headers).toHaveCount(2);
+    const hiddenCategoryId = await headers.first().getAttribute("data-category-id");
+    const remainingCategoryId = await headers.nth(1).getAttribute("data-category-id");
     const hiddenHeader = table.locator(`thead th.col-result[data-category-id="${hiddenCategoryId}"]`);
     await expect(hiddenHeader).toHaveCount(1);
 
@@ -200,6 +198,10 @@ test.describe("Inspection summary dashboard", () => {
     await expect(row.locator(".mobile-entry-univ")).toHaveText("서울대학교");
     await expect(row.locator(".mobile-entry-team")).toHaveText("SNU Racing");
     await expect(row.locator(".mobile-entry-type")).toHaveText("EV");
+    await expectCompactTeamIdentity(table, {
+      summary: ".entry-summary",
+      fields: [".mobile-entry-type", ".mobile-entry-univ", ".mobile-entry-team"],
+    });
 
     const layout = await row.evaluate((element) => {
       const entry = element.querySelector(".col-num").getBoundingClientRect();
@@ -207,8 +209,8 @@ test.describe("Inspection summary dashboard", () => {
       return {
         entryWidth: entry.width,
         resultOffset: firstResult.left - entry.left,
-        teamDisplay: getComputedStyle(element.querySelector(".col-team")).display,
-        typeDisplay: getComputedStyle(element.querySelector(".col-type")).display,
+        hasLegacyTeamColumn: Boolean(element.querySelector(".col-team")),
+        hasLegacyTypeColumn: Boolean(element.querySelector(".col-type")),
         teamColor: getComputedStyle(element.querySelector(".mobile-entry-team")).color,
         tertiaryColor: (() => {
           const probe = document.createElement("span");
@@ -221,10 +223,9 @@ test.describe("Inspection summary dashboard", () => {
         teamWeight: getComputedStyle(element.querySelector(".mobile-entry-team")).fontWeight,
       };
     });
-    expect(layout.entryWidth).toBeLessThanOrEqual(152);
-    expect(layout.resultOffset).toBeLessThanOrEqual(152);
-    expect(layout.teamDisplay).toBe("none");
-    expect(layout.typeDisplay).toBe("none");
+    expect(Math.abs(layout.resultOffset - layout.entryWidth)).toBeLessThanOrEqual(1);
+    expect(layout.hasLegacyTeamColumn).toBe(false);
+    expect(layout.hasLegacyTypeColumn).toBe(false);
     expect(layout.teamColor).not.toBe(layout.tertiaryColor);
     expect(Number(layout.teamWeight)).toBeGreaterThanOrEqual(500);
 
@@ -241,8 +242,26 @@ test.describe("Inspection summary dashboard", () => {
       };
     });
     expect(Math.abs(stickyLayout.leftOffset)).toBeLessThanOrEqual(1);
-    expect(stickyLayout.width).toBeGreaterThanOrEqual(147);
+    expect(Math.abs(stickyLayout.width - layout.entryWidth)).toBeLessThanOrEqual(1);
     expect(stickyLayout.textFits).toBe(true);
+  });
+
+  test("uses the compact identity column on desktop too", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const table = page.locator(".sheet-table");
+    const row = table.locator("tbody tr.clickable-row").first();
+    await expect(row.locator(".mobile-entry-univ")).toBeVisible();
+    await expect(row.locator(".mobile-entry-team")).toBeVisible();
+    await expect(row.locator(".mobile-entry-type")).toBeVisible();
+    await expect(row.locator(".col-team")).toHaveCount(0);
+    await expect(row.locator(".col-type")).toHaveCount(0);
+    await expectCompactTeamIdentity(table, {
+      summary: ".entry-summary",
+      fields: [".mobile-entry-type", ".mobile-entry-univ", ".mobile-entry-team"],
+    });
   });
 
   test("collapses five or more inspectors without hiding the full list", async ({ page }) => {
@@ -263,6 +282,7 @@ test.describe("Inspection summary dashboard", () => {
     const disclosure = row.locator(".inspector-disclosure").first();
     const toggle = disclosure.locator("summary");
 
+    await expect(toggle).toBeVisible();
     await expect(toggle.locator(".inspector-preview")).toHaveText("김검차, 이검차");
     await expect(toggle.locator(".inspector-more")).toHaveText("외 3명");
     await expect(toggle).toHaveAttribute("title", inspectors.join(", "));
@@ -368,9 +388,9 @@ test.describe("Inspection summary dashboard", () => {
 
     const table = page.locator(".sheet-table");
 
-    // Click the first team row (team #1)
+    // The compact identity cell opens the team sheet; category cells open that category.
     const firstRow = table.locator("tbody tr.clickable-row").first();
-    await firstRow.click();
+    await firstRow.locator(".col-num").click();
 
     // Should navigate to the sheet detail page
     await page.waitForURL(`**/inspection/${YEAR}/1`);

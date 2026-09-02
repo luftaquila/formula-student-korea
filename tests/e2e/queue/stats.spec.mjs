@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const TYPE = "rain";
 const ENTRY_NUM = 20;
@@ -55,11 +55,10 @@ test.describe("Queue statistics page", () => {
     await expect(inspectionSelect.locator("option").first()).toHaveText("전체");
     expect(await inspectionSelect.locator("option").count()).toBeGreaterThan(1);
 
-    const table = page.locator(".stats-table");
+    const table = page.locator(".stats-table:not([data-table-head-copy])");
     await expect(table).toBeVisible({ timeout: 10000 });
     await expect(table.getByRole("columnheader")).toHaveText([
-      /번호/,
-      /팀/,
+      /엔트리/,
       /등록/,
       /취소/,
       /입장/,
@@ -94,7 +93,7 @@ test.describe("Queue statistics page", () => {
   });
 
   test("sorts rows, expands the owned timeline, and returns to administration", async ({ page }) => {
-    const numHeader = page.locator("th.sortable", { hasText: "번호" });
+    const numHeader = page.locator(".stats-table:not([data-table-head-copy]) th.sortable", { hasText: "엔트리" });
     await numHeader.click();
     await expect(numHeader).toContainText(/▲|▼/);
     const firstDirection = await numHeader.textContent();
@@ -116,5 +115,27 @@ test.describe("Queue statistics page", () => {
 
     await page.getByRole("button", { name: "돌아가기" }).click();
     await expect(page).toHaveURL(/\/queue\/admin/);
+  });
+
+  test("uses the compact mobile identity column and persistent type filter", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 600 });
+    const table = page.locator(".stats-table:not([data-table-head-copy])");
+    const row = table.locator("tbody .clickable-row").first();
+
+    await expect(page.getByTestId("queue-stats-sticky-header").locator("th").first()).toContainText("엔트리");
+    await expect(page.locator(".sticky-freeze-line")).toHaveCount(0);
+    await expect(row.locator(".team-mobile-entry-univ")).toBeVisible();
+    await expect(row.locator(".team-mobile-entry-name")).toBeVisible();
+    await expect(row.locator(".team-mobile-entry-type")).toBeVisible();
+    await expect(row.locator("td.col-team")).toBeHidden();
+    await expect(row.locator("td.col-type")).toBeHidden();
+    await expectCompactTeamIdentity(table);
+
+    const cv = page.getByTestId("queue-stats-type-filter").locator("label", { hasText: "CV" }).locator("input");
+    await cv.uncheck();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("queue-stats-type-filter"))).toContain('"CV":false');
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByTestId("queue-stats-type-filter").locator("label", { hasText: "CV" }).locator("input")).not.toBeChecked();
   });
 });

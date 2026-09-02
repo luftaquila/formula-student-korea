@@ -10,7 +10,7 @@ test.describe("Entry team management", () => {
   });
 
   test("renders entry table with seeded data", async ({ page }) => {
-    const table = page.locator(".entry-table");
+    const table = page.locator(".entry-table:not([data-table-head-copy])");
     await expect(table).toBeVisible();
 
     // All seeded entries remain present. Other tests may leave deactivated
@@ -48,7 +48,7 @@ test.describe("Entry team management", () => {
 
     // Wait for table to update and verify the new entry
     await waitForPageReady(page);
-    const table = page.locator(".entry-table");
+    const table = page.locator(".entry-table:not([data-table-head-copy])");
     await expect(table.locator("tbody")).toContainText(university);
     await expect(table.locator("tbody")).toContainText("테스트팀");
 
@@ -61,15 +61,15 @@ test.describe("Entry team management", () => {
   });
 
   test("inline edits an entry university name", async ({ page }) => {
-    const table = page.locator(".entry-table");
+    const table = page.locator(".entry-table:not([data-table-head-copy])");
 
-    // Find the row with entry number 10 (KAIST) and click the university cell text
+    // Find the row with entry number 10 (KAIST) and click the desktop university cell.
     const row = table.locator("tbody tr").filter({ hasText: "KAIST" });
     await row.locator("td.col-univ .cell-text").click();
 
     // After clicking, "KAIST" moves from span text to input value,
     // so the row filter no longer matches — find the edit input directly
-    const editInput = table.locator("input.edit-input");
+    const editInput = table.locator("input.edit-input:visible");
     await expect(editInput).toBeVisible();
 
     // Clear and type new value
@@ -86,7 +86,7 @@ test.describe("Entry team management", () => {
     // Revert: edit back to original.
     const updatedRow = table.locator("tbody tr").filter({ hasText: "카이스트" });
     await updatedRow.locator("td.col-univ .cell-text").click();
-    const revertInput = table.locator("input.edit-input");
+    const revertInput = table.locator("input.edit-input:visible");
     await expect(revertInput).toBeVisible();
     await revertInput.fill("KAIST");
     await revertInput.press("Enter");
@@ -96,7 +96,7 @@ test.describe("Entry team management", () => {
   test("deactivates an entry without deleting its stable row", async ({ page }) => {
     page.on("dialog", (dialog) => dialog.accept());
 
-    const table = page.locator(".entry-table");
+    const table = page.locator(".entry-table:not([data-table-head-copy])");
     const row = table.locator("tbody tr").filter({ hasText: "고려대학교" });
     const toggle = row.locator(".status-toggle");
     await expect(toggle).toHaveAttribute("aria-checked", "true");
@@ -114,7 +114,7 @@ test.describe("Entry team management", () => {
 
   test("filters entries with search", async ({ page }) => {
     const searchInput = page.locator(".search-input");
-    const table = page.locator(".entry-table");
+    const table = page.locator(".entry-table:not([data-table-head-copy])");
 
     // Search by university name. "adds a new entry" retains a deactivated
     // 테스트대학교-9xxxx row for audit, and its number can contain the digits
@@ -147,31 +147,28 @@ test.describe("Entry team management", () => {
     await expect(table.locator("tbody")).toContainText("서울대학교");
   });
 
-  test("sorts entries by column headers", async ({ page }) => {
-    const table = page.locator(".entry-table");
+  test("sorts entries by the desktop column headers", async ({ page }) => {
+    const table = page.locator(".entry-table:not([data-table-head-copy])");
+    const pinnedHeader = page.getByTestId("entry-team-sticky-header");
+    const clickActiveHeader = async (selector) => {
+      const isPinned = await pinnedHeader.evaluate((element) => getComputedStyle(element).pointerEvents !== "none");
+      await (isPinned ? pinnedHeader : table).locator(selector).click();
+    };
 
     // Default sort is by num ascending (from computed)
     const firstRowNum = table.locator("tbody tr").first().locator(".entry-number");
     await expect(firstRowNum).toHaveText("1");
 
-    // Click "학교" header to sort by university ascending
-    await table.locator("th.col-univ").click();
-    // Alphabetical order: KAIST < 고려대학교 < 서울대학교 < 성균관대학교 < 한양대학교
-    const firstRowAfterUnivSort = table.locator("tbody tr").first().locator("td.col-univ .cell-text");
-    await expect(firstRowAfterUnivSort).toHaveText("KAIST");
+    await clickActiveHeader("th.col-univ");
+    await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("KAIST");
 
-    // Click again to sort descending
-    await table.locator("th.col-univ").click();
-    const firstRowAfterUnivDescSort = table.locator("tbody tr").first().locator("td.col-univ .cell-text");
-    await expect(firstRowAfterUnivDescSort).toHaveText("한양대학교");
+    await clickActiveHeader("th.col-univ");
+    await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("한양대학교");
 
-    // Click "번호" header to sort by num ascending
-    await table.locator("th.col-num").click();
-    const firstRowAfterNumSort = table.locator("tbody tr").first().locator(".entry-number");
-    await expect(firstRowAfterNumSort).toHaveText("1");
+    await clickActiveHeader("th.col-num");
+    await expect(table.locator("tbody tr").first().locator(".entry-number")).toHaveText("1");
 
-    // Click again to sort by num descending
-    await table.locator("th.col-num").click();
+    await clickActiveHeader("th.col-num");
     const numbers = await table.locator("tbody tr .entry-number").allTextContents();
     const numeric = numbers.map(Number);
     expect(numeric).toEqual([...numeric].sort((a, b) => b - a));

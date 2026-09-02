@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatDate, formatSize } from '../../shared/format-date.js';
+import { formatDate, formatDateLines, formatSize } from '../../shared/format-date.js';
 import { createKeyedDebouncer } from '../../shared/debounce.js';
 
 describe('formatDate', () => {
@@ -15,6 +15,18 @@ describe('formatDate', () => {
     assert.equal(formatDate(''), '-');
     assert.equal(formatDate(null), '-');
     assert.equal(formatDate('not-a-date'), '-');
+  });
+});
+
+describe('formatDateLines', () => {
+  it('returns separate non-empty date and time lines', () => {
+    const out = formatDateLines('2026-07-01T03:00:00.000Z');
+    assert.ok(out.date.length > 0);
+    assert.ok(out.time.length > 0);
+  });
+
+  it('returns a single fallback line for invalid values', () => {
+    assert.deepEqual(formatDateLines('not-a-date'), { date: '-', time: '' });
   });
 });
 

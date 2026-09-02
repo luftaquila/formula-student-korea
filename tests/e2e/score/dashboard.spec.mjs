@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, scoreTable, SCORE_TABLE } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, scoreTable, SCORE_TABLE } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -28,8 +28,12 @@ test.describe("Score dashboard", () => {
     await expect(table.locator("tbody")).toContainText("고려대학교");
 
     // Verify key column headers are present
-    await expect(table.locator("th").filter({ hasText: "번호" })).toBeVisible();
-    await expect(table.locator("th").filter({ hasText: "학교 / 팀" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "엔트리" })).toBeVisible();
+    await expect(table.locator("th.col-team")).toBeHidden();
+    await expect(table.locator("tbody tr").first().locator(".team-mobile-entry-univ")).toBeVisible();
+    await expect(table.locator("tbody tr").first().locator(".team-mobile-entry-name")).toBeVisible();
+    await expect(table.locator("tbody tr").first().locator(".team-mobile-entry-type")).toBeVisible();
+    await expectCompactTeamIdentity(table);
     await expect(table.locator("th").filter({ hasText: "총점" })).toBeVisible();
     await expect(table.locator("th.col-event").filter({ hasText: "내구" })).toBeVisible();
     await expect(table.locator("th").filter({ hasText: "보고서" })).toBeVisible();
@@ -66,6 +70,22 @@ test.describe("Score dashboard", () => {
     for (let i = 0; i < count; i++) {
       await expect(inspectionCells.nth(i)).toBeHidden();
     }
+
+    const pinnedLayout = await page.evaluate(() => {
+      const headers = [...document.querySelectorAll(".head-band th")]
+        .filter((cell) => getComputedStyle(cell).display !== "none")
+        .map((cell) => {
+          const rect = cell.getBoundingClientRect();
+          return { left: rect.left, right: rect.right, width: rect.width, text: cell.textContent.trim() };
+        });
+      return {
+        headers,
+        overlaps: headers.slice(1).some((header, index) => header.left < headers[index].right - 1),
+      };
+    });
+    expect(pinnedLayout.headers.some((header) => header.text.includes("총점"))).toBe(true);
+    expect(pinnedLayout.headers.every((header) => header.width > 1)).toBe(true);
+    expect(pinnedLayout.overlaps).toBe(false);
 
     // Re-check to show inspection columns
     await inspectionCheckbox.check();
@@ -153,7 +173,7 @@ test.describe("Score dashboard", () => {
     const table = scoreTable(page);
     const band = page.locator(".head-band");
     await expect(table).toBeVisible();
-    await expect(band.locator("th.col-num")).toBeVisible();
+    await expect(band.locator("th").first()).toBeVisible();
 
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect
@@ -189,7 +209,7 @@ test.describe("Score dashboard", () => {
       const scroller = document.querySelector(".sticky-host .table-container");
       const lastReal = scroller.querySelector("thead tr").lastElementChild.getBoundingClientRect();
       const lastBand = document.querySelector(".head-band thead tr").lastElementChild.getBoundingClientRect();
-      const numBand = document.querySelector(".head-band th.col-num").getBoundingClientRect();
+      const numBand = document.querySelector(".head-band th").getBoundingClientRect();
       return {
         pageScrollsX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
         tableScrollsX: scroller.scrollWidth > scroller.clientWidth,
@@ -214,53 +234,26 @@ test.describe("Score dashboard", () => {
     expect(Math.abs(after.numBand - before.numBand)).toBeLessThanOrEqual(1);
   });
 
-  test("dragging the freeze line keeps the pinned header's frozen columns in step", async ({ page }) => {
-    await page.setViewportSize({ width: 700, height: 500 });
-    await expect(scoreTable(page)).toBeVisible();
+  test("combines team identity on mobile and remembers the vehicle type filter", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 600 });
+    const table = scoreTable(page);
+    const firstRow = table.locator("tbody tr.team-row").first();
 
-    const frozen = () => page.evaluate((tableSel) => {
-      const real = document.querySelector(tableSel);
-      const copy = document.querySelector(".head-band table");
-      const left = (root, sel) => root.querySelector(sel)?.getBoundingClientRect().left ?? null;
-      return {
-        realCols: real.getAttribute("data-sticky-cols"),
-        copyCols: copy.getAttribute("data-sticky-cols"),
-        realTeam: left(real, "tbody td.col-team"),
-        copyTeam: left(copy, "thead th.col-team"),
-      };
-    }, SCORE_TABLE);
+    await expect(page.locator(".sticky-freeze-line")).toHaveCount(0);
+    await expect(table).not.toHaveAttribute("data-sticky-cols");
+    await expect(firstRow.locator(".team-mobile-entry-univ")).toBeVisible();
+    await expect(firstRow.locator(".team-mobile-entry-name")).toBeVisible();
+    await expect(firstRow.locator(".team-mobile-entry-type")).toBeVisible();
+    await expect(firstRow.locator("td.col-team")).toBeHidden();
+    await expect(firstRow.locator("td.col-type")).toBeHidden();
+    await expectCompactTeamIdentity(table);
 
-    // 고정 경계선을 학교/팀 열 오른쪽으로 끌어 고정열을 2개로 늘린다.
-    // 경계선은 표 높이 전체를 덮지만 시작 위치는 필터 바가 몇 줄로 접히느냐에 달렸으므로,
-    // 잡는 지점을 화면 안으로 눌러 담고 그래도 표 위가 아니면 조용히 헛도는 대신 실패시킨다.
-    const line = await page.locator(".sticky-freeze-line").boundingBox();
-    const teamHead = await page.locator(".sticky-host .table-container thead th.col-team").boundingBox();
-    const grabY = Math.min(line.y + 40, page.viewportSize().height - 10);
-    expect(grabY).toBeGreaterThan(line.y);
-
-    await page.mouse.move(line.x + line.width / 2, grabY);
-    await page.mouse.down();
-    await page.mouse.move(teamHead.x + teamHead.width, grabY, { steps: 8 });
-    await page.mouse.up();
-
-    await expect.poll(async () => (await frozen()).realCols).toBe("2");
-
-    // 고정열 상태는 헤더 마크업이 아니라 table 속성이라 사본에 따로 옮겨져야 한다
-    await page.evaluate(() => { document.querySelector(".sticky-host .table-container").scrollLeft = 300; });
-    await expect.poll(async () => (await frozen()).copyCols).toBe("2");
-
-    const after = await frozen();
-    expect(Math.abs(after.realTeam - after.copyTeam)).toBeLessThanOrEqual(1);
-
-    // 경계선은 표가 아니라 스크롤 영역 왼쪽 기준으로 그려진다. 표 기준으로 좌표를 재면
-    // 스크롤한 만큼 어긋나, 제자리에서 잡기만 해도 엉뚱한 열 수로 튄다.
-    const held = await page.locator(".sticky-freeze-line").boundingBox();
-    await page.mouse.move(held.x + held.width / 2, grabY);
-    await page.mouse.down();
-    await page.mouse.move(held.x + held.width / 2 + 1, grabY, { steps: 2 });
-    await page.mouse.up();
-
-    expect((await frozen()).realCols).toBe("2");
+    const cvCheckbox = page.getByTestId("score-team-type-filter").locator("label", { hasText: "CV" }).locator("input");
+    await cvCheckbox.uncheck();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("score-board-type-filter"))).toContain('"CV":false');
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByTestId("score-team-type-filter").locator("label", { hasText: "CV" }).locator("input")).not.toBeChecked();
   });
 
   test("search filter narrows displayed teams", async ({ page }) => {

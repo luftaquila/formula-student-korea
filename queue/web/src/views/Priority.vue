@@ -3,6 +3,7 @@ import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
 import {
   fetchEntries,
+  fetchVehicleTypes,
   fetchAllInspections,
   fetchPriorities,
   setPriority,
@@ -14,8 +15,8 @@ import {
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 
 const { success, error } = useNotification();
 const router = useRouter();
@@ -23,12 +24,8 @@ const { lastEntriesUpdate } = useSSE();
 
 const tableRef = ref(null);
 const scrollerRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "queue-priority-sticky-cols",
-  tableRef,
-  scrollerRef,
-  columnSelectors: [".col-num", ".col-team"],
-});
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef, bandRef: headBandRef });
 
 const entries = ref({});
 const inspections = ref([]);
@@ -36,6 +33,7 @@ const allPriorities = ref({}); // { inspectionType: { num: priority, ... }, ... 
 const reinspectionStatus = ref({}); // { inspectionType: [num, ...], ... }
 const loading = ref(true);
 const searchQuery = ref("");
+const typeColorMap = ref({});
 
 // Convert entries object to sorted array
 const entriesArray = computed(() => {
@@ -46,12 +44,21 @@ const entriesArray = computed(() => {
     }))
     .sort((a, b) => a.num - b.num);
 });
+const availableTypes = computed(() => [...new Set(entriesArray.value.map((entry) => entry.type).filter(Boolean))].sort());
+const typeFilters = usePersistentTypeFilters("queue-priority-type-filter", availableTypes);
+
+function getTypeColor(type) {
+  return typeColorMap.value[type] || "blue";
+}
 
 // Filtered entries based on search
 const filteredEntries = computed(() => {
-  if (!searchQuery.value.trim()) return entriesArray.value;
+  const typeFiltered = entriesArray.value.filter(
+    (entry) => !entry.type || typeFilters.value[entry.type] !== false,
+  );
+  if (!searchQuery.value.trim()) return typeFiltered;
   const query = searchQuery.value.toLowerCase();
-  return entriesArray.value.filter(
+  return typeFiltered.filter(
     (entry) =>
       entry.num.toString().includes(query) ||
       entry.univ.toLowerCase().includes(query) ||
@@ -76,7 +83,12 @@ function isReinspection(num, type) {
 
 onMounted(async () => {
   try {
-    entries.value = await fetchEntries();
+    const [entryData, vehicleTypeData] = await Promise.all([
+      fetchEntries(),
+      fetchVehicleTypes().catch(() => []),
+    ]);
+    entries.value = entryData;
+    typeColorMap.value = Object.fromEntries(vehicleTypeData.map((type) => [type.name, type.color]));
     inspections.value = await fetchAllInspections();
 
     // Fetch priorities and reinspection status for all inspection types
@@ -307,34 +319,42 @@ function goBack() {
     </div>
 
     <!-- Entry Table with Priority Inputs -->
-    <div class="card entries-card">
+    <div class="card entries-card team-table-card">
       <div class="card-header">
         <div class="header-left">
           <h3>우선순위 설정</h3>
-          <span class="count-badge">{{ entriesArray.length }}개 팀</span>
+          <span class="count-badge">{{ filteredEntries.length }}개 팀</span>
         </div>
         <div class="header-right">
+          <div v-if="availableTypes.length" class="team-type-filter" data-testid="queue-priority-type-filter">
+            <label v-for="type in availableTypes" :key="type" class="team-type-filter-label">
+              <input v-model="typeFilters[type]" type="checkbox" :value="type" />
+              <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
+            </label>
+          </div>
           <div class="search-box">
             <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="11" cy="11" r="8" />
               <path d="m21 21-4.35-4.35" />
             </svg>
-            <input v-model="searchQuery" type="text" placeholder="검색..." class="search-input" />
+            <input v-model="searchQuery" type="text" placeholder="엔트리 / 학교 / 팀명" class="search-input" />
           </div>
         </div>
       </div>
 
-      <div class="card-body">
+      <div class="card-body team-table-body">
         <div v-if="loading" class="loading">
           <div class="loading-spinner"></div>
         </div>
-        <div v-else class="sticky-host">
-          <div ref="scrollerRef" class="table-container">
-          <table ref="tableRef" class="priority-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
+        <div v-else class="sticky-host team-table-sticky-host">
+          <div ref="headBandRef" class="team-table-head-band" data-testid="queue-priority-sticky-header"></div>
+          <div ref="scrollerRef" class="table-container team-table-scroll" data-testid="queue-priority-table-scroll">
+          <table ref="tableRef" class="priority-table team-table" @keydown="handleKeyNav">
             <thead>
               <tr>
-                <th class="col-num">번호</th>
-                <th class="col-team">팀</th>
+                <th class="col-num">엔트리</th>
+                <th class="col-team">학교 / 팀</th>
+                <th class="col-type">유형</th>
                 <th v-for="inspection in inspections" :key="inspection.type" class="col-priority">
                   <div class="th-content">
                     <span>{{ inspection.name }}</span>
@@ -392,11 +412,19 @@ function goBack() {
             <tbody>
               <tr v-for="entry in filteredEntries" :key="entry.num">
                 <td class="col-num">
-                  <span class="entry-num">{{ entry.num }}</span>
+                  <div class="team-entry-summary">
+                    <div class="team-entry-summary-top">
+                      <span class="entry-num">{{ entry.num }}</span>
+                      <span v-if="entry.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
+                    </div>
+                    <span class="team-mobile-entry-univ">{{ entry.univ }}</span>
+                    <span class="team-mobile-entry-name">{{ entry.team }}</span>
+                  </div>
                 </td>
                 <td class="col-team">
                   <span class="entry-name">{{ entry.univ }} {{ entry.team }}</span>
                 </td>
+                <td class="col-type"><span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span></td>
                 <td v-for="inspection in inspections" :key="inspection.type" class="col-priority">
                   <input
                     type="number"
@@ -417,12 +445,11 @@ function goBack() {
                 </td>
               </tr>
               <tr v-if="filteredEntries.length === 0">
-                <td :colspan="2 + inspections.length" class="empty-state">검색 결과가 없습니다.</td>
+                <td :colspan="3 + inspections.length" class="empty-state">검색 결과가 없습니다.</td>
               </tr>
             </tbody>
           </table>
           </div>
-          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -495,9 +522,7 @@ function goBack() {
 
 /* Entries Card */
 .entries-card {
-  max-height: calc(100vh - 260px);
-  display: flex;
-  flex-direction: column;
+  display: block;
 }
 
 .entries-card .card-header {
@@ -562,7 +587,6 @@ function goBack() {
 
 .entries-card .card-body {
   overflow: auto;
-  flex: 1;
   padding: 0;
 }
 
@@ -596,6 +620,7 @@ function goBack() {
 
 .col-num,
 .col-team,
+.col-type,
 .col-priority {
   width: 1%;
   white-space: nowrap;
@@ -616,18 +641,8 @@ function goBack() {
   position: relative;
 }
 
-.priority-table[data-sticky-cols="2"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.priority-table[data-sticky-cols="2"] thead .col-team {
-  z-index: 3;
-}
-
 .col-num,
+.col-type,
 .col-priority {
   text-align: center !important;
 }

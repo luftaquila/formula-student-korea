@@ -1,11 +1,11 @@
 <script setup>
 import { ref, onMounted, computed, watch } from "vue";
 import { useRouter } from "vue-router";
-import { fetchEntries, fetchEntryYears, fetchAllInspections, getStatsTimerange, getStats, getTeamStats } from "../api";
+import { fetchEntries, fetchEntryYears, fetchVehicleTypes, fetchAllInspections, getStatsTimerange, getStats, getTeamStats } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import {
   competitionDateStart,
   currentCompetitionYear,
@@ -17,17 +17,16 @@ const router = useRouter();
 const { lastEntriesUpdate } = useSSE();
 
 const tableRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "queue-stats-sticky-cols",
-  tableRef,
-  columnSelectors: [".col-num", ".col-team"],
-});
+const tableScrollerRef = ref(null);
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: tableScrollerRef, bandRef: headBandRef });
 
 const entries = ref({});
 const inspections = ref([]);
 const statsData = ref([]);
 const loading = ref(true);
 const fetching = ref(false);
+const typeColorMap = ref({});
 
 // Year
 const selectedYear = ref(currentCompetitionYear());
@@ -47,10 +46,19 @@ const timelineLoading = ref(false);
 const sortKey = ref("");
 const sortAsc = ref(true);
 
+const availableTypes = computed(() => [...new Set(
+  Object.values(entries.value).map((entry) => entry.type).filter(Boolean),
+)].sort());
+const typeFilters = usePersistentTypeFilters("queue-stats-type-filter", availableTypes);
+const filteredStats = computed(() => statsData.value.filter((row) => {
+  const type = entries.value[row.num]?.type;
+  return !type || typeFilters.value[type] !== false;
+}));
+
 const sortedStats = computed(() => {
-  if (!sortKey.value) return statsData.value;
+  if (!sortKey.value) return filteredStats.value;
   const key = sortKey.value;
-  return [...statsData.value].sort((a, b) => {
+  return [...filteredStats.value].sort((a, b) => {
     let va = a[key];
     let vb = b[key];
     if (typeof va === "number" && typeof vb === "number") {
@@ -61,6 +69,19 @@ const sortedStats = computed(() => {
     return sortAsc.value ? va.localeCompare(vb) : vb.localeCompare(va);
   });
 });
+
+function getTypeColor(type) {
+  return typeColorMap.value[type] || "blue";
+}
+
+async function loadEntryMetadata(year) {
+  const [entryData, vehicleTypeData] = await Promise.all([
+    fetchEntries(year),
+    fetchVehicleTypes(year).catch(() => []),
+  ]);
+  entries.value = entryData;
+  typeColorMap.value = Object.fromEntries(vehicleTypeData.map((type) => [type.name, type.color]));
+}
 
 function toggleSort(key) {
   if (sortKey.value === key) {
@@ -131,7 +152,7 @@ async function onYearChange() {
   expandedTeam.value = null;
   teamTimeline.value = [];
   try {
-    entries.value = await fetchEntries(selectedYear.value);
+    await loadEntryMetadata(selectedYear.value);
   } catch (e) {
     error("엔트리 정보를 가져올 수 없습니다.");
   }
@@ -145,7 +166,7 @@ onMounted(async () => {
     if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) {
       selectedYear.value = availableYears.value[0];
     }
-    entries.value = await fetchEntries(selectedYear.value);
+    await loadEntryMetadata(selectedYear.value);
     inspections.value = await fetchAllInspections();
     await initDateRange(selectedYear.value);
     await fetchStats();
@@ -288,31 +309,42 @@ function goBack() {
           </option>
         </select>
       </div>
+      <div v-if="availableTypes.length" class="filter-group">
+        <label class="filter-label">유형</label>
+        <div class="team-type-filter" data-testid="queue-stats-type-filter">
+          <label v-for="type in availableTypes" :key="type" class="team-type-filter-label">
+            <input v-model="typeFilters[type]" type="checkbox" :value="type" />
+            <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
+          </label>
+        </div>
+      </div>
     </div>
 
     <!-- Stats Table -->
-    <div class="card stats-card">
+    <div class="card stats-card team-table-card">
       <div class="card-header">
         <div class="header-left">
           <h3>팀별 통계</h3>
-          <span class="count-badge">{{ statsData.length }}개 팀</span>
+          <span class="count-badge">{{ filteredStats.length }}개 팀</span>
         </div>
       </div>
-      <div class="card-body">
+      <div class="card-body team-table-body">
         <div v-if="loading" class="loading">
           <div class="loading-spinner"></div>
         </div>
-        <div v-else class="sticky-host">
-          <div class="table-container">
-          <table ref="tableRef" class="stats-table" :data-sticky-cols="stickyCols">
+        <div v-else class="sticky-host team-table-sticky-host">
+          <div ref="headBandRef" class="team-table-head-band" data-testid="queue-stats-sticky-header"></div>
+          <div ref="tableScrollerRef" class="table-container team-table-scroll" data-testid="queue-stats-table-scroll">
+          <table ref="tableRef" class="stats-table team-table">
             <thead>
               <tr>
                 <th class="col-num sortable" @click="toggleSort('num')">
-                  번호{{ sortIndicator("num") }}
+                  엔트리{{ sortIndicator("num") }}
                 </th>
                 <th class="col-team sortable" @click="toggleSort('teamName')">
-                  팀{{ sortIndicator("teamName") }}
+                  학교 / 팀{{ sortIndicator("teamName") }}
                 </th>
+                <th class="col-type">유형</th>
                 <th class="col-stat sortable" @click="toggleSort('registrations')">
                   등록{{ sortIndicator("registrations") }}
                 </th>
@@ -335,11 +367,19 @@ function goBack() {
                   @click="toggleTeamDetail(row.num)"
                 >
                   <td class="col-num">
-                    <span class="entry-num">{{ row.num }}</span>
+                    <div class="team-entry-summary">
+                      <div class="team-entry-summary-top">
+                        <span class="entry-num">{{ row.num }}</span>
+                        <span v-if="entries[row.num]?.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(entries[row.num].type)">{{ entries[row.num].type }}</span>
+                      </div>
+                      <span class="team-mobile-entry-univ">{{ entries[row.num]?.univ }}</span>
+                      <span class="team-mobile-entry-name">{{ entries[row.num]?.team }}</span>
+                    </div>
                   </td>
                   <td class="col-team">
                     <span class="entry-name">{{ entries[row.num]?.univ }} {{ entries[row.num]?.team }}</span>
                   </td>
+                  <td class="col-type"><span v-if="entries[row.num]?.type" class="badge" :class="'badge-type-' + getTypeColor(entries[row.num].type)">{{ entries[row.num].type }}</span></td>
                   <td class="col-stat">{{ row.registrations }}</td>
                   <td class="col-stat">{{ row.cancellations }}</td>
                   <td class="col-stat">{{ row.entries }}</td>
@@ -347,7 +387,7 @@ function goBack() {
                 </tr>
                 <!-- Timeline detail row -->
                 <tr v-if="expandedTeam === row.num" class="detail-row">
-                  <td colspan="6">
+                  <td colspan="7">
                     <div class="timeline-section">
                       <div class="timeline-header">
                         <h4>
@@ -386,14 +426,13 @@ function goBack() {
                 </tr>
               </template>
               <tr v-if="sortedStats.length === 0">
-                <td colspan="6" class="empty-state">
+                <td colspan="7" class="empty-state">
                   {{ fetching ? "데이터를 불러오는 중..." : "통계 데이터가 없습니다." }}
                 </td>
               </tr>
             </tbody>
           </table>
           </div>
-          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -526,6 +565,7 @@ function goBack() {
 
 .col-num,
 .col-team,
+.col-type,
 .col-stat,
 .col-time {
   width: 1%;
@@ -547,18 +587,8 @@ function goBack() {
   position: relative;
 }
 
-.stats-table[data-sticky-cols="2"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.stats-table[data-sticky-cols="2"] thead .col-team {
-  z-index: 3;
-}
-
 .col-num,
+.col-type,
 .col-stat,
 .col-time {
   text-align: center !important;

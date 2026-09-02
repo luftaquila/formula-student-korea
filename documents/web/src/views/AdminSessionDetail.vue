@@ -3,20 +3,18 @@ import { ref, computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
 import { request, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
-import { formatDate, formatSize } from "@shared/format-date.js";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
+import { formatDate, formatDateLines, formatSize } from "@shared/format-date.js";
 
 const route = useRoute();
 const router = useRouter();
 const { notyf } = useNotification();
 
 const tableRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "documents-session-sticky-cols",
-  tableRef,
-  columnSelectors: [".col-num", ".col-team", ".col-type"],
-});
+const tableScrollerRef = ref(null);
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: tableScrollerRef, bandRef: headBandRef });
 
 const BASE_URL = "/competition/api/v1/documents";
 
@@ -47,6 +45,15 @@ function getTypeColor(type) {
   return typeColorMap.value[type] || "blue";
 }
 
+const availableTypes = computed(() => [...new Set(
+  status.value.map((teamStatus) => entries.value[teamStatus.team_num]?.type).filter(Boolean),
+)].sort());
+const typeFilters = usePersistentTypeFilters("documents-session-type-filter", availableTypes);
+const filteredStatus = computed(() => status.value.filter((teamStatus) => {
+  const type = entries.value[teamStatus.team_num]?.type;
+  return !type || typeFilters.value[type] !== false;
+}));
+
 // 학생 디스플레이
 const studentByEmail = computed(() => {
   const map = {};
@@ -63,10 +70,10 @@ function studentDisplayName(email) {
 
 // 정렬된 status
 const sortedStatus = computed(() => {
-  if (!sortKey.value) return status.value;
+  if (!sortKey.value) return filteredStatus.value;
   const key = sortKey.value;
   const dir = sortOrder.value === "asc" ? 1 : -1;
-  return [...status.value].sort((a, b) => {
+  return [...filteredStatus.value].sort((a, b) => {
     let aVal, bVal;
     if (key === "num") { aVal = a.team_num; bVal = b.team_num; }
     else if (key === "team") {
@@ -99,10 +106,10 @@ const sortedStatus = computed(() => {
 });
 
 // 카운트 칩
-const submittedCount = computed(() => status.value.filter(t => t.submission && !t.submission.is_late).length);
-const lateCount = computed(() => status.value.filter(t => t.submission && t.submission.is_late).length);
-const missingCount = computed(() => status.value.filter(t => !t.submission).length);
-const totalCount = computed(() => status.value.length);
+const submittedCount = computed(() => filteredStatus.value.filter(t => t.submission && !t.submission.is_late).length);
+const lateCount = computed(() => filteredStatus.value.filter(t => t.submission && t.submission.is_late).length);
+const missingCount = computed(() => filteredStatus.value.filter(t => !t.submission).length);
+const totalCount = computed(() => filteredStatus.value.length);
 
 async function loadStatus() {
   loading.value = true;
@@ -174,7 +181,7 @@ onMounted(loadStatus);
       <button class="btn btn-ghost back-btn" @click="router.push('/admin')">← 목록으로</button>
 
       <!-- 세션 정보 카드 -->
-      <div class="card">
+      <div class="card team-table-card">
         <div class="card-header">
           <h3>{{ session.name }}</h3>
           <div class="header-actions">
@@ -220,19 +227,31 @@ onMounted(loadStatus);
             <span v-if="missingCount > 0" class="badge badge-default">미제출 {{ missingCount }}</span>
             <span class="badge badge-primary">전체 {{ totalCount }}</span>
           </div>
+          <div v-if="availableTypes.length" class="team-type-filter" data-testid="documents-session-type-filter">
+            <label v-for="type in availableTypes" :key="type" class="team-type-filter-label">
+              <input v-model="typeFilters[type]" type="checkbox" :value="type" />
+              <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
+            </label>
+          </div>
         </div>
-        <div class="card-body table-body">
-          <div class="sticky-host">
-            <div class="table-container">
-            <table ref="tableRef" class="data-table detail-table" :data-sticky-cols="stickyCols">
+        <div class="card-body table-body team-table-body">
+          <div class="sticky-host team-table-sticky-host">
+            <div ref="headBandRef" class="team-table-head-band" data-testid="documents-session-sticky-header"></div>
+            <div ref="tableScrollerRef" class="table-container team-table-scroll" data-testid="documents-session-table-scroll">
+            <table ref="tableRef" class="data-table detail-table team-table">
               <thead>
                 <tr>
-                  <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
+                  <th class="col-num sortable" @click="handleSort('num')">엔트리 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
                   <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ getSortIcon('team') }}</span></th>
                   <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ getSortIcon('type') }}</span></th>
                   <th class="col-status sortable" @click="handleSort('status')">상태 <span class="sort-icon">{{ getSortIcon('status') }}</span></th>
                   <th class="col-count sortable" @click="handleSort('count')">횟수 <span class="sort-icon">{{ getSortIcon('count') }}</span></th>
-                  <th class="col-time sortable" @click="handleSort('time')">제출 시간 <span class="sort-icon">{{ getSortIcon('time') }}</span></th>
+                  <th class="col-time sortable" aria-label="제출 일시" @click="handleSort('time')">
+                    <span class="column-header-lines">
+                      <span>제출</span>
+                      <span>일시 <span class="sort-icon">{{ getSortIcon('time') }}</span></span>
+                    </span>
+                  </th>
                   <th class="col-submitter sortable" @click="handleSort('submitter')">제출자 <span class="sort-icon">{{ getSortIcon('submitter') }}</span></th>
                   <th class="col-size sortable" @click="handleSort('size')">용량 <span class="sort-icon">{{ getSortIcon('size') }}</span></th>
                   <th class="col-files">파일</th>
@@ -241,8 +260,17 @@ onMounted(loadStatus);
               <tbody>
                 <template v-for="t in sortedStatus" :key="t.team_num">
                   <tr :class="{ 'row-none': !t.submission }">
-                    <td class="col-num"><span class="entry-num">{{ t.team_num }}</span></td>
-                    <td class="col-team">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</td>
+                    <td class="col-num">
+                      <div class="team-entry-summary">
+                        <div class="team-entry-summary-top">
+                          <span class="entry-num">{{ t.team_num }}</span>
+                          <span v-if="entries[t.team_num]?.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(entries[t.team_num].type)">{{ entries[t.team_num].type }}</span>
+                        </div>
+                        <span class="team-mobile-entry-univ">{{ entries[t.team_num]?.univ }}</span>
+                        <span class="team-mobile-entry-name">{{ entries[t.team_num]?.team }}</span>
+                      </div>
+                    </td>
+                    <td class="col-team"><span class="entry-name">{{ entries[t.team_num]?.univ }} {{ entries[t.team_num]?.team }}</span></td>
                     <td class="col-type">
                       <span v-if="entries[t.team_num]?.type" class="badge" :class="'badge-type-' + getTypeColor(entries[t.team_num].type)">{{ entries[t.team_num].type }}</span>
                     </td>
@@ -256,7 +284,13 @@ onMounted(loadStatus);
                       <span v-if="t.submissionCount > 0">#{{ t.submissionCount }}</span>
                       <span v-else class="text-muted">-</span>
                     </td>
-                    <td class="col-time">{{ t.submission ? formatDate(t.submission.submitted_at) : "-" }}</td>
+                    <td class="col-time">
+                      <span v-if="t.submission" class="date-time-lines">
+                        <span>{{ formatDateLines(t.submission.submitted_at).date }}</span>
+                        <span>{{ formatDateLines(t.submission.submitted_at).time }}</span>
+                      </span>
+                      <span v-else>-</span>
+                    </td>
                     <td class="col-submitter">
                       <span v-if="t.submission?.submitted_by" :title="t.submission.submitted_by">{{ studentDisplayName(t.submission.submitted_by) }}</span>
                       <span v-else>-</span>
@@ -284,7 +318,12 @@ onMounted(loadStatus);
                       </span>
                     </td>
                     <td class="col-count"></td>
-                    <td class="col-time">{{ formatDate(t.prevSubmission.submitted_at) }}</td>
+                    <td class="col-time">
+                      <span class="date-time-lines">
+                        <span>{{ formatDateLines(t.prevSubmission.submitted_at).date }}</span>
+                        <span>{{ formatDateLines(t.prevSubmission.submitted_at).time }}</span>
+                      </span>
+                    </td>
                     <td class="col-submitter">
                       <span :title="t.prevSubmission.submitted_by">{{ studentDisplayName(t.prevSubmission.submitted_by) }}</span>
                     </td>
@@ -303,10 +342,12 @@ onMounted(loadStatus);
                     </td>
                   </tr>
                 </template>
+                <tr v-if="sortedStatus.length === 0">
+                  <td colspan="9" class="empty-state">선택한 유형에 해당하는 팀이 없습니다.</td>
+                </tr>
               </tbody>
             </table>
             </div>
-            <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
           </div>
         </div>
       </div>
@@ -330,6 +371,8 @@ onMounted(loadStatus);
 .card-header {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
 }
 
 .header-actions {
@@ -376,7 +419,6 @@ onMounted(loadStatus);
 .count-chips {
   display: flex;
   gap: 0.375rem;
-  margin-left: 0.75rem;
   flex-wrap: wrap;
 }
 
@@ -400,7 +442,7 @@ onMounted(loadStatus);
 }
 
 .col-num {
-  text-align: center !important;
+  text-align: left !important;
   position: sticky;
   left: 0;
   z-index: 1;
@@ -413,27 +455,6 @@ onMounted(loadStatus);
 
 .sticky-host {
   position: relative;
-}
-
-.detail-table[data-sticky-cols="2"] .col-team,
-.detail-table[data-sticky-cols="3"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.detail-table[data-sticky-cols="3"] .col-type {
-  position: sticky;
-  left: var(--sticky-l2, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.detail-table[data-sticky-cols="2"] thead .col-team,
-.detail-table[data-sticky-cols="3"] thead .col-team,
-.detail-table[data-sticky-cols="3"] thead .col-type {
-  z-index: 3;
 }
 
 .col-status,
@@ -450,6 +471,18 @@ onMounted(loadStatus);
 .col-size {
   font-size: 0.8125rem;
   color: var(--text-secondary);
+}
+
+.col-time {
+  min-width: 5.75rem;
+}
+
+.column-header-lines,
+.date-time-lines {
+  display: inline-grid;
+  gap: 0.0625rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .row-none {

@@ -3,10 +3,9 @@ import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { fetchEntryYears, fetchEntries, fetchEndurance, fetchScore, fetchVehicleTypes, updateEndurance, updateSetting } from "../api";
 import { exportTable } from "../composables/exportTable";
 import { useNotification } from "@shared/useNotification.js";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import ConfirmableInput from "../components/ConfirmableInput.vue";
-import { useTableHeadBand } from "../composables/useTableHeadBand";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { useSSE } from "../composables/useSSE";
 
@@ -15,13 +14,6 @@ const { lastEnduranceUpdate, lastPenaltyUpdate, lastSettingUpdate, reconnected }
 
 const tableRef = ref(null);
 const headScrollerRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "score-endurance-sticky-cols",
-  tableRef,
-  scrollerRef: headScrollerRef,
-  columnSelectors: [".col-num", ".col-team"],
-});
-
 const headBandRef = ref(null);
 useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
@@ -29,7 +21,6 @@ const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
-const typeFilters = ref({});
 const typeColorMap = ref({});
 const showQualifiedOnly = ref(false);
 
@@ -60,12 +51,7 @@ const vehicleTypes = computed(() => {
   }
   return [...types].sort();
 });
-
-watch(vehicleTypes, (types) => {
-  for (const type of types) {
-    if (!(type in typeFilters.value)) typeFilters.value[type] = true;
-  }
-});
+const typeFilters = usePersistentTypeFilters("score-endurance-type-filter", vehicleTypes);
 
 const entryList = computed(() => {
   let list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
@@ -657,7 +643,7 @@ function getInputGrid(el) {
 }
 
 function exportData() {
-  const headers = ["번호", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 이름", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 이름", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수", "내구 진출"];
+  const headers = ["엔트리", "학교", "팀", "최종 기록", "주행시간", "페널티", "D1 이름", "D1 기록", "D1 출발지연", "D1 콘터치", "D1 코스이탈", "D1 페널티(초)", "교체 초과시간", "D2 이름", "D2 기록", "D2 출발지연", "D2 콘터치", "D2 코스이탈", "D2 페널티(초)", "상태", `연료 소비량(${getFuelUnit()})`, `추가 주유량(${getFuelUnit()})`, "순사용 전력량(kWh)", "보정 CO₂/100 km", "실격", "에너지 판정", "에너지 점수", "내구 진출"];
   const rows = entryList.value.map((entry) => {
     const num = entry.num;
     const ft = getFinalTime(num);
@@ -735,11 +721,11 @@ function exportData() {
         </div>
         <div class="filter-group">
           <label class="filter-label">검색</label>
-          <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+          <input class="filter-input" v-model="searchQuery" placeholder="엔트리 / 학교 / 팀명" />
         </div>
-        <div v-if="vehicleTypes.length > 1" class="filter-group type-filter-gap">
+        <div v-if="vehicleTypes.length" class="filter-group type-filter-gap">
           <label class="filter-label">유형</label>
-          <div class="type-filter-group">
+          <div class="type-filter-group" data-testid="endurance-team-type-filter">
             <label v-for="type in vehicleTypes" :key="type" class="filter-checkbox">
               <input v-model="typeFilters[type]" type="checkbox" />
               <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
@@ -765,23 +751,24 @@ function exportData() {
 
     <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
 
-    <div class="card table-card">
+    <div class="card table-card team-table-card">
       <div class="card-header">
         <div class="header-left">
           <h3>내구 기록 입력</h3>
           <span class="count-badge">{{ entryList.length }}개 팀</span>
         </div>
       </div>
-      <div class="card-body table-body">
+      <div class="card-body table-body team-table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="sticky-host">
-          <div ref="headBandRef" class="head-band"></div>
-          <div ref="headScrollerRef" class="table-container">
-          <table ref="tableRef" class="data-table endurance-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
+        <div v-else class="sticky-host team-table-sticky-host">
+          <div ref="headBandRef" class="head-band team-table-head-band" data-testid="endurance-team-sticky-header"></div>
+          <div ref="headScrollerRef" class="table-container team-table-scroll" data-testid="endurance-team-table-scroll">
+          <table ref="tableRef" class="data-table endurance-table team-table" @keydown="handleKeyNav">
             <thead>
               <tr>
-                <th class="col-num" rowspan="2">번호</th>
+                <th class="col-num" rowspan="2">엔트리</th>
                 <th class="col-team" rowspan="2">학교 / 팀</th>
+                <th class="col-type" rowspan="2">유형</th>
                 <th class="col-summary" rowspan="2">최종 기록</th>
                 <th class="col-summary" rowspan="2">주행시간</th>
                 <th class="col-summary" rowspan="2">페널티</th>
@@ -816,8 +803,18 @@ function exportData() {
             </thead>
             <tbody>
               <tr v-for="entry in entryList" :key="entry.num" :class="{ 'row-disabled': isDisabled(entry.num) }">
-                <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
-                <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
+                <td class="col-num">
+                  <div class="team-entry-summary">
+                    <div class="team-entry-summary-top">
+                      <span class="entry-num">{{ entry.num }}</span>
+                      <span v-if="entry.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
+                    </div>
+                    <span class="team-mobile-entry-univ">{{ entry.univ }}</span>
+                    <span class="team-mobile-entry-name">{{ entry.team }}</span>
+                  </div>
+                </td>
+                <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
+                <td class="col-type"><span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span></td>
                 <td class="col-summary">
                   <span v-if="getStatus(entry.num)" class="record-value" :class="getStatus(entry.num).toLowerCase()">{{ getStatus(entry.num) }}</span>
                   <span v-else-if="getFinalTime(entry.num) != null" class="record-value">{{ formatResult(getFinalTime(entry.num)) }}</span>
@@ -883,14 +880,13 @@ function exportData() {
                 </td>
               </tr>
               <tr v-if="entryList.length === 0">
-                <td colspan="27" class="empty-state">
+                <td colspan="28" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
             </tbody>
           </table>
           </div>
-          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -1064,10 +1060,8 @@ function exportData() {
   overflow: auto;
 }
 
-/* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
-
 .endurance-table {
-  min-width: 2160px;
+  min-width: 2240px;
 }
 
 .endurance-table th {
@@ -1103,6 +1097,7 @@ function exportData() {
 
 .col-num,
 .col-team,
+.col-type,
 .col-status,
 .col-summary,
 .col-change,
@@ -1116,6 +1111,10 @@ function exportData() {
 .col-qualified {
   width: 1%;
   white-space: nowrap;
+  text-align: center !important;
+}
+
+.col-type {
   text-align: center !important;
 }
 
@@ -1179,7 +1178,7 @@ function exportData() {
 }
 
 .col-num {
-  text-align: center !important;
+  text-align: left !important;
   position: sticky;
   left: 0;
   z-index: 1;
@@ -1192,17 +1191,6 @@ function exportData() {
 
 .sticky-host {
   position: relative;
-}
-
-.endurance-table[data-sticky-cols="2"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.endurance-table[data-sticky-cols="2"] thead .col-team {
-  z-index: 3;
 }
 
 .col-team {
