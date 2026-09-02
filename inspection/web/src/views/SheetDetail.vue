@@ -100,7 +100,17 @@ const catNumById = computed(() =>
 
 const currentCategory = computed(() => visibleCategories.value[activeTab.value] || null);
 
+function selectRequestedCategory() {
+  const requestedId = Number(route.query.category);
+  if (!Number.isInteger(requestedId) || requestedId <= 0) return false;
+  const index = visibleCategories.value.findIndex(category => Number(category.id) === requestedId);
+  if (index < 0) return false;
+  activeTab.value = index;
+  return true;
+}
+
 onMounted(async () => {
+  let categoryRequested = false;
   try {
     const [entries, tmpl, data, vtList] = await Promise.all([
       fetchEntries(year),
@@ -112,11 +122,12 @@ onMounted(async () => {
     template.value = tmpl;
     sheetData.value = data;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+    categoryRequested = selectRequestedCategory();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
   }
   loading.value = false;
-  const savedY = Number(sessionStorage.getItem("inspectionScrollY")) || 0;
+  const savedY = categoryRequested ? 0 : Number(sessionStorage.getItem("inspectionScrollY")) || 0;
   await nextTick();
   scrollActiveTabIntoView();
   requestAnimationFrame(() => window.scrollTo(0, savedY));

@@ -3,19 +3,11 @@ import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue"
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } from "../api";
 import { useNotification } from "@shared/useNotification.js";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { isChief } from "@shared/officialsStore.js";
 
 const tableRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "inspection-sticky-cols",
-  tableRef,
-  columnSelectors: [".col-num", ".col-team", ".col-type"],
-});
-
 const { error } = useNotification();
 const router = useRouter();
 const { lastUpdate, lastInspectorUpdate, lastEntriesUpdate } = useSSE();
@@ -25,8 +17,11 @@ const summary = ref({ categories: [], teams: {} });
 const selectedYear = ref(currentCompetitionYear());
 const availableYears = ref([]);
 const typeColorMap = ref({});
+const vehicleTypes = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
+const TYPE_FILTER_STORAGE_KEY = "inspection-team-type-filter";
+const selectedType = ref(localStorage.getItem(TYPE_FILTER_STORAGE_KEY) || "");
 const tableScrollLeft = ref(0);
 const stickyHeaderMetrics = ref({ width: 0, height: 0, columnWidths: [] });
 let lifecycleRefreshTimer = null;
@@ -49,14 +44,25 @@ const stickyHeaderRowStyle = computed(() => ({
   width: `${stickyHeaderMetrics.value.width}px`,
   transform: `translate3d(-${tableScrollLeft.value}px, 0, 0)`,
 }));
+const availableTypes = computed(() => {
+  const configured = vehicleTypes.value.map(type => type.name).filter(Boolean);
+  const used = Object.values(entries.value).map(entry => entry.type).filter(Boolean);
+  return [...new Set([...configured, ...used])];
+});
 
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
-  if (!searchQuery.value) return list.sort((a, b) => a.num - b.num);
+  const typeFiltered = selectedType.value ? list.filter(entry => entry.type === selectedType.value) : list;
+  if (!searchQuery.value) return typeFiltered.sort((a, b) => a.num - b.num);
   const q = searchQuery.value.toLowerCase();
-  return list
+  return typeFiltered
     .filter(e => String(e.num).includes(q) || (e.univ || "").toLowerCase().includes(q) || (e.team || "").toLowerCase().includes(q))
     .sort((a, b) => a.num - b.num);
+});
+
+watch(selectedType, (type) => {
+  if (type) localStorage.setItem(TYPE_FILTER_STORAGE_KEY, type);
+  else localStorage.removeItem(TYPE_FILTER_STORAGE_KEY);
 });
 
 onMounted(async () => {
@@ -88,7 +94,9 @@ async function loadData() {
     if (seq !== dataLoadSeq) return;
     entries.value = e;
     summary.value = s;
+    vehicleTypes.value = vtList;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
+    if (selectedType.value && !availableTypes.value.includes(selectedType.value)) selectedType.value = "";
   } catch (e) {
     if (seq !== dataLoadSeq) return;
     error("데이터를 가져올 수 없습니다.");
@@ -155,7 +163,7 @@ function getStickyHeaderCellStyle(index) {
     width: `${width}px`,
     flexBasis: `${width}px`,
   };
-  if (index < stickyCols.value) {
+  if (index === 0) {
     style.transform = `translate3d(${tableScrollLeft.value}px, 0, 0)`;
     style.zIndex = 2;
   }
@@ -164,6 +172,13 @@ function getStickyHeaderCellStyle(index) {
 
 function goToSheet(num) {
   router.push(`/${selectedYear.value}/${num}`);
+}
+
+function goToCategory(num, categoryId) {
+  router.push({
+    path: `/${selectedYear.value}/${num}`,
+    query: { category: String(categoryId) },
+  });
 }
 
 function getResult(num, catId) {
@@ -254,6 +269,17 @@ watch(lastEntriesUpdate, (update) => {
         <label class="filter-label">검색</label>
         <input class="filter-input" v-model="searchQuery" placeholder="엔트리 / 학교 / 팀명" />
       </div>
+      <div class="filter-group">
+        <label class="filter-label">유형</label>
+        <select
+          v-model="selectedType"
+          class="filter-input"
+          data-testid="inspection-team-type-filter"
+        >
+          <option value="">전체 유형</option>
+          <option v-for="type in availableTypes" :key="type" :value="type">{{ type }}</option>
+        </select>
+      </div>
       <div v-if="isChief" class="filter-group template-action">
         <label class="filter-label">&nbsp;</label>
         <button class="btn btn-ghost" @click="router.push('/template')">템플릿 관리</button>
@@ -301,7 +327,6 @@ watch(lastEntriesUpdate, (update) => {
           <table
             ref="tableRef"
             class="data-table sheet-table"
-            :data-sticky-cols="stickyCols"
             :style="{ '--mobile-table-width': mobileTableWidth }"
           >
             <thead>
@@ -340,7 +365,16 @@ watch(lastEntriesUpdate, (update) => {
                   <span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
                 </td>
                 <template v-for="cat in summary.categories" :key="'r'+cat.id+'-'+entry.num">
-                  <td class="col-result">
+                  <td
+                    class="col-result"
+                    :class="{ 'category-cell-link': appliesToTeam(cat, entry.type) }"
+                    :data-category-id="cat.id"
+                    :role="appliesToTeam(cat, entry.type) ? 'link' : undefined"
+                    :tabindex="appliesToTeam(cat, entry.type) ? 0 : undefined"
+                    @click.stop="appliesToTeam(cat, entry.type) && goToCategory(entry.num, cat.id)"
+                    @keydown.enter.prevent.stop="appliesToTeam(cat, entry.type) && goToCategory(entry.num, cat.id)"
+                    @keydown.space.prevent.stop="appliesToTeam(cat, entry.type) && goToCategory(entry.num, cat.id)"
+                  >
                     <template v-if="appliesToTeam(cat, entry.type)">
                       <span
                         v-if="getResult(entry.num, cat.id)"
@@ -382,7 +416,6 @@ watch(lastEntriesUpdate, (update) => {
             </tbody>
           </table>
           </div>
-          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -556,27 +589,6 @@ watch(lastEntriesUpdate, (update) => {
   background: var(--bg-secondary);
 }
 
-.sheet-table[data-sticky-cols="2"] .col-team,
-.sheet-table[data-sticky-cols="3"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.sheet-table[data-sticky-cols="3"] .col-type {
-  position: sticky;
-  left: var(--sticky-l2, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.sheet-table[data-sticky-cols="2"] thead .col-team,
-.sheet-table[data-sticky-cols="3"] thead .col-team,
-.sheet-table[data-sticky-cols="3"] thead .col-type {
-  z-index: 6;
-}
-
 .col-num,
 .col-type,
 .col-result {
@@ -664,6 +676,19 @@ watch(lastEntriesUpdate, (update) => {
 
 .clickable-row:hover {
   background: var(--bg-hover);
+}
+
+.category-cell-link {
+  cursor: pointer;
+}
+
+.category-cell-link:hover {
+  background: var(--bg-hover);
+}
+
+.category-cell-link:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: -3px;
 }
 
 .badge-empty {

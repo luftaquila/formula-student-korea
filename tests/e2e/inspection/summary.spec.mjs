@@ -46,6 +46,49 @@ test.describe("Inspection summary dashboard", () => {
     await expect(headers.filter({ hasText: /^엔트리$/ })).toBeVisible();
     await expect(headers.filter({ hasText: "전기 검차" })).toBeVisible();
     await expect(headers.filter({ hasText: "샤시 검차" })).toBeVisible();
+    await expect(page.locator(".sticky-freeze-line")).toHaveCount(0);
+    await expect(table).not.toHaveAttribute("data-sticky-cols");
+  });
+
+  test("opens the selected category when a team result cell is clicked", async ({ page }) => {
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const table = page.locator(".sheet-table");
+    const chassisHeader = table.locator("thead .col-result").filter({ hasText: "샤시 검차" });
+    const categoryIndex = await table.locator("thead .col-result").allTextContents()
+      .then(headers => headers.findIndex(header => header.includes("샤시 검차")));
+    expect(categoryIndex).toBeGreaterThanOrEqual(0);
+    await expect(chassisHeader).toBeVisible();
+
+    const row = table.locator("tbody tr.clickable-row").filter({ hasText: "서울대학교" });
+    const cell = row.locator(".col-result").nth(categoryIndex);
+    const categoryId = await cell.getAttribute("data-category-id");
+    await cell.click();
+
+    await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/1\\?category=${categoryId}$`));
+    await expect(page.locator(".tabs .tab.active")).toContainText("샤시 검차");
+  });
+
+  test("remembers the selected vehicle type filter", async ({ page }) => {
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const filter = page.getByTestId("inspection-team-type-filter");
+    const rows = page.locator(".sheet-table tbody tr.clickable-row");
+    const evCount = await rows.locator(".col-type").allTextContents()
+      .then(types => types.filter(type => type.trim() === "EV").length);
+    expect(evCount).toBeGreaterThan(0);
+
+    await filter.selectOption("EV");
+    await expect(rows).toHaveCount(evCount);
+    await expect(rows.locator(".col-type")).toHaveText(Array(evCount).fill("EV"));
+    expect(await page.evaluate(() => localStorage.getItem("inspection-team-type-filter"))).toBe("EV");
+
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(filter).toHaveValue("EV");
+    await expect(rows).toHaveCount(evCount);
   });
 
   test("keeps the table header fixed while the page scrolls", async ({ page }) => {
