@@ -299,6 +299,17 @@ test.describe("Inspection sheet filling", () => {
     await expect(answerMetadata).not.toContainText("응답 ·");
     await expect(answerMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
     expect(await answerMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");
+    const metadataSpacing = await row.evaluate((element) => {
+      const answer = element.querySelector(".pf-toggle").getBoundingClientRect();
+      const metadata = element.querySelector(".answer-edit-metadata").getBoundingClientRect();
+      const memo = element.querySelector(".memo-editor").getBoundingClientRect();
+      return {
+        answerToMetadata: metadata.top - answer.bottom,
+        metadataToMemo: memo.top - metadata.bottom,
+      };
+    });
+    expect(metadataSpacing.answerToMetadata).toBeGreaterThanOrEqual(0);
+    expect(metadataSpacing.metadataToMemo).toBeGreaterThan(metadataSpacing.answerToMetadata);
     const inspectorCenterDelta = await page.locator(".inspector-row").evaluate((element) => {
       const label = element.querySelector(".inspector-label").getBoundingClientRect();
       const chip = element.querySelector(".inspector-chip").getBoundingClientRect();

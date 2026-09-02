@@ -1156,39 +1156,25 @@ watch(reconnected, async () => {
                       @click="resetStopwatch(item.id)"
                     >초기화</button>
                   </div>
-                  <div class="item-status-slot" aria-live="polite">
-                    <div
-                      v-if="['pending', 'saving', 'error'].includes(answerSaveStates[item.id]?.state)"
-                      class="save-feedback"
-                      :class="`save-${answerSaveStates[item.id].state}`"
-                    >
-                      <span v-if="answerSaveStates[item.id].state === 'pending' || answerSaveStates[item.id].state === 'saving'">응답 저장 중…</span>
-                      <template v-else-if="answerSaveStates[item.id].state === 'error'">
-                        <span>응답 저장 실패</span>
-                        <button type="button" @click="retryAnswer(item.id)">재시도</button>
-                      </template>
-                    </div>
-
-                    <div
-                      v-if="['pending', 'saving', 'error'].includes(memoSaveStates[item.id]?.state)"
-                      class="save-feedback"
-                      :class="`save-${memoSaveStates[item.id].state}`"
-                    >
-                      <span v-if="memoSaveStates[item.id].state === 'pending' || memoSaveStates[item.id].state === 'saving'">메모 저장 중…</span>
-                      <template v-else-if="memoSaveStates[item.id].state === 'error'">
-                        <span>메모 저장 실패</span>
-                        <button type="button" @click="retryMemo(item.id)">재시도</button>
-                      </template>
-                    </div>
-                  </div>
                   <div
-                    v-if="getAnswerUpdatedAt(item.id)"
+                    v-if="getAnswerUpdatedAt(item.id) || ['pending', 'saving', 'error', 'saved'].includes(answerSaveStates[item.id]?.state)"
                     class="edit-metadata answer-edit-metadata"
                     aria-live="polite"
                   >
-                    {{ getAnswerUpdatedBy(item.id) || "알 수 없음" }} ·
-                    <time :datetime="getAnswerUpdatedAt(item.id)">{{ formatUpdatedAt(getAnswerUpdatedAt(item.id)) }}</time>
-                    <span v-if="answerSaveStates[item.id]?.state === 'saved'" class="save-saved"> · 응답 저장됨</span>
+                    <template v-if="getAnswerUpdatedAt(item.id)">
+                      {{ getAnswerUpdatedBy(item.id) || "알 수 없음" }} ·
+                      <time :datetime="getAnswerUpdatedAt(item.id)">{{ formatUpdatedAt(getAnswerUpdatedAt(item.id)) }}</time>
+                    </template>
+                    <span
+                      v-if="answerSaveStates[item.id]?.state === 'pending' || answerSaveStates[item.id]?.state === 'saving'"
+                      class="save-feedback"
+                      :class="`save-${answerSaveStates[item.id].state}`"
+                    >{{ getAnswerUpdatedAt(item.id) ? " · " : "" }}응답 저장 중…</span>
+                    <span v-else-if="answerSaveStates[item.id]?.state === 'error'" class="save-feedback save-error">
+                      <span>{{ getAnswerUpdatedAt(item.id) ? " · " : "" }}응답 저장 실패</span>
+                      <button type="button" @click="retryAnswer(item.id)">재시도</button>
+                    </span>
+                    <span v-else-if="answerSaveStates[item.id]?.state === 'saved'" class="save-saved">{{ getAnswerUpdatedAt(item.id) ? " · " : "" }}응답 저장됨</span>
                   </div>
                   </div>
 
@@ -1220,13 +1206,24 @@ watch(reconnected, async () => {
                       ></textarea>
                     </div>
                     <div
-                      v-if="getMemoUpdatedAt(item.id)"
+                      v-if="getMemoUpdatedAt(item.id) || ['pending', 'saving', 'error', 'saved'].includes(memoSaveStates[item.id]?.state)"
                       class="edit-metadata memo-edit-metadata"
                       aria-live="polite"
                     >
-                      {{ getMemoUpdatedBy(item.id) || "알 수 없음" }} ·
-                      <time :datetime="getMemoUpdatedAt(item.id)">{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</time>
-                      <span v-if="memoSaveStates[item.id]?.state === 'saved'" class="save-saved"> · 메모 저장됨</span>
+                      <template v-if="getMemoUpdatedAt(item.id)">
+                        {{ getMemoUpdatedBy(item.id) || "알 수 없음" }} ·
+                        <time :datetime="getMemoUpdatedAt(item.id)">{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</time>
+                      </template>
+                      <span
+                        v-if="memoSaveStates[item.id]?.state === 'pending' || memoSaveStates[item.id]?.state === 'saving'"
+                        class="save-feedback"
+                        :class="`save-${memoSaveStates[item.id].state}`"
+                      >{{ getMemoUpdatedAt(item.id) ? " · " : "" }}메모 저장 중…</span>
+                      <span v-else-if="memoSaveStates[item.id]?.state === 'error'" class="save-feedback save-error">
+                        <span>{{ getMemoUpdatedAt(item.id) ? " · " : "" }}메모 저장 실패</span>
+                        <button type="button" @click="retryMemo(item.id)">재시도</button>
+                      </span>
+                      <span v-else-if="memoSaveStates[item.id]?.state === 'saved'" class="save-saved">{{ getMemoUpdatedAt(item.id) ? " · " : "" }}메모 저장됨</span>
                     </div>
                   </div>
                 </div>
@@ -1536,18 +1533,10 @@ watch(reconnected, async () => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.5rem;
+  column-gap: 0.5rem;
+  row-gap: 0.25rem;
   width: 100%;
-}
-
-.item-status-slot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.375rem;
-  min-width: 0;
-  height: 2rem;
-  overflow: hidden;
+  margin-bottom: 0.25rem;
 }
 
 .item-controls.has-checktable {
@@ -1555,13 +1544,8 @@ watch(reconnected, async () => {
   gap: 0.25rem;
 }
 
-.item-controls.has-checktable .checktable-block,
-.item-controls.has-checktable .item-status-slot {
+.item-controls.has-checktable .checktable-block {
   grid-column: 1;
-}
-
-.item-controls.has-checktable .item-status-slot {
-  height: 1.25rem;
 }
 
 .edit-metadata {
@@ -1853,7 +1837,7 @@ watch(reconnected, async () => {
 }
 
 .save-feedback {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 0.375rem;
   width: auto;
