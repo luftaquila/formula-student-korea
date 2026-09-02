@@ -56,7 +56,7 @@ test.describe("Cross-service SSE propagation", () => {
   });
 
   test("inspection category result change propagates to score dashboard via SSE", async ({ page }) => {
-    const teamNum = 7;
+    const teamNum = 20;
     // First, get the category IDs from the inspection template
     const headers = {
       "Content-Type": "application/json",
@@ -100,8 +100,8 @@ test.describe("Cross-service SSE propagation", () => {
     const inspectionHeader = scoreTable(page).locator("th.col-inspection").filter({ hasText: "전기 검차" });
     await expect(inspectionHeader).toBeVisible();
 
-    // Use the inspection validation team so parallel inspection specs do not mutate these answers.
-    const teamRow = table.locator("tr.team-row").filter({ hasText: "검차검증대학교" });
+    // Use a base-seeded team that no other cross-service inspection spec mutates.
+    const teamRow = table.locator("tr.team-row").filter({ hasText: "고려대학교" });
     await expect(teamRow).toBeVisible();
 
     // Set the category result via API
