@@ -35,7 +35,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     // 재시도도 별도 센서 이벤트가 되도록 매 실행마다 고유 tick/sequence를 사용한다.
     const tickBase = BigInt(Date.now()) * 16000n;
     const finishTick = tickBase + 160000000n;
-    const eventSequence = Date.now() % 1_000_000_000;
+    const eventSequence = Date.now() % 0x10000;
 
     // 매핑: 출발=NODE_S, 도착=NODE_F (goto 전에 설정 → init SSE에 포함)
     await page.request.put(`/competition/api/v1/traffic/wireless/mapping/${NODE_S}`, { data: { event_type: "가속", role: "start" } });
@@ -68,16 +68,20 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(page.locator(".traffic-light.green")).toBeVisible({ timeout: 8000 });
 
     // 출발은 온라인 상태에서 수신한다.
-    await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
+    const startIngest = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
       data: { events: [{ node_id: NODE_S, master_tick: tickBase.toString(), ev_seq: eventSequence, rssi: -60, snr: 9 }] },
     });
+    expect(startIngest.status()).toBe(200);
+    expect(await startIngest.json()).toMatchObject({ stored: 1, rejected: 0 });
     await expect(page.locator(".records-section .record-card").first().locator(".record-item")).toBeVisible({ timeout: 5000 });
 
     // SSE가 끊긴 동안 별도 클라이언트에서 도착과 저장이 완료되는 상황을 재현한다.
     await page.context().setOffline(true);
-    await observerPage.request.post("/competition/api/v1/traffic/wireless/ingest", {
+    const finishIngest = await observerPage.request.post("/competition/api/v1/traffic/wireless/ingest", {
       data: { events: [{ node_id: NODE_F, master_tick: finishTick.toString(), ev_seq: eventSequence, rssi: -61, snr: 9 }] },
     });
+    expect(finishIngest.status()).toBe(200);
+    expect(await finishIngest.json()).toMatchObject({ stored: 1, rejected: 0 });
     await page.context().setOffline(false);
 
     // 재연결 시 timing event는 backfill되고, records 이벤트는 세션의 정확한 name/rowid로 복구된다.
