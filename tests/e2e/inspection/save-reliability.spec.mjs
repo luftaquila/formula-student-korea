@@ -102,7 +102,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await textarea.fill("첫째 줄\n둘째 줄");
     const filledRowHeight = await row.evaluate(element => element.getBoundingClientRect().height);
     expect(filledRowHeight).toBeGreaterThan(initialRowHeight);
-    const memoSaved = row.locator(".save-saved").filter({ hasText: "메모 저장됨" });
+    const memoSaved = row.locator(".memo-edit-metadata .save-saved").filter({ hasText: "메모 저장됨" });
     await expect(memoSaved).toBeVisible({ timeout: 10000 });
     const [textareaBox, statusBox] = await Promise.all([textarea.boundingBox(), memoSaved.boundingBox()]);
     expect(statusBox.y + statusBox.height <= textareaBox.y || textareaBox.y + textareaBox.height <= statusBox.y).toBe(true);
@@ -155,9 +155,11 @@ test.describe("Inspection answer and memo save reliability", () => {
     await pass.click();
 
     await expect(pass).toHaveClass(/btn-success/);
-    await expect(row.locator(".save-error")).toContainText("응답 저장 실패");
+    const error = row.locator(".answer-edit-metadata time + .save-error");
+    await expect(error).toContainText("응답 저장 실패");
+    await expect(error.locator("button")).toHaveText("재시도");
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(initialRowHeight);
-    await row.locator(".save-error button").click();
+    await error.locator("button").click();
 
     await expect.poll(async () => {
       const response = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
@@ -167,6 +169,42 @@ test.describe("Inspection answer and memo save reliability", () => {
     expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(initialRowHeight);
 
     await replaceAnswer(page, item.id, "");
+  });
+
+  test("shows a failed memo save and retry after the memo edit timestamp", async ({ page }) => {
+    const item = await findItem(page, "전압 확인");
+    await replaceMemo(page, item.id, "");
+
+    let failedOnce = false;
+    await page.route("**/competition/api/v1/inspection/sheet/memo", async route => {
+      if (!failedOnce && route.request().method() === "PUT") {
+        failedOnce = true;
+        await route.fulfill({ status: 503, body: "temporary failure" });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto(`/inspection/${YEAR}/${TEAM}`);
+    await waitForPageReady(page);
+    const row = page.locator(".item-row").filter({ hasText: "전압 확인" });
+    await row.locator(".memo-text").click();
+    const textarea = row.locator("textarea.memo-input");
+    await textarea.fill("재시도할 메모");
+    await textarea.blur();
+
+    const error = row.locator(".memo-edit-metadata time + .save-error");
+    await expect(error).toContainText("메모 저장 실패");
+    await expect(error.locator("button")).toHaveText("재시도");
+    await error.locator("button").click();
+
+    await expect.poll(async () => {
+      const response = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`);
+      const data = await response.json();
+      return data.answers[item.id]?.memo;
+    }, { timeout: 10000 }).toBe("재시도할 메모");
+
+    await replaceMemo(page, item.id, "");
   });
 
   test("keeps item text, check tables, and memo controls at full width", async ({ page }) => {

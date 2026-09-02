@@ -9,11 +9,8 @@ import {
   updateSheetAnswer,
   updateSheetMemo,
   updateSheetCategoryResult,
-  updateSheetInspector,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
-import { user } from "@shared/officialsStore.js";
-import { createKeyedDebouncer } from "@shared/debounce.js";
 import { useSSE } from "../composables/useSSE";
 import { createSaveQueue, reconcileSaveQueuesAfterReconnect } from "../utils/save-queue";
 import { createCalculationEvaluator, formatCalculationValue } from "../../../lib/calculations.mjs";
@@ -139,6 +136,14 @@ function getMemo(itemId) {
   return sheetData.value.answers[itemId]?.memo ?? "";
 }
 
+function getAnswerUpdatedAt(itemId) {
+  return sheetData.value.answers[itemId]?.answer_updated_at ?? null;
+}
+
+function getAnswerUpdatedBy(itemId) {
+  return sheetData.value.answers[itemId]?.answer_updated_by ?? "";
+}
+
 function getMemoUpdatedAt(itemId) {
   return sheetData.value.answers[itemId]?.memo_updated_at ?? null;
 }
@@ -165,12 +170,10 @@ function getCategoryResult(catId) {
   return sheetData.value.results[catId] ?? "";
 }
 
-function getInspector(catId) {
-  return sheetData.value.inspectors[catId] ?? "";
+function getInspectors(catId) {
+  const inspectors = sheetData.value.inspectors[catId];
+  return Array.isArray(inspectors) ? inspectors : [];
 }
-
-// 검차관 이름은 기존 키 단위 디바운스를 유지한다.
-const { debounce, cancel: cancelDebounce, flush: flushDebounce } = createKeyedDebouncer(300);
 
 const answerSaveStates = ref({});
 const memoSaveStates = ref({});
@@ -290,55 +293,18 @@ function onMemoChange(itemId, memo) {
 async function onCategoryResultToggle(catId, val) {
   const current = getCategoryResult(catId);
   const newVal = current === val ? "" : val;
-  if (newVal && !getInspector(catId)?.trim()) {
-    error("검차관 이름을 입력하세요.");
+  if (newVal === "PASS" && !inspectionStatusMap.value.complete) {
+    error("모든 문항을 입력한 뒤 PASS할 수 있습니다.");
     return;
   }
+  if (newVal === "PASS") await answerQueue.flushAll();
   sheetData.value.results[catId] = newVal;
   try {
     await updateSheetCategoryResult({ year, team_num: num, category_id: catId, result: newVal });
   } catch (e) {
-    error("저장에 실패했습니다.");
+    sheetData.value.results[catId] = current;
+    error(e?.status === 409 ? "모든 문항을 입력한 뒤 PASS할 수 있습니다." : "저장에 실패했습니다.");
   }
-}
-
-async function onInspectorBlur(catId) {
-  cancelDebounce(`inspector-${catId}`);
-  const inspector = getInspector(catId);
-  try {
-    await updateSheetInspector({ year, team_num: num, category_id: catId, inspector, broadcast: true });
-  } catch (e) {
-    error("저장에 실패했습니다.");
-  }
-}
-
-async function onInspectorChange(catId, inspector) {
-  sheetData.value.inspectors[catId] = inspector;
-  debounce(`inspector-${catId}`, async () => {
-    try {
-      await updateSheetInspector({ year, team_num: num, category_id: catId, inspector });
-    } catch (e) {
-      error("저장에 실패했습니다.");
-    }
-  });
-}
-
-// 검차관 입력란에 내 실명 추가 (없으면 set, 있으면 append, 이미 있으면 무시)
-function fillMyName(catId) {
-  if (isReadOnly.value) return;
-  const myName = user.value?.name?.trim();
-  if (!myName) {
-    error("로그인 정보를 찾을 수 없습니다.");
-    return;
-  }
-  // 구분자(,)로 나눠 빈 토큰을 정리한 뒤 내 이름을 토글: 있으면 제거, 없으면 추가
-  const names = getInspector(catId).split(",").map((n) => n.trim()).filter(Boolean);
-  const idx = names.indexOf(myName);
-  if (idx === -1) names.push(myName);
-  else names.splice(idx, 1);
-  const newVal = names.join(", ");
-  onInspectorChange(catId, newVal); // 모델 갱신 + debounced 저장 예약
-  onInspectorBlur(catId); // debounce 취소 후 broadcast 포함 즉시 저장
 }
 
 // Click-to-edit memo
@@ -583,7 +549,14 @@ function formatUpdatedAt(value) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString("ko-KR", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+  return date.toLocaleString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 async function scrollToItem(itemId) {
@@ -660,7 +633,6 @@ onBeforeUnmount(() => {
   if (stopwatchInterval !== null) window.clearInterval(stopwatchInterval);
   for (const timer of saveStateTimers.values()) clearTimeout(timer);
   saveStateTimers.clear();
-  flushDebounce();
   answerQueue.flushAll();
   memoQueue.flushAll();
 });
@@ -697,7 +669,7 @@ watch(lastInspectorUpdate, (update) => {
     return;
   }
   if (update.renumbered) return;
-  sheetData.value.inspectors[update.category_id] = update.inspector;
+  sheetData.value.inspectors[update.category_id] = Array.isArray(update.inspectors) ? update.inspectors : [];
 });
 
 // 다른 브라우저의 변경은 로컬 저장 대기열보다 우선한다. 편집 중이면
@@ -984,27 +956,26 @@ watch(reconnected, async () => {
       <div v-if="currentCategory" class="card category-panel">
         <div class="card-header panel-header">
           <div class="inspector-row">
-            <label class="inspector-label">검차관</label>
-            <input
-              class="form-input inspector-input"
-              :value="getInspector(currentCategory.id)"
-              @input="onInspectorChange(currentCategory.id, $event.target.value)"
-              @blur="onInspectorBlur(currentCategory.id)"
-              :disabled="isReadOnly"
-              placeholder="이름"
-            />
-            <button
-              class="btn btn-sm btn-ghost inspector-fill-btn"
-              :disabled="isReadOnly"
-              @click="fillMyName(currentCategory.id)"
-              title="내 이름 추가/제거"
-            >내 이름</button>
+            <span class="inspector-label">검차관</span>
+            <div class="inspector-list" aria-live="polite">
+              <span
+                v-for="name in getInspectors(currentCategory.id)"
+                :key="name"
+                class="inspector-chip"
+              >{{ name }}</span>
+              <span v-if="!getInspectors(currentCategory.id).length" class="inspector-empty">
+                응답 또는 메모를 편집하면 자동으로 추가됩니다.
+              </span>
+            </div>
           </div>
           <div class="result-toggle">
             <button
               class="btn btn-sm"
               :class="getCategoryResult(currentCategory.id) === 'PASS' ? 'btn-success' : 'btn-ghost'"
-              :disabled="isReadOnly"
+              :disabled="isReadOnly || (getCategoryResult(currentCategory.id) !== 'PASS' && !inspectionStatusMap.complete)"
+              :title="inspectionStatusMap.complete || getCategoryResult(currentCategory.id) === 'PASS'
+                ? '카테고리 PASS'
+                : '진행률이 100%일 때 PASS할 수 있습니다.'"
               @click="onCategoryResultToggle(currentCategory.id, 'PASS')"
             >PASS</button>
             <button
@@ -1185,61 +1156,75 @@ watch(reconnected, async () => {
                       @click="resetStopwatch(item.id)"
                     >초기화</button>
                   </div>
-                  <div class="item-status-slot" aria-live="polite">
-                    <div
-                      v-if="answerSaveStates[item.id]?.state && answerSaveStates[item.id].state !== 'idle'"
+                  <div
+                    v-if="getAnswerUpdatedAt(item.id) || ['pending', 'saving', 'error', 'saved'].includes(answerSaveStates[item.id]?.state)"
+                    class="edit-metadata answer-edit-metadata"
+                    aria-live="polite"
+                  >
+                    <template v-if="getAnswerUpdatedAt(item.id)">
+                      {{ getAnswerUpdatedBy(item.id) || "알 수 없음" }} ·
+                      <time :datetime="getAnswerUpdatedAt(item.id)">{{ formatUpdatedAt(getAnswerUpdatedAt(item.id)) }}</time>
+                    </template>
+                    <span
+                      v-if="answerSaveStates[item.id]?.state === 'pending' || answerSaveStates[item.id]?.state === 'saving'"
                       class="save-feedback"
                       :class="`save-${answerSaveStates[item.id].state}`"
-                    >
-                      <span v-if="answerSaveStates[item.id].state === 'pending' || answerSaveStates[item.id].state === 'saving'">응답 저장 중…</span>
-                      <span v-else-if="answerSaveStates[item.id].state === 'saved'">응답 저장됨</span>
-                      <template v-else-if="answerSaveStates[item.id].state === 'error'">
-                        <span>응답 저장 실패</span>
-                        <button type="button" @click="retryAnswer(item.id)">재시도</button>
-                      </template>
-                    </div>
-
-                    <div
-                      v-if="memoSaveStates[item.id]?.state && memoSaveStates[item.id].state !== 'idle'"
-                      class="save-feedback"
-                      :class="`save-${memoSaveStates[item.id].state}`"
-                    >
-                      <span v-if="memoSaveStates[item.id].state === 'pending' || memoSaveStates[item.id].state === 'saving'">메모 저장 중…</span>
-                      <span v-else-if="memoSaveStates[item.id].state === 'saved'">메모 저장됨</span>
-                      <template v-else-if="memoSaveStates[item.id].state === 'error'">
-                        <span>메모 저장 실패</span>
-                        <button type="button" @click="retryMemo(item.id)">재시도</button>
-                      </template>
-                    </div>
+                    >{{ getAnswerUpdatedAt(item.id) ? " · " : "" }}응답 저장 중…</span>
+                    <span v-else-if="answerSaveStates[item.id]?.state === 'error'" class="save-feedback save-error">
+                      <span>{{ getAnswerUpdatedAt(item.id) ? " · " : "" }}응답 저장 실패</span>
+                      <button type="button" @click="retryAnswer(item.id)">재시도</button>
+                    </span>
+                    <span v-else-if="answerSaveStates[item.id]?.state === 'saved'" class="save-saved">{{ getAnswerUpdatedAt(item.id) ? " · " : "" }}응답 저장됨</span>
                   </div>
                   </div>
 
                   <!-- Memo: full content is visible below every answer control. -->
                   <div class="memo-area">
-                    <button
-                      type="button"
-                      class="memo-text"
-                      :class="{
-                        'memo-empty': !normalizeMemo(getMemo(item.id)),
-                        'memo-readonly': isReadOnly,
-                        'memo-editing': editingMemo === item.id,
-                      }"
-                      :disabled="isReadOnly"
-                      :title="normalizeMemo(getMemo(item.id)) && getMemoUpdatedAt(item.id) ? `${getMemoUpdatedBy(item.id)} ${formatUpdatedAt(getMemoUpdatedAt(item.id))}`.trim() : ''"
-                      @click="startEditMemo(item.id)"
+                    <div class="memo-editor">
+                      <button
+                        type="button"
+                        class="memo-text"
+                        :class="{
+                          'memo-empty': !normalizeMemo(getMemo(item.id)),
+                          'memo-readonly': isReadOnly,
+                          'memo-editing': editingMemo === item.id,
+                        }"
+                        :disabled="isReadOnly"
+                        @click="startEditMemo(item.id)"
+                      >
+                        <span class="memo-preview">{{ normalizeMemo(getMemo(item.id)) || "+ 메모 추가" }}</span>
+                      </button>
+                      <textarea
+                        v-if="editingMemo === item.id"
+                        class="form-input memo-input"
+                        :value="getMemo(item.id)"
+                        :data-memo-item="item.id"
+                        rows="1"
+                        @input="onMemoInput(item.id, $event)"
+                        @blur="finishEditMemo(item.id)"
+                        placeholder="메모 입력"
+                      ></textarea>
+                    </div>
+                    <div
+                      v-if="getMemoUpdatedAt(item.id) || ['pending', 'saving', 'error', 'saved'].includes(memoSaveStates[item.id]?.state)"
+                      class="edit-metadata memo-edit-metadata"
+                      aria-live="polite"
                     >
-                      <span class="memo-preview">{{ normalizeMemo(getMemo(item.id)) || "+ 메모 추가" }}</span>
-                    </button>
-                    <textarea
-                      v-if="editingMemo === item.id"
-                      class="form-input memo-input"
-                      :value="getMemo(item.id)"
-                      :data-memo-item="item.id"
-                      rows="1"
-                      @input="onMemoInput(item.id, $event)"
-                      @blur="finishEditMemo(item.id)"
-                      placeholder="메모 입력"
-                    ></textarea>
+                      <template v-if="getMemoUpdatedAt(item.id)">
+                        {{ getMemoUpdatedBy(item.id) || "알 수 없음" }} ·
+                        <time :datetime="getMemoUpdatedAt(item.id)">{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</time>
+                      </template>
+                      <span
+                        v-if="memoSaveStates[item.id]?.state === 'pending' || memoSaveStates[item.id]?.state === 'saving'"
+                        class="save-feedback"
+                        :class="`save-${memoSaveStates[item.id].state}`"
+                      >{{ getMemoUpdatedAt(item.id) ? " · " : "" }}메모 저장 중…</span>
+                      <span v-else-if="memoSaveStates[item.id]?.state === 'error'" class="save-feedback save-error">
+                        <span>{{ getMemoUpdatedAt(item.id) ? " · " : "" }}메모 저장 실패</span>
+                        <button type="button" @click="retryMemo(item.id)">재시도</button>
+                      </span>
+                      <span v-else-if="memoSaveStates[item.id]?.state === 'saved'" class="save-saved">{{ getMemoUpdatedAt(item.id) ? " · " : "" }}메모 저장됨</span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1398,15 +1383,31 @@ watch(reconnected, async () => {
   white-space: nowrap;
 }
 
-.inspector-input {
+.inspector-list {
+  display: flex;
   flex: 1;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  align-items: center;
   min-width: 0;
 }
 
-.inspector-fill-btn {
-  flex-shrink: 0;
-  white-space: nowrap;
-  align-self: stretch;
+.inspector-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-primary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.inspector-empty {
+  color: var(--text-tertiary);
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .result-toggle {
@@ -1532,18 +1533,10 @@ watch(reconnected, async () => {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.5rem;
+  column-gap: 0.5rem;
+  row-gap: 0.25rem;
   width: 100%;
-}
-
-.item-status-slot {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 0.375rem;
-  min-width: 0;
-  height: 2rem;
-  overflow: hidden;
+  margin-bottom: 0.25rem;
 }
 
 .item-controls.has-checktable {
@@ -1551,13 +1544,21 @@ watch(reconnected, async () => {
   gap: 0.25rem;
 }
 
-.item-controls.has-checktable .checktable-block,
-.item-controls.has-checktable .item-status-slot {
+.item-controls.has-checktable .checktable-block {
   grid-column: 1;
 }
 
-.item-controls.has-checktable .item-status-slot {
-  height: 1.25rem;
+.edit-metadata {
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+}
+
+.answer-edit-metadata {
+  grid-column: 1 / -1;
+  width: 100%;
+  text-align: left;
 }
 
 .pf-toggle {
@@ -1758,6 +1759,11 @@ watch(reconnected, async () => {
 
 /* Memo: full-width display and editor share the same content-driven height. */
 .memo-area {
+  width: 100%;
+  min-width: 0;
+}
+
+.memo-editor {
   position: relative;
   width: 100%;
   min-width: 0;
@@ -1825,13 +1831,16 @@ watch(reconnected, async () => {
   white-space: inherit;
 }
 
+.memo-edit-metadata {
+  margin-top: 0.25rem;
+  text-align: left;
+}
+
 .save-feedback {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 0.375rem;
   width: auto;
-  height: 1.25rem;
-  min-height: 0;
   font-size: 0.6875rem;
   color: var(--text-tertiary);
   white-space: nowrap;
@@ -1949,8 +1958,8 @@ watch(reconnected, async () => {
 
 .inspection-status-map {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 10px);
-  grid-auto-rows: 10px;
+  grid-template-columns: repeat(auto-fill, 12.5px);
+  grid-auto-rows: 12.5px;
   gap: 2px;
   min-width: 0;
   padding-block: 0.125rem;
@@ -1961,9 +1970,9 @@ watch(reconnected, async () => {
 }
 
 .status-map-item {
-  width: 10px;
-  height: 10px;
-  min-height: 10px;
+  width: 12.5px;
+  height: 12.5px;
+  min-height: 12.5px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 2px;
@@ -1973,8 +1982,13 @@ watch(reconnected, async () => {
 
 .status-map-item:hover {
   z-index: 1;
-  transform: scale(1.6);
+  transform: scale(1.25);
   box-shadow: var(--shadow-hover);
+}
+
+.status-map-item:focus-visible {
+  z-index: 1;
+  transform: scale(1.25);
 }
 
 .status-pass {

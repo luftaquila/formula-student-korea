@@ -86,10 +86,3 @@ export async function updateSheetCategoryResult(data) {
     body: JSON.stringify(data),
   });
 }
-
-export async function updateSheetInspector(data) {
-  await request("/api/sheet/inspector", {
-    method: "PUT",
-    body: JSON.stringify(data),
-  });
-}

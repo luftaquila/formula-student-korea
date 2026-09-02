@@ -1,6 +1,7 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { completeInspectionCategory, restoreInspectionAnswers } from "../helpers/inspection.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -59,11 +60,13 @@ test.describe("Inspection summary dashboard", () => {
     // Get the template to find category IDs
     const templateRes = await apiPage.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
-    const firstCatId = template[0].id;
-
-    // Set inspector name (required for category result)
-    await apiPage.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "테스트관" },
+    const firstCategory = template[0];
+    const firstCatId = firstCategory.id;
+    const completionChanges = await completeInspectionCategory({
+      year: YEAR,
+      teamNum: TEAM,
+      category: firstCategory,
+      role: "official",
     });
 
     // Set category result to PASS for the team
@@ -81,15 +84,19 @@ test.describe("Inspection summary dashboard", () => {
     const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: TEAM_UNIV });
     const passBadge = teamRow.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
+    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Official");
 
-    // Clean up: clear the result and inspector
+    // Clean up mutable values. Inspector participation intentionally remains as history.
     const cleanupCtx = await browser.newContext({ storageState: storageStatePath("official") });
     const cleanupPage = await cleanupCtx.newPage();
     await cleanupPage.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "" },
     });
-    await cleanupPage.request.put("/competition/api/v1/inspection/sheet/inspector", {
-      data: { year: YEAR, team_num: TEAM, category_id: firstCatId, inspector: "" },
+    await restoreInspectionAnswers({
+      year: YEAR,
+      teamNum: TEAM,
+      changes: completionChanges,
+      role: "official",
     });
     await cleanupCtx.close();
   });

@@ -2,6 +2,7 @@ import express from "express";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
+import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
@@ -10,6 +11,7 @@ import {
   serializeCalculationConfig,
   validateCalculationGraph,
 } from "./lib/calculations.mjs";
+import { getInspectionItemState } from "./lib/item-status.mjs";
 
 export function createInspectionApp(options = {}) {
 
@@ -262,7 +264,127 @@ db.transaction(() => {
     FOREIGN KEY (category_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_si_category ON sheet_inspector(category_id);`);
+
+  // 수기 검차관 문자열을 폐기하고, 보존돼 있는 답변/메모의 마지막 편집자부터
+  // 자동 참여자 목록을 구성한다. 이후 편집자는 각 저장 트랜잭션에서 누적한다.
+  runMigrationOnce(db, "inspection-automatic-inspectors-v1", () => {
+    const editors = db.prepare(`
+      SELECT year, team_num, category_id, inspector, MIN(updated_at) AS first_updated_at
+      FROM (
+        SELECT a.year, a.team_num, category.id AS category_id,
+               TRIM(a.answer_updated_by) AS inspector, a.answer_updated_at AS updated_at
+        FROM sheet_answer a
+        JOIN sheet_template item
+          ON item.id = a.item_id AND item.year = a.year AND item.level = 'item'
+        JOIN sheet_template item_group
+          ON item_group.id = item.parent_id AND item_group.level = 'group'
+        JOIN sheet_template subcategory
+          ON subcategory.id = item_group.parent_id AND subcategory.level = 'subcategory'
+        JOIN sheet_template category
+          ON category.id = subcategory.parent_id AND category.level = 'category'
+        WHERE TRIM(COALESCE(a.answer_updated_by, '')) != ''
+        UNION ALL
+        SELECT a.year, a.team_num, category.id AS category_id,
+               TRIM(a.memo_updated_by) AS inspector, a.memo_updated_at AS updated_at
+        FROM sheet_answer a
+        JOIN sheet_template item
+          ON item.id = a.item_id AND item.year = a.year AND item.level = 'item'
+        JOIN sheet_template item_group
+          ON item_group.id = item.parent_id AND item_group.level = 'group'
+        JOIN sheet_template subcategory
+          ON subcategory.id = item_group.parent_id AND subcategory.level = 'subcategory'
+        JOIN sheet_template category
+          ON category.id = subcategory.parent_id AND category.level = 'category'
+        WHERE TRIM(COALESCE(a.memo_updated_by, '')) != ''
+        UNION ALL
+        SELECT CAST(CASE WHEN json_valid(audit.detail)
+                    THEN json_extract(audit.detail, '$.year') END AS INTEGER) AS year,
+               CAST(SUBSTR(audit.target, 2) AS INTEGER) AS team_num,
+               category.id AS category_id,
+               TRIM(audit.actor_name) AS inspector,
+               audit.timestamp AS updated_at
+        FROM logs audit
+        JOIN sheet_template item
+          ON item.id = CAST(CASE WHEN json_valid(audit.detail)
+                            THEN json_extract(audit.detail, '$.item_id') END AS INTEGER)
+         AND item.year = CAST(CASE WHEN json_valid(audit.detail)
+                              THEN json_extract(audit.detail, '$.year') END AS INTEGER)
+         AND item.level = 'item'
+        JOIN sheet_template item_group
+          ON item_group.id = item.parent_id AND item_group.level = 'group'
+        JOIN sheet_template subcategory
+          ON subcategory.id = item_group.parent_id AND subcategory.level = 'subcategory'
+        JOIN sheet_template category
+          ON category.id = subcategory.parent_id AND category.level = 'category'
+        WHERE audit.module = 'inspection'
+          AND audit.level = 'info'
+          AND audit.action IN ('answer.update', 'memo.update')
+          AND json_valid(audit.detail)
+          AND audit.target GLOB '#[0-9]*'
+          AND TRIM(COALESCE(audit.actor_name, '')) != ''
+      )
+      GROUP BY year, team_num, category_id, inspector
+      ORDER BY year, team_num, category_id, first_updated_at, inspector
+    `).all();
+    const grouped = new Map();
+    for (const row of editors) {
+      const key = `${row.year}:${row.team_num}:${row.category_id}`;
+      if (!grouped.has(key)) grouped.set(key, { ...row, inspectors: [] });
+      grouped.get(key).inspectors.push(row.inspector);
+    }
+    db.prepare("DELETE FROM sheet_inspector").run();
+    const insert = db.prepare(`
+      INSERT INTO sheet_inspector (year, team_num, category_id, inspector)
+      VALUES (?, ?, ?, ?)
+    `);
+    for (const row of grouped.values()) {
+      insert.run(row.year, row.team_num, row.category_id, JSON.stringify(row.inspectors));
+    }
+  });
 })();
+
+function parseInspectorNames(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.map(name => String(name).trim()).filter(Boolean))];
+  } catch {
+    return [];
+  }
+}
+
+function addInspectorForItemEdit({ year, teamNum, itemId, updatedBy }) {
+  const category = db.prepare(`
+    SELECT category.id
+    FROM sheet_template item
+    JOIN sheet_template item_group
+      ON item_group.id = item.parent_id AND item_group.level = 'group'
+    JOIN sheet_template subcategory
+      ON subcategory.id = item_group.parent_id AND subcategory.level = 'subcategory'
+    JOIN sheet_template category
+      ON category.id = subcategory.parent_id AND category.level = 'category'
+    WHERE item.id = ? AND item.year = ? AND item.level = 'item'
+  `).get(itemId, year);
+  if (!category) throw new Error(`inspection category not found for item ${itemId}`);
+
+  const stored = db.prepare(`
+    SELECT inspector FROM sheet_inspector
+    WHERE year = ? AND team_num = ? AND category_id = ?
+  `).get(year, teamNum, category.id);
+  const inspectors = parseInspectorNames(stored?.inspector);
+  const name = String(updatedBy || "").trim();
+  if (!name || inspectors.includes(name)) {
+    return { categoryId: category.id, inspectors, changed: false };
+  }
+
+  inspectors.push(name);
+  db.prepare(`
+    INSERT INTO sheet_inspector (year, team_num, category_id, inspector)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(year, team_num, category_id) DO UPDATE SET inspector = excluded.inspector
+  `).run(year, teamNum, category.id, JSON.stringify(inspectors));
+  return { categoryId: category.id, inspectors, changed: true };
+}
 
 function templateItemsForYear(year) {
   return db.prepare(`
@@ -277,6 +399,33 @@ function validateStoredCalculationGraph(year) {
   } catch (e) {
     throw { status: 400, message: e.message };
   }
+}
+
+function getCategoryCompletion(year, teamNum, categoryId) {
+  const rows = db.prepare(`
+    SELECT item.answer_type, item.remarks, item.calculation, answer.value
+    FROM sheet_template AS category
+    JOIN sheet_template AS subcategory ON subcategory.parent_id = category.id
+    JOIN sheet_template AS item_group ON item_group.parent_id = subcategory.id
+    JOIN sheet_template AS item ON item.parent_id = item_group.id AND item.level = 'item'
+    LEFT JOIN sheet_answer AS answer
+      ON answer.year = ? AND answer.team_num = ? AND answer.item_id = item.id
+    WHERE category.id = ? AND category.year = ? AND category.level = 'category'
+  `).all(year, teamNum, categoryId, year);
+
+  let total = 0;
+  let completed = 0;
+  for (const row of rows) {
+    const state = getInspectionItemState({
+      answer_type: row.answer_type,
+      remarks: row.remarks,
+      calculation: parseCalculationConfig(row.calculation),
+    }, row.value ?? "");
+    if (!state) continue;
+    total += 1;
+    if (state !== "unanswered") completed += 1;
+  }
+  return { total, completed, complete: completed === total };
 }
 
 // 특정 연도나 문항을 기준으로 템플릿 내용을 시작 시 삽입·수정하지 않는다.
@@ -749,7 +898,7 @@ function getInspectionSummary(year) {
   const teams = {};
   for (const row of inspectors) {
     if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
-    teams[row.team_num].inspectors[row.category_id] = row.inspector;
+    teams[row.team_num].inspectors[row.category_id] = parseInspectorNames(row.inspector);
   }
   for (const row of results) {
     if (!teams[row.team_num]) teams[row.team_num] = { inspectors: {}, results: {} };
@@ -847,7 +996,7 @@ app.get("/api/sheet/data/:year/:num", (req, res) => {
     for (const r of categoryResults) resultsMap[r.category_id] = r.result;
 
     const inspectorsMap = {};
-    for (const i of inspectors) inspectorsMap[i.category_id] = i.inspector;
+    for (const i of inspectors) inspectorsMap[i.category_id] = parseInspectorNames(i.inspector);
 
     return { answers: answersMap, results: resultsMap, inspectors: inspectorsMap };
   });
@@ -886,7 +1035,7 @@ app.put("/api/sheet/answer", (req, res) => {
   const expectedValueProvided = Object.hasOwn(req.body, "expectedValue") && typeof expectedValue === "string";
 
   const updatedAt = new Date().toISOString();
-  const updatedBy = req.user?.name || req.user?.email || "";
+  const updatedBy = req.user?.name?.trim() || "";
 
   const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
@@ -905,6 +1054,9 @@ app.put("/api/sheet/answer", (req, res) => {
     if (current.value === newValue) {
       return { changed: false, current };
     }
+    if (!updatedBy) {
+      throw { status: 409, message: "계정 실명을 확인할 수 없어 저장할 수 없습니다. 다시 로그인하세요." };
+    }
 
     db.prepare(
       `INSERT INTO sheet_answer
@@ -916,9 +1068,14 @@ app.put("/api/sheet/answer", (req, res) => {
          answer_updated_by = excluded.answer_updated_by`
     ).run(year, team_num, item_id, newValue, updatedAt, updatedBy);
 
+    const inspector = addInspectorForItemEdit({
+      year, teamNum: team_num, itemId: item_id, updatedBy,
+    });
+
     return {
       changed: true,
       current: { value: newValue, updated_at: updatedAt, updated_by: updatedBy },
+      inspector,
     };
   })());
 
@@ -940,7 +1097,12 @@ app.put("/api/sheet/answer", (req, res) => {
   }
 
   if (result.result.changed) {
-    logger.log(req, "answer.update", { year, item_id, item_name: templateItem.name, value: newValue }, `#${team_num}`);
+    logger.log(req, "answer.update", {
+      year, item_id, item_name: templateItem.name, value: newValue,
+      updated_by: updatedBy,
+      inspector_added: result.result.inspector.changed,
+      inspectors: result.result.inspector.inspectors,
+    }, `#${team_num}`);
     broadcastEvent("answer", {
       year,
       team_num,
@@ -950,6 +1112,14 @@ app.put("/api/sheet/answer", (req, res) => {
       updated_by: result.result.current.updated_by,
       mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
     });
+    if (result.result.inspector.changed) {
+      broadcastEvent("inspector", {
+        year,
+        team_num,
+        category_id: result.result.inspector.categoryId,
+        inspectors: result.result.inspector.inspectors,
+      });
+    }
   }
 
   res.status(200).json({
@@ -976,7 +1146,7 @@ app.put("/api/sheet/memo", (req, res) => {
 
   const newMemo = memo ?? "";
   const updatedAt = new Date().toISOString();
-  const updatedBy = req.user?.name || req.user?.email || "";
+  const updatedBy = req.user?.name?.trim() || "";
   const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
       `SELECT memo, memo_updated_at, memo_updated_by
@@ -994,6 +1164,9 @@ app.put("/api/sheet/memo", (req, res) => {
     if (current.memo === newMemo) {
       return { changed: false, current };
     }
+    if (!updatedBy) {
+      throw { status: 409, message: "계정 실명을 확인할 수 없어 저장할 수 없습니다. 다시 로그인하세요." };
+    }
 
     db.prepare(
       `INSERT INTO sheet_answer
@@ -1005,9 +1178,14 @@ app.put("/api/sheet/memo", (req, res) => {
          memo_updated_by = excluded.memo_updated_by`
     ).run(year, team_num, item_id, newMemo, updatedAt, updatedBy);
 
+    const inspector = addInspectorForItemEdit({
+      year, teamNum: team_num, itemId: item_id, updatedBy,
+    });
+
     return {
       changed: true,
       current: { memo: newMemo, updated_at: updatedAt, updated_by: updatedBy },
+      inspector,
     };
   })());
 
@@ -1029,7 +1207,12 @@ app.put("/api/sheet/memo", (req, res) => {
   }
 
   if (result.result.changed) {
-    logger.log(req, "memo.update", { year, item_id, item_name: templateItem.name, memo: newMemo }, `#${team_num}`);
+    logger.log(req, "memo.update", {
+      year, item_id, item_name: templateItem.name, memo: newMemo,
+      updated_by: updatedBy,
+      inspector_added: result.result.inspector.changed,
+      inspectors: result.result.inspector.inspectors,
+    }, `#${team_num}`);
     broadcastEvent("memo", {
       year,
       team_num,
@@ -1039,6 +1222,14 @@ app.put("/api/sheet/memo", (req, res) => {
       updated_by: result.result.current.updated_by,
       mutation_id: typeof mutation_id === "string" ? mutation_id : undefined,
     });
+    if (result.result.inspector.changed) {
+      broadcastEvent("inspector", {
+        year,
+        team_num,
+        category_id: result.result.inspector.categoryId,
+        inspectors: result.result.inspector.inspectors,
+      });
+    }
   }
 
   res.status(200).json({
@@ -1065,6 +1256,31 @@ app.put("/api/sheet/category-result", (req, res) => {
   });
   if (!templateCat) return;
 
+  if (catResult === "PASS") {
+    const completion = dbRun(() => getCategoryCompletion(year, team_num, category_id));
+    if (!completion.success) {
+      logger.warn(req, "category_result.update", {
+        error: completion.internalError || completion.error,
+        phase: "category_completion_lookup",
+        year,
+        category_id,
+      }, `#${team_num}`);
+      return res.status(completion.status).send(completion.error);
+    }
+    if (!completion.result.complete) {
+      logger.warn(req, "category_result.update", {
+        error: "category_incomplete",
+        reason: "category_pass_requires_complete_responses",
+        year,
+        category_id,
+        completed: completion.result.completed,
+        total: completion.result.total,
+        requested_result: catResult,
+      }, `#${team_num}`);
+      return res.status(409).send("모든 문항을 입력한 뒤 PASS할 수 있습니다.");
+    }
+  }
+
   const r = dbRun(() =>
     db.prepare(
       "INSERT INTO sheet_category_result (year, team_num, category_id, result) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, category_id) DO UPDATE SET result = excluded.result"
@@ -1078,38 +1294,6 @@ app.put("/api/sheet/category-result", (req, res) => {
 
   logger.log(req, "category_result.update", { year, category_id, category_name: templateCat.name, result: catResult }, `#${team_num}`);
   broadcastEvent("category-result", { year, team_num, category_id, result: catResult ?? "" });
-
-  res.status(200).send();
-});
-
-// PUT /api/sheet/inspector - 검차관 upsert
-app.put("/api/sheet/inspector", (req, res) => {
-  const { year, team_num, category_id, inspector } = req.body;
-  if (!year || team_num == null || !category_id) return res.status(400).send("필수 필드가 누락되었습니다.");
-  if (!Number.isInteger(year) || !Number.isInteger(team_num) || !Number.isInteger(category_id)) {
-    return res.status(400).send("필수 필드가 올바르지 않습니다.");
-  }
-  if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
-  if (!teamPreflight(req, res, { action: "inspector.update", year, teamNum: team_num })) return;
-  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
-  const templateCat = mutationTemplatePreflight(req, res, {
-    action: "inspector.update", id: category_id, year, level: "category",
-  });
-  if (!templateCat) return;
-
-  const result = dbRun(() =>
-    db.prepare(
-      "INSERT INTO sheet_inspector (year, team_num, category_id, inspector) VALUES (?, ?, ?, ?) ON CONFLICT(year, team_num, category_id) DO UPDATE SET inspector = excluded.inspector"
-    ).run(year, team_num, category_id, inspector ?? "")
-  );
-
-  if (!result.success) {
-    logger.warn(req, "inspector.update", { error: result.internalError || result.error, year, category_id }, `#${team_num}`);
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "inspector.update", { year, category_id, category_name: templateCat.name, inspector }, `#${team_num}`);
-  broadcastEvent("inspector", { year, team_num, category_id, inspector: inspector ?? "" });
 
   res.status(200).send();
 });

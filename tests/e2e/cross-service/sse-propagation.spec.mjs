@@ -3,6 +3,7 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
+import { completeInspectionCategory, restoreInspectionAnswers } from "../helpers/inspection.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -55,6 +56,7 @@ test.describe("Cross-service SSE propagation", () => {
   });
 
   test("inspection category result change propagates to score dashboard via SSE", async ({ page }) => {
+    const teamNum = 20;
     // First, get the category IDs from the inspection template
     const headers = {
       "Content-Type": "application/json",
@@ -73,6 +75,12 @@ test.describe("Cross-service SSE propagation", () => {
     expect(category).toBeTruthy();
     expect(category.name).toBe("전기 검차");
     const categoryId = category.id;
+    const completionChanges = await completeInspectionCategory({
+      year: YEAR,
+      teamNum,
+      category,
+      role: "admin",
+    });
 
     // Open score dashboard
     await page.goto("/score");
@@ -92,8 +100,8 @@ test.describe("Cross-service SSE propagation", () => {
     const inspectionHeader = scoreTable(page).locator("th.col-inspection").filter({ hasText: "전기 검차" });
     await expect(inspectionHeader).toBeVisible();
 
-    // Get team 1's initial inspection result
-    const teamRow = table.locator("tr.team-row").filter({ hasText: "서울대학교" });
+    // Use a base-seeded team that no other cross-service inspection spec mutates.
+    const teamRow = table.locator("tr.team-row").filter({ hasText: "고려대학교" });
     await expect(teamRow).toBeVisible();
 
     // Set the category result via API
@@ -104,7 +112,7 @@ test.describe("Cross-service SSE propagation", () => {
         headers,
         body: JSON.stringify({
           year: YEAR,
-          team_num: 1,
+          team_num: teamNum,
           category_id: categoryId,
           result: "PASS",
         }),
@@ -124,7 +132,7 @@ test.describe("Cross-service SSE propagation", () => {
         headers,
         body: JSON.stringify({
           year: YEAR,
-          team_num: 1,
+          team_num: teamNum,
           category_id: categoryId,
           result: "FAIL",
         }),
@@ -141,10 +149,16 @@ test.describe("Cross-service SSE propagation", () => {
       headers,
       body: JSON.stringify({
         year: YEAR,
-        team_num: 1,
+        team_num: teamNum,
         category_id: categoryId,
         result: "",
       }),
+    });
+    await restoreInspectionAnswers({
+      year: YEAR,
+      teamNum,
+      changes: completionChanges,
+      role: "admin",
     });
   });
 
