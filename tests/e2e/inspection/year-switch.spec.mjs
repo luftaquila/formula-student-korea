@@ -30,6 +30,6 @@ test.describe("Competition year boundary", () => {
     await page.goto("/inspection");
     await waitForPageReady(page);
     await expect(page.locator(".readonly-banner")).not.toBeVisible();
-    await expect(page.locator(".filter-bar select.filter-input")).toHaveValue(String(YEAR));
+    await expect(page.getByTestId("inspection-team-year-filter")).toHaveValue(String(YEAR));
   });
 });

@@ -165,11 +165,11 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
     // attempt rather than captured across separate awaits. Misalignment means the body
     // loop skipped a category and every badge sits under the wrong header.
     await expect.poll(async () => {
-      const headerTexts = await resultHeaders.allInnerTexts();
-      const cwIndex = headerTexts.findIndex(t => t.trim() === "코너웨이트");
+      const headerNames = await resultHeaders.locator(".category-header-name").allInnerTexts();
+      const cwIndex = headerNames.findIndex(name => name.trim() === "코너웨이트");
       if (cwIndex === -1) return "column-missing";
       const cells = teamRow.locator("td.col-result");
-      if (await cells.count() !== headerTexts.length) return "header-body-misaligned";
+      if (await cells.count() !== headerNames.length) return "header-body-misaligned";
       const cell = cells.nth(cwIndex);
       return {
         result: (await cell.locator(".badge-empty").innerText()).trim(),
