@@ -76,6 +76,22 @@ const filteredEntries = computed(() => {
     .filter(e => String(e.num).includes(q) || (e.univ || "").toLowerCase().includes(q) || (e.team || "").toLowerCase().includes(q))
     .sort((a, b) => a.num - b.num);
 });
+const categoryPassRates = computed(() => Object.fromEntries(
+  summary.value.categories.map((category) => {
+    let passed = 0;
+    let total = 0;
+    for (const entry of filteredEntries.value) {
+      if (!appliesToTeam(category, entry.type)) continue;
+      total += 1;
+      if (getResult(entry.num, category.id) === "PASS") passed += 1;
+    }
+    return [category.id, {
+      passed,
+      total,
+      percentage: total ? Math.round((passed / total) * 100) : 0,
+    }];
+  }),
+));
 
 watch(typeFilters, (filters) => {
   localStorage.setItem(TYPE_FILTER_STORAGE_KEY, JSON.stringify(filters));
@@ -205,6 +221,11 @@ function goToCategory(num, categoryId) {
 
 function getResult(num, catId) {
   return summary.value.teams[num]?.results?.[catId] || "";
+}
+
+function formatCategoryPassRate(categoryId) {
+  const rate = categoryPassRates.value[categoryId] || { passed: 0, total: 0, percentage: 0 };
+  return `${rate.percentage}% (${rate.passed}/${rate.total})`;
 }
 
 function getInspectors(num, catId) {
@@ -339,7 +360,10 @@ watch(lastEntriesUpdate, (update) => {
                 <div class="sticky-header-cell col-team" :style="getStickyHeaderCellStyle(1)">학교 / 팀</div>
                 <div class="sticky-header-cell col-type" :style="getStickyHeaderCellStyle(2)">유형</div>
                 <template v-for="(cat, index) in summary.categories" :key="'sticky-r'+cat.id">
-                  <div class="sticky-header-cell col-result" :style="getStickyHeaderCellStyle(index + 3)">{{ cat.name }}</div>
+                  <div class="sticky-header-cell col-result" :style="getStickyHeaderCellStyle(index + 3)">
+                    <span class="category-header-name">{{ cat.name }}</span>
+                    <span class="category-pass-rate">{{ formatCategoryPassRate(cat.id) }}</span>
+                  </div>
                 </template>
               </div>
             </div>
@@ -360,7 +384,10 @@ watch(lastEntriesUpdate, (update) => {
                 <th class="col-team">학교 / 팀</th>
                 <th class="col-type">유형</th>
                 <template v-for="cat in summary.categories" :key="'r'+cat.id">
-                  <th class="col-result">{{ cat.name }}</th>
+                  <th class="col-result">
+                    <span class="category-header-name">{{ cat.name }}</span>
+                    <span class="category-pass-rate" :data-category-id="cat.id">{{ formatCategoryPassRate(cat.id) }}</span>
+                  </th>
                 </template>
               </tr>
             </thead>
@@ -647,6 +674,28 @@ watch(lastEntriesUpdate, (update) => {
   text-align: center !important;
 }
 
+.col-result .category-header-name,
+.col-result .category-pass-rate {
+  display: block;
+}
+
+.sticky-header-cell.col-result {
+  flex-direction: column;
+  justify-content: center;
+}
+
+.category-pass-rate {
+  margin-top: 0.125rem;
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 .inspector-name {
   display: block;
   max-width: 10rem;
@@ -854,8 +903,9 @@ watch(lastEntriesUpdate, (update) => {
   }
 
   .mobile-entry-team {
-    color: var(--text-tertiary);
+    color: var(--text-secondary);
     font-size: 0.75rem;
+    font-weight: 500;
   }
 
   .inspector-name,

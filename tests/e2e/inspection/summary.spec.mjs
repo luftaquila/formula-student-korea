@@ -99,6 +99,40 @@ test.describe("Inspection summary dashboard", () => {
     await expect(rows).toHaveCount(evCount);
   });
 
+  test("calculates category pass rates from the currently filtered teams", async ({ page }) => {
+    await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const category = body.categories[0];
+      category.excluded_types = [];
+      for (const team of Object.values(body.teams)) {
+        team.results ||= {};
+        team.results[category.id] = "";
+      }
+      body.teams[1].results[category.id] = "PASS";
+      await route.fulfill({ response, json: body });
+    });
+
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const rows = page.locator(".sheet-table tbody tr.clickable-row");
+    const passRate = page.locator(".sheet-table thead .category-pass-rate").first();
+    const initialCount = await rows.count();
+    await expect(passRate).toHaveText(`${Math.round(100 / initialCount)}% (1/${initialCount})`);
+
+    const evCount = await rows.locator(".col-type").allTextContents()
+      .then(types => types.filter(type => type.trim() === "EV").length);
+    await page.getByTestId("inspection-team-type-filter").locator('input[value="CV"]').uncheck();
+    expect(evCount).toBeLessThan(initialCount);
+    await expect(rows).toHaveCount(evCount);
+    await expect(passRate).toHaveText(`${Math.round(100 / evCount)}% (1/${evCount})`);
+
+    await page.locator('input[placeholder="엔트리 / 학교 / 팀명"]').fill("한양대학교");
+    await expect(rows).toHaveCount(1);
+    await expect(passRate).toHaveText("0% (0/1)");
+  });
+
   test("keeps the table header fixed while the page scrolls", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 520 });
     await page.goto("/inspection");
@@ -147,12 +181,24 @@ test.describe("Inspection summary dashboard", () => {
         resultOffset: firstResult.left - entry.left,
         teamDisplay: getComputedStyle(element.querySelector(".col-team")).display,
         typeDisplay: getComputedStyle(element.querySelector(".col-type")).display,
+        teamColor: getComputedStyle(element.querySelector(".mobile-entry-team")).color,
+        tertiaryColor: (() => {
+          const probe = document.createElement("span");
+          probe.style.color = "var(--text-tertiary)";
+          element.appendChild(probe);
+          const color = getComputedStyle(probe).color;
+          probe.remove();
+          return color;
+        })(),
+        teamWeight: getComputedStyle(element.querySelector(".mobile-entry-team")).fontWeight,
       };
     });
     expect(layout.entryWidth).toBeLessThanOrEqual(152);
     expect(layout.resultOffset).toBeLessThanOrEqual(152);
     expect(layout.teamDisplay).toBe("none");
     expect(layout.typeDisplay).toBe("none");
+    expect(layout.teamColor).not.toBe(layout.tertiaryColor);
+    expect(Number(layout.teamWeight)).toBeGreaterThanOrEqual(500);
 
     await expect.poll(() => scroller.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
     await scroller.evaluate(element => { element.scrollLeft = element.scrollWidth; });
