@@ -29,8 +29,12 @@ const loading = ref(true);
 const searchQuery = ref("");
 let lifecycleRefreshTimer = null;
 let dataLoadSeq = 0;
+const INSPECTOR_COLLAPSE_THRESHOLD = 5;
+const MOBILE_ENTRY_COLUMN_WIDTH = 148;
+const MOBILE_RESULT_COLUMN_WIDTH = 104;
 
 const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
+const mobileTableWidth = computed(() => `${MOBILE_ENTRY_COLUMN_WIDTH + summary.value.categories.length * MOBILE_RESULT_COLUMN_WIDTH}px`);
 
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
@@ -102,9 +106,17 @@ function getResult(num, catId) {
   return summary.value.teams[num]?.results?.[catId] || "";
 }
 
-function getInspector(num, catId) {
+function getInspectors(num, catId) {
   const inspectors = summary.value.teams[num]?.inspectors?.[catId];
-  return Array.isArray(inspectors) ? inspectors.join(", ") : "";
+  return Array.isArray(inspectors) ? inspectors : [];
+}
+
+function getInspectorTitle(num, catId) {
+  return getInspectors(num, catId).join(", ");
+}
+
+function isInspectorListCollapsed(num, catId) {
+  return getInspectors(num, catId).length >= INSPECTOR_COLLAPSE_THRESHOLD;
 }
 
 // 카테고리 열은 여러 유형이 섞인 목록에서 공유되므로 열 자체는 남기고,
@@ -176,7 +188,7 @@ watch(lastEntriesUpdate, (update) => {
       </div>
       <div class="filter-group">
         <label class="filter-label">검색</label>
-        <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+        <input class="filter-input" v-model="searchQuery" placeholder="엔트리 / 학교 / 팀명" />
       </div>
       <div v-if="isChief" class="filter-group template-action">
         <label class="filter-label">&nbsp;</label>
@@ -196,11 +208,16 @@ watch(lastEntriesUpdate, (update) => {
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
         <div v-else class="sticky-host">
-          <div class="table-container">
-          <table ref="tableRef" class="data-table sheet-table" :data-sticky-cols="stickyCols">
+          <div class="table-container" data-testid="inspection-team-table-scroll">
+          <table
+            ref="tableRef"
+            class="data-table sheet-table"
+            :data-sticky-cols="stickyCols"
+            :style="{ '--mobile-table-width': mobileTableWidth }"
+          >
             <thead>
               <tr>
-                <th class="col-num">번호</th>
+                <th class="col-num">엔트리</th>
                 <th class="col-team">학교 / 팀</th>
                 <th class="col-type">유형</th>
                 <template v-for="cat in summary.categories" :key="'r'+cat.id">
@@ -215,7 +232,20 @@ watch(lastEntriesUpdate, (update) => {
                 class="clickable-row"
                 @click="goToSheet(entry.num)"
               >
-                <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
+                <td class="col-num">
+                  <div class="entry-summary">
+                    <div class="entry-summary-top">
+                      <span class="entry-num"><span class="mobile-entry-prefix">#</span>{{ entry.num }}</span>
+                      <span
+                        v-if="entry.type"
+                        class="badge mobile-entry-type"
+                        :class="'badge-type-' + getTypeColor(entry.type)"
+                      >{{ entry.type }}</span>
+                    </div>
+                    <span class="mobile-entry-univ">{{ entry.univ }}</span>
+                    <span class="mobile-entry-team">{{ entry.team }}</span>
+                  </div>
+                </td>
                 <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
                 <td class="col-type">
                   <span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
@@ -229,7 +259,28 @@ watch(lastEntriesUpdate, (update) => {
                         :class="getResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
                       >{{ getResult(entry.num, cat.id) }}</span>
                       <span v-else class="badge badge-empty">-</span>
-                      <span v-if="getInspector(entry.num, cat.id)" class="inspector-name">({{ getInspector(entry.num, cat.id) }})</span>
+                      <details
+                        v-if="isInspectorListCollapsed(entry.num, cat.id)"
+                        class="inspector-disclosure"
+                        @click.stop
+                      >
+                        <summary
+                          class="inspector-name"
+                          :title="getInspectorTitle(entry.num, cat.id)"
+                          :aria-label="`${cat.name} 검차관 ${getInspectors(entry.num, cat.id).length}명 전체 목록`"
+                        >
+                          <span class="inspector-preview">{{ getInspectors(entry.num, cat.id).slice(0, 2).join(", ") }}</span>
+                          <span class="inspector-more">외 {{ getInspectors(entry.num, cat.id).length - 2 }}명</span>
+                        </summary>
+                        <div class="inspector-list" :aria-label="`${cat.name} 전체 검차관`">
+                          <span v-for="name in getInspectors(entry.num, cat.id)" :key="name" class="inspector-person">{{ name }}</span>
+                        </div>
+                      </details>
+                      <span
+                        v-else-if="getInspectors(entry.num, cat.id).length"
+                        class="inspector-name"
+                        :title="getInspectorTitle(entry.num, cat.id)"
+                      >({{ getInspectorTitle(entry.num, cat.id) }})</span>
                     </template>
                   </td>
                 </template>
@@ -326,7 +377,13 @@ watch(lastEntriesUpdate, (update) => {
 
 .table-body {
   padding: 0 !important;
+  overflow: hidden;
+}
+
+.table-container {
+  max-height: clamp(20rem, 65dvh, 48rem);
   overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .sheet-table {
@@ -336,9 +393,10 @@ watch(lastEntriesUpdate, (update) => {
 .sheet-table th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 4;
   white-space: nowrap;
   font-size: 0.875rem;
+  box-shadow: 0 1px 0 var(--border-color);
 }
 
 .col-num,
@@ -357,7 +415,7 @@ watch(lastEntriesUpdate, (update) => {
 }
 
 .sheet-table thead .col-num {
-  z-index: 3;
+  z-index: 6;
 }
 
 .sticky-host {
@@ -382,7 +440,7 @@ watch(lastEntriesUpdate, (update) => {
 .sheet-table[data-sticky-cols="2"] thead .col-team,
 .sheet-table[data-sticky-cols="3"] thead .col-team,
 .sheet-table[data-sticky-cols="3"] thead .col-type {
-  z-index: 3;
+  z-index: 6;
 }
 
 .col-num,
@@ -393,14 +451,76 @@ watch(lastEntriesUpdate, (update) => {
 
 .inspector-name {
   display: block;
+  max-width: 10rem;
   font-size: 0.75rem;
   color: var(--text-tertiary);
   margin-top: 0.125rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.inspector-disclosure {
+  max-width: 10rem;
+  margin: 0.125rem auto 0;
+  text-align: left;
+}
+
+.inspector-disclosure .inspector-name {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-top: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.inspector-disclosure .inspector-name::before {
+  content: "▸";
+  flex: none;
+  color: var(--text-tertiary);
+}
+
+.inspector-disclosure[open] .inspector-name::before {
+  content: "▾";
+}
+
+.inspector-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inspector-more {
+  flex: none;
+  color: var(--accent-primary);
+  font-weight: 600;
+}
+
+.inspector-list {
+  display: grid;
+  gap: 0.125rem;
+  margin-top: 0.25rem;
+  padding-left: 0.75rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.inspector-person::before {
+  content: "· ";
 }
 
 .entry-name {
   color: var(--text-primary);
   font-size: 0.875rem;
+}
+
+.mobile-entry-prefix,
+.mobile-entry-type,
+.mobile-entry-univ,
+.mobile-entry-team {
+  display: none;
 }
 
 .clickable-row {
@@ -433,6 +553,100 @@ watch(lastEntriesUpdate, (update) => {
 
   .template-action .btn {
     width: 100%;
+  }
+
+  .table-container {
+    max-height: 65dvh;
+  }
+
+  .sheet-table {
+    width: max(100%, var(--mobile-table-width));
+    min-width: var(--mobile-table-width);
+    table-layout: fixed;
+  }
+
+  .sheet-table th,
+  .sheet-table td {
+    padding: 0.625rem 0.5rem;
+  }
+
+  .sheet-table .col-team,
+  .sheet-table .col-type {
+    display: none;
+  }
+
+  .sheet-table .col-num {
+    width: 148px;
+    min-width: 148px;
+    max-width: 148px;
+    white-space: normal;
+    text-align: left !important;
+  }
+
+  .sheet-table .col-result {
+    width: 104px;
+    min-width: 104px;
+    max-width: 104px;
+    padding-inline: 0.375rem;
+    white-space: normal;
+  }
+
+  .entry-summary,
+  .entry-summary-top {
+    min-width: 0;
+  }
+
+  .entry-summary {
+    display: grid;
+    gap: 0.125rem;
+  }
+
+  .entry-summary-top {
+    display: flex;
+    align-items: center;
+    gap: 0.375rem;
+  }
+
+  .mobile-entry-prefix,
+  .mobile-entry-type,
+  .mobile-entry-univ,
+  .mobile-entry-team {
+    display: inline;
+  }
+
+  .mobile-entry-prefix {
+    color: var(--text-tertiary);
+  }
+
+  .mobile-entry-type {
+    min-width: 0;
+    padding: 0.125rem 0.375rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-entry-univ,
+  .mobile-entry-team {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .mobile-entry-univ {
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-weight: 600;
+  }
+
+  .mobile-entry-team {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+  }
+
+  .inspector-name,
+  .inspector-disclosure {
+    max-width: 100%;
   }
 }
 </style>
