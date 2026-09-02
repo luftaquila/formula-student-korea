@@ -261,7 +261,12 @@ watch(lastEntriesUpdate, (update) => {
     <div class="filter-bar">
       <div class="filter-group">
         <label class="filter-label">엔트리</label>
-        <select class="filter-input" v-model.number="selectedYear" @change="onYearChange">
+        <select
+          v-model.number="selectedYear"
+          class="filter-input"
+          data-testid="inspection-team-year-filter"
+          @change="onYearChange"
+        >
           <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
         </select>
       </div>
