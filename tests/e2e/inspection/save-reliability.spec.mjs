@@ -58,11 +58,13 @@ test.describe("Inspection answer and memo save reliability", () => {
 
   test("coalesces rapid PASS/FAIL changes to the final visible value", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
+    await replaceAnswer(page, item.id, "FAIL");
     await replaceAnswer(page, item.id, "");
 
     await page.goto(`/inspection/${YEAR}/${TEAM}`);
     await waitForPageReady(page);
     const row = page.locator(".item-row").filter({ hasText: "전압 확인" });
+    await expect(row.locator(".answer-edit-metadata time")).toBeVisible();
     const initialRowHeight = await row.evaluate(element => element.getBoundingClientRect().height);
     const pass = row.locator(".pf-toggle button").first();
     const fail = row.locator(".pf-toggle button").nth(1);
@@ -135,6 +137,7 @@ test.describe("Inspection answer and memo save reliability", () => {
 
   test("retains an optimistic answer after a failed save and retries it", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
+    await replaceAnswer(page, item.id, "FAIL");
     await replaceAnswer(page, item.id, "");
 
     let failedOnce = false;
@@ -150,6 +153,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await page.goto(`/inspection/${YEAR}/${TEAM}`);
     await waitForPageReady(page);
     const row = page.locator(".item-row").filter({ hasText: "전압 확인" });
+    await expect(row.locator(".answer-edit-metadata time")).toBeVisible();
     const initialRowHeight = await row.evaluate(element => element.getBoundingClientRect().height);
     const pass = row.locator(".pf-toggle button").first();
     await pass.click();
@@ -173,6 +177,7 @@ test.describe("Inspection answer and memo save reliability", () => {
 
   test("shows a failed memo save and retry after the memo edit timestamp", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
+    await replaceMemo(page, item.id, "기준 메모");
     await replaceMemo(page, item.id, "");
 
     let failedOnce = false;
@@ -188,6 +193,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     await page.goto(`/inspection/${YEAR}/${TEAM}`);
     await waitForPageReady(page);
     const row = page.locator(".item-row").filter({ hasText: "전압 확인" });
+    await expect(row.locator(".memo-edit-metadata time")).toBeVisible();
     await row.locator(".memo-text").click();
     const textarea = row.locator("textarea.memo-input");
     await textarea.fill("재시도할 메모");

@@ -2,14 +2,13 @@
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { fetchEndurance, fetchEntryYears, fetchScore, fetchScorePublication, fetchVehicleTypes, updateManualScore, updatePenalty, updateScorePublication, updateSetting } from "../api";
 import { useNotification } from "@shared/useNotification.js";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import { useTableHeadBand } from "../composables/useTableHeadBand";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { formatScoreResult as formatResult } from "../lib/scoreExport.js";
 import { buildOfficialScoreWorkbookModel, downloadOfficialScoreWorkbook } from "../lib/officialScoreWorkbook.js";
 import { calculateAdjustedResult } from "../../../lib/adjusted-result.mjs";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
 import { useSSE } from "../composables/useSSE";
 
 const { error, success } = useNotification();
@@ -33,13 +32,6 @@ watch(displayMode, (v) => localStorage.setItem("score-display-mode", v));
 
 const tableRef = ref(null);
 const headScrollerRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "score-board-sticky-cols",
-  tableRef,
-  scrollerRef: headScrollerRef,
-  columnSelectors: [".col-num", ".col-team", ".col-type"],
-});
-
 const headBandRef = ref(null);
 useTableHeadBand({ tableRef, scrollerRef: headScrollerRef, bandRef: headBandRef });
 
@@ -59,8 +51,6 @@ const energy = ref({ teams: {}, config: {}, references: {} });
 const dynamicEvents = computed(() => events.value.filter((e) => e.type !== "내구"));
 const enduranceEvent = computed(() => events.value.find((e) => e.type === "내구") || { type: "내구", records: {} });
 
-const typeFilters = ref({});
-
 const vehicleTypes = computed(() => {
   const types = new Set();
   for (const e of Object.values(entries.value)) {
@@ -68,13 +58,7 @@ const vehicleTypes = computed(() => {
   }
   return [...types].sort();
 });
-
-// 새 유형이 나타나면 기본 활성화
-watch(vehicleTypes, (types) => {
-  for (const t of types) {
-    if (!(t in typeFilters.value)) typeFilters.value[t] = true;
-  }
-});
+const typeFilters = usePersistentTypeFilters("score-board-type-filter", vehicleTypes);
 
 const editingSettingCell = ref(null); // "penalty:cone_penalty:가속" or "setting:total:내구"
 
@@ -853,7 +837,7 @@ async function exportXlsx() {
         </div>
         <div class="filter-group">
           <label class="filter-label">검색</label>
-          <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+          <input class="filter-input" v-model="searchQuery" placeholder="엔트리 / 학교 / 팀명" />
         </div>
         <div class="filter-group type-filter-gap">
           <label class="filter-label">필터</label>
@@ -862,9 +846,9 @@ async function exportXlsx() {
             <span>검차</span>
           </label>
         </div>
-        <div class="filter-group type-filter-gap" v-if="vehicleTypes.length > 1">
+        <div class="filter-group type-filter-gap" v-if="vehicleTypes.length">
           <label class="filter-label">유형</label>
-          <div class="type-filter-group">
+          <div class="type-filter-group" data-testid="score-team-type-filter">
             <label v-for="t in vehicleTypes" :key="t" class="filter-checkbox">
               <input type="checkbox" v-model="typeFilters[t]" />
               <span class="badge" :class="'badge-type-' + getTypeColor(t)">{{ t }}</span>
@@ -891,7 +875,7 @@ async function exportXlsx() {
     <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
 
     <!-- 메인 테이블 -->
-    <div class="card table-card">
+    <div class="card table-card team-table-card">
       <div class="card-header score-card-header">
         <div class="header-left">
           <h3>성적표</h3>
@@ -923,15 +907,15 @@ async function exportXlsx() {
           <button v-else type="button" class="btn btn-ghost btn-sm public-link" disabled>공개</button>
         </div>
       </div>
-      <div class="card-body table-body">
+      <div class="card-body table-body team-table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="sticky-host">
-          <div ref="headBandRef" class="head-band"></div>
-          <div ref="headScrollerRef" class="table-container">
-          <table ref="tableRef" class="data-table score-table" :data-sticky-cols="stickyCols" @keydown="handleKeyNav">
+        <div v-else class="sticky-host team-table-sticky-host">
+          <div ref="headBandRef" class="head-band team-table-head-band" data-testid="score-team-sticky-header"></div>
+          <div ref="headScrollerRef" class="table-container team-table-scroll" data-testid="score-team-table-scroll">
+          <table ref="tableRef" class="data-table score-table team-table" @keydown="handleKeyNav">
             <thead>
               <tr>
-                <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
+                <th class="col-num sortable" @click="handleSort('num')">엔트리 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
                 <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ getSortIcon('team') }}</span></th>
                 <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ getSortIcon('type') }}</span></th>
                 <th
@@ -959,8 +943,17 @@ async function exportXlsx() {
             <tbody>
               <template v-for="entry in entryList" :key="entry.num">
               <tr class="team-row" :class="{ 'expanded-row': detailExpandedTeam === entry.num }" @click="handleRowClick(entry.num, $event)">
-                  <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
-                  <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
+                  <td class="col-num">
+                    <div class="team-entry-summary">
+                      <div class="team-entry-summary-top">
+                        <span class="entry-num">{{ entry.num }}</span>
+                        <span v-if="entry.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
+                      </div>
+                      <span class="team-mobile-entry-univ">{{ entry.univ }}</span>
+                      <span class="team-mobile-entry-name">{{ entry.team }}</span>
+                    </div>
+                  </td>
+                  <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
                   <td class="col-type"><span class="badge" :class="'badge-type-' + getTypeColor(entry.type)" v-if="entry.type">{{ entry.type }}</span></td>
                   <template v-for="cat in inspection.categories" :key="'insp-'+cat.id+'-'+entry.num">
                     <!-- 이 차량 유형에 표시하지 않는 카테고리 → 빈 칸 -->
@@ -1159,7 +1152,6 @@ async function exportXlsx() {
             </tbody>
           </table>
           </div>
-          <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
         </div>
       </div>
     </div>
@@ -1428,8 +1420,6 @@ async function exportXlsx() {
   overflow: auto;
 }
 
-/* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
-
 .score-table {
   min-width: 700px;
 }
@@ -1472,7 +1462,7 @@ async function exportXlsx() {
 }
 
 .col-num {
-  text-align: center !important;
+  text-align: left !important;
   position: sticky;
   left: 0;
   z-index: 1;
@@ -1485,27 +1475,6 @@ async function exportXlsx() {
 
 .sticky-host {
   position: relative;
-}
-
-.score-table[data-sticky-cols="2"] .col-team,
-.score-table[data-sticky-cols="3"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.score-table[data-sticky-cols="3"] .col-type {
-  position: sticky;
-  left: var(--sticky-l2, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.score-table[data-sticky-cols="2"] thead .col-team,
-.score-table[data-sticky-cols="3"] thead .col-team,
-.score-table[data-sticky-cols="3"] thead .col-type {
-  z-index: 3;
 }
 
 .col-team {

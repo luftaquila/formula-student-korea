@@ -45,11 +45,8 @@ let lifecycleRefreshTimer = null;
 let dataLoadSeq = 0;
 let stickyHeaderResizeObserver = null;
 const INSPECTOR_COLLAPSE_THRESHOLD = 5;
-const MOBILE_ENTRY_COLUMN_WIDTH = 148;
-const MOBILE_RESULT_COLUMN_WIDTH = 104;
 
 const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
-const mobileTableWidth = computed(() => `${MOBILE_ENTRY_COLUMN_WIDTH + visibleCategories.value.length * MOBILE_RESULT_COLUMN_WIDTH}px`);
 const stickyHeaderHostStyle = computed(() => {
   const height = stickyHeaderMetrics.value.height;
   return {
@@ -360,13 +357,11 @@ watch(lastEntriesUpdate, (update) => {
                 :style="stickyHeaderRowStyle"
               >
                 <div class="sticky-header-cell col-num" :style="getStickyHeaderCellStyle(0)">엔트리</div>
-                <div class="sticky-header-cell col-team" :style="getStickyHeaderCellStyle(1)">학교 / 팀</div>
-                <div class="sticky-header-cell col-type" :style="getStickyHeaderCellStyle(2)">유형</div>
                 <template v-for="(cat, index) in visibleCategories" :key="'sticky-r'+cat.id">
                   <div
                     class="sticky-header-cell col-result"
                     :data-category-id="cat.id"
-                    :style="getStickyHeaderCellStyle(index + 3)"
+                    :style="getStickyHeaderCellStyle(index + 1)"
                   >
                     <span class="category-header-name">{{ cat.name }}</span>
                     <span class="category-pass-rate">{{ formatCategoryPassRate(cat.id) }}</span>
@@ -383,13 +378,14 @@ watch(lastEntriesUpdate, (update) => {
           <table
             ref="tableRef"
             class="data-table sheet-table"
-            :style="{ '--mobile-table-width': mobileTableWidth }"
           >
+            <colgroup>
+              <col class="sheet-table-col-entry" />
+              <col v-for="cat in visibleCategories" :key="'col-'+cat.id" class="sheet-table-col-result" />
+            </colgroup>
             <thead>
               <tr>
                 <th class="col-num">엔트리</th>
-                <th class="col-team">학교 / 팀</th>
-                <th class="col-type">유형</th>
                 <template v-for="cat in visibleCategories" :key="'r'+cat.id">
                   <th class="col-result" :data-category-id="cat.id">
                     <span class="category-header-name">{{ cat.name }}</span>
@@ -403,6 +399,7 @@ watch(lastEntriesUpdate, (update) => {
                 v-for="entry in filteredEntries"
                 :key="entry.num"
                 class="clickable-row"
+                :data-team-type="entry.type || ''"
                 @click="goToSheet(entry.num)"
               >
                 <td class="col-num">
@@ -418,10 +415,6 @@ watch(lastEntriesUpdate, (update) => {
                     <span class="mobile-entry-univ">{{ entry.univ }}</span>
                     <span class="mobile-entry-team">{{ entry.team }}</span>
                   </div>
-                </td>
-                <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
-                <td class="col-type">
-                  <span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
                 </td>
                 <template v-for="cat in visibleCategories" :key="'r'+cat.id+'-'+entry.num">
                   <td
@@ -468,7 +461,7 @@ watch(lastEntriesUpdate, (update) => {
                 </template>
               </tr>
               <tr v-if="filteredEntries.length === 0">
-                <td :colspan="3 + visibleCategories.length" class="empty-state">
+                <td :colspan="1 + visibleCategories.length" class="empty-state">
                   {{ loading ? "데이터를 불러오는 중..." : "팀 데이터가 없습니다." }}
                 </td>
               </tr>
@@ -595,6 +588,11 @@ watch(lastEntriesUpdate, (update) => {
 
 .sheet-table {
   min-width: 600px;
+  table-layout: auto;
+}
+
+.sheet-table-col-entry {
+  width: 1%;
 }
 
 .sheet-table th {
@@ -607,10 +605,7 @@ watch(lastEntriesUpdate, (update) => {
 }
 
 .col-num,
-.col-team,
-.col-type,
 .col-result {
-  width: 1%;
   white-space: nowrap;
 }
 
@@ -675,10 +670,19 @@ watch(lastEntriesUpdate, (update) => {
   background: var(--bg-secondary);
 }
 
-.col-num,
-.col-type,
 .col-result {
   text-align: center !important;
+}
+
+.sheet-table .col-num,
+.sticky-header-cell.col-num {
+  width: 1%;
+  min-width: 0;
+  max-width: none;
+  box-sizing: border-box;
+  white-space: nowrap;
+  text-align: left !important;
+  justify-content: flex-start;
 }
 
 .col-result .category-header-name,
@@ -770,11 +774,50 @@ watch(lastEntriesUpdate, (update) => {
   font-size: 0.875rem;
 }
 
-.mobile-entry-prefix,
-.mobile-entry-type,
+.entry-summary,
+.entry-summary-top {
+  min-width: 0;
+}
+
+.entry-summary {
+  display: grid;
+  gap: 0.125rem;
+  width: max-content;
+}
+
+.entry-summary-top {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.mobile-entry-prefix {
+  color: var(--text-tertiary);
+}
+
+.mobile-entry-type {
+  display: inline-flex;
+  min-width: 0;
+  padding: 0.125rem 0.375rem;
+  white-space: nowrap;
+}
+
 .mobile-entry-univ,
 .mobile-entry-team {
-  display: none;
+  display: block;
+  white-space: nowrap;
+}
+
+.mobile-entry-univ {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.mobile-entry-team {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
 }
 
 .clickable-row {
@@ -823,9 +866,9 @@ watch(lastEntriesUpdate, (update) => {
   }
 
   .sheet-table {
-    width: max(100%, var(--mobile-table-width));
-    min-width: var(--mobile-table-width);
-    table-layout: fixed;
+    width: max-content;
+    min-width: 100%;
+    table-layout: auto;
   }
 
   .sheet-table th,
@@ -834,21 +877,22 @@ watch(lastEntriesUpdate, (update) => {
     padding: 0.625rem 0.5rem;
   }
 
-  .sheet-table .col-team,
-  .sheet-table .col-type,
-  .sticky-header-cell.col-team,
-  .sticky-header-cell.col-type {
-    display: none;
-  }
-
   .sheet-table .col-num,
   .sticky-header-cell.col-num {
-    width: 148px;
-    min-width: 148px;
-    max-width: 148px;
-    white-space: normal;
+    width: 1%;
+    min-width: 0;
+    max-width: none;
+    white-space: nowrap;
     text-align: left !important;
     justify-content: flex-start;
+  }
+
+  .sheet-table-col-entry {
+    width: 1%;
+  }
+
+  .sheet-table-col-result {
+    width: 104px;
   }
 
   .sheet-table .col-result,
@@ -859,60 +903,6 @@ watch(lastEntriesUpdate, (update) => {
     padding-inline: 0.375rem;
     white-space: normal;
     justify-content: center;
-  }
-
-  .entry-summary,
-  .entry-summary-top {
-    min-width: 0;
-  }
-
-  .entry-summary {
-    display: grid;
-    gap: 0.125rem;
-  }
-
-  .entry-summary-top {
-    display: flex;
-    align-items: center;
-    gap: 0.375rem;
-  }
-
-  .mobile-entry-prefix,
-  .mobile-entry-type,
-  .mobile-entry-univ,
-  .mobile-entry-team {
-    display: inline;
-  }
-
-  .mobile-entry-prefix {
-    color: var(--text-tertiary);
-  }
-
-  .mobile-entry-type {
-    min-width: 0;
-    padding: 0.125rem 0.375rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .mobile-entry-univ,
-  .mobile-entry-team {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .mobile-entry-univ {
-    color: var(--text-primary);
-    font-size: 0.8125rem;
-    font-weight: 600;
-  }
-
-  .mobile-entry-team {
-    color: var(--text-secondary);
-    font-size: 0.75rem;
-    font-weight: 500;
   }
 
   .inspector-name,

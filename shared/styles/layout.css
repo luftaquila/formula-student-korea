@@ -59,6 +59,196 @@
   padding: 1.5rem 2rem;
 }
 
+/* Team tables scroll horizontally inside the page while their header remains
+   attached to the viewport. overflow: clip avoids creating a nested vertical
+   scroll container, unlike overflow: hidden/auto. */
+.team-table-card {
+  overflow: clip !important;
+}
+
+.team-table-body {
+  overflow: visible !important;
+}
+
+.team-table-sticky-host {
+  position: relative;
+}
+
+.team-table-head-band {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  overflow: hidden;
+}
+
+.team-table-scroll {
+  overflow-x: auto;
+  overflow-y: visible;
+  overscroll-behavior-x: contain;
+}
+
+/* Inline tables shrink to their intrinsic content instead of distributing
+   spare card space back into the pinned entry column. */
+.team-table:not(.team-table-desktop-split) {
+  display: inline-table;
+  width: auto !important;
+  min-width: 0 !important;
+  table-layout: auto;
+}
+
+.team-table:not(.team-table-desktop-split) th,
+.team-table:not(.team-table-desktop-split) td {
+  width: auto !important;
+}
+
+.team-table .col-num {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  box-sizing: border-box;
+  white-space: nowrap !important;
+}
+
+.team-table .col-univ,
+.team-table .col-team,
+.team-table .col-type {
+  display: none;
+}
+
+.team-table tr > .col-num {
+  text-align: left !important;
+}
+
+.team-table thead .col-num {
+  z-index: 6;
+  background: var(--bg-secondary);
+}
+
+.team-table .entry-name {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.team-entry-summary,
+.team-entry-summary-top {
+  min-width: 0;
+}
+
+.team-entry-summary {
+  display: grid;
+  gap: 0.125rem;
+  width: max-content;
+}
+
+.team-entry-summary-top {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.team-mobile-entry-type,
+.team-mobile-entry-univ,
+.team-mobile-entry-name {
+  min-width: 0;
+}
+
+.team-mobile-edit-control {
+  display: block !important;
+  width: 100%;
+}
+
+.team-mobile-entry-type {
+  display: inline-flex !important;
+  padding: 0.125rem 0.375rem;
+  white-space: nowrap;
+}
+
+.team-mobile-entry-univ,
+.team-mobile-entry-name {
+  display: block !important;
+  white-space: nowrap;
+}
+
+.team-mobile-entry-univ {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.team-mobile-entry-name {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.team-mobile-entry-button {
+  max-width: none;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: text;
+}
+
+.team-mobile-entry-button:not(.badge) {
+  background: transparent;
+}
+
+@media (min-width: 641px) {
+  .team-table.team-table-desktop-split .col-univ,
+  .team-table.team-table-desktop-split .col-team,
+  .team-table.team-table-desktop-split .col-type {
+    display: table-cell;
+  }
+
+  .team-table.team-table-desktop-split .col-num {
+    width: 1% !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    white-space: nowrap !important;
+  }
+
+  .team-table.team-table-desktop-split .team-entry-summary {
+    display: contents;
+  }
+
+  .team-table.team-table-desktop-split .team-mobile-entry-type,
+  .team-table.team-table-desktop-split .team-mobile-entry-univ,
+  .team-table.team-table-desktop-split .team-mobile-entry-name,
+  .team-table.team-table-desktop-split .team-mobile-edit-control {
+    display: none !important;
+  }
+}
+
+.team-type-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.team-type-filter-label {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-height: 2rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  user-select: none;
+}
+
+.team-type-filter-label input {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent-primary);
+}
+
 /* Reusable sidebar + content layout */
 .layout-sidebar {
   display: grid;
@@ -104,4 +294,32 @@
   .layout-sidebar > .sidebar > * {
     min-width: 0;
   }
+
+  .team-table {
+    display: inline-table;
+    width: auto !important;
+    min-width: 0 !important;
+    table-layout: auto;
+  }
+
+  .team-table th,
+  .team-table td {
+    width: auto !important;
+    padding: 0.625rem 0.5rem;
+  }
+
+  .team-table .col-num {
+    width: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    text-align: left !important;
+    white-space: nowrap !important;
+  }
+
+  .team-table th:not(.col-num):not(.col-univ):not(.col-team):not(.col-type),
+  .team-table td:not(.col-num):not(.col-univ):not(.col-team):not(.col-type) {
+    min-width: 96px;
+    box-sizing: border-box;
+  }
+
 }

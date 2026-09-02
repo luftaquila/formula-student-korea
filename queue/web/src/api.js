@@ -1,8 +1,8 @@
 import { createApiClient } from "@shared/api-base.js";
 
-const { request, fetchEntries, fetchEntryYears } = createApiClient("/competition/api/v1/queue");
+const { request, fetchEntries, fetchEntryYears, fetchVehicleTypes } = createApiClient("/competition/api/v1/queue");
 
-export { fetchEntries, fetchEntryYears };
+export { fetchEntries, fetchEntryYears, fetchVehicleTypes };
 
 export async function fetchQueueState(num, phone) {
   const res = await request(`/api/state/${num}`, {

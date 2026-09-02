@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 const INSPECTION_TYPE = "battery";
@@ -41,7 +41,7 @@ test.describe("Queue priority management", () => {
     await waitForPageReady(page);
 
     // Wait for the table to load
-    const table = page.locator(".priority-table");
+    const table = page.locator(".priority-table:not([data-table-head-copy])");
     await expect(table).toBeVisible({ timeout: 10000 });
 
     // Should show entry numbers from seeded data (use exact match to avoid "1" matching "10")
@@ -50,12 +50,37 @@ test.describe("Queue priority management", () => {
     await expect(page.locator(".priority-table .entry-num").filter({ hasText: /^3$/ })).toBeVisible();
   });
 
+  test("uses the compact mobile identity column and persistent type filter", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 600 });
+    await page.goto("/queue/priority");
+    await waitForPageReady(page);
+
+    const table = page.locator(".priority-table:not([data-table-head-copy])");
+    const row = table.locator("tbody tr").first();
+    await expect(table.locator("thead .col-num")).toContainText("엔트리");
+    await expect(page.getByTestId("queue-priority-sticky-header").locator("th").first()).toContainText("엔트리");
+    await expect(page.locator(".sticky-freeze-line")).toHaveCount(0);
+    await expect(row.locator(".team-mobile-entry-univ")).toBeVisible();
+    await expect(row.locator(".team-mobile-entry-name")).toBeVisible();
+    await expect(row.locator(".team-mobile-entry-type")).toBeVisible();
+    await expect(row.locator("td.col-team")).toBeHidden();
+    await expect(row.locator("td.col-type")).toBeHidden();
+    await expectCompactTeamIdentity(table);
+
+    const cv = page.getByTestId("queue-priority-type-filter").locator("label", { hasText: "CV" }).locator("input");
+    await cv.uncheck();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("queue-priority-type-filter"))).toContain('"CV":false');
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByTestId("queue-priority-type-filter").locator("label", { hasText: "CV" }).locator("input")).not.toBeChecked();
+  });
+
   test("set team priority via input", async ({ page }) => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
 
     // Wait for table to load
-    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
     // Find the first priority input in the row for entry 1
     const row = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
@@ -81,7 +106,7 @@ test.describe("Queue priority management", () => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
 
-    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
     // Find the priority input for entry 2 in the battery column
     const row = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
@@ -103,7 +128,7 @@ test.describe("Queue priority management", () => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
 
-    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
     // Use search input
     const searchInput = page.locator(".search-input");
@@ -138,7 +163,7 @@ test.describe("Queue priority management", () => {
 
     await page.goto("/queue/priority");
     await waitForPageReady(page);
-    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
     // Verify priorities are set
     const row1 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
@@ -159,7 +184,7 @@ test.describe("Queue priority management", () => {
     // Reload and verify priorities are cleared
     await page.reload();
     await waitForPageReady(page);
-    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
     const row1After = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
     await expect(row1After.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`)).toHaveValue("");
@@ -176,7 +201,7 @@ test.describe("Queue priority management", () => {
     page.on("dialog", (dialog) => dialog.accept());
 
     // Find the first history reset button in the table header
-    const historyResetBtn = page.locator(".btn-th-history").first();
+    const historyResetBtn = page.locator(".priority-table:not([data-table-head-copy]) .btn-th-history").first();
     await expect(historyResetBtn).toBeVisible();
     await historyResetBtn.click();
 
@@ -187,7 +212,7 @@ test.describe("Queue priority management", () => {
   test("arrow keys move focus between priority inputs", async ({ page }) => {
     await page.goto("/queue/priority");
     await waitForPageReady(page);
-    await expect(page.locator(".priority-table")).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
     const row1 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^1$/ }) });
     const row2 = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
@@ -219,13 +244,13 @@ test.describe("Queue priority management", () => {
     await waitForPageReady(page);
 
     // Should show toggle controls in the table column headers
-    const thControls = page.locator(".th-controls");
+    const thControls = page.locator(".priority-table:not([data-table-head-copy]) .th-controls");
     await expect(thControls.first()).toBeVisible({ timeout: 10000 });
     const count = await thControls.count();
     expect(count).toBeGreaterThan(0);
 
     // Each column header should have toggle buttons
-    const toggles = page.locator(".btn-th-toggle");
+    const toggles = page.locator(".priority-table:not([data-table-head-copy]) .btn-th-toggle");
     const toggleCount = await toggles.count();
     expect(toggleCount).toBeGreaterThan(0);
   });
@@ -235,7 +260,7 @@ test.describe("Queue priority management", () => {
     await waitForPageReady(page);
 
     // Wait for toggle buttons in table headers to load
-    const firstToggle = page.locator(".btn-th-toggle").first();
+    const firstToggle = page.locator(".priority-table:not([data-table-head-copy]) .btn-th-toggle").first();
     await expect(firstToggle).toBeVisible({ timeout: 10000 });
 
     // Read initial state (active or not)

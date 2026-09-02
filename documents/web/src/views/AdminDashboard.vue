@@ -2,19 +2,17 @@
 import { ref, onMounted, onUnmounted, computed, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntryYears, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
-import { formatDate } from "@shared/format-date.js";
+import { formatDateLines } from "@shared/format-date.js";
 
 const { notyf } = useNotification();
 
 const tableRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "documents-admin-sticky-cols",
-  tableRef,
-  columnSelectors: [".col-num", ".col-team", ".col-type"],
-});
+const tableScrollerRef = ref(null);
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: tableScrollerRef, bandRef: headBandRef });
 
 const BASE_URL = "/competition/api/v1/documents";
 const loading = ref(true);
@@ -42,15 +40,12 @@ function getSortIcon(key) {
 }
 
 // 유형 필터
-const typeFilters = ref({});
 const vehicleTypes = computed(() => {
   const types = new Set();
   for (const e of Object.values(entries.value)) { if (e.type) types.add(e.type); }
   return [...types].sort();
 });
-watch(vehicleTypes, (types) => {
-  for (const t of types) { if (!(t in typeFilters.value)) typeFilters.value[t] = true; }
-});
+const typeFilters = usePersistentTypeFilters("documents-admin-type-filter", vehicleTypes);
 
 // 유형 색상 (엔트리 서비스에서 가져옴)
 const typeColorMap = ref({});
@@ -284,11 +279,11 @@ onUnmounted(() => {
         </div>
         <div class="filter-group">
           <label class="filter-label">검색</label>
-          <input class="filter-input" v-model="searchQuery" placeholder="번호 / 학교 / 팀명" />
+          <input class="filter-input" v-model="searchQuery" placeholder="엔트리 / 학교 / 팀명" />
         </div>
-        <div class="filter-group type-filter-gap" v-if="vehicleTypes.length > 1">
+        <div class="filter-group type-filter-gap" v-if="vehicleTypes.length">
           <label class="filter-label">유형</label>
-          <div class="type-filter-group">
+          <div class="type-filter-group" data-testid="documents-team-type-filter">
             <label v-for="t in vehicleTypes" :key="t" class="filter-checkbox">
               <input type="checkbox" v-model="typeFilters[t]" />
               <span class="badge" :class="'badge-type-' + getTypeColor(t)">{{ t }}</span>
@@ -317,30 +312,43 @@ onUnmounted(() => {
     </div>
 
     <template v-else>
-      <div class="card">
+      <div class="card team-table-card">
         <div class="card-header header-row">
           <h3>팀 목록 <span class="count-badge">{{ entryList.length }}</span></h3>
         </div>
-        <div class="card-body table-body">
-          <div class="sticky-host">
-            <div class="table-container">
-            <table ref="tableRef" class="data-table main-table" :data-sticky-cols="stickyCols">
+        <div class="card-body table-body team-table-body">
+          <div class="sticky-host team-table-sticky-host">
+            <div ref="headBandRef" class="team-table-head-band" data-testid="documents-team-sticky-header"></div>
+            <div ref="tableScrollerRef" class="table-container team-table-scroll" data-testid="documents-team-table-scroll">
+            <table ref="tableRef" class="data-table main-table team-table">
               <thead>
                 <tr>
-                  <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
+                  <th class="col-num sortable" @click="handleSort('num')">엔트리 <span class="sort-icon">{{ getSortIcon('num') }}</span></th>
                   <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ getSortIcon('team') }}</span></th>
                   <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ getSortIcon('type') }}</span></th>
                   <th v-if="showAccount" class="col-account">계정</th>
                   <th v-for="s in sessions" :key="s.id" class="col-session">
                     <router-link :to="'/admin/session/' + s.id" class="session-link">{{ s.name }}</router-link>
-                    <div class="session-date">{{ formatDate(s.end_at) }}</div>
+                    <span class="session-date date-time-lines">
+                      <span>{{ formatDateLines(s.end_at).date }}</span>
+                      <span v-if="formatDateLines(s.end_at).time">{{ formatDateLines(s.end_at).time }}</span>
+                    </span>
                   </th>
                 </tr>
               </thead>
               <tbody>
                 <tr v-for="e in entryList" :key="e.num">
-                  <td class="col-num"><span class="entry-num">{{ e.num }}</span></td>
-                  <td class="col-team">{{ e.univ }} {{ e.team }}</td>
+                  <td class="col-num">
+                    <div class="team-entry-summary">
+                      <div class="team-entry-summary-top">
+                        <span class="entry-num">{{ e.num }}</span>
+                        <span v-if="e.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(e.type)">{{ e.type }}</span>
+                      </div>
+                      <span class="team-mobile-entry-univ">{{ e.univ }}</span>
+                      <span class="team-mobile-entry-name">{{ e.team }}</span>
+                    </div>
+                  </td>
+                  <td class="col-team"><span class="entry-name">{{ e.univ }} {{ e.team }}</span></td>
                   <td class="col-type">
                     <span v-if="e.type" class="badge" :class="'badge-type-' + getTypeColor(e.type)">{{ e.type }}</span>
                   </td>
@@ -385,7 +393,10 @@ onUnmounted(() => {
                       <span class="cell-empty"></span>
                     </template>
                     <template v-else-if="getSubmissionForTeam(s, e.num)">
-                      <span class="cell-time">{{ formatDate(getSubmissionForTeam(s, e.num).submitted_at) }}</span>
+                      <span class="cell-time date-time-lines">
+                        <span>{{ formatDateLines(getSubmissionForTeam(s, e.num).submitted_at).date }}</span>
+                        <span>{{ formatDateLines(getSubmissionForTeam(s, e.num).submitted_at).time }}</span>
+                      </span>
                     </template>
                     <template v-else>
                       <span v-if="isSessionClosed(s)" class="cell-time">미제출</span>
@@ -393,10 +404,12 @@ onUnmounted(() => {
                     </template>
                   </td>
                 </tr>
+                <tr v-if="entryList.length === 0">
+                  <td :colspan="3 + (showAccount ? 1 : 0) + sessions.length" class="empty-state">선택한 조건에 해당하는 팀이 없습니다.</td>
+                </tr>
               </tbody>
             </table>
             </div>
-            <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
           </div>
         </div>
       </div>
@@ -553,7 +566,7 @@ onUnmounted(() => {
 }
 
 .col-num {
-  text-align: center !important;
+  text-align: left !important;
   position: sticky;
   left: 0;
   z-index: 1;
@@ -566,27 +579,6 @@ onUnmounted(() => {
 
 .sticky-host {
   position: relative;
-}
-
-.main-table[data-sticky-cols="2"] .col-team,
-.main-table[data-sticky-cols="3"] .col-team {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.main-table[data-sticky-cols="3"] .col-type {
-  position: sticky;
-  left: var(--sticky-l2, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.main-table[data-sticky-cols="2"] thead .col-team,
-.main-table[data-sticky-cols="3"] thead .col-team,
-.main-table[data-sticky-cols="3"] thead .col-type {
-  z-index: 3;
 }
 
 .col-type,
@@ -610,6 +602,7 @@ onUnmounted(() => {
 
 /* 세션 헤더 */
 .session-link {
+  display: block;
   color: var(--accent-primary);
   text-decoration: none;
   font-weight: 600;
@@ -624,7 +617,23 @@ onUnmounted(() => {
   font-size: 0.75rem;
   color: var(--text-tertiary);
   font-weight: 400;
-  margin-top: 0.125rem;
+  margin-top: 0.25rem;
+}
+
+.date-time-lines {
+  display: inline-grid;
+  gap: 0.0625rem;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.session-date.date-time-lines {
+  display: grid;
+  justify-items: center;
+}
+
+.cell-time.date-time-lines {
+  display: inline-grid;
 }
 
 /* 검색 가능 드롭다운 */

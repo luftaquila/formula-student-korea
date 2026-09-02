@@ -1,7 +1,6 @@
 <script setup>
 import { ref, computed } from "vue";
-import { useStickyColumns } from "@shared/useStickyColumns.js";
-import StickyFreezeLine from "@shared/StickyFreezeLine.vue";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 
 const props = defineProps({
   entries: {
@@ -20,11 +19,9 @@ const props = defineProps({
 });
 
 const tableRef = ref(null);
-const { stickyCols, lineX, startDrag } = useStickyColumns({
-  storageKey: "entry-sticky-cols",
-  tableRef,
-  columnSelectors: [".col-num", ".col-univ", ".col-team", ".col-type"],
-});
+const tableScrollerRef = ref(null);
+const headBandRef = ref(null);
+useTableHeadBand({ tableRef, scrollerRef: tableScrollerRef, bandRef: headBandRef });
 
 const emit = defineEmits(["update", "active"]);
 
@@ -81,7 +78,10 @@ function startEdit(num, field) {
 }
 
 function editInputRef(el) {
-  if (el) el.focus();
+  if (!el) return;
+  queueMicrotask(() => {
+    if (el.getClientRects().length) el.focus();
+  });
 }
 
 function saveCell(entry, field, value) {
@@ -123,13 +123,14 @@ function toggleActive(entry) {
 </script>
 
 <template>
-  <div class="sticky-host">
-    <div class="table-wrapper">
-    <table ref="tableRef" class="entry-table" :class="{ readonly }" :data-sticky-cols="stickyCols">
+  <div class="sticky-host team-table-sticky-host">
+    <div ref="headBandRef" class="team-table-head-band" data-testid="entry-team-sticky-header"></div>
+    <div ref="tableScrollerRef" class="table-wrapper team-table-scroll" data-testid="entry-team-table-scroll">
+    <table ref="tableRef" class="entry-table team-table team-table-desktop-split" :class="{ readonly }">
       <thead>
         <tr>
           <th class="col-num sortable" @click="handleSort('num')">
-            번호 <span class="sort-icon">{{ getSortIcon("num") }}</span>
+            엔트리 <span class="sort-icon">{{ getSortIcon("num") }}</span>
           </th>
           <th class="col-univ sortable" @click="handleSort('univ')">
             학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
@@ -157,7 +158,7 @@ function toggleActive(entry) {
           </td>
         </tr>
         <tr v-for="entry in sortedEntries" :key="entry.id" :class="{ 'entry-inactive': entry.active === false }">
-          <!-- 번호 -->
+          <!-- 엔트리 -->
           <td class="col-num" @click="startEdit(entry.num, 'num')">
             <input
               v-if="isEditing(entry.num, 'num')"
@@ -169,7 +170,54 @@ function toggleActive(entry) {
               @keyup.enter="$event.target.blur()"
               @keyup.escape="editingCell = null"
             />
-            <span v-else class="entry-number">{{ entry.num }}</span>
+            <div v-else class="team-entry-summary">
+              <div class="team-entry-summary-top">
+                <span class="entry-number">{{ entry.num }}</span>
+                <select
+                  v-if="isEditing(entry.num, 'type')"
+                  :ref="editInputRef"
+                  class="team-mobile-edit-control"
+                  :value="entry.type || ''"
+                  @click.stop
+                  @change="saveCell(entry, 'type', $event.target.value)"
+                  @blur="editingCell = null"
+                >
+                  <option value="">-</option>
+                  <option v-for="vt in vehicleTypes" :key="vt.id" :value="vt.name">{{ vt.name }}</option>
+                </select>
+                <button
+                  v-else-if="entry.type"
+                  type="button"
+                  class="badge team-mobile-entry-type team-mobile-entry-button"
+                  :class="'badge-type-' + getTypeColor(entry.type)"
+                  @click.stop="startEdit(entry.num, 'type')"
+                >{{ entry.type }}</button>
+              </div>
+              <input
+                v-if="isEditing(entry.num, 'univ')"
+                :ref="editInputRef"
+                class="team-mobile-edit-control"
+                type="text"
+                :value="entry.univ"
+                @click.stop
+                @blur="saveCell(entry, 'univ', $event.target.value)"
+                @keyup.enter="$event.target.blur()"
+                @keyup.escape="editingCell = null"
+              />
+              <button v-else type="button" class="team-mobile-entry-univ team-mobile-entry-button" @click.stop="startEdit(entry.num, 'univ')">{{ entry.univ }}</button>
+              <input
+                v-if="isEditing(entry.num, 'team')"
+                :ref="editInputRef"
+                class="team-mobile-edit-control"
+                type="text"
+                :value="entry.team"
+                @click.stop
+                @blur="saveCell(entry, 'team', $event.target.value)"
+                @keyup.enter="$event.target.blur()"
+                @keyup.escape="editingCell = null"
+              />
+              <button v-else type="button" class="team-mobile-entry-name team-mobile-entry-button" @click.stop="startEdit(entry.num, 'team')">{{ entry.team }}</button>
+            </div>
           </td>
           <!-- 학교 -->
           <td class="col-univ editable-cell" @click="startEdit(entry.num, 'univ')">
@@ -236,7 +284,6 @@ function toggleActive(entry) {
       </tbody>
     </table>
     </div>
-    <StickyFreezeLine :line-x="lineX" :active="stickyCols > 1" @pointerdown="startDrag" />
   </div>
 </template>
 
@@ -359,7 +406,7 @@ function toggleActive(entry) {
 }
 
 .col-num {
-  text-align: center;
+  text-align: left;
   position: sticky;
   left: 0;
   z-index: 1;
@@ -372,39 +419,6 @@ function toggleActive(entry) {
 
 .sticky-host {
   position: relative;
-}
-
-.entry-table[data-sticky-cols="2"] .col-univ,
-.entry-table[data-sticky-cols="3"] .col-univ,
-.entry-table[data-sticky-cols="4"] .col-univ {
-  position: sticky;
-  left: var(--sticky-l1, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.entry-table[data-sticky-cols="3"] .col-team,
-.entry-table[data-sticky-cols="4"] .col-team {
-  position: sticky;
-  left: var(--sticky-l2, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.entry-table[data-sticky-cols="4"] .col-type {
-  position: sticky;
-  left: var(--sticky-l3, 0);
-  z-index: 1;
-  background: var(--bg-card);
-}
-
-.entry-table[data-sticky-cols="2"] thead .col-univ,
-.entry-table[data-sticky-cols="3"] thead .col-univ,
-.entry-table[data-sticky-cols="3"] thead .col-team,
-.entry-table[data-sticky-cols="4"] thead .col-univ,
-.entry-table[data-sticky-cols="4"] thead .col-team,
-.entry-table[data-sticky-cols="4"] thead .col-type {
-  z-index: 3;
 }
 
 .col-actions {
@@ -442,7 +456,8 @@ function toggleActive(entry) {
   height: 16px;
 }
 
-.edit-input {
+.edit-input,
+.team-mobile-edit-control {
   width: 100%;
   padding: 0.375rem 0.5rem;
   background: var(--bg-input);
@@ -452,7 +467,8 @@ function toggleActive(entry) {
   font-size: 0.875rem;
 }
 
-.edit-input:focus {
+.edit-input:focus,
+.team-mobile-edit-control:focus {
   outline: none;
   box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.2);
 }

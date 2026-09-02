@@ -70,12 +70,12 @@ test.describe("Documents admin zip download", () => {
     // (no gap for parallel tests to overwrite the 2-file submission)
     await page.goto("/documents/admin", { waitUntil: "networkidle" });
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: SESSION_NAME });
     const statusResp = page.waitForResponse((res) => res.url().includes("/competition/api/v1/documents/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
     await statusResp;
 
-    const table = page.locator(".detail-table");
+    const table = page.locator(".detail-table:not([data-table-head-copy])");
     await table.waitFor({ state: "visible" });
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
 
@@ -133,12 +133,12 @@ test.describe("Documents admin zip download", () => {
     const chiefPage = await chiefCtx.newPage();
     await chiefPage.goto("/documents/admin", { waitUntil: "networkidle" });
 
-    const sessionLink = chiefPage.locator(".session-link").filter({ hasText: SESSION_NAME });
+    const sessionLink = chiefPage.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: SESSION_NAME });
     const statusResp = chiefPage.waitForResponse((res) => res.url().includes("/competition/api/v1/documents/admin/sessions/") && res.url().includes("/status") && res.status() === 200);
     await sessionLink.click();
     await statusResp;
 
-    const table = chiefPage.locator(".detail-table");
+    const table = chiefPage.locator(".detail-table:not([data-table-head-copy])");
     await table.waitFor({ state: "visible" });
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
     await expect(team1Row.locator(".file-zip")).not.toBeVisible();

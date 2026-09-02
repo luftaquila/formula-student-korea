@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, scoreTable, enduranceTable, ENDURANCE_TABLE } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, scoreTable, enduranceTable, ENDURANCE_TABLE } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -61,7 +61,9 @@ test.describe("Score endurance input", () => {
     await expect(table.locator("tbody")).toContainText("KAIST");
 
     // Verify key column headers
-    await expect(enduranceTable(page).locator("th").filter({ hasText: "번호" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th").filter({ hasText: "엔트리" })).toBeVisible();
+    await expect(enduranceTable(page).locator("th.col-type")).toBeHidden();
+    await expect(enduranceTable(page).locator("tbody tr").first().locator(".team-mobile-entry-type")).toBeVisible();
     await expect(enduranceTable(page).locator("th").filter({ hasText: "최종 기록" })).toBeVisible();
     await expect(enduranceTable(page).locator("th").filter({ hasText: "드라이버 1" })).toBeVisible();
     await expect(enduranceTable(page).locator("th").filter({ hasText: "드라이버 2" })).toBeVisible();
@@ -197,6 +199,30 @@ test.describe("Score endurance input", () => {
 
     await cvCheckbox.check();
     await expect(table.locator("tbody")).toContainText("성균관대학교");
+  });
+
+  test("keeps the wide editor usable with a compact mobile identity column", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 600 });
+    const table = enduranceTable(page);
+    const firstRow = table.locator("tbody tr").first();
+    const scroller = page.getByTestId("endurance-team-table-scroll");
+
+    await expect(page.locator(".sticky-freeze-line")).toHaveCount(0);
+    await expect(table).not.toHaveAttribute("data-sticky-cols");
+    await expect(firstRow.locator(".team-mobile-entry-univ")).toBeVisible();
+    await expect(firstRow.locator(".team-mobile-entry-name")).toBeVisible();
+    await expect(firstRow.locator(".team-mobile-entry-type")).toBeVisible();
+    await expect(firstRow.locator("td.col-team")).toBeHidden();
+    await expect(firstRow.locator("td.col-type")).toBeHidden();
+    await expectCompactTeamIdentity(table);
+    await expect.poll(() => scroller.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+
+    const cv = page.getByTestId("endurance-team-type-filter").locator("label", { hasText: "CV" }).locator("input");
+    await cv.uncheck();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("score-endurance-type-filter"))).toContain('"CV":false');
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByTestId("endurance-team-type-filter").locator("label", { hasText: "CV" }).locator("input")).not.toBeChecked();
   });
 
   test("toggles endurance qualification and filters to qualified teams", async ({ page }) => {
@@ -527,12 +553,12 @@ test.describe("Score endurance input", () => {
     expect(state.maxDrift).toBeLessThanOrEqual(1);
   });
 
-  test("focusing a cell to the left does not park it behind the frozen columns", async ({ page }) => {
+  test("focusing a cell to the left does not park it behind the fixed entry column", async ({ page }) => {
     await page.setViewportSize({ width: 900, height: 600 });
     await expect(enduranceTable(page)).toBeVisible();
 
     // 표를 오른쪽 끝까지 민 뒤 왼쪽 끝 입력 칸으로 포커스를 옮기면 브라우저가 그 칸을
-    // 스크롤 영역 왼쪽에 붙이는데, 그 자리는 고정열이 덮고 있다.
+    // 스크롤 영역 왼쪽에 붙이는데, 그 자리는 고정 엔트리 열이 덮고 있다.
     await page.evaluate(() => {
       const scroller = document.querySelector(".sticky-host .table-container");
       scroller.scrollLeft = scroller.scrollWidth;

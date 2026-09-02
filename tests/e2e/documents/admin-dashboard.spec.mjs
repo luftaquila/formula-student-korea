@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 const DROPDOWN_EMAIL = "e2e-student2@test.com";
@@ -35,7 +35,7 @@ test.describe("Documents admin dashboard", () => {
     await expect(page.locator("h3").filter({ hasText: "팀 목록" })).toBeVisible();
 
     // Verify table with entries
-    const table = page.locator(".main-table");
+    const table = page.locator(".main-table:not([data-table-head-copy])");
     await expect(table).toBeVisible();
 
     // Verify seeded entries are present
@@ -43,12 +43,42 @@ test.describe("Documents admin dashboard", () => {
     await expect(table.locator("tbody")).toContainText("한양대학교");
 
     // Verify the seeded session "E2E 테스트 세션" appears as a column header
-    await expect(page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" })).toBeVisible();
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: "E2E 테스트 세션" });
+    await expect(sessionLink).toBeVisible();
+    const sessionHeader = sessionLink.locator("xpath=..");
+    expect(await sessionHeader.evaluate((header) => {
+      const name = header.querySelector(".session-link").getBoundingClientRect();
+      const date = header.querySelector(".session-date").getBoundingClientRect();
+      return name.bottom <= date.top;
+    })).toBe(true);
+  });
+
+  test("uses the shared mobile team layout and remembers type filters", async ({ page }) => {
+    await page.setViewportSize({ width: 360, height: 600 });
+    const table = page.locator(".main-table:not([data-table-head-copy])");
+    const row = table.locator("tbody tr").first();
+
+    await expect(table.locator("thead .col-num")).toContainText("엔트리");
+    await expect(page.getByTestId("documents-team-sticky-header").locator("th").first()).toContainText("엔트리");
+    await expect(page.locator(".sticky-freeze-line")).toHaveCount(0);
+    await expect(row.locator(".team-mobile-entry-univ")).toBeVisible();
+    await expect(row.locator(".team-mobile-entry-name")).toBeVisible();
+    await expect(row.locator(".team-mobile-entry-type")).toBeVisible();
+    await expect(row.locator("td.col-team")).toBeHidden();
+    await expect(row.locator("td.col-type")).toBeHidden();
+    await expectCompactTeamIdentity(table);
+
+    const cv = page.getByTestId("documents-team-type-filter").locator("label", { hasText: "CV" }).locator("input");
+    await cv.uncheck();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("documents-admin-type-filter"))).toContain('"CV":false');
+    await page.reload();
+    await waitForPageReady(page);
+    await expect(page.getByTestId("documents-team-type-filter").locator("label", { hasText: "CV" }).locator("input")).not.toBeChecked();
   });
 
   test("student-team mapping is displayed for seeded data", async ({ page }) => {
     // The seeded student e2e-student@test.com is mapped to team 1
-    const table = page.locator(".main-table");
+    const table = page.locator(".main-table:not([data-table-head-copy])");
     const row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
     await expect(row).toBeVisible();
 
@@ -57,7 +87,7 @@ test.describe("Documents admin dashboard", () => {
   });
 
   test("adds a student-team mapping via dropdown", async ({ page }) => {
-    const table = page.locator(".main-table");
+    const table = page.locator(".main-table:not([data-table-head-copy])");
 
     // Find a team row without a student mapping (e.g., team 2 - 한양대학교)
     const row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
@@ -98,7 +128,7 @@ test.describe("Documents admin dashboard", () => {
   });
 
   test("deletes student-team mapping via clear button", async ({ page }) => {
-    const table = page.locator(".main-table");
+    const table = page.locator(".main-table:not([data-table-head-copy])");
 
     // Use a team + email this test owns exclusively. student_team has
     // PRIMARY KEY(email, year) and UNIQUE(team_num, year), so sharing the email
@@ -157,10 +187,10 @@ test.describe("Documents admin dashboard", () => {
   });
 
   test("search filter works on team list", async ({ page }) => {
-    const searchInput = page.locator(".filter-input[placeholder*='번호']");
+    const searchInput = page.locator(".filter-input[placeholder*='엔트리']");
     await expect(searchInput).toBeVisible();
 
-    const table = page.locator(".main-table");
+    const table = page.locator(".main-table:not([data-table-head-copy])");
 
     // Search by university name
     await searchInput.fill("서울");
@@ -179,7 +209,7 @@ test.describe("Documents admin dashboard", () => {
   });
 
   test("sort columns work", async ({ page }) => {
-    const table = page.locator(".main-table");
+    const table = page.locator(".main-table:not([data-table-head-copy])");
 
     // Click "번호" header to sort ascending (default)
     await table.locator("th.col-num").click();
@@ -193,13 +223,13 @@ test.describe("Documents admin dashboard", () => {
   });
 
   test("session column links navigate to session detail", async ({ page }) => {
-    const sessionLink = page.locator(".session-link").filter({ hasText: "E2E 테스트 세션" });
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: "E2E 테스트 세션" });
     await expect(sessionLink).toBeVisible();
     await sessionLink.click();
     await waitForPageReady(page);
 
     // Should navigate to session detail page
     await expect(page.locator("h3").first()).toContainText("E2E 테스트 세션");
-    await expect(page.locator("th").filter({ hasText: "상태" })).toBeVisible();
+    await expect(page.locator(".detail-table:not([data-table-head-copy]) th").filter({ hasText: "상태" })).toBeVisible();
   });
 });

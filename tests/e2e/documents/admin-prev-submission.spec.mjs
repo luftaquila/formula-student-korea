@@ -38,12 +38,12 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
     // Team 1 (서울대학교) now has 2 submissions, so count cell should be clickable
-    const table = page.locator(".detail-table");
+    const table = page.locator(".detail-table:not([data-table-head-copy])");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
     await expect(team1Row.locator(".col-count-expand")).toBeVisible();
   });
@@ -52,11 +52,11 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
-    const table = page.locator(".detail-table");
+    const table = page.locator(".detail-table:not([data-table-head-copy])");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
     await team1Row.locator(".col-count-expand").click();
 
@@ -71,11 +71,11 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
-    const table = page.locator(".detail-table");
+    const table = page.locator(".detail-table:not([data-table-head-copy])");
     const team1Row = table.locator("tbody tr").filter({ hasText: "서울대학교" }).first();
     const expandCell = team1Row.locator(".col-count-expand");
 
@@ -90,12 +90,12 @@ test.describe("Documents admin previous submission display", () => {
     await page.goto("/documents/admin");
     await waitForPageReady(page);
 
-    const sessionLink = page.locator(".session-link").filter({ hasText: SESSION_NAME });
+    const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: SESSION_NAME });
     await sessionLink.click();
     await waitForPageReady(page);
 
     // Team 2 (한양대학교) has no submission at all
-    const table = page.locator(".detail-table");
+    const table = page.locator(".detail-table:not([data-table-head-copy])");
     const team2Row = table.locator("tbody tr").filter({ hasText: "한양대학교" });
     await expect(team2Row.locator(".col-count-expand")).not.toBeVisible();
   });

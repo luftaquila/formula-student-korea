@@ -3,7 +3,8 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { fetchPublicScore, fetchVehicleTypes } from "../api";
 import { createSSEConnection, parseSSEData } from "@shared/useSSE.js";
-import { useTableHeadBand } from "../composables/useTableHeadBand";
+import { useTableHeadBand } from "@shared/useTableHeadBand.js";
+import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
 
 const route = useRoute();
 const year = Number(route.params.year);
@@ -15,6 +16,7 @@ const loadFailed = ref(false);
 const entries = ref({});
 const events = ref([]);
 const typeColorMap = ref({});
+const configuredVehicleTypes = ref([]);
 const sortKey = ref(null);
 const sortOrder = ref("asc");
 
@@ -36,6 +38,7 @@ async function loadData() {
     if (seq !== requestSeq) return;
     entries.value = data.entries || {};
     events.value = (data.events || []).filter((event) => event.type !== "내구");
+    configuredVehicleTypes.value = vehicleTypes;
     typeColorMap.value = Object.fromEntries(vehicleTypes.map((type) => [type.name, type.color]));
     unavailable.value = false;
     loadFailed.value = false;
@@ -98,8 +101,16 @@ function formatResult(result, status = null) {
   return `${minutes}:${seconds}.${millis}`;
 }
 
+const availableTypes = computed(() => [...new Set([
+  ...configuredVehicleTypes.value.map((type) => type.name),
+  ...Object.values(entries.value).map((entry) => entry.type),
+].filter(Boolean))].sort());
+const typeFilters = usePersistentTypeFilters("score-public-type-filter", availableTypes);
+
 const entryList = computed(() => {
-  const list = Object.entries(entries.value).map(([num, entry]) => ({ num: Number(num), ...entry }));
+  const list = Object.entries(entries.value)
+    .map(([num, entry]) => ({ num: Number(num), ...entry }))
+    .filter((entry) => !entry.type || typeFilters.value[entry.type] !== false);
   if (!sortKey.value) return list.sort((a, b) => a.num - b.num);
 
   return list.sort((a, b) => {
@@ -160,23 +171,29 @@ function sortIcon(key) {
       <button class="btn btn-primary" @click="loadData">다시 시도</button>
     </div>
 
-    <div v-else class="card table-card">
+    <div v-else class="card table-card team-table-card">
       <div class="card-header public-card-header">
         <div class="header-left">
           <h3>{{ year }}년 성적표</h3>
           <span class="count-badge">{{ entryList.length }}개 팀</span>
         </div>
+        <div v-if="availableTypes.length" class="team-type-filter" data-testid="public-score-type-filter">
+          <label v-for="type in availableTypes" :key="type" class="team-type-filter-label">
+            <input v-model="typeFilters[type]" type="checkbox" :value="type" />
+            <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
+          </label>
+        </div>
         <span class="readonly-badge">읽기 전용</span>
       </div>
-      <div class="card-body table-body">
+      <div class="card-body table-body team-table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
-        <div v-else class="sticky-host">
-          <div ref="headBandRef" class="head-band"></div>
-          <div ref="headScrollerRef" class="table-container">
-          <table ref="tableRef" class="data-table score-table">
+        <div v-else class="sticky-host team-table-sticky-host">
+          <div ref="headBandRef" class="head-band team-table-head-band" data-testid="public-score-sticky-header"></div>
+          <div ref="headScrollerRef" class="table-container team-table-scroll" data-testid="public-score-table-scroll">
+          <table ref="tableRef" class="data-table score-table team-table">
               <thead>
                 <tr>
-                  <th class="col-num sortable" @click="handleSort('num')">번호 <span class="sort-icon">{{ sortIcon('num') }}</span></th>
+                  <th class="col-num sortable" @click="handleSort('num')">엔트리 <span class="sort-icon">{{ sortIcon('num') }}</span></th>
                   <th class="col-team sortable" @click="handleSort('team')">학교 / 팀 <span class="sort-icon">{{ sortIcon('team') }}</span></th>
                   <th class="col-type sortable" @click="handleSort('type')">유형 <span class="sort-icon">{{ sortIcon('type') }}</span></th>
                   <th
@@ -189,8 +206,17 @@ function sortIcon(key) {
               </thead>
               <tbody>
                 <tr v-for="entry in entryList" :key="entry.num">
-                  <td class="col-num"><span class="entry-num">{{ entry.num }}</span></td>
-                  <td class="col-team">{{ entry.univ }} {{ entry.team }}</td>
+                  <td class="col-num">
+                    <div class="team-entry-summary">
+                      <div class="team-entry-summary-top">
+                        <span class="entry-num">{{ entry.num }}</span>
+                        <span v-if="entry.type" class="badge team-mobile-entry-type" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span>
+                      </div>
+                      <span class="team-mobile-entry-univ">{{ entry.univ }}</span>
+                      <span class="team-mobile-entry-name">{{ entry.team }}</span>
+                    </div>
+                  </td>
+                  <td class="col-team"><span class="entry-name">{{ entry.univ }} {{ entry.team }}</span></td>
                   <td class="col-type"><span v-if="entry.type" class="badge" :class="'badge-type-' + getTypeColor(entry.type)">{{ entry.type }}</span></td>
                   <td v-for="event in events" :key="event.type" class="col-event">
                     <span
@@ -260,8 +286,6 @@ function sortIcon(key) {
   position: relative;
 }
 
-/* .table-card / .head-band 는 세 표가 공유하므로 main.css 에 있다. */
-
 .score-table {
   min-width: 700px;
 }
@@ -304,7 +328,7 @@ function sortIcon(key) {
   position: sticky;
   left: 0;
   z-index: 1;
-  text-align: center !important;
+  text-align: left !important;
   background: var(--bg-card);
 }
 
