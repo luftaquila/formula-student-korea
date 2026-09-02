@@ -48,20 +48,24 @@ test.describe("Inspection summary dashboard", () => {
     await expect(headers.filter({ hasText: "샤시 검차" })).toBeVisible();
   });
 
-  test("keeps the table header fixed while the team list scrolls", async ({ page }) => {
+  test("keeps the table header fixed while the page scrolls", async ({ page }) => {
     await page.setViewportSize({ width: 1100, height: 520 });
     await page.goto("/inspection");
     await waitForPageReady(page);
 
     const scroller = page.getByTestId("inspection-team-table-scroll");
-    const header = page.locator(".sheet-table thead th").first();
-    await expect.poll(() => scroller.evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
-    const before = await header.boundingBox();
-    await scroller.evaluate(element => { element.scrollTop = element.scrollHeight; });
-    const after = await header.boundingBox();
+    const stickyHeader = page.getByTestId("inspection-team-sticky-header");
+    const tableTop = await scroller.evaluate(element => element.getBoundingClientRect().top + window.scrollY);
+    await expect.poll(() => scroller.evaluate(element => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+    await expect.poll(() => stickyHeader.evaluate(element => element.getBoundingClientRect().height > 0)).toBe(true);
 
-    expect(Math.abs(after.y - before.y)).toBeLessThanOrEqual(1);
-    const styles = await header.evaluate(element => ({
+    await page.evaluate(top => window.scrollTo({ top, behavior: "instant" }), tableTop + 100);
+
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
+    expect(await scroller.evaluate(element => element.scrollTop)).toBe(0);
+    const after = await stickyHeader.boundingBox();
+    expect(Math.abs(after.y)).toBeLessThanOrEqual(1);
+    const styles = await stickyHeader.evaluate(element => ({
       position: getComputedStyle(element).position,
       top: getComputedStyle(element).top,
     }));

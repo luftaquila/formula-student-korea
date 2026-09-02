@@ -1,5 +1,5 @@
 <script setup>
-import { ref, onMounted, onBeforeUnmount, computed, watch } from "vue";
+import { ref, onMounted, onBeforeUnmount, computed, watch, nextTick } from "vue";
 import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } from "../api";
 import { useNotification } from "@shared/useNotification.js";
@@ -27,14 +27,28 @@ const availableYears = ref([]);
 const typeColorMap = ref({});
 const loading = ref(true);
 const searchQuery = ref("");
+const tableScrollLeft = ref(0);
+const stickyHeaderMetrics = ref({ width: 0, height: 0, columnWidths: [] });
 let lifecycleRefreshTimer = null;
 let dataLoadSeq = 0;
+let stickyHeaderResizeObserver = null;
 const INSPECTOR_COLLAPSE_THRESHOLD = 5;
 const MOBILE_ENTRY_COLUMN_WIDTH = 148;
 const MOBILE_RESULT_COLUMN_WIDTH = 104;
 
 const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
 const mobileTableWidth = computed(() => `${MOBILE_ENTRY_COLUMN_WIDTH + summary.value.categories.length * MOBILE_RESULT_COLUMN_WIDTH}px`);
+const stickyHeaderHostStyle = computed(() => {
+  const height = stickyHeaderMetrics.value.height;
+  return {
+    height: `${height}px`,
+    marginBottom: `-${height}px`,
+  };
+});
+const stickyHeaderTableStyle = computed(() => ({
+  width: `${stickyHeaderMetrics.value.width}px`,
+  transform: `translate3d(-${tableScrollLeft.value}px, 0, 0)`,
+}));
 
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
@@ -96,7 +110,52 @@ function scheduleLifecycleRefresh() {
 
 onBeforeUnmount(() => {
   clearTimeout(lifecycleRefreshTimer);
+  stickyHeaderResizeObserver?.disconnect();
 });
+
+function syncStickyHeaderMetrics() {
+  const table = tableRef.value;
+  if (!table) return;
+  const header = table.querySelector("thead");
+  const columnWidths = Array.from(header?.querySelectorAll("th") || [], cell => cell.getBoundingClientRect().width);
+  const next = {
+    width: table.getBoundingClientRect().width,
+    height: header?.getBoundingClientRect().height || 0,
+    columnWidths,
+  };
+  const current = stickyHeaderMetrics.value;
+  if (
+    Math.abs(current.width - next.width) < 0.5
+    && Math.abs(current.height - next.height) < 0.5
+    && current.columnWidths.length === next.columnWidths.length
+    && current.columnWidths.every((width, index) => Math.abs(width - next.columnWidths[index]) < 0.5)
+  ) return;
+  stickyHeaderMetrics.value = next;
+}
+
+watch(tableRef, async (table) => {
+  stickyHeaderResizeObserver?.disconnect();
+  stickyHeaderResizeObserver = null;
+  if (!table) return;
+  await nextTick();
+  syncStickyHeaderMetrics();
+  stickyHeaderResizeObserver = new ResizeObserver(syncStickyHeaderMetrics);
+  stickyHeaderResizeObserver.observe(table);
+  const header = table.querySelector("thead");
+  if (header) stickyHeaderResizeObserver.observe(header);
+}, { flush: "post" });
+
+function onTableScroll(event) {
+  tableScrollLeft.value = event.currentTarget.scrollLeft;
+}
+
+function getStickyHeaderCellStyle(index) {
+  if (index >= stickyCols.value) return undefined;
+  return {
+    transform: `translate3d(${tableScrollLeft.value}px, 0, 0)`,
+    zIndex: 2,
+  };
+}
 
 function goToSheet(num) {
   router.push(`/${selectedYear.value}/${num}`);
@@ -198,7 +257,7 @@ watch(lastEntriesUpdate, (update) => {
 
     <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
 
-    <div class="card">
+    <div class="card team-list-card">
       <div class="card-header">
         <div class="header-left">
           <h3>검차 시트</h3>
@@ -208,7 +267,44 @@ watch(lastEntriesUpdate, (update) => {
       <div class="card-body table-body">
         <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
         <div v-else class="sticky-host">
-          <div class="table-container" data-testid="inspection-team-table-scroll">
+          <div
+            class="page-sticky-header"
+            data-testid="inspection-team-sticky-header"
+            :style="stickyHeaderHostStyle"
+            aria-hidden="true"
+          >
+            <div class="page-sticky-header-viewport">
+              <table
+                v-if="stickyHeaderMetrics.width"
+                class="data-table sticky-header-table"
+                :style="stickyHeaderTableStyle"
+              >
+                <colgroup>
+                  <col
+                    v-for="(width, index) in stickyHeaderMetrics.columnWidths"
+                    :key="index"
+                    :class="{ 'mobile-hidden-col': index === 1 || index === 2 }"
+                    :style="{ width: `${width}px` }"
+                  />
+                </colgroup>
+                <thead>
+                  <tr>
+                    <th class="col-num" :style="getStickyHeaderCellStyle(0)">엔트리</th>
+                    <th class="col-team" :style="getStickyHeaderCellStyle(1)">학교 / 팀</th>
+                    <th class="col-type" :style="getStickyHeaderCellStyle(2)">유형</th>
+                    <template v-for="(cat, index) in summary.categories" :key="'sticky-r'+cat.id">
+                      <th class="col-result" :style="getStickyHeaderCellStyle(index + 3)">{{ cat.name }}</th>
+                    </template>
+                  </tr>
+                </thead>
+              </table>
+            </div>
+          </div>
+          <div
+            class="table-container"
+            data-testid="inspection-team-table-scroll"
+            @scroll="onTableScroll"
+          >
           <table
             ref="tableRef"
             class="data-table sheet-table"
@@ -377,13 +473,12 @@ watch(lastEntriesUpdate, (update) => {
 
 .table-body {
   padding: 0 !important;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .table-container {
-  max-height: clamp(20rem, 65dvh, 48rem);
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
 }
 
 .sheet-table {
@@ -392,7 +487,7 @@ watch(lastEntriesUpdate, (update) => {
 
 .sheet-table th {
   position: sticky;
-  top: 0;
+  top: auto;
   z-index: 4;
   white-space: nowrap;
   font-size: 0.875rem;
@@ -420,6 +515,39 @@ watch(lastEntriesUpdate, (update) => {
 
 .sticky-host {
   position: relative;
+}
+
+.team-list-card {
+  overflow: visible;
+}
+
+.page-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.page-sticky-header-viewport {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+.sticky-header-table {
+  table-layout: fixed;
+  will-change: transform;
+}
+
+.sticky-header-table th {
+  position: relative;
+  white-space: nowrap;
+  font-size: 0.875rem;
+  box-shadow: 0 1px 0 var(--border-color);
+}
+
+.sticky-header-table th[style*="translate3d"] {
+  background: var(--bg-secondary);
 }
 
 .sheet-table[data-sticky-cols="2"] .col-team,
@@ -555,27 +683,32 @@ watch(lastEntriesUpdate, (update) => {
     width: 100%;
   }
 
-  .table-container {
-    max-height: 65dvh;
-  }
-
-  .sheet-table {
+  .sheet-table,
+  .sticky-header-table {
     width: max(100%, var(--mobile-table-width));
     min-width: var(--mobile-table-width);
     table-layout: fixed;
   }
 
   .sheet-table th,
+  .sticky-header-table th,
   .sheet-table td {
     padding: 0.625rem 0.5rem;
   }
 
   .sheet-table .col-team,
-  .sheet-table .col-type {
+  .sheet-table .col-type,
+  .sticky-header-table .col-team,
+  .sticky-header-table .col-type {
     display: none;
   }
 
-  .sheet-table .col-num {
+  .sticky-header-table col.mobile-hidden-col {
+    visibility: collapse;
+  }
+
+  .sheet-table .col-num,
+  .sticky-header-table .col-num {
     width: 148px;
     min-width: 148px;
     max-width: 148px;
@@ -583,7 +716,8 @@ watch(lastEntriesUpdate, (update) => {
     text-align: left !important;
   }
 
-  .sheet-table .col-result {
+  .sheet-table .col-result,
+  .sticky-header-table .col-result {
     width: 104px;
     min-width: 104px;
     max-width: 104px;
