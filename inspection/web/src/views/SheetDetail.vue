@@ -1841,8 +1841,6 @@ watch(reconnected, async () => {
   align-items: center;
   gap: 0.375rem;
   width: auto;
-  height: 1.25rem;
-  min-height: 0;
   font-size: 0.6875rem;
   color: var(--text-tertiary);
   white-space: nowrap;
