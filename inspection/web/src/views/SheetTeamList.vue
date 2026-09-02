@@ -21,7 +21,24 @@ const vehicleTypes = ref([]);
 const loading = ref(true);
 const searchQuery = ref("");
 const TYPE_FILTER_STORAGE_KEY = "inspection-team-type-filter";
-const selectedType = ref(localStorage.getItem(TYPE_FILTER_STORAGE_KEY) || "");
+const storedTypeFilter = localStorage.getItem(TYPE_FILTER_STORAGE_KEY);
+let legacySelectedType = "";
+let initialTypeFilters = {};
+if (storedTypeFilter) {
+  try {
+    const parsed = JSON.parse(storedTypeFilter);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      initialTypeFilters = Object.fromEntries(
+        Object.entries(parsed).filter(([, enabled]) => typeof enabled === "boolean"),
+      );
+    } else {
+      legacySelectedType = typeof parsed === "string" ? parsed : storedTypeFilter;
+    }
+  } catch {
+    legacySelectedType = storedTypeFilter;
+  }
+}
+const typeFilters = ref(initialTypeFilters);
 const tableScrollLeft = ref(0);
 const stickyHeaderMetrics = ref({ width: 0, height: 0, columnWidths: [] });
 let lifecycleRefreshTimer = null;
@@ -52,7 +69,7 @@ const availableTypes = computed(() => {
 
 const filteredEntries = computed(() => {
   const list = Object.entries(entries.value).map(([num, e]) => ({ num: Number(num), ...e }));
-  const typeFiltered = selectedType.value ? list.filter(entry => entry.type === selectedType.value) : list;
+  const typeFiltered = list.filter(entry => !entry.type || typeFilters.value[entry.type] !== false);
   if (!searchQuery.value) return typeFiltered.sort((a, b) => a.num - b.num);
   const q = searchQuery.value.toLowerCase();
   return typeFiltered
@@ -60,10 +77,9 @@ const filteredEntries = computed(() => {
     .sort((a, b) => a.num - b.num);
 });
 
-watch(selectedType, (type) => {
-  if (type) localStorage.setItem(TYPE_FILTER_STORAGE_KEY, type);
-  else localStorage.removeItem(TYPE_FILTER_STORAGE_KEY);
-});
+watch(typeFilters, (filters) => {
+  localStorage.setItem(TYPE_FILTER_STORAGE_KEY, JSON.stringify(filters));
+}, { deep: true });
 
 onMounted(async () => {
   try {
@@ -96,7 +112,13 @@ async function loadData() {
     summary.value = s;
     vehicleTypes.value = vtList;
     typeColorMap.value = Object.fromEntries(vtList.map(v => [v.name, v.color]));
-    if (selectedType.value && !availableTypes.value.includes(selectedType.value)) selectedType.value = "";
+    const types = availableTypes.value;
+    const legacyTypeAvailable = legacySelectedType && types.includes(legacySelectedType);
+    for (const type of types) {
+      if (legacySelectedType) typeFilters.value[type] = !legacyTypeAvailable || type === legacySelectedType;
+      else if (!(type in typeFilters.value)) typeFilters.value[type] = true;
+    }
+    legacySelectedType = "";
   } catch (e) {
     if (seq !== dataLoadSeq) return;
     error("데이터를 가져올 수 없습니다.");
@@ -276,14 +298,12 @@ watch(lastEntriesUpdate, (update) => {
       </div>
       <div class="filter-group">
         <label class="filter-label">유형</label>
-        <select
-          v-model="selectedType"
-          class="filter-input"
-          data-testid="inspection-team-type-filter"
-        >
-          <option value="">전체 유형</option>
-          <option v-for="type in availableTypes" :key="type" :value="type">{{ type }}</option>
-        </select>
+        <div class="type-filter-group" data-testid="inspection-team-type-filter">
+          <label v-for="type in availableTypes" :key="type" class="filter-checkbox">
+            <input v-model="typeFilters[type]" type="checkbox" :value="type" />
+            <span class="badge" :class="'badge-type-' + getTypeColor(type)">{{ type }}</span>
+          </label>
+        </div>
       </div>
       <div v-if="isChief" class="filter-group template-action">
         <label class="filter-label">&nbsp;</label>
@@ -475,6 +495,33 @@ watch(lastEntriesUpdate, (update) => {
 .filter-input:focus {
   outline: none;
   border-color: var(--accent-primary);
+}
+
+.type-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  min-height: 2.125rem;
+}
+
+.filter-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2.125rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  user-select: none;
+  cursor: pointer;
+}
+
+.filter-checkbox input[type="checkbox"] {
+  width: 1rem;
+  height: 1rem;
+  accent-color: var(--accent-primary);
+  cursor: pointer;
 }
 
 .readonly-banner {

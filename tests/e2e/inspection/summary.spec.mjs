@@ -75,19 +75,27 @@ test.describe("Inspection summary dashboard", () => {
     await waitForPageReady(page);
 
     const filter = page.getByTestId("inspection-team-type-filter");
+    const checkboxes = filter.locator('input[type="checkbox"]');
     const rows = page.locator(".sheet-table tbody tr.clickable-row");
     const evCount = await rows.locator(".col-type").allTextContents()
       .then(types => types.filter(type => type.trim() === "EV").length);
     expect(evCount).toBeGreaterThan(0);
+    await expect(checkboxes).not.toHaveCount(0);
+    await expect(filter.locator('input[value="EV"]')).toBeChecked();
 
-    await filter.selectOption("EV");
+    for (const checkbox of await checkboxes.all()) {
+      if (await checkbox.getAttribute("value") !== "EV") await checkbox.uncheck();
+    }
     await expect(rows).toHaveCount(evCount);
     await expect(rows.locator(".col-type")).toHaveText(Array(evCount).fill("EV"));
-    expect(await page.evaluate(() => localStorage.getItem("inspection-team-type-filter"))).toBe("EV");
+    expect(JSON.parse(await page.evaluate(() => localStorage.getItem("inspection-team-type-filter")))).toMatchObject({ EV: true });
 
     await page.reload();
     await waitForPageReady(page);
-    await expect(filter).toHaveValue("EV");
+    await expect(filter.locator('input[value="EV"]')).toBeChecked();
+    for (const checkbox of await filter.locator('input[type="checkbox"]:not([value="EV"])').all()) {
+      await expect(checkbox).not.toBeChecked();
+    }
     await expect(rows).toHaveCount(evCount);
   });
 
