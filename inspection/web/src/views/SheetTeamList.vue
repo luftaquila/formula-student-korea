@@ -45,7 +45,7 @@ const stickyHeaderHostStyle = computed(() => {
     marginBottom: `-${height}px`,
   };
 });
-const stickyHeaderTableStyle = computed(() => ({
+const stickyHeaderRowStyle = computed(() => ({
   width: `${stickyHeaderMetrics.value.width}px`,
   transform: `translate3d(-${tableScrollLeft.value}px, 0, 0)`,
 }));
@@ -150,11 +150,16 @@ function onTableScroll(event) {
 }
 
 function getStickyHeaderCellStyle(index) {
-  if (index >= stickyCols.value) return undefined;
-  return {
-    transform: `translate3d(${tableScrollLeft.value}px, 0, 0)`,
-    zIndex: 2,
+  const width = stickyHeaderMetrics.value.columnWidths[index] || 0;
+  const style = {
+    width: `${width}px`,
+    flexBasis: `${width}px`,
   };
+  if (index < stickyCols.value) {
+    style.transform = `translate3d(${tableScrollLeft.value}px, 0, 0)`;
+    style.zIndex = 2;
+  }
+  return style;
 }
 
 function goToSheet(num) {
@@ -274,30 +279,18 @@ watch(lastEntriesUpdate, (update) => {
             aria-hidden="true"
           >
             <div class="page-sticky-header-viewport">
-              <table
+              <div
                 v-if="stickyHeaderMetrics.width"
-                class="data-table sticky-header-table"
-                :style="stickyHeaderTableStyle"
+                class="sticky-header-row"
+                :style="stickyHeaderRowStyle"
               >
-                <colgroup>
-                  <col
-                    v-for="(width, index) in stickyHeaderMetrics.columnWidths"
-                    :key="index"
-                    :class="{ 'mobile-hidden-col': index === 1 || index === 2 }"
-                    :style="{ width: `${width}px` }"
-                  />
-                </colgroup>
-                <thead>
-                  <tr>
-                    <th class="col-num" :style="getStickyHeaderCellStyle(0)">엔트리</th>
-                    <th class="col-team" :style="getStickyHeaderCellStyle(1)">학교 / 팀</th>
-                    <th class="col-type" :style="getStickyHeaderCellStyle(2)">유형</th>
-                    <template v-for="(cat, index) in summary.categories" :key="'sticky-r'+cat.id">
-                      <th class="col-result" :style="getStickyHeaderCellStyle(index + 3)">{{ cat.name }}</th>
-                    </template>
-                  </tr>
-                </thead>
-              </table>
+                <div class="sticky-header-cell col-num" :style="getStickyHeaderCellStyle(0)">엔트리</div>
+                <div class="sticky-header-cell col-team" :style="getStickyHeaderCellStyle(1)">학교 / 팀</div>
+                <div class="sticky-header-cell col-type" :style="getStickyHeaderCellStyle(2)">유형</div>
+                <template v-for="(cat, index) in summary.categories" :key="'sticky-r'+cat.id">
+                  <div class="sticky-header-cell col-result" :style="getStickyHeaderCellStyle(index + 3)">{{ cat.name }}</div>
+                </template>
+              </div>
             </div>
           </div>
           <div
@@ -534,19 +527,32 @@ watch(lastEntriesUpdate, (update) => {
   overflow: hidden;
 }
 
-.sticky-header-table {
-  table-layout: fixed;
+.sticky-header-row {
+  display: flex;
+  height: 100%;
+  background: var(--bg-secondary);
   will-change: transform;
 }
 
-.sticky-header-table th {
+.sticky-header-cell {
   position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  box-sizing: border-box;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-weight: 600;
   white-space: nowrap;
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   box-shadow: 0 1px 0 var(--border-color);
 }
 
-.sticky-header-table th[style*="translate3d"] {
+.sticky-header-cell[style*="translate3d"] {
   background: var(--bg-secondary);
 }
 
@@ -683,46 +689,43 @@ watch(lastEntriesUpdate, (update) => {
     width: 100%;
   }
 
-  .sheet-table,
-  .sticky-header-table {
+  .sheet-table {
     width: max(100%, var(--mobile-table-width));
     min-width: var(--mobile-table-width);
     table-layout: fixed;
   }
 
   .sheet-table th,
-  .sticky-header-table th,
-  .sheet-table td {
+  .sheet-table td,
+  .sticky-header-cell {
     padding: 0.625rem 0.5rem;
   }
 
   .sheet-table .col-team,
   .sheet-table .col-type,
-  .sticky-header-table .col-team,
-  .sticky-header-table .col-type {
+  .sticky-header-cell.col-team,
+  .sticky-header-cell.col-type {
     display: none;
   }
 
-  .sticky-header-table col.mobile-hidden-col {
-    visibility: collapse;
-  }
-
   .sheet-table .col-num,
-  .sticky-header-table .col-num {
+  .sticky-header-cell.col-num {
     width: 148px;
     min-width: 148px;
     max-width: 148px;
     white-space: normal;
     text-align: left !important;
+    justify-content: flex-start;
   }
 
   .sheet-table .col-result,
-  .sticky-header-table .col-result {
+  .sticky-header-cell.col-result {
     width: 104px;
     min-width: 104px;
     max-width: 104px;
     padding-inline: 0.375rem;
     white-space: normal;
+    justify-content: center;
   }
 
   .entry-summary,

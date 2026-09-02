@@ -73,13 +73,17 @@ test.describe("Inspection summary dashboard", () => {
   });
 
   test("combines entry, team, and vehicle type into one compact mobile column", async ({ page }) => {
-    await page.setViewportSize({ width: 390, height: 844 });
+    await page.setViewportSize({ width: 320, height: 640 });
     await page.goto("/inspection");
     await waitForPageReady(page);
 
     const table = page.locator(".sheet-table");
+    const scroller = page.getByTestId("inspection-team-table-scroll");
+    const stickyHeader = page.getByTestId("inspection-team-sticky-header");
+    const stickyEntry = stickyHeader.locator(".sticky-header-cell.col-num");
     const row = table.locator("tbody tr.clickable-row").first();
     await expect(table.locator("thead .col-num")).toHaveText("엔트리");
+    await expect(stickyEntry).toHaveText("엔트리");
     await expect(row.locator(".mobile-entry-univ")).toHaveText("서울대학교");
     await expect(row.locator(".mobile-entry-team")).toHaveText("SNU Racing");
     await expect(row.locator(".mobile-entry-type")).toHaveText("EV");
@@ -98,6 +102,22 @@ test.describe("Inspection summary dashboard", () => {
     expect(layout.resultOffset).toBeLessThanOrEqual(152);
     expect(layout.teamDisplay).toBe("none");
     expect(layout.typeDisplay).toBe("none");
+
+    await expect.poll(() => scroller.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
+    await scroller.evaluate(element => { element.scrollLeft = element.scrollWidth; });
+    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
+    const stickyLayout = await stickyEntry.evaluate((element) => {
+      const cell = element.getBoundingClientRect();
+      const viewport = element.closest(".page-sticky-header-viewport").getBoundingClientRect();
+      return {
+        leftOffset: cell.left - viewport.left,
+        width: cell.width,
+        textFits: element.scrollWidth <= element.clientWidth + 1,
+      };
+    });
+    expect(Math.abs(stickyLayout.leftOffset)).toBeLessThanOrEqual(1);
+    expect(stickyLayout.width).toBeGreaterThanOrEqual(147);
+    expect(stickyLayout.textFits).toBe(true);
   });
 
   test("collapses five or more inspectors without hiding the full list", async ({ page }) => {
