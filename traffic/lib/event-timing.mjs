@@ -19,6 +19,58 @@ export const TIMING_RULES = {
   endurance: { startSensor: 1, latchStart: true, singleSensor: true },
 };
 
+export const MASTER_TICKS_PER_MS = 16000n;
+const MASTER_TICK_MAX = (1n << 64n) - 1n;
+
+// Fail-closed plausibility limits for automatically persisted wireless results.
+// These are deliberately broad enough for competition operation while rejecting
+// the sub-second/multi-second false records caused by missing or shifted edges.
+export const WIRELESS_MEASUREMENT_LIMITS_MS = Object.freeze({
+  "가속": Object.freeze({ min: 1000, max: 30000 }),
+  "스키드패드": Object.freeze({ min: 5000, max: 120000 }),
+  "오토크로스": Object.freeze({ min: 5000, max: 300000 }),
+  "내구": Object.freeze({ min: 5000, max: 300000 }),
+});
+
+function masterTick(value) {
+  let tick;
+  if (typeof value === "bigint") tick = value;
+  else if (typeof value === "number" && Number.isSafeInteger(value)) tick = BigInt(value);
+  else if (typeof value === "string" && /^\d{1,20}$/.test(value)) tick = BigInt(value);
+  if (tick != null && tick >= 0n && tick <= MASTER_TICK_MAX) return tick;
+  throw new TypeError("invalid master tick");
+}
+
+function roundTickDuration(ticks) {
+  if (ticks < 0n) return -Number((-ticks + MASTER_TICKS_PER_MS / 2n) / MASTER_TICKS_PER_MS);
+  return Number((ticks + MASTER_TICKS_PER_MS / 2n) / MASTER_TICKS_PER_MS);
+}
+
+export function masterTickDelta(end, start) {
+  return masterTick(end) - masterTick(start);
+}
+
+export function masterTickDeltaMs(end, start) {
+  return roundTickDuration(masterTickDelta(end, start));
+}
+
+export function masterTickDurationsMs(durations) {
+  return roundTickDuration((durations || []).reduce((sum, value) => sum + masterTick(value), 0n));
+}
+
+export function masterTickDistanceBelowMs(a, b, windowMs) {
+  if (!Number.isInteger(windowMs) || windowMs < 0) return false;
+  const delta = masterTick(a) - masterTick(b);
+  const distance = delta < 0n ? -delta : delta;
+  return distance < BigInt(windowMs) * MASTER_TICKS_PER_MS;
+}
+
+export function measurementWithinLimits(eventType, durationMs) {
+  const limits = WIRELESS_MEASUREMENT_LIMITS_MS[eventType];
+  return !!limits && Number.isInteger(durationMs)
+    && durationMs >= limits.min && durationMs <= limits.max;
+}
+
 export function ruleFor(mode) {
   return TIMING_RULES[mode] || null;
 }

@@ -81,7 +81,7 @@ void pu_emit_identity(uint32_t devid_hi, uint32_t devid_lo)
 {
     char line[80];
     lb_t b; lb_init(&b, line, sizeof(line));
-    lb_str(&b, "I FSK-WL 2.0.0 ");
+    lb_str(&b, "I FSK-WL 2.1.0 ");
     lb_hex8(&b, devid_hi); lb_hex8(&b, devid_lo);
     lb_ch(&b, ' '); lb_f2(&b, LORA_FREQ_MHZ);
     lb_ch(&b, ' '); lb_u32(&b, (uint32_t)LORA_SF);
@@ -104,8 +104,8 @@ void pu_emit_heartbeat(uint64_t now_tick, uint32_t uptime_ms, uint8_t beacon_seq
     usb_write(line);
 }
 
-void pu_emit_event(uint32_t node_id, uint16_t ev_seq, uint64_t tmaster,
-                   uint8_t flags, float rssi, float snr)
+int pu_emit_event(uint32_t node_id, uint16_t ev_seq, uint64_t tmaster,
+                  uint8_t flags, float rssi, float snr)
 {
     char line[80];
     lb_t b; lb_init(&b, line, sizeof(line));
@@ -117,7 +117,7 @@ void pu_emit_event(uint32_t node_id, uint16_t ev_seq, uint64_t tmaster,
     lb_ch(&b, ' '); lb_f2(&b, rssi);
     lb_ch(&b, ' '); lb_f2(&b, snr);
     lb_finish(&b);
-    usb_write(line);
+    return usb_write(line);
 }
 
 void pu_emit_diag(uint32_t node_id, int is_master,
@@ -125,10 +125,14 @@ void pu_emit_diag(uint32_t node_id, int is_master,
                   uint16_t rx_miss, uint16_t beacon_gap, uint32_t last_seen_ms,
                   float rssi, float snr, uint32_t lat_ms,
                   int16_t temp_c10, uint16_t batt_mv,
-                  uint32_t sec_drop, int provisioned)
+                  uint32_t sec_drop, int provisioned,
+                  int sync_valid, int skew_valid, int clock_xtal, uint16_t sync_age_ms,
+                  uint16_t capture_overflow, uint16_t event_drop,
+                  uint16_t queue_depth, uint16_t queue_overflow,
+                  int usb_ref_valid, int32_t usb_ref_ppm)
 {
     const char *st = state == PU_STATE_OK ? "OK" : (state == PU_STATE_STALE ? "STALE" : "LOST");
-    char line[160];
+    char line[240];
     lb_t b; lb_init(&b, line, sizeof(line));
     lb_str(&b, "D ");
     lb_node(&b, node_id, is_master);
@@ -145,6 +149,16 @@ void pu_emit_diag(uint32_t node_id, int is_master,
     lb_ch(&b, ' '); lb_u32(&b, batt_mv);
     lb_ch(&b, ' '); lb_u32(&b, sec_drop);          /* security drops (node 0 = master AEAD fails) */
     lb_ch(&b, ' '); lb_u32(&b, (uint32_t)(provisioned ? 1u : 0u));
+    lb_ch(&b, ' '); lb_u32(&b, (uint32_t)(sync_valid ? 1u : 0u));
+    lb_ch(&b, ' '); lb_u32(&b, (uint32_t)(skew_valid ? 1u : 0u));
+    lb_ch(&b, ' '); lb_str(&b, clock_xtal ? "XTAL" : "RC");
+    lb_ch(&b, ' '); lb_u32(&b, sync_age_ms);
+    lb_ch(&b, ' '); lb_u32(&b, capture_overflow);
+    lb_ch(&b, ' '); lb_u32(&b, event_drop);
+    lb_ch(&b, ' '); lb_u32(&b, queue_depth);
+    lb_ch(&b, ' '); lb_u32(&b, queue_overflow);
+    lb_ch(&b, ' '); lb_u32(&b, (uint32_t)(usb_ref_valid ? 1u : 0u));
+    lb_ch(&b, ' '); lb_i32(&b, usb_ref_ppm);
     lb_finish(&b);
     usb_write(line);
 }
@@ -181,8 +195,14 @@ void pu_emit_err(const char *reason)
 static char s_line[80];      /* must hold "K " + 64 hex + NUL */
 static unsigned s_len;
 static uint8_t s_key[32];    /* parsed payload of the last K command */
+static uint32_t s_ack_node;
+static uint16_t s_ack_seq;
+static uint64_t s_ack_tick;
 
 const uint8_t *pu_setkey(void) { return s_key; }
+uint32_t pu_event_ack_node(void) { return s_ack_node; }
+uint16_t pu_event_ack_seq(void) { return s_ack_seq; }
+uint64_t pu_event_ack_tick(void) { return s_ack_tick; }
 
 static int hexval(char c)
 {
@@ -204,6 +224,43 @@ static int parse_key(const char *s)
     return s[64] == '\0'; /* reject trailing junk / wrong length */
 }
 
+static int parse_u64(const char **p, uint64_t max, uint64_t *out)
+{
+    uint64_t value = 0;
+    const char *s = *p;
+    if (*s < '0' || *s > '9') { return 0; }
+    while (*s >= '0' && *s <= '9') {
+        uint8_t digit = (uint8_t)(*s - '0');
+        if (value > (max - digit) / 10u) { return 0; }
+        value = value * 10u + digit;
+        s++;
+    }
+    *p = s;
+    *out = value;
+    return 1;
+}
+
+static int parse_event_ack(const char *s)
+{
+    if (s[0] != 'C' || s[1] != ' ') { return 0; }
+    s += 2;
+    uint32_t node = 0;
+    for (int i = 0; i < 8; i++) {
+        int digit = hexval(*s++);
+        if (digit < 0) { return 0; }
+        node = (node << 4) | (uint32_t)digit;
+    }
+    if (*s++ != ' ') { return 0; }
+    uint64_t seq;
+    if (!parse_u64(&s, UINT16_MAX, &seq) || *s++ != ' ') { return 0; }
+    uint64_t tick;
+    if (!parse_u64(&s, UINT64_MAX, &tick) || *s != '\0') { return 0; }
+    s_ack_node = node;
+    s_ack_seq = (uint16_t)seq;
+    s_ack_tick = tick;
+    return 1;
+}
+
 static pu_cmd_t classify(const char *s)
 {
     if (s[0] == '\0') { return PU_CMD_NONE; } /* blank line — ignore */
@@ -214,6 +271,7 @@ static pu_cmd_t classify(const char *s)
     if (!strcmp(s, "?STATUS")) { return PU_CMD_STATUS; }
     if (!strcmp(s, "PING")) { return PU_CMD_PING; }
     if (s[0] == 'K' && s[1] == ' ') { return parse_key(s + 2) ? PU_CMD_SETKEY : PU_CMD_BAD; }
+    if (s[0] == 'C' && s[1] == ' ') { return parse_event_ack(s) ? PU_CMD_EVENT_ACK : PU_CMD_BAD; }
     return PU_CMD_BAD;
 }
 

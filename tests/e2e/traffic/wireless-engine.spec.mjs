@@ -2,6 +2,7 @@ import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
+import { healthyWirelessBatch } from "../../helpers/wireless-fixtures.mjs";
 
 // 서버 권위 기록 엔진(traffic/index.mjs)의 무선 ingest 계약 검증. 하드웨어 없이 ingest로 직접 구동
 // (wireless-accel.spec.mjs와 동일 계약: events:[{ node_id, master_tick, ev_seq, rssi, snr }]).
@@ -29,6 +30,10 @@ test.describe("Wireless record engine (ingest contract)", () => {
         data: { event_type: "내구", role: "start" },
       });
       expect(mapRes.status()).toBe(200);
+      const health = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
+        data: healthyWirelessBatch([NODE]),
+      });
+      expect(health.status()).toBe(200);
 
       // bind-at-arm: arm green 본문에 team·event_name을 실어 귀속을 고정(엔진이 run.bound 사용).
       const armRes = await page.request.post("/competition/api/v1/traffic/wireless/arm", {

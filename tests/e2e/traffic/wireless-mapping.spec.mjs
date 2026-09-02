@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { healthyWirelessTelemetry } from "../../helpers/wireless-fixtures.mjs";
 
 const NODE = "e2e-map-1";
 
@@ -17,7 +18,7 @@ test.describe("Wireless sensor mapping", () => {
   test("maps a discovered node and persists it", async ({ page }) => {
     // 노드를 진단 ingest로 노출
     await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
-      data: { telemetry: [{ node_id: NODE, rssi: -70, snr: 9, offset_us: 100, skew_ppm: 3, latency_ms: 20, link_state: "online" }] },
+      data: { telemetry: [healthyWirelessTelemetry(NODE, { rssi: -70, offset_us: 100, skew_ppm: 3, latency_ms: 20 })] },
     });
 
     await page.goto("/traffic/wireless/settings");

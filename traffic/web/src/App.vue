@@ -1,6 +1,8 @@
 <script setup>
-import { onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 import NavTabs from "./components/NavTabs.vue";
+import WirelessQualityAlert from "./components/WirelessQualityAlert.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useEntryStore } from "./stores/entry";
@@ -9,6 +11,8 @@ import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
 const entryStore = useEntryStore();
 const { lastEntriesUpdate } = useSSE();
+const route = useRoute();
+const isWirelessRoute = computed(() => route.path.startsWith("/wireless"));
 const isScoreboardFullscreen = ref(false);
 
 function handleFullscreenChange() {
@@ -50,6 +54,8 @@ onUnmounted(() => {
         </div>
       </div>
     </header>
+
+    <WirelessQualityAlert v-if="isWirelessRoute" />
 
     <main class="main-content">
       <router-view v-slot="{ Component }">

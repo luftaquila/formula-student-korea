@@ -111,10 +111,11 @@ export async function deleteWirelessMapping(nodeId) {
 }
 
 export async function ingestWireless(batch) {
-  await request("/api/wireless/ingest", {
+  const res = await request("/api/wireless/ingest", {
     method: "POST",
     body: JSON.stringify(batch),
   });
+  return res.json();
 }
 
 export async function reportLight(state) {

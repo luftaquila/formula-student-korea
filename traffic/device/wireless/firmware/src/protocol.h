@@ -37,9 +37,8 @@
 #define PKT_TYPE_ACK      0x03u
 #define PKT_TYPE_STATUS   0x04u
 
-#define PROTO_VER   6u  /* 6: compact wire (ver-in-type, no downlink node_id, 24-bit ctr,
-                         *    dropped beacon period fields, 16-bit master_boot_id, i16 skew,
-                         *    u8 beacon_gap); 5: chip-id identity + hashed-phase STATUS */
+#define PROTO_VER   7u  /* 7: fail-closed sync/clock/capture health in EVENT + STATUS;
+                         * 6: compact wire; 5: chip-id identity + hashed-phase STATUS */
 
 /* Type byte = (PROTO_VER << 4) | PKT_TYPE_*. Both nibbles are authenticated as
  * AEAD associated data and the type half feeds the nonce. PROTO_VER must stay <= 15. */
@@ -82,8 +81,15 @@ typedef struct __attribute__((packed)) {
     uint16_t ev_seq;
     uint64_t ev_master_t;
     uint16_t master_boot_id; /* low 16 bits of the master boot_id (session binding) */
+    uint16_t sync_age_ms;    /* age of the offset anchor when the edge was captured */
     uint8_t  flags;
 } event_pl_t;
+
+#define HEALTH_SYNC_VALID 0x01u
+#define HEALTH_SKEW_VALID 0x02u
+#define HEALTH_CLOCK_XTAL 0x04u
+#define HEALTH_CAPTURE_OK 0x08u
+#define HEALTH_EVENT_REQUIRED (HEALTH_SYNC_VALID | HEALTH_SKEW_VALID | HEALTH_CLOCK_XTAL | HEALTH_CAPTURE_OK)
 
 /* Master -> sensor: acknowledges a received EVENT so the sensor stops
  * retransmitting (DESIGN §2.8). The header node_id is the master (0, implicit);
@@ -105,6 +111,10 @@ typedef struct __attribute__((packed)) {
     uint8_t  beacon_gap;  /* consecutive beacons missed right now (saturating at 255) */
     uint16_t batt_mv;     /* cell estimate (VDDH via SAADC VDDHDIV5 + diode drop) */
     int16_t  temp_c10;    /* nRF die temperature, deci-degrees C (235 = 23.5 C) */
+    uint16_t sync_age_ms; /* current offset-anchor age, saturated */
+    uint16_t capture_overflow; /* sticky SENSOR ISR ring overflow count */
+    uint16_t event_drop;  /* post-sync events rejected, overflowed, or expired before ACK */
+    uint8_t  flags;       /* HEALTH_* bits */
 } status_pl_t;
 
 /* ---- Wire sizes ---------------------------------------------------------- */
@@ -118,9 +128,9 @@ typedef struct __attribute__((packed)) {
 #define SEC_WIRE_LEN(hdr, pl) ((hdr) + (int)(pl) + SEC_MAC_LEN)
 
 #define WIRE_BEACON   SEC_WIRE_LEN(SEC_HDR_DL, sizeof(beacon_pl_t))  /* 33 */
-#define WIRE_EVENT    SEC_WIRE_LEN(SEC_HDR_UL, sizeof(event_pl_t))   /* 41 */
+#define WIRE_EVENT    SEC_WIRE_LEN(SEC_HDR_UL, sizeof(event_pl_t))
 #define WIRE_ACK      SEC_WIRE_LEN(SEC_HDR_DL, sizeof(ack_pl_t))     /* 30 */
-#define WIRE_STATUS   SEC_WIRE_LEN(SEC_HDR_UL, sizeof(status_pl_t))  /* 46 */
+#define WIRE_STATUS   SEC_WIRE_LEN(SEC_HDR_UL, sizeof(status_pl_t))
 #define WIRE_MAX      64 /* RX buffer size; largest sealed packet is WIRE_STATUS */
 
 #endif /* PROTOCOL_H */

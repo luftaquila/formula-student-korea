@@ -41,6 +41,21 @@ function fmtAge(a) {
 function fmtNum(v, d = 1) { return v == null || Number.isNaN(v) ? "-" : Number(v).toFixed(d); }
 function fmtTemp(v) { return v == null || Number.isNaN(v) ? "—" : `${(Number(v) / 10).toFixed(1)} °C`; }
 function fmtVolt(mv) { return mv == null || Number.isNaN(mv) ? "—" : `${(Number(mv) / 1000).toFixed(3)} V`; }
+function clockDrift(r) {
+  if (isMaster(r)) return r.usb_ref_valid === 1 ? `${fmtNum(r.usb_ref_ppm, 0)} ppm (USB)` : "SOF 측정 중";
+  return `${fmtNum(r.skew_ppm)} ppm`;
+}
+function timingHealth(r) {
+  if (r.provisioned !== 1) return { state: "bad", label: "키 없음" };
+  if (r.clock_source !== "xtal") return { state: "bad", label: "RC 차단" };
+  if (isMaster(r)) {
+    if (r.queue_overflow !== 0) return { state: "bad", label: "큐 오류" };
+    return { state: r.usb_ref_valid === 1 ? "good" : "warn", label: r.usb_ref_valid === 1 ? "정상" : "SOF 대기" };
+  }
+  if (r.capture_overflow !== 0 || r.event_drop !== 0) return { state: "bad", label: "캡처/전달 오류" };
+  if (r.sync_valid !== 1 || r.skew_valid !== 1) return { state: "bad", label: "동기 불량" };
+  return { state: "good", label: `정상 · ${r.sync_age_ms ?? "-"} ms` };
+}
 // 대략적 Li-ion SoC: 3.3 V→0 %, 4.2 V→100 % (clamp). 정밀 게이지 아님.
 function socPct(mv) {
   return Math.max(0, Math.min(100, Math.round(((mv - 3300) / (4200 - 3300)) * 100)));
@@ -64,9 +79,10 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
           <tr>
             <th>노드</th>
             <th>상태</th>
+            <th class="has-tip" title="HFXO·동기·캡처·이벤트 큐를 합친 계측 가능 상태">계측</th>
             <th class="has-tip" title="마스터가 측정한 센서 신호 세기 (dBm). 0에 가까울수록 강함">RSSI</th>
             <th class="has-tip" title="신호 대 잡음비 (dB). 높을수록 깨끗한 수신">SNR</th>
-            <th class="has-tip" title="센서 클럭의 마스터 대비 편차 (ppm). 0에 가까워야 정상">드리프트</th>
+            <th class="has-tip" title="센서=마스터 대비 skew, 마스터=USB SOF 대비 HFXO 관측값(교정에는 사용하지 않음)">클럭 편차</th>
             <th class="has-tip" title="센서가 부팅 후 놓친 비콘 수. (N)은 지금 연속으로 놓친 개수">누락</th>
             <th class="has-tip" title="이벤트가 마스터에 도달하기까지 걸린 시간 (ms)">지연</th>
             <th class="has-tip" title="nRF 다이(칩) 온도. 주변 온도보다 몇 °C 높게 나옴">온도</th>
@@ -82,9 +98,10 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
                 {{ stateLabel[linkState(r)] }}
               </span>
             </td>
+            <td><span class="health" :class="timingHealth(r).state">{{ timingHealth(r).label }}</span></td>
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.rssi)} dBm` }}</td>
             <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.snr)} dB` }}</td>
-            <td class="mono">{{ isMaster(r) ? "—" : `${fmtNum(r.skew_ppm)} ppm` }}</td>
+            <td class="mono" :data-testid="`diag-clock-${r.node_id}`">{{ clockDrift(r) }}</td>
             <td class="mono">
               <template v-if="isMaster(r)">—</template>
               <template v-else>{{ r.rx_miss ?? 0 }}<span :class="{ gap: r.beacon_gap }"> ({{ r.beacon_gap ?? 0 }})</span></template>
@@ -129,4 +146,7 @@ const stateLabel = { online: "연결", degraded: "지연", lost: "끊김" };
 .badge.online { background: rgba(16,185,129,0.18); color: var(--accent-success); }
 .badge.degraded { background: rgba(245,158,11,0.18); color: var(--accent-warning, #f59e0b); }
 .badge.lost { background: rgba(239,68,68,0.18); color: var(--accent-danger); }
+.health.good { color: var(--accent-success); }
+.health.warn { color: var(--accent-warning, #f59e0b); }
+.health.bad { color: var(--accent-danger); font-weight: 700; }
 </style>

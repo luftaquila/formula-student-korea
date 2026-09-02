@@ -8,6 +8,7 @@ import path from "node:path";
 import {
   createClient, makeAuthCookie, setupTestEnv, startServer, stopServer, TRUST_JWT,
 } from "../helpers/test-utils.mjs";
+import { healthyWirelessBatch } from "../helpers/wireless-fixtures.mjs";
 import { currentCompetitionYear } from "../../shared/competition-year.mjs";
 import { validateCompetitionDatabase } from "../../competition/lib/database-validation.mjs";
 
@@ -723,6 +724,11 @@ describe("Competition modular monolith", () => {
         });
         assert.equal(mapping.status, 200, await mapping.clone().text());
       }
+      const health = await client.post("/competition/api/v1/traffic/wireless/ingest", {
+        cookie: admin,
+        body: healthyWirelessBatch(["canonical-start", "canonical-finish"]),
+      });
+      assert.equal(health.status, 200, await health.clone().text());
       const armed = await client.post("/competition/api/v1/traffic/wireless/arm", {
         cookie: admin,
         body: {
@@ -759,7 +765,7 @@ describe("Competition modular monolith", () => {
       assert.equal(updated.status, 200, await updated.clone().text());
       await client.post("/competition/api/v1/traffic/wireless/ingest", {
         cookie: admin,
-        body: { events: [{ node_id: "canonical-finish", master_tick: "1600160000", ev_seq: 1 }] },
+        body: { events: [{ node_id: "canonical-finish", master_tick: "1760000000", ev_seq: 1 }] },
       });
 
       const records = await client.get(
@@ -774,7 +780,7 @@ describe("Competition modular monolith", () => {
         univ: "Updated University",
         team: "Updated Team",
         type: "오토크로스",
-        result: 10,
+        result: 10000,
       }]);
 
       for (const name of ["trg_wireless_session_bind_team_update", "trg_booth_validate_team_update"]) {

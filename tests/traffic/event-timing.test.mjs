@@ -9,6 +9,9 @@ import {
   formatLapMs,
   formatEnduranceDetail,
   enduranceTotal,
+  masterTickDeltaMs,
+  masterTickDistanceBelowMs,
+  measurementWithinLimits,
 } from "../../traffic/lib/event-timing.mjs";
 
 describe("event-timing rules", () => {
@@ -51,5 +54,27 @@ describe("event-timing rules", () => {
     assert.equal(formatEnduranceDetail([]), "");
     assert.equal(enduranceTotal([42531, 41882, 1000]), 85413);
     assert.equal(enduranceTotal([]), 0);
+  });
+
+  it("subtracts raw 64-bit ticks before rounding once", () => {
+    const start = "8160"; // 0.51 ms
+    const finish = "16023840"; // 1001.49 ms, delta = 1000.98 ms
+    assert.equal(masterTickDeltaMs(finish, start), 1001);
+    assert.equal(masterTickDeltaMs("9007199254740993000", "9007199254724977000"), 1001);
+    assert.throws(() => masterTickDeltaMs("18446744073709551616", "0"), /invalid master tick/);
+  });
+
+  it("compares debounce windows in raw ticks without endpoint rounding", () => {
+    assert.equal(masterTickDistanceBelowMs("31999", "16000", 1), true);
+    assert.equal(masterTickDistanceBelowMs("32000", "16000", 1), false);
+  });
+
+  it("rejects implausible wireless measurements by event type", () => {
+    assert.equal(measurementWithinLimits("가속", 4500), true);
+    assert.equal(measurementWithinLimits("가속", 500), false);
+    assert.equal(measurementWithinLimits("가속", 45000), false);
+    assert.equal(measurementWithinLimits("오토크로스", 3041), false);
+    assert.equal(measurementWithinLimits("오토크로스", 60000), true);
+    assert.equal(measurementWithinLimits("스키드패드", 20000), true);
   });
 });

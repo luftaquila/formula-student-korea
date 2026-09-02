@@ -300,7 +300,7 @@ A successful answer or memo change automatically adds the authenticated account'
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/events` | admin | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge, sessions, lastEventId } }`. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command` |
+| GET | `/events` | admin | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent GREEN emits `{ event_type, cleared: true }`. |
 
 ### Record Management
 
@@ -333,25 +333,25 @@ A successful answer or memo change automatically adds the authenticated account'
 
 ### Wireless LoRa Timing (one master + ≤6 sensors, single channel)
 
-마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push한다. 서버가 권위 상태(경기별 세션: arm·선택·신호등·lease)를 보유하고 모든 클라이언트가 SSE로 동일하게 본다. `green = arm`(측정 t0는 출발 센서). 경기 기록은 **서버 기록 엔진**이 ingest 이벤트로 직접 계산·저장한다(가속/오토크로스 = 출발→도착, 스키드패드 = lap2+lap4) — 무선 클라는 표시만(이중저장 없음). 제어는 경기별 **독점 lease**(claim/heartbeat/release/takeover)로, lease 보유자면 비-브리지도 가상 경기를 제어하고 물리 신호등은 다운링크(`/command`)로 제어한다. 경기: 가속·스키드패드·오토크로스·내구(`EVENT_TYPES`, 짐카나 제거).
+마스터 노드에 USB로 연결된 브리지 PC가 모든 센서의 raw 이벤트·진단·신호등 상태를 서버로 push한다. 서버가 권위 상태(경기별 세션: arm·선택·신호등·lease)를 보유하고 모든 클라이언트가 SSE로 동일하게 본다. `green = arm`(측정 t0는 출발 센서). 경기 기록은 **서버 기록 엔진**이 64-bit raw tick의 차이를 먼저 계산하고 마지막에 한 번만 ms로 반올림해 저장한다(가속/오토크로스 = 출발→도착, 스키드패드 = lap2+lap4). green은 필수 센서 매핑과 최신 HFXO·동기·skew·캡처/큐 상태가 모두 정상일 때만 허용되며, 진행 중 품질 악화나 비현실적 측정 구간은 fail-closed 처리된다. 제어는 경기별 **독점 lease**(claim/heartbeat/release/takeover)로, lease 보유자면 비-브리지도 가상 경기를 제어하고 물리 신호등은 다운링크(`/command`)로 제어한다. 경기: 가속·스키드패드·오토크로스·내구(`EVENT_TYPES`, 짐카나 제거).
 
 세션 객체: `{ event_type, armed, light_color, green_tick, armed_at, team, event_name, controller, lease_expires_at, updated_at }`.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state?, rx_miss?, beacon_gap?, temp_c10?, batt_mv?, sec_drop?, provisioned? }] }` (각 ≤200) | `{ stored, deduped, rejected }` | 브리지 배치 ingest. `(node_id, ev_seq, master_tick)` 멱등(재전송 보존, 재부팅 seq 재사용 구분). 불량 항목은 배치 전체 실패 없이 skip(`rejected`). 도착 = 브리지 heartbeat. 신규 이벤트는 **서버 기록 엔진**을 거쳐 armed 경기의 기록을 자동 저장(`records` 브로드캐스트). 보안 관측: `sec_drop`(인증 거부 카운터, node 0=마스터 AEAD 실패) 증가 또는 `provisioned=0`이면 `wireless.security` 로그(`/logs`). `wireless:event`/`wireless:telemetry`/`wireless:bridge` 브로드캐스트 |
-| POST | `/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고(green tick은 green일 때만 갱신). `wireless:light` 브로드캐스트 |
+| POST | `/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, flags?, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state?, rx_miss?, beacon_gap?, temp_c10?, batt_mv?, sec_drop?, provisioned?, sync_valid?, skew_valid?, clock_source?, sync_age_ms?, capture_overflow?, event_drop?, queue_depth?, queue_overflow?, usb_ref_valid?, usb_ref_ppm? }] }` (각 ≤200) | `{ stored, deduped, rejected, acknowledged: [{ node_id, ev_seq, master_tick }] }` | 브리지 배치 ingest. `(node_id, ev_seq, master_tick)` 멱등. `acknowledged`는 DB insert 또는 기존 행 dedupe가 확인된 정확한 키만 포함하며, 브리지는 이 키를 USB `C` ACK로 돌려 마스터 RAM 큐를 비운다. 불량 항목은 배치 전체 실패 없이 skip. 상태 악화는 armed 세션을 중단하고 `wireless.quality_fault`를 기록한다. 보안 관측은 `wireless.security` 로그로 남긴다. |
+| POST | `/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고. 새 green 보고도 해당 경기 품질 게이트를 통과해야 하며, 거부되면 409이고 브리지는 마스터에 OFF를 보낸다. |
 | PUT | `/wireless/physical-event` | admin | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
 | PUT | `/wireless/debounce` | admin | `{ ms: 0~5000 정수 }` | `{ ...light }` | 센서 디바운스 창(ms). 한 통과의 다중 엣지(바운스)를 접는 간격. 기본 300, 0이면 끔. `wireless_light.debounce_ms`에 저장, `wireless:light` 브로드캐스트(모든 화면 공유) |
 | GET | `/wireless/mapping` | admin | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
 | PUT | `/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish\|lane1~lane9), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트). 가속·오토크로스=start+finish, 스키드패드·내구=start(단일 센서 멀티랩). 기록 엔진은 finish만 센서2로 취급, 그 외(start·lane*)는 센서1 |
 | DELETE | `/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |
-| GET | `/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge, sessions, lastEventId }` | 신선 로드용 종합 스냅샷. 각 session은 물리 초기화의 OFF 확인 대기 여부인 `reset_pending`을 포함 |
+| GET | `/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId }` | 신선 로드용 종합 스냅샷. 각 session은 물리 초기화의 OFF 확인 대기 여부인 `reset_pending`을 포함. `qualityFaults`는 새 GREEN이 품질 검사를 통과할 때까지 유지되는 자동 중단 원인이다. |
 | GET | `/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
-| POST | `/wireless/arm` | admin | `{ event_type, action: green\|red\|off\|reset, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm(green=arm). 가상 경기를 전 클라에 공유. lease 점유자 있으면 그만(409). green은 기록 엔진 런 리셋(물리 reset의 OFF 확인 대기 중이면 409), reset은 가상 경기의 런 식별자와 저장 기록 포인터를 폐기(현재 물리 지정 경기면 409). `wireless:session` 브로드캐스트 |
+| POST | `/wireless/arm` | admin | `{ event_type, action: green\|red\|off\|reset, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm. green은 필수 역할 센서 전부의 최신 link/provisioned/HFXO/sync/skew/beacon/capture/delivery 상태와 마스터 큐가 정상일 때만 허용(아니면 409). lease·reset 규칙은 동일하다. |
 | POST | `/wireless/select` | admin | `{ event_type, team?: { id, num, univ, team }\|null, event_name?: string\|null }` | `{ ...session }` | 경기 선택(팀·이벤트명) 공유 — 서버 기록 귀속. 안정적 팀 ID를 현재 활성 팀으로 재확인하며 오래되거나 유효하지 않으면 409, null=해제. lease 점유자만. `wireless:session` 브로드캐스트 |
 | POST | `/wireless/status` | admin | `{ event_type, status: DNS\|DNF\|DSQ }` | `{ name, record, session }` | 선택된 팀/이벤트의 현재 시도를 판정한다. arm 단계와 무관하게 가능하며, 부분·완료 기록이 있으면 raw result를 보존한 같은 행을 갱신하고 없으면 untimed status 행을 만든다. lease 점유자만 |
-| POST | `/wireless/command` | admin | `{ event_type, action: green\|red\|off\|reset }` | `{ ok, session? }` | 물리 신호등(SSR) 원격 제어 다운링크 — 서버→브리지(`wireless:command`)→시리얼. reset은 session의 `reset_pending`을 즉시 브로드캐스트하고, 마스터 OFF 보고에서 런 폐기를 확정하며 그 전의 green은 409. 물리 지정 경기+브리지 online+lease 필요(아니면 409) |
+| POST | `/wireless/command` | admin | `{ event_type, action: green\|red\|off\|reset }` | `{ ok, session? }` | 물리 신호등 원격 제어 다운링크. green은 `/wireless/arm`과 같은 품질 게이트를 통과해야 한다. reset은 `reset_pending`을 즉시 브로드캐스트하고 마스터 OFF 보고에서 런 폐기를 확정한다. |
 | POST | `/wireless/lease/:event` | admin | — | `{ ...session }` | 경기 독점 제어 lease 획득/갱신(heartbeat). 타인 점유 시 409. 점유자 변경 시만 `wireless:session` 브로드캐스트(heartbeat는 조용히 만료 연장) |
 | DELETE | `/wireless/lease/:event` | admin | — | `{ ...session }` | lease 해제(보유자 또는 admin 강제 회수). `wireless:session` 브로드캐스트 |
 | GET | `/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |

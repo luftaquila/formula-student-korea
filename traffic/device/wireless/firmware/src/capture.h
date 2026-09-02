@@ -22,7 +22,16 @@ uint64_t capture_now64(void);
  * 64 bits into *tick and return 1; else 0. */
 int capture_dio1_get(uint64_t *tick);
 
-/* Same for a SENSOR falling edge (event). */
+/* Pop the oldest SENSOR falling edge from the ISR-backed ring buffer. */
 int capture_sensor_get(uint64_t *tick);
+
+/* Sticky ring overflow counter. Any non-zero value invalidates timing until the
+ * sensor is rebooted, so a dropped physical edge cannot become a valid run. */
+uint16_t capture_sensor_overflow(void);
+
+/* Master-only USB clock monitor. PPI captures each USBD SOF into a spare TIMER1
+ * CC register; samples are diagnostic and never alter the event timebase. */
+void capture_usb_sof_enable(void);
+int capture_usb_sof_sample(uint64_t *tick, uint16_t *frame);
 
 #endif /* CAPTURE_H */
