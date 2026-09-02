@@ -11,6 +11,7 @@ import {
   serializeCalculationConfig,
   validateCalculationGraph,
 } from "./lib/calculations.mjs";
+import { getInspectionItemState } from "./lib/item-status.mjs";
 
 export function createInspectionApp(options = {}) {
 
@@ -398,6 +399,33 @@ function validateStoredCalculationGraph(year) {
   } catch (e) {
     throw { status: 400, message: e.message };
   }
+}
+
+function getCategoryCompletion(year, teamNum, categoryId) {
+  const rows = db.prepare(`
+    SELECT item.answer_type, item.remarks, item.calculation, answer.value
+    FROM sheet_template AS category
+    JOIN sheet_template AS subcategory ON subcategory.parent_id = category.id
+    JOIN sheet_template AS item_group ON item_group.parent_id = subcategory.id
+    JOIN sheet_template AS item ON item.parent_id = item_group.id AND item.level = 'item'
+    LEFT JOIN sheet_answer AS answer
+      ON answer.year = ? AND answer.team_num = ? AND answer.item_id = item.id
+    WHERE category.id = ? AND category.year = ? AND category.level = 'category'
+  `).all(year, teamNum, categoryId, year);
+
+  let total = 0;
+  let completed = 0;
+  for (const row of rows) {
+    const state = getInspectionItemState({
+      answer_type: row.answer_type,
+      remarks: row.remarks,
+      calculation: parseCalculationConfig(row.calculation),
+    }, row.value ?? "");
+    if (!state) continue;
+    total += 1;
+    if (state !== "unanswered") completed += 1;
+  }
+  return { total, completed, complete: completed === total };
 }
 
 // 특정 연도나 문항을 기준으로 템플릿 내용을 시작 시 삽입·수정하지 않는다.
@@ -1227,6 +1255,31 @@ app.put("/api/sheet/category-result", (req, res) => {
     action: "category_result.update", id: category_id, year, level: "category",
   });
   if (!templateCat) return;
+
+  if (catResult === "PASS") {
+    const completion = dbRun(() => getCategoryCompletion(year, team_num, category_id));
+    if (!completion.success) {
+      logger.warn(req, "category_result.update", {
+        error: completion.internalError || completion.error,
+        phase: "category_completion_lookup",
+        year,
+        category_id,
+      }, `#${team_num}`);
+      return res.status(completion.status).send(completion.error);
+    }
+    if (!completion.result.complete) {
+      logger.warn(req, "category_result.update", {
+        error: "category_incomplete",
+        reason: "category_pass_requires_complete_responses",
+        year,
+        category_id,
+        completed: completion.result.completed,
+        total: completion.result.total,
+        requested_result: catResult,
+      }, `#${team_num}`);
+      return res.status(409).send("모든 문항을 입력한 뒤 PASS할 수 있습니다.");
+    }
+  }
 
   const r = dbRun(() =>
     db.prepare(

@@ -1,6 +1,7 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { completeInspectionCategory, restoreInspectionAnswers } from "../helpers/inspection.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -59,21 +60,13 @@ test.describe("Inspection summary dashboard", () => {
     // Get the template to find category IDs
     const templateRes = await apiPage.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`);
     const template = await templateRes.json();
-    const firstCatId = template[0].id;
-    const firstItemId = template[0].subcategories[0].groups[0].items[0].id;
-
-    const sheetData = await (await apiPage.request.get(
-      `/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`,
-    )).json();
-    const previousAnswer = sheetData.answers[firstItemId]?.value || "";
-    await apiPage.request.put("/competition/api/v1/inspection/sheet/answer", {
-      data: {
-        year: YEAR,
-        team_num: TEAM,
-        item_id: firstItemId,
-        value: previousAnswer === "42" ? "43" : "42",
-        expectedValue: previousAnswer,
-      },
+    const firstCategory = template[0];
+    const firstCatId = firstCategory.id;
+    const completionChanges = await completeInspectionCategory({
+      year: YEAR,
+      teamNum: TEAM,
+      category: firstCategory,
+      role: "official",
     });
 
     // Set category result to PASS for the team
@@ -99,17 +92,11 @@ test.describe("Inspection summary dashboard", () => {
     await cleanupPage.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "" },
     });
-    const currentData = await (await cleanupPage.request.get(
-      `/competition/api/v1/inspection/sheet/data/${YEAR}/${TEAM}`,
-    )).json();
-    await cleanupPage.request.put("/competition/api/v1/inspection/sheet/answer", {
-      data: {
-        year: YEAR,
-        team_num: TEAM,
-        item_id: firstItemId,
-        value: previousAnswer,
-        expectedValue: currentData.answers[firstItemId]?.value || "",
-      },
+    await restoreInspectionAnswers({
+      year: YEAR,
+      teamNum: TEAM,
+      changes: completionChanges,
+      role: "official",
     });
     await cleanupCtx.close();
   });

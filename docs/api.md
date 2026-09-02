@@ -288,7 +288,7 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 | GET | `/sheet/data/:year/:num` | official | — | `{ answers, results, inspectors }` | Full sheet data; `inspectors[category_id]` is an array of real names and each answer has independent answer/memo update metadata |
 | PUT | `/sheet/answer` | official | `{ year, team_num, item_id, value, expectedValue }` | `{ value, updated_at, updated_by }` | Save only if the stored answer still equals the caller's last-read value; `passfail` items accept `PASS`, `FAIL`, `N/A`, or an empty value |
 | PUT | `/sheet/memo` | official | `{ year, team_num, item_id, memo, expectedMemo }` | `{ memo, updated_at, updated_by }` | Save only if the stored memo still equals the caller's last-read memo |
-| PUT | `/sheet/category-result` | official | `{ year, team_num, category_id, result }` | 200 | Upsert category PASS/FAIL (broadcasts SSE) |
+| PUT | `/sheet/category-result` | official | `{ year, team_num, category_id, result }` | 200 | Upsert category PASS/FAIL (broadcasts SSE); PASS returns 409 until every response item is complete, while FAIL and clearing remain available |
 
 There are no answer or memo version numbers. If `expectedValue` or `expectedMemo` differs from the stored value, the server returns `409 { code: "INSPECTION_STALE_WRITE", current }` and persists nothing. The browser discards the stale local value and instructs the operator to refresh and retry.
 

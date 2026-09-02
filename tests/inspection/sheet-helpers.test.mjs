@@ -180,6 +180,30 @@ describe('Inspection status map', () => {
     const checktable = category.subcategories[0].groups[0].items[5];
     assert.equal(getInspectionItemState(checktable, JSON.stringify({ '9_9': '1' })), 'unanswered');
   });
+
+  it('does not round an incomplete category up to 100 percent', () => {
+    const items = Array.from({ length: 200 }, (_, index) => ({
+      id: index + 1,
+      name: `Item ${index + 1}`,
+      answer_type: 'text',
+    }));
+    const answers = Object.fromEntries(items.slice(0, 199).map(entry => [entry.id, { value: 'done' }]));
+    const status = buildInspectionStatusMap({
+      subcategories: [{ id: 1, name: 'Sub', groups: [{ id: 2, name: 'Group', items }] }],
+    }, answers);
+
+    assert.equal(status.completed, 199);
+    assert.equal(status.total, 200);
+    assert.equal(status.percent, 99);
+    assert.equal(status.complete, false);
+  });
+
+  it('treats a category without response items as complete', () => {
+    const status = buildInspectionStatusMap({ subcategories: [] }, {});
+    assert.equal(status.total, 0);
+    assert.equal(status.percent, 100);
+    assert.equal(status.complete, true);
+  });
 });
 
 describe('Calculation editor transitions', () => {

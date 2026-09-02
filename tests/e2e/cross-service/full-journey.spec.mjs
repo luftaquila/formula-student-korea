@@ -2,9 +2,11 @@ import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
+import { completeInspectionCategory, restoreInspectionAnswers } from "../helpers/inspection.mjs";
 
 const YEAR = currentCompetitionYear();
 const INSPECTION_TYPE = "noise";
+const TEAM_NUM = 32;
 
 async function apiRegister(num) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${INSPECTION_TYPE}`, {
@@ -50,6 +52,8 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
 
   let originalPenalty;
   let categoryId;
+  let category;
+  let completionChanges = [];
 
   test.beforeAll(async () => {
     // Save cancel penalty
@@ -68,7 +72,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
       headers: { Cookie: getAuthCookie("admin") },
     });
     const template = await templateRes.json();
-    const category = template.find((c) => c.name === "전기 검차");
+    category = template.find((c) => c.name === "전기 검차");
     categoryId = category.id;
   });
 
@@ -85,36 +89,49 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
   test.afterEach(async () => {
     const headers = { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
 
-    // Clear category result for team 30
+    // Clear category result and restore answers for this spec's team.
     await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({ year: YEAR, team_num: 30, category_id: categoryId, result: "" }),
+      body: JSON.stringify({ year: YEAR, team_num: TEAM_NUM, category_id: categoryId, result: "" }),
     });
+    await restoreInspectionAnswers({
+      year: YEAR,
+      teamNum: TEAM_NUM,
+      changes: completionChanges,
+      role: "admin",
+    });
+    completionChanges = [];
 
     // Cleanup queue
     await cleanupQueue();
   });
 
   test("queue registration flows through inspection to score dashboard", async ({ page }) => {
-    // Step 1: Register team 30 into noise queue
-    const regRes = await apiRegister(30);
+    // Step 1: Register this spec's team into the noise queue.
+    const regRes = await apiRegister(TEAM_NUM);
     expect(regRes.status).toBe(201);
 
     // Step 2: Enter booth
-    const enterRes = await apiEnterBooth(30);
+    const enterRes = await apiEnterBooth(TEAM_NUM);
     expect(enterRes.status).toBe(200);
 
     // Step 3: Exit booth (complete inspection queue step)
     const exitRes = await apiExitBooth();
     expect(exitRes.status).toBe(200);
 
-    // Step 4: Set category result to PASS for team 30
+    // Step 4: Complete the category and set its result to PASS.
     const headers = { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
+    completionChanges = await completeInspectionCategory({
+      year: YEAR,
+      teamNum: TEAM_NUM,
+      category,
+      role: "admin",
+    });
     const setResultRes = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",
       headers,
-      body: JSON.stringify({ year: YEAR, team_num: 30, category_id: categoryId, result: "PASS" }),
+      body: JSON.stringify({ year: YEAR, team_num: TEAM_NUM, category_id: categoryId, result: "PASS" }),
     });
     expect(setResultRes.status).toBe(200);
 
@@ -131,8 +148,8 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
       await inspectionCheckbox.check();
     }
 
-    // Verify team 30 shows PASS badge for 전기 검차
-    const teamRow = table.locator("tr.team-row").filter({ hasText: "부산대학교" });
+    // Verify this spec's team shows a PASS badge for 전기 검차.
+    const teamRow = table.locator("tr.team-row").filter({ hasText: "중앙대학교" });
     await expect(teamRow).toBeVisible();
     await expect(async () => {
       const badge = teamRow.locator(".badge-success");

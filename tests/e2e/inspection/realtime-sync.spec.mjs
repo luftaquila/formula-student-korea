@@ -122,7 +122,8 @@ test.describe("Inspection real-time sync via SSE", () => {
     expect(putRes.status()).toBe(200);
 
     await expect(page.locator(".inspector-list")).toContainText("E2E Admin", { timeout: 15000 });
-    await expect(row.locator(".answer-edit-metadata")).toContainText("응답 · E2E Admin", { timeout: 15000 });
+    await expect(row.locator(".answer-edit-metadata")).toContainText("E2E Admin", { timeout: 15000 });
+    await expect(row.locator(".answer-edit-metadata")).not.toContainText("응답 ·");
 
     await adminPage.request.put("/competition/api/v1/inspection/sheet/answer", {
       data: { year: YEAR, team_num: 10, item_id: item.id, value: "", expectedValue: newValue },

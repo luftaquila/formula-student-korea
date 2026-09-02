@@ -1125,7 +1125,7 @@ describe('Memo', () => {
 
 // ─── Category Result ────────────────────────────────────────────────────
 describe('Category Result', () => {
-  let resultCategoryId, resultNonCategoryId;
+  let resultCategoryId, resultNonCategoryId, resultItemId, emptyCategoryId;
 
   before(async () => {
     // Create a category for result tests
@@ -1141,16 +1141,79 @@ describe('Category Result', () => {
       cookie: adminCookie,
     });
     resultNonCategoryId = Number((await subRes.json()).id);
+
+    const groupRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'group', parent_id: resultNonCategoryId, name: 'ResultGroup' },
+      cookie: adminCookie,
+    });
+    const groupId = Number((await groupRes.json()).id);
+    const itemRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'item', parent_id: groupId, name: 'ResultItem', answer_type: 'passfail' },
+      cookie: adminCookie,
+    });
+    resultItemId = Number((await itemRes.json()).id);
+
+    const emptyCatRes = await client.post('/api/sheet/template', {
+      body: { year: CURRENT_YEAR, level: 'category', name: 'EmptyResultCat' },
+      cookie: adminCookie,
+    });
+    emptyCategoryId = Number((await emptyCatRes.json()).id);
   });
 
-  it('PUT /api/sheet/category-result upserts result', async () => {
-    const res = await client.put('/api/sheet/category-result', {
+  it('PUT /api/sheet/category-result allows PASS only after every response is complete', async () => {
+    const incomplete = await client.put('/api/sheet/category-result', {
       body: { year: CURRENT_YEAR, team_num: 1, category_id: resultCategoryId, result: 'PASS' },
+      cookie: officialCookie,
+    });
+    assert.equal(incomplete.status, 409);
+    assert.equal(await incomplete.text(), '모든 문항을 입력한 뒤 PASS할 수 있습니다.');
+
+    const answer = await client.put('/api/sheet/answer', {
+      body: {
+        year: CURRENT_YEAR, team_num: 1, item_id: resultItemId, value: 'N/A', expectedValue: '',
+      },
+      cookie: officialCookie,
+    });
+    assert.equal(answer.status, 200);
+
+    const completed = await client.put('/api/sheet/category-result', {
+      body: { year: CURRENT_YEAR, team_num: 1, category_id: resultCategoryId, result: 'PASS' },
+      cookie: officialCookie,
+    });
+    assert.equal(completed.status, 200);
+    const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
+    assert.equal(data.results[resultCategoryId], 'PASS');
+
+    const clearedAnswer = await client.put('/api/sheet/answer', {
+      body: {
+        year: CURRENT_YEAR, team_num: 1, item_id: resultItemId, value: '', expectedValue: 'N/A',
+      },
+      cookie: officialCookie,
+    });
+    assert.equal(clearedAnswer.status, 200);
+    const clearedResult = await client.put('/api/sheet/category-result', {
+      body: { year: CURRENT_YEAR, team_num: 1, category_id: resultCategoryId, result: '' },
+      cookie: officialCookie,
+    });
+    assert.equal(clearedResult.status, 200);
+  });
+
+  it('PUT /api/sheet/category-result allows FAIL while responses are incomplete', async () => {
+    const res = await client.put('/api/sheet/category-result', {
+      body: { year: CURRENT_YEAR, team_num: 1, category_id: resultCategoryId, result: 'FAIL' },
       cookie: officialCookie,
     });
     assert.equal(res.status, 200);
     const data = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/1`, { cookie: officialCookie })).json();
-    assert.equal(data.results[resultCategoryId], 'PASS');
+    assert.equal(data.results[resultCategoryId], 'FAIL');
+  });
+
+  it('PUT /api/sheet/category-result allows PASS for a category without response items', async () => {
+    const res = await client.put('/api/sheet/category-result', {
+      body: { year: CURRENT_YEAR, team_num: 1, category_id: emptyCategoryId, result: 'PASS' },
+      cookie: officialCookie,
+    });
+    assert.equal(res.status, 200);
   });
 
   it('PUT /api/sheet/category-result validates result values (PASS/FAIL/"")', async () => {

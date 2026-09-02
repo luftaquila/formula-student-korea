@@ -293,11 +293,17 @@ function onMemoChange(itemId, memo) {
 async function onCategoryResultToggle(catId, val) {
   const current = getCategoryResult(catId);
   const newVal = current === val ? "" : val;
+  if (newVal === "PASS" && !inspectionStatusMap.value.complete) {
+    error("모든 문항을 입력한 뒤 PASS할 수 있습니다.");
+    return;
+  }
+  if (newVal === "PASS") await answerQueue.flushAll();
   sheetData.value.results[catId] = newVal;
   try {
     await updateSheetCategoryResult({ year, team_num: num, category_id: catId, result: newVal });
   } catch (e) {
-    error("저장에 실패했습니다.");
+    sheetData.value.results[catId] = current;
+    error(e?.status === 409 ? "모든 문항을 입력한 뒤 PASS할 수 있습니다." : "저장에 실패했습니다.");
   }
 }
 
@@ -966,7 +972,10 @@ watch(reconnected, async () => {
             <button
               class="btn btn-sm"
               :class="getCategoryResult(currentCategory.id) === 'PASS' ? 'btn-success' : 'btn-ghost'"
-              :disabled="isReadOnly"
+              :disabled="isReadOnly || (getCategoryResult(currentCategory.id) !== 'PASS' && !inspectionStatusMap.complete)"
+              :title="inspectionStatusMap.complete || getCategoryResult(currentCategory.id) === 'PASS'
+                ? '카테고리 PASS'
+                : '진행률이 100%일 때 PASS할 수 있습니다.'"
               @click="onCategoryResultToggle(currentCategory.id, 'PASS')"
             >PASS</button>
             <button
@@ -1178,7 +1187,7 @@ watch(reconnected, async () => {
                     v-if="getAnswerUpdatedAt(item.id)"
                     class="edit-metadata answer-edit-metadata"
                   >
-                    응답 · {{ getAnswerUpdatedBy(item.id) || "알 수 없음" }} ·
+                    {{ getAnswerUpdatedBy(item.id) || "알 수 없음" }} ·
                     <time :datetime="getAnswerUpdatedAt(item.id)">{{ formatUpdatedAt(getAnswerUpdatedAt(item.id)) }}</time>
                   </div>
                   </div>
@@ -1214,7 +1223,7 @@ watch(reconnected, async () => {
                       v-if="getMemoUpdatedAt(item.id)"
                       class="edit-metadata memo-edit-metadata"
                     >
-                      메모 · {{ getMemoUpdatedBy(item.id) || "알 수 없음" }} ·
+                      {{ getMemoUpdatedBy(item.id) || "알 수 없음" }} ·
                       <time :datetime="getMemoUpdatedAt(item.id)">{{ formatUpdatedAt(getMemoUpdatedAt(item.id)) }}</time>
                     </div>
                   </div>
@@ -1364,7 +1373,7 @@ watch(reconnected, async () => {
 
 .inspector-row {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.5rem;
 }
 
@@ -1563,7 +1572,7 @@ watch(reconnected, async () => {
 .answer-edit-metadata {
   grid-column: 1 / -1;
   width: 100%;
-  text-align: right;
+  text-align: left;
 }
 
 .pf-toggle {
@@ -1838,7 +1847,7 @@ watch(reconnected, async () => {
 
 .memo-edit-metadata {
   margin-top: 0.25rem;
-  text-align: right;
+  text-align: left;
 }
 
 .save-feedback {
@@ -1989,8 +1998,13 @@ watch(reconnected, async () => {
 
 .status-map-item:hover {
   z-index: 1;
-  transform: scale(1.6);
+  transform: scale(1.25);
   box-shadow: var(--shadow-hover);
+}
+
+.status-map-item:focus-visible {
+  z-index: 1;
+  transform: scale(1.25);
 }
 
 .status-pass {

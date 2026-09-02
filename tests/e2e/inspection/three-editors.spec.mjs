@@ -142,11 +142,11 @@ test.describe("Three concurrent inspection editors", () => {
       await expect(inspectors).toContainText("E2E Chief", { timeout: 5000 });
       await expect(inspectors).toContainText("E2E Official", { timeout: 5000 });
       await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".answer-edit-metadata"))
-        .toContainText("응답 · E2E Admin");
+        .toContainText("E2E Admin");
       await expect(page.locator(".item-row").filter({ hasText: "절연 저항 측정" }).locator(".answer-edit-metadata"))
-        .toContainText("응답 · E2E Chief");
+        .toContainText("E2E Chief");
       await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-edit-metadata"))
-        .toContainText("메모 · E2E Official");
+        .toContainText("E2E Official");
     }
 
     await context1.close();
