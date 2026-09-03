@@ -9,6 +9,7 @@ import {
   updateSheetAnswer,
   updateSheetMemo,
   updateSheetCategoryResult,
+  sheetRuleLink,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
@@ -90,6 +91,10 @@ function getCalculationHint(item) {
   if (status === "out_of_range") return "설정된 구간을 벗어났습니다.";
   if (status === "cycle") return "계산 설정에 순환 참조가 있습니다.";
   return status === "invalid" ? "원본 값이 올바른 숫자가 아닙니다." : "";
+}
+
+function ruleDocumentLabel(document) {
+  return document === "formula-technical" ? "기술" : "경기";
 }
 
 // 탭 번호는 템플릿 원본 순서를 따른다 — 유형별로 숨겨진 카테고리가 있어도
@@ -1012,7 +1017,38 @@ watch(reconnected, async () => {
                 <div class="item-content">
                   <div class="item-heading">
                     <div class="item-info">
-                      <div class="item-name"><span v-html="renderMd(item.name)"></span></div>
+                      <div class="item-name-row">
+                        <div class="item-name"><span v-html="renderMd(item.name)"></span></div>
+                        <a
+                          v-if="item.rule_refs?.status === 'verified' && item.rule_refs.references.length === 1"
+                          class="rule-help-button"
+                          :href="sheetRuleLink(item.id, 0)"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          :aria-label="`${item.name} 대응 규정 열기`"
+                          title="대응 규정 열기"
+                        >?</a>
+                        <details v-else-if="item.rule_refs?.status === 'verified' && item.rule_refs.references.length > 1" class="rule-help-menu">
+                          <summary class="rule-help-button" :aria-label="`${item.name} 대응 규정 선택`" title="대응 규정 선택">?</summary>
+                          <div class="rule-help-options">
+                            <a
+                              v-for="(reference, referenceIndex) in item.rule_refs.references"
+                              :key="reference.rule_key"
+                              :href="sheetRuleLink(item.id, referenceIndex)"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >{{ ruleDocumentLabel(reference.document) }} {{ reference.citation }}</a>
+                          </div>
+                        </details>
+                        <button
+                          v-else-if="(item.rule_refs?.status || 'needs_review') === 'needs_review'"
+                          type="button"
+                          class="rule-help-button needs-review"
+                          disabled
+                          :aria-label="`${item.name} 규정 연결 검토 필요`"
+                          title="규정 연결 검토 필요"
+                        >?</button>
+                      </div>
                       <span v-if="item.remarks && item.answer_type !== 'checktable'" class="item-remarks">{{ item.remarks }}</span>
                     </div>
                   </div>
@@ -1525,6 +1561,65 @@ watch(reconnected, async () => {
   word-break: keep-all;
   overflow-wrap: break-word;
 }
+
+.item-name-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.rule-help-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--accent-primary);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
+  color: var(--accent-primary);
+  font: 700 0.8125rem/1 inherit;
+  text-decoration: none;
+  cursor: pointer;
+  list-style: none;
+}
+
+.rule-help-button::-webkit-details-marker { display: none; }
+.rule-help-button.needs-review {
+  border-color: var(--accent-warning, #d97706);
+  background: color-mix(in srgb, var(--accent-warning, #d97706) 12%, transparent);
+  color: var(--accent-warning, #d97706);
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+
+.rule-help-menu { position: relative; flex: 0 0 auto; }
+.rule-help-options {
+  position: absolute;
+  top: calc(100% + 0.375rem);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  min-width: 160px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.rule-help-options a {
+  padding: 0.625rem 0.75rem;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.rule-help-options a:hover { background: var(--bg-hover); }
 
 .item-name :deep(ul) {
   margin: 0.25rem 0;
@@ -2258,6 +2353,14 @@ watch(reconnected, async () => {
   flex-direction: column;
   align-items: center;
   gap: 1rem;
+}
+
+@media (max-width: 640px) {
+  .rule-help-button {
+    flex-basis: 44px;
+    width: 44px;
+    height: 44px;
+  }
 }
 
 </style>

@@ -537,6 +537,13 @@ describe('Template Copy', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 201);
+    assert.deepEqual(await res.json(), {
+      from_year: SOURCE_YEAR,
+      to_year: TARGET_YEAR,
+      statuses: { verified: 0, needs_review: 0, no_direct_rule: 0 },
+      reasons: {},
+      catalog_available: false,
+    });
 
     // Verify target has data
     const tree = await (await client.get(`/api/sheet/template?year=${TARGET_YEAR}`, { cookie: officialCookie })).json();

@@ -180,6 +180,11 @@ test.describe("Inspection template management", () => {
     expect(parsed[0].subcategories[0].name).toBe("배터리");
     expect(parsed[0].subcategories[0].groups[0].name).toBe("배터리 팩");
     expect(parsed[0].subcategories[0].groups[0].items).toHaveLength(4);
+    expect(parsed[0].subcategories[0].groups[0].items[0].field_key).toBeTruthy();
+    expect(parsed[0].subcategories[0].groups[0].items[0].rule_refs).toEqual({
+      status: "needs_review",
+      references: [],
+    });
   });
 
 });

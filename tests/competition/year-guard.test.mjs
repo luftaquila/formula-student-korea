@@ -42,6 +42,7 @@ describe("Competition mutation year guard", () => {
   it("uses the stored resource year for ID-addressed mutations", () => {
     const inspection = createModuleYearGuard({ module: "inspection", db: fakeDatabase() });
     assert.deepEqual(inspection({ query: {}, body: {}, path: "/API/SHEET/TEMPLATE/12/" }).years, [YEAR]);
+    assert.deepEqual(inspection({ query: {}, body: {}, path: "/api/sheet/template/12/rule-refs" }).years, [YEAR]);
     const documents = createModuleYearGuard({ module: "documents", db: fakeDatabase() });
     assert.throws(
       () => documents({ query: {}, body: {}, path: "/api/sessions/33/submit" }),
@@ -68,6 +69,12 @@ describe("Competition mutation year guard", () => {
       }),
       (error) => error.status === 409 && error.code === "YEAR_READ_ONLY",
     );
+    assert.deepEqual(guard({
+      query: {}, body: { from_year: YEAR - 1, to_year: YEAR }, path: "/api/sheet/template/rule-refs/sync",
+    }).years, [YEAR]);
+    assert.deepEqual(guard({
+      query: {}, body: { year: YEAR }, path: "/api/sheet/template/rule-refs/revalidate",
+    }).years, [YEAR]);
   });
 
   it("rejects record mutations when the path name has no parseable competition year", () => {

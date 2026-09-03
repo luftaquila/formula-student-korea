@@ -13,11 +13,23 @@ import {
 } from "./lib/calculations.mjs";
 import { getInspectionItemState } from "./lib/item-status.mjs";
 import { access } from "../shared/access-control.js";
+import {
+  DEFAULT_RULES_BASE_URL,
+  EMPTY_RULE_REFS,
+  RuleCatalogError,
+  createRulesCatalog,
+  parseStoredRuleRefs,
+  refsFromRules,
+  resolveRuleKeys,
+  serializeRuleRefs,
+  transitionRuleRefs,
+  validateRuleRefs,
+} from "./lib/rule-refs.mjs";
 
 export function createInspectionApp(options = {}) {
 
 const { app, db, logger, dbRun } = createServiceSkeleton({
-  name: "inspection", express, Database, options, dbFile: "sheet.db",
+  name: "inspection", express, Database, options: { ...options, jsonLimit: options.jsonLimit || "1mb" }, dbFile: "sheet.db",
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
     if (req.path.startsWith("/api/internal/")) return access.internal;
@@ -26,6 +38,11 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     if (req.path.startsWith("/api/")) return access.permission("inspection.operate");
     return access.permission("inspection.operate"); // SPA
   },
+});
+const rulesCatalog = createRulesCatalog({
+  baseUrl: options.rulesBaseUrl || process.env.RULES_BASE_URL || DEFAULT_RULES_BASE_URL,
+  fetchImpl: options.rulesFetch || globalThis.fetch,
+  ...(options.rulesCatalogOptions || {}),
 });
 ensureInactiveTeamView(db);
 
@@ -129,6 +146,9 @@ function mutationTemplatePreflight(req, res, { action, id, year, level }) {
     const excludedTypesExpr = existingColumns.has("excluded_types") ? "excluded_types" : "''";
     const fieldKeyExpr = existingColumns.has("field_key") ? "field_key" : "''";
     const calculationExpr = existingColumns.has("calculation") ? "calculation" : "''";
+    const ruleRefsExpr = existingColumns.has("rule_refs")
+      ? "rule_refs"
+      : `'${JSON.stringify(EMPTY_RULE_REFS)}'`;
     db.pragma("foreign_keys = OFF");
     try {
       db.transaction(() => {
@@ -146,12 +166,13 @@ function mutationTemplatePreflight(req, res, { action, id, year, level }) {
           excluded_types TEXT DEFAULT '',
           field_key TEXT DEFAULT '',
           calculation TEXT DEFAULT '',
+          rule_refs TEXT NOT NULL DEFAULT '{"status":"needs_review","references":[]}' CHECK(json_valid(rule_refs)),
           FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
         )`);
         db.exec(`INSERT INTO sheet_template_new
-          (id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation)
+          (id, year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation, rule_refs)
           SELECT id, year, level, parent_id, sort_order, name, answer_type, remarks,
-                 ${unitExpr}, ${pdfIncludeExpr}, ${excludedTypesExpr}, ${fieldKeyExpr}, ${calculationExpr}
+                 ${unitExpr}, ${pdfIncludeExpr}, ${excludedTypesExpr}, ${fieldKeyExpr}, ${calculationExpr}, ${ruleRefsExpr}
           FROM sheet_template`);
         db.exec("DROP TABLE sheet_template");
         db.exec("ALTER TABLE sheet_template_new RENAME TO sheet_template");
@@ -182,6 +203,7 @@ db.transaction(() => {
     excluded_types TEXT DEFAULT '',
     field_key TEXT DEFAULT '',
     calculation TEXT DEFAULT '',
+    rule_refs TEXT NOT NULL DEFAULT '{"status":"needs_review","references":[]}' CHECK(json_valid(rule_refs)),
     FOREIGN KEY (parent_id) REFERENCES sheet_template(id) ON DELETE CASCADE
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_st_year ON sheet_template(year);`);
@@ -206,6 +228,10 @@ db.transaction(() => {
   }
   if (!cols.find(c => c.name === "calculation")) {
     db.exec(`ALTER TABLE sheet_template ADD COLUMN calculation TEXT DEFAULT ''`);
+  }
+  if (!cols.find(c => c.name === "rule_refs")) {
+    db.exec(`ALTER TABLE sheet_template ADD COLUMN rule_refs TEXT NOT NULL
+      DEFAULT '{"status":"needs_review","references":[]}' CHECK(json_valid(rule_refs))`);
   }
   // 기존 문항도 복사·내보내기 후 참조가 유지되는 안정적인 내부 키를 갖게 한다.
   db.exec(`UPDATE sheet_template
@@ -477,6 +503,8 @@ function getTemplateTree(year) {
   for (const r of rows) {
     r.excluded_types = parseExcludedTypes(r.excluded_types);
     r.calculation = parseCalculationConfig(r.calculation);
+    if (r.level === "item") r.rule_refs = parseStoredRuleRefs(r.rule_refs, r.year);
+    else delete r.rule_refs;
   }
   const nodeMap = {};
   const tree = [];
@@ -517,8 +545,190 @@ app.get("/api/sheet/template", (req, res) => {
 
   const result = dbRun(() => getTemplateTree(year));
 
-  if (!result.success) return res.status(result.status).send(result.error);
+  if (!result.success) {
+    logger.warn(req, "template.read", { error: result.internalError || result.error, year }, String(year));
+    return res.status(result.status).send(result.error);
+  }
   res.json(result.result);
+});
+
+function ruleCatalogFailure(req, res, action, error, context = {}) {
+  const detail = {
+    error: error?.message || String(error),
+    code: error?.code || "RULE_CATALOG_UNAVAILABLE",
+    phase: "rule_catalog",
+    ...context,
+  };
+  logger.warn(req, action, detail, context.year ? String(context.year) : "rules");
+  return res.status(503).json({
+    code: "RULE_CATALOG_UNAVAILABLE",
+    message: "규정 카탈로그를 확인할 수 없습니다. 잠시 후 다시 시도하세요.",
+  });
+}
+
+function invalidRuleRefs(req, res, action, error, context = {}) {
+  logger.warn(req, action, {
+    error: error?.message || String(error),
+    phase: "rule_refs_validation",
+    ...context,
+  }, context.item_id ? `template:${context.item_id}` : "rules");
+  return res.status(400).json({ code: "INVALID_RULE_REFS", message: error?.message || String(error) });
+}
+
+// 감사 로그에 어떤 배포본·문서 Release를 기준으로 판단했는지 남긴다.
+function catalogRelease(catalog) {
+  if (!catalog) return {};
+  return {
+    catalog_site_tag: catalog.deployment.site_tag,
+    catalog_releases: catalog.documents.map((doc) => doc.release_tag),
+  };
+}
+
+function ruleRefsForInput(value, year, catalog) {
+  const parsed = validateRuleRefs(value, { edition: year });
+  if (parsed.status === "no_direct_rule") return { status: "no_direct_rule", references: [] };
+  if (!parsed.references.length) return { status: "needs_review", references: [] };
+  const rules = resolveRuleKeys(catalog, parsed.references.map((ref) => ref.rule_key));
+  return refsFromRules(parsed.status, rules);
+}
+
+function flattenTemplateRuleRefs(template, { requireFieldKeys = true, requireRuleRefs = true } = {}) {
+  if (!Array.isArray(template)) throw new Error("template 배열이 필요합니다.");
+  const result = [];
+  for (const category of template) {
+    for (const subcategory of category?.subcategories || []) {
+      for (const group of subcategory?.groups || []) {
+        for (const item of group?.items || []) {
+          if (requireFieldKeys && (typeof item?.field_key !== "string" || !item.field_key.trim())) {
+            throw new Error("모든 문항에 field_key가 필요합니다.");
+          }
+          if (requireRuleRefs && item.rule_refs === undefined) throw new Error(`${item.field_key}: rule_refs가 필요합니다.`);
+          if (typeof item?.field_key === "string" && item.field_key.trim()) {
+            result.push({ fieldKey: item.field_key.trim(), value: item.rule_refs ?? EMPTY_RULE_REFS });
+          }
+        }
+      }
+    }
+  }
+  const keys = result.map((item) => item.fieldKey);
+  if (new Set(keys).size !== keys.length) throw new Error("가져오기 파일에 중복 field_key가 있습니다.");
+  return result;
+}
+
+app.get("/api/sheet/rules/search", async (req, res) => {
+  const year = Number(req.query.year);
+  const document = req.query.document ? String(req.query.document) : "";
+  const query = String(req.query.q || "").trim().toLocaleLowerCase("ko");
+  if (!Number.isInteger(year) || year < 2000) return res.status(400).json({ code: "INVALID_YEAR" });
+  if (document && !["formula-technical", "formula-competition"].includes(document)) {
+    return res.status(400).json({ code: "INVALID_DOCUMENT" });
+  }
+  if (query.length > 200) return res.status(400).json({ code: "INVALID_QUERY" });
+  try {
+    const catalog = await rulesCatalog.load(year);
+    const rules = catalog.rules
+      .filter((rule) => !document || rule.document === document)
+      .filter((rule) => !query || `${rule.rule_key} ${rule.citation} ${rule.text}`.toLocaleLowerCase("ko").includes(query))
+      .slice(0, 100)
+      .map(({ edition, document: ruleDocument, rule_key, clause_id, citation, text, content_hash, release_tag }) => ({
+        edition, document: ruleDocument, rule_key, clause_id, citation, text, content_hash, release_tag,
+      }));
+    return res.json({ year, rules });
+  } catch (error) {
+    return ruleCatalogFailure(req, res, "rule_refs.search", error, { year, document });
+  }
+});
+
+app.put("/api/sheet/template/:id/rule-refs", async (req, res) => {
+  const id = Number(req.params.id);
+  const node = templateNodePreflight(req, res, {
+    action: "template.rule_refs.update", id, columns: "id, year, level, name",
+  });
+  if (!node) return;
+  if (node.level !== "item") return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("문항에만 규정을 연결할 수 있습니다."), { item_id: id, year: node.year });
+  const status = req.body?.status;
+  const ruleKeys = req.body?.rule_keys;
+  if (!["verified", "needs_review", "no_direct_rule"].includes(status) || !Array.isArray(ruleKeys)) {
+    return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("status와 rule_keys 배열이 필요합니다."), { item_id: id, year: node.year });
+  }
+  if (status !== "verified" && ruleKeys.length) {
+    return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("검증 상태에서만 규정을 연결할 수 있습니다."), { item_id: id, year: node.year });
+  }
+  let value;
+  try {
+    if (status === "verified") {
+      const catalog = await rulesCatalog.load(node.year);
+      value = refsFromRules("verified", resolveRuleKeys(catalog, ruleKeys));
+    } else {
+      value = validateRuleRefs({ status, references: [] }, { edition: node.year });
+    }
+  } catch (error) {
+    if (error instanceof RuleCatalogError) return ruleCatalogFailure(req, res, "template.rule_refs.update", error, { item_id: id, year: node.year });
+    return invalidRuleRefs(req, res, "template.rule_refs.update", error, { item_id: id, year: node.year });
+  }
+  const result = dbRun(() => db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ? AND level = 'item'")
+    .run(serializeRuleRefs(value, node.year), id));
+  if (!result.success) {
+    logger.warn(req, "template.rule_refs.update", { error: result.internalError || result.error, item_id: id, year: node.year }, node.name);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "template.rule_refs.update", {
+    item_id: id, year: node.year, status: value.status,
+    rule_keys: value.references.map((ref) => ref.rule_key),
+    release_tags: [...new Set(value.references.map((ref) => ref.release_tag))],
+  }, node.name);
+  return res.json(value);
+});
+
+app.get("/api/sheet/rule-link/:itemId/:referenceIndex", async (req, res) => {
+  const itemId = Number(req.params.itemId);
+  const referenceIndex = Number(req.params.referenceIndex);
+  if (!Number.isInteger(itemId) || !Number.isInteger(referenceIndex) || referenceIndex < 0) {
+    return res.status(400).json({ code: "INVALID_RULE_REFERENCE" });
+  }
+  const lookup = dbRun(() => db.prepare(
+    "SELECT id, year, name, rule_refs FROM sheet_template WHERE id = ? AND level = 'item'",
+  ).get(itemId));
+  if (!lookup.success) {
+    logger.warn(req, "rule_link.resolve", { error: lookup.internalError || lookup.error, item_id: itemId, phase: "item_lookup" }, `template:${itemId}`);
+    return res.status(lookup.status).send(lookup.error);
+  }
+  if (!lookup.result) {
+    logger.warn(req, "rule_link.resolve", { error: "item_not_found", item_id: itemId, phase: "item_lookup" }, `template:${itemId}`);
+    return res.status(404).json({ code: "ITEM_NOT_FOUND" });
+  }
+  let stored;
+  try { stored = parseStoredRuleRefs(lookup.result.rule_refs, lookup.result.year); }
+  catch (error) {
+    logger.warn(req, "rule_link.resolve", { error: error.message, item_id: itemId, year: lookup.result.year, phase: "stored_rule_refs" }, lookup.result.name);
+    return res.status(500).json({ code: "INVALID_STORED_RULE_REFS" });
+  }
+  const reference = stored.references[referenceIndex];
+  if (stored.status !== "verified" || !reference) {
+    logger.warn(req, "rule_link.resolve", {
+      error: "rule_reference_not_verified", item_id: itemId, year: lookup.result.year, reference_index: referenceIndex,
+    }, lookup.result.name);
+    return res.status(409).json({ code: "RULE_REFERENCE_NOT_VERIFIED" });
+  }
+  try {
+    const catalog = await rulesCatalog.load(lookup.result.year);
+    const current = catalog.byKey.get(reference.rule_key);
+    if (!current) {
+      logger.warn(req, "rule_link.resolve", {
+        error: "rule_reference_missing", item_id: itemId, year: lookup.result.year, rule_key: reference.rule_key,
+      }, lookup.result.name);
+      return res.status(409).json({ code: "RULE_REFERENCE_MISSING" });
+    }
+    if (current.content_hash !== reference.source_hash) {
+      logger.warn(req, "rule_link.resolve", {
+        error: "rule_reference_changed", item_id: itemId, year: lookup.result.year, rule_key: reference.rule_key,
+      }, lookup.result.name);
+      return res.status(409).json({ code: "RULE_REFERENCE_CHANGED" });
+    }
+    return res.redirect(302, current.url);
+  } catch (error) {
+    return ruleCatalogFailure(req, res, "rule_link.resolve", error, { item_id: itemId, year: lookup.result.year });
+  }
 });
 
 // sheet_template CHECK 제약과 동기화된 허용값 — 라우트에서 미리 걸러 CHECK 위반 500 대신
@@ -553,8 +763,8 @@ app.post("/api/sheet/template", (req, res) => {
 
   const result = dbRun(() => db.transaction(() => {
     const info = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1, excluded, fieldKey, storedCalculation);
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation, rule_refs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(year, level, parent_id || null, sort_order || 0, name, answer_type || null, remarks || "", unit || "", pdf_include ?? 1, excluded, fieldKey, storedCalculation, JSON.stringify(EMPTY_RULE_REFS));
     validateStoredCalculationGraph(year);
     return info;
   })());
@@ -777,9 +987,35 @@ app.post("/api/sheet/template/reorder", (req, res) => {
 });
 
 // POST /api/sheet/template/copy - 연도간 템플릿 복사
-app.post("/api/sheet/template/copy", (req, res) => {
+app.post("/api/sheet/template/copy", async (req, res) => {
   const { from_year, to_year } = req.body;
   if (!from_year || !to_year) return res.status(400).send("from_year, to_year가 필요합니다.");
+
+  const preflight = dbRun(() => ({
+    targetCount: db.prepare("SELECT COUNT(*) as cnt FROM sheet_template WHERE year = ?").get(to_year).cnt,
+    sourceCount: db.prepare("SELECT COUNT(*) as cnt FROM sheet_template WHERE year = ?").get(from_year).cnt,
+  }));
+  if (!preflight.success) {
+    logger.warn(req, "template.copy", { error: preflight.internalError || preflight.error, from_year, to_year, phase: "preflight" });
+    return res.status(preflight.status).send(preflight.error);
+  }
+  if (preflight.result.targetCount > 0 || preflight.result.sourceCount === 0) {
+    const message = preflight.result.targetCount > 0
+      ? "대상 연도에 이미 템플릿이 존재합니다."
+      : "원본 연도에 템플릿이 없습니다.";
+    logger.warn(req, "template.copy", { error: message, from_year, to_year, phase: "preflight" });
+    return res.status(400).send(message);
+  }
+
+  let targetCatalog = null;
+  let catalogError = null;
+  try { targetCatalog = await rulesCatalog.load(Number(to_year)); }
+  catch (error) {
+    catalogError = error;
+    logger.warn(req, "template.copy", {
+      error: error?.message || String(error), code: error?.code, phase: "rule_catalog", from_year, to_year,
+    }, `${from_year}->${to_year}`);
+  }
 
   const result = dbRun(() => {
     const existing = db.prepare("SELECT COUNT(*) as cnt FROM sheet_template WHERE year = ?").get(to_year);
@@ -788,18 +1024,38 @@ app.post("/api/sheet/template/copy", (req, res) => {
     const rows = db.prepare("SELECT * FROM sheet_template WHERE year = ? ORDER BY id").all(from_year);
     if (!rows.length) throw { status: 400, message: "원본 연도에 템플릿이 없습니다." };
 
-    db.transaction(() => {
+    return db.transaction(() => {
       const idMap = {};
       const stmt = db.prepare(
-        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation, rule_refs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       );
+      const reasons = {};
+      const statuses = { verified: 0, needs_review: 0, no_direct_rule: 0 };
       for (const r of rows) {
         const newParent = r.parent_id ? idMap[r.parent_id] : null;
+        let nextRuleRefs = EMPTY_RULE_REFS;
+        let reason = "not_item";
+        if (r.level === "item") {
+          const source = parseStoredRuleRefs(r.rule_refs, Number(from_year));
+          if (source.status === "no_direct_rule") {
+            nextRuleRefs = { status: "no_direct_rule", references: [] };
+            reason = "no_direct_rule";
+          } else if (targetCatalog) {
+            const transitioned = transitionRuleRefs(source, targetCatalog);
+            ({ reason, ...nextRuleRefs } = transitioned);
+          } else {
+            nextRuleRefs = { status: "needs_review", references: [] };
+            reason = "catalog_unavailable";
+          }
+          statuses[nextRuleRefs.status] += 1;
+          reasons[reason] = (reasons[reason] || 0) + 1;
+        }
         // 유형 제외 설정은 이름 기준이므로 연도가 달라도 그대로 옮겨진다.
-        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1, r.excluded_types || "", r.field_key || "", r.calculation || "");
+        const info = stmt.run(to_year, r.level, newParent, r.sort_order, r.name, r.answer_type, r.remarks, r.unit || "", r.pdf_include ?? 1, r.excluded_types || "", r.field_key || "", r.calculation || "", serializeRuleRefs(nextRuleRefs, r.level === "item" ? Number(to_year) : undefined));
         idMap[r.id] = info.lastInsertRowid;
       }
       validateStoredCalculationGraph(to_year);
+      return { statuses, reasons };
     })();
   });
 
@@ -807,18 +1063,34 @@ app.post("/api/sheet/template/copy", (req, res) => {
     logger.warn(req, "template.copy", { error: result.internalError || result.error, from_year, to_year });
     return res.status(result.status).send(result.error);
   }
-  logger.log(req, "template.copy", { from_year, to_year });
-  res.status(201).send();
+  logger.log(req, "template.copy", {
+    from_year, to_year, ...result.result, catalog_available: Boolean(targetCatalog), catalog_error: catalogError?.code,
+  });
+  res.status(201).json({ from_year, to_year, ...result.result, catalog_available: Boolean(targetCatalog) });
 });
 
 // POST /api/sheet/template/import - JSON 파일로 템플릿 가져오기
-app.post("/api/sheet/template/import", (req, res) => {
+app.post("/api/sheet/template/import", async (req, res) => {
   const { year, template } = req.body;
   if (!year || !Array.isArray(template)) return res.status(400).send("year, template 배열이 필요합니다.");
 
+  let importedRuleRefs;
+  try {
+    const flattened = flattenTemplateRuleRefs(template, { requireFieldKeys: false, requireRuleRefs: false });
+    const needsCatalog = flattened.some(({ value }) => value?.references?.length);
+    const catalog = needsCatalog ? await rulesCatalog.load(Number(year)) : null;
+    importedRuleRefs = new Map(flattened.map(({ fieldKey, value }) => [
+      fieldKey,
+      catalog ? ruleRefsForInput(value, Number(year), catalog) : validateRuleRefs(value, { edition: Number(year) }),
+    ]));
+  } catch (error) {
+    if (error instanceof RuleCatalogError) return ruleCatalogFailure(req, res, "template.import", error, { year });
+    return invalidRuleRefs(req, res, "template.import", error, { year });
+  }
+
   const result = dbRun(() => {
     const stmt = db.prepare(
-      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO sheet_template (year, level, parent_id, sort_order, name, answer_type, remarks, unit, pdf_include, excluded_types, field_key, calculation, rule_refs) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     );
 
     return db.transaction(() => {
@@ -827,19 +1099,19 @@ app.post("/api/sheet/template/import", (req, res) => {
         const cat = template[ci];
         // 다른 필드와 마찬가지로 잘못된 값은 기본값으로 흘려보낸다 — 가져오기 전체를 실패시키지 않는다.
         const excluded = normalizeExcludedTypes(cat.excluded_types) ?? "";
-        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1, excluded, "", "");
+        const catInfo = stmt.run(year, "category", null, ci, cat.name, null, cat.remarks || "", "", cat.pdf_include ?? 1, excluded, "", "", JSON.stringify(EMPTY_RULE_REFS));
         const catId = catInfo.lastInsertRowid;
 
         if (!Array.isArray(cat.subcategories)) continue;
         for (let si = 0; si < cat.subcategories.length; si++) {
           const sub = cat.subcategories[si];
-          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1, "", "", "");
+          const subInfo = stmt.run(year, "subcategory", catId, si, sub.name, null, sub.remarks || "", "", 1, "", "", "", JSON.stringify(EMPTY_RULE_REFS));
           const subId = subInfo.lastInsertRowid;
 
           if (!Array.isArray(sub.groups)) continue;
           for (let gi = 0; gi < sub.groups.length; gi++) {
             const grp = sub.groups[gi];
-            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1, "", "", "");
+            const grpInfo = stmt.run(year, "group", subId, gi, grp.name, null, grp.remarks || "", "", 1, "", "", "", JSON.stringify(EMPTY_RULE_REFS));
             const grpId = grpInfo.lastInsertRowid;
 
             if (!Array.isArray(grp.items)) continue;
@@ -852,7 +1124,8 @@ app.post("/api/sheet/template/import", (req, res) => {
                 throw { status: 400, message: `${item.name || "이름 없는 문항"}: ${e.message}` };
               }
               const fieldKey = item.field_key || `item-${randomUUID()}`;
-              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1, "", fieldKey, storedCalculation);
+              const ruleRefs = importedRuleRefs.get(fieldKey) || EMPTY_RULE_REFS;
+              stmt.run(year, "item", grpId, ii, item.name, item.answer_type || "passfail", item.remarks || "", item.unit || "", 1, "", fieldKey, storedCalculation, serializeRuleRefs(ruleRefs, Number(year)));
             }
           }
         }
@@ -872,6 +1145,158 @@ app.post("/api/sheet/template/import", (req, res) => {
   }
   logger.log(req, "template.import", { year, replaced_categories: result.result.replaced, imported_categories: template.length });
   res.status(201).send();
+});
+
+// 기존 템플릿 구조와 답변은 건드리지 않고, 동일한 내보내기 JSON의 rule_refs만 반영한다.
+app.post("/api/sheet/template/rule-refs/import", async (req, res) => {
+  const year = Number(req.body?.year);
+  if (!Number.isInteger(year) || year < 2000) {
+    return invalidRuleRefs(req, res, "template.rule_refs.import", new Error("올바른 year가 필요합니다."), { year });
+  }
+  let flattened;
+  try { flattened = flattenTemplateRuleRefs(req.body?.template); }
+  catch (error) { return invalidRuleRefs(req, res, "template.rule_refs.import", error, { year }); }
+
+  const storedLookup = dbRun(() => db.prepare(
+    "SELECT id, field_key FROM sheet_template WHERE year = ? AND level = 'item' ORDER BY field_key",
+  ).all(year));
+  if (!storedLookup.success) {
+    logger.warn(req, "template.rule_refs.import", {
+      error: storedLookup.internalError || storedLookup.error, year, phase: "template_lookup",
+    }, String(year));
+    return res.status(storedLookup.status).send(storedLookup.error);
+  }
+  const storedItems = storedLookup.result;
+  const storedKeys = storedItems.map((item) => item.field_key).sort();
+  const importedKeys = flattened.map((item) => item.fieldKey).sort();
+  if (!storedItems.length || storedKeys.length !== importedKeys.length
+    || storedKeys.some((key, index) => key !== importedKeys[index])) {
+    return invalidRuleRefs(req, res, "template.rule_refs.import", new Error("가져오기 파일의 field_key 집합이 현재 템플릿과 정확히 일치해야 합니다."), {
+      year, stored_count: storedKeys.length, imported_count: importedKeys.length,
+    });
+  }
+
+  let normalized;
+  let catalog = null;
+  try {
+    const needsCatalog = flattened.some(({ value }) => value?.references?.length);
+    catalog = needsCatalog ? await rulesCatalog.load(year) : null;
+    normalized = new Map(flattened.map(({ fieldKey, value }) => [
+      fieldKey,
+      catalog ? ruleRefsForInput(value, year, catalog) : validateRuleRefs(value, { edition: year }),
+    ]));
+  } catch (error) {
+    if (error instanceof RuleCatalogError) return ruleCatalogFailure(req, res, "template.rule_refs.import", error, { year });
+    return invalidRuleRefs(req, res, "template.rule_refs.import", error, { year });
+  }
+
+  const result = dbRun(() => db.transaction(() => {
+    const update = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ? AND year = ? AND level = 'item'");
+    const counts = { verified: 0, needs_review: 0, no_direct_rule: 0 };
+    for (const item of storedItems) {
+      const value = normalized.get(item.field_key);
+      const info = update.run(serializeRuleRefs(value, year), item.id, year);
+      if (info.changes !== 1) throw { status: 409, message: "템플릿이 동시에 변경되었습니다. 다시 시도하세요." };
+      counts[value.status] += 1;
+    }
+    return counts;
+  })());
+  if (!result.success) {
+    logger.warn(req, "template.rule_refs.import", { error: result.internalError || result.error, year }, String(year));
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "template.rule_refs.import", { year, counts: result.result, ...catalogRelease(catalog) }, String(year));
+  return res.json({ year, counts: result.result });
+});
+
+app.post("/api/sheet/template/rule-refs/sync", async (req, res) => {
+  const fromYear = Number(req.body?.from_year);
+  const toYear = Number(req.body?.to_year);
+  if (!Number.isInteger(fromYear) || !Number.isInteger(toYear)) return res.status(400).send("from_year, to_year가 필요합니다.");
+  let catalog;
+  try { catalog = await rulesCatalog.load(toYear); }
+  catch (error) { return ruleCatalogFailure(req, res, "template.rule_refs.sync", error, { from_year: fromYear, year: toYear }); }
+
+  const result = dbRun(() => db.transaction(() => {
+    const sourceItems = db.prepare(
+      "SELECT field_key, rule_refs FROM sheet_template WHERE year = ? AND level = 'item' AND field_key != ''",
+    ).all(fromYear);
+    const targetItems = db.prepare(
+      "SELECT id, field_key, rule_refs FROM sheet_template WHERE year = ? AND level = 'item' AND field_key != ''",
+    ).all(toYear);
+    if (!sourceItems.length || !targetItems.length) throw { status: 400, message: "동기화할 원본 또는 대상 템플릿이 없습니다." };
+    const sourceByKey = new Map(sourceItems.map((item) => [item.field_key, item]));
+    const update = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?");
+    const counts = { verified: 0, needs_review: 0, no_direct_rule: 0, skipped_verified: 0, missing_field_key: 0 };
+    const reasons = {};
+    for (const target of targetItems) {
+      const current = parseStoredRuleRefs(target.rule_refs, toYear);
+      if (current.status !== "needs_review") {
+        counts.skipped_verified += 1;
+        continue;
+      }
+      const source = sourceByKey.get(target.field_key);
+      if (!source) {
+        counts.missing_field_key += 1;
+        continue;
+      }
+      const transitioned = transitionRuleRefs(parseStoredRuleRefs(source.rule_refs, fromYear), catalog);
+      const { reason, ...value } = transitioned;
+      update.run(serializeRuleRefs(value, toYear), target.id);
+      counts[value.status] += 1;
+      reasons[reason] = (reasons[reason] || 0) + 1;
+    }
+    return { counts, reasons };
+  })());
+  if (!result.success) {
+    logger.warn(req, "template.rule_refs.sync", { error: result.internalError || result.error, from_year: fromYear, to_year: toYear }, `${fromYear}->${toYear}`);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "template.rule_refs.sync", { from_year: fromYear, to_year: toYear, ...result.result, ...catalogRelease(catalog) }, `${fromYear}->${toYear}`);
+  return res.json({ from_year: fromYear, to_year: toYear, ...result.result });
+});
+
+app.post("/api/sheet/template/rule-refs/revalidate", async (req, res) => {
+  const year = Number(req.body?.year);
+  if (!Number.isInteger(year)) return res.status(400).send("year가 필요합니다.");
+  let catalog;
+  try { catalog = await rulesCatalog.load(year, { force: true }); }
+  catch (error) { return ruleCatalogFailure(req, res, "template.rule_refs.revalidate", error, { year }); }
+
+  const result = dbRun(() => db.transaction(() => {
+    const items = db.prepare(
+      "SELECT id, rule_refs FROM sheet_template WHERE year = ? AND level = 'item'",
+    ).all(year);
+    const update = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?");
+    const counts = { verified: 0, needs_review: 0, no_direct_rule: 0, changed: 0, missing: 0 };
+    for (const item of items) {
+      const source = parseStoredRuleRefs(item.rule_refs, year);
+      let value = source;
+      if (source.status === "verified") {
+        const transitioned = transitionRuleRefs(source, catalog);
+        const { reason, ...next } = transitioned;
+        value = next;
+        if (reason === "content_changed") counts.changed += 1;
+        if (reason === "rule_key_missing") counts.missing += 1;
+      } else if (source.status === "needs_review" && source.references.length) {
+        const currentRules = source.references.map((ref) => catalog.byKey.get(ref.rule_key));
+        if (currentRules.every(Boolean)) value = refsFromRules("needs_review", currentRules);
+        else {
+          value = { status: "needs_review", references: [] };
+          counts.missing += 1;
+        }
+      }
+      update.run(serializeRuleRefs(value, year), item.id);
+      counts[value.status] += 1;
+    }
+    return counts;
+  })());
+  if (!result.success) {
+    logger.warn(req, "template.rule_refs.revalidate", { error: result.internalError || result.error, year }, String(year));
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "template.rule_refs.revalidate", { year, counts: result.result, ...catalogRelease(catalog) }, String(year));
+  return res.json({ year, counts: result.result });
 });
 
 function getInspectionSummary(year) {

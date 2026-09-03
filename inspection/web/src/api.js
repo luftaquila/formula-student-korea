@@ -41,10 +41,11 @@ export async function reorderSheetNodes(items) {
 }
 
 export async function copySheetTemplate(fromYear, toYear) {
-  await request("/api/sheet/template/copy", {
+  const res = await request("/api/sheet/template/copy", {
     method: "POST",
     body: JSON.stringify({ from_year: fromYear, to_year: toYear }),
   });
+  return res.json();
 }
 
 export async function importSheetTemplate(year, template) {
@@ -52,6 +53,50 @@ export async function importSheetTemplate(year, template) {
     method: "POST",
     body: JSON.stringify({ year, template }),
   });
+}
+
+export async function searchSheetRules(year, document, query) {
+  const params = new URLSearchParams({ year: String(year) });
+  if (document) params.set("document", document);
+  if (query) params.set("q", query);
+  const res = await request(`/api/sheet/rules/search?${params}`);
+  return res.json();
+}
+
+export async function updateSheetRuleRefs(itemId, status, ruleKeys = []) {
+  const res = await request(`/api/sheet/template/${itemId}/rule-refs`, {
+    method: "PUT",
+    body: JSON.stringify({ status, rule_keys: ruleKeys }),
+  });
+  return res.json();
+}
+
+export async function importSheetRuleRefs(year, template) {
+  const res = await request("/api/sheet/template/rule-refs/import", {
+    method: "POST",
+    body: JSON.stringify({ year, template }),
+  });
+  return res.json();
+}
+
+export async function syncSheetRuleRefs(fromYear, toYear) {
+  const res = await request("/api/sheet/template/rule-refs/sync", {
+    method: "POST",
+    body: JSON.stringify({ from_year: fromYear, to_year: toYear }),
+  });
+  return res.json();
+}
+
+export async function revalidateSheetRuleRefs(year) {
+  const res = await request("/api/sheet/template/rule-refs/revalidate", {
+    method: "POST",
+    body: JSON.stringify({ year }),
+  });
+  return res.json();
+}
+
+export function sheetRuleLink(itemId, referenceIndex) {
+  return `/competition/api/v1/inspection/sheet/rule-link/${encodeURIComponent(itemId)}/${encodeURIComponent(referenceIndex)}`;
 }
 
 export async function fetchSheetSummary(year) {

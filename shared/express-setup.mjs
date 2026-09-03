@@ -223,8 +223,9 @@ export function createApp(deps, authRoleFn) {
     setHeaders: (res) => res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
   }));
 
-  app.use(express.json({ limit: "100kb" }));
-  app.use(express.urlencoded({ extended: true, limit: "100kb" }));
+  const bodyLimit = deps.jsonLimit || "100kb";
+  app.use(express.json({ limit: bodyLimit }));
+  app.use(express.urlencoded({ extended: true, limit: bodyLimit }));
 
   // 1. Cookie parsing (no external dependency)
   app.use((req, res, next) => {

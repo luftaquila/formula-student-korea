@@ -934,6 +934,42 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
+  it("validates the exact pre-rule-reference database read-only and upgrades it without replacing template rows", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-rule-reference-schema-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    const predecessor = new Database(dbPath);
+    const itemId = predecessor.prepare(`INSERT INTO sheet_template
+      (year, level, name, answer_type, field_key, calculation)
+      VALUES (?, 'item', 'Preserved item', 'number', 'preserved-key', '')`
+    ).run(CURRENT_YEAR).lastInsertRowid;
+    predecessor.exec("ALTER TABLE sheet_template DROP COLUMN rule_refs");
+    predecessor.close();
+
+    const before = validateDatabase(dbPath);
+    assert.equal(before.status, 0, before.stderr);
+    const unchanged = new Database(dbPath, { readonly: true });
+    assert.equal(unchanged.pragma("table_info('sheet_template')").some(({ name }) => name === "rule_refs"), false);
+    assert.equal(competitionSchemaContractDigest(captureCompetitionSchemaContract(unchanged)),
+      "83a36e66e0d2786040e4b1cdfdc883fcc5ee64b3d90c3daf80c4669d1346e3f9");
+    unchanged.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    assert.deepEqual(
+      upgraded.db.prepare("SELECT id, field_key, rule_refs FROM sheet_template WHERE id = ?").get(itemId),
+      { id: itemId, field_key: "preserved-key", rule_refs: '{"status":"needs_review","references":[]}' },
+    );
+    upgraded.close();
+    assert.equal(validateDatabase(dbPath).status, 0);
+  });
+
   it("accepts the exact pre-driver-name schema and adds both columns without validator writes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-driver-name-schema-upgrade-"));
     roots.push(root);
@@ -960,7 +996,7 @@ describe("Competition backup/restore artifact validation", () => {
     const unchanged = new Database(dbPath, { readonly: true });
     assert.equal(
       competitionSchemaContractDigest(captureCompetitionSchemaContract(unchanged)),
-      "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
+      "a442bea1ab762b97bc4238ca16d5d4e1dafc93f42bcb6f1455d2a0c90d4914e8",
     );
     assert.equal(
       unchanged.pragma("table_info('score_endurance')").some(({ name }) => name === "driver1_name" || name === "driver2_name"),
@@ -1094,7 +1130,7 @@ describe("Competition backup/restore artifact validation", () => {
     const intermediate = new Database(dbPath, { readonly: true });
     assert.equal(
       competitionSchemaContractDigest(captureCompetitionSchemaContract(intermediate)),
-      "bbfed20876a4642ecc6759441ac84d6c1c28e9b21689a8fafb2cfe4b44f400b4",
+      "2a998ecd02b336cc525ecf03341ecead2ea97899ae83c3913710ade9136d1f45",
     );
     intermediate.close();
     const intermediateResult = validateDatabase(dbPath);

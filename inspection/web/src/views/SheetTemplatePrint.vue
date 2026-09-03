@@ -35,6 +35,15 @@ function print() {
   window.print();
 }
 
+function ruleCitation(item) {
+  const refs = item.rule_refs;
+  if (!refs || refs.status === "needs_review") return "규정 연결 검토 필요";
+  if (refs.status !== "verified") return "";
+  return refs.references
+    .map(ref => `${ref.document === "formula-technical" ? "기술" : "경기"} ${ref.citation}`)
+    .join(" · ");
+}
+
 import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../utils/sheet-helpers";
 </script>
 
@@ -95,6 +104,7 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
                   <template v-if="item.answer_type === 'checktable'">
                     <td :colspan="5" class="td-item-name td-checktable">
                       <span class="item-num">{{ itemNum(ii) }}</span> {{ item.name }}
+                      <span v-if="ruleCitation(item)" class="rule-citation">{{ ruleCitation(item) }}</span>
                       <table class="checktable-print" v-if="getChecktableConfig(item).columns.length">
                         <thead>
                           <tr>
@@ -125,7 +135,10 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
                         <span v-if="item.unit" class="unit-label">{{ item.unit }}</span>
                       </td>
                     </template>
-                    <td class="td-remarks">{{ item.remarks }}</td>
+                    <td class="td-remarks">
+                      <span>{{ item.remarks }}</span>
+                      <span v-if="ruleCitation(item)" class="rule-citation">{{ ruleCitation(item) }}</span>
+                    </td>
                   </template>
                 </tr>
               </template>
@@ -319,6 +332,13 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
 .td-remarks {
   font-size: 7.5pt;
   color: #333;
+}
+
+.rule-citation {
+  display: block;
+  margin-top: 1pt;
+  color: #555;
+  font-size: 6.5pt;
 }
 
 .unit-label {
