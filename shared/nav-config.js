@@ -23,7 +23,6 @@ export const operations = [
   { name: "인스펙션 시트", href: "/inspection", icon: "sheet", permission: "inspection.operate" },
   { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", permission: "documents.operate" },
   { name: "파일 클라우드", href: "/files/", icon: "files", permission: "files.access", external: true },
-  { name: "일정 관리", href: "/calendar", icon: "calendar", permission: "calendar.manage" },
   { name: "코스 관리", href: "/course", icon: "course", permission: "course.operate" },
   { name: "계측 시스템", href: "/traffic", icon: "traffic", permission: "traffic.operate" },
   { name: "성적 관리", href: "/score", icon: "score", permission: "score.operate" },

@@ -29,7 +29,7 @@ test.describe("Cross-application RBAC", () => {
       {
         profile: "operationsManager",
         headings: ["Services", "Operations"],
-        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/", "/calendar"],
+        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/"],
         absentPaths: ["/course", "/traffic", "/score"],
       },
       {
