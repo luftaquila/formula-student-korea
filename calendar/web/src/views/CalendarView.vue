@@ -35,6 +35,12 @@ const ROLE_CALENDARS = {
     lightColors: { main: "#059669", container: "#d1fae5", onContainer: "#065f46" },
     darkColors: { main: "#6ee7b7", container: "#064e3b", onContainer: "#d1fae5" },
   },
+  staff: {
+    colorName: "staff",
+    label: "staff",
+    lightColors: { main: "#0d9488", container: "#ccfbf1", onContainer: "#115e59" },
+    darkColors: { main: "#5eead4", container: "#134e4a", onContainer: "#ccfbf1" },
+  },
   official: {
     colorName: "official",
     label: "official",
@@ -46,6 +52,12 @@ const ROLE_CALENDARS = {
     label: "chief",
     lightColors: { main: "#d97706", container: "#fef3c7", onContainer: "#92400e" },
     darkColors: { main: "#fcd34d", container: "#78350f", onContainer: "#fef3c7" },
+  },
+  master: {
+    colorName: "master",
+    label: "master",
+    lightColors: { main: "#7c3aed", container: "#ede9fe", onContainer: "#5b21b6" },
+    darkColors: { main: "#c4b5fd", container: "#4c1d95", onContainer: "#ede9fe" },
   },
   admin: {
     colorName: "admin",
@@ -629,8 +641,10 @@ onUnmounted(() => {
 
 .role-public { background: rgba(100, 116, 139, 0.25); color: var(--text-secondary, #334155); }
 .role-student { background: rgba(16, 185, 129, 0.15); color: #059669; }
+.role-staff { background: rgba(13, 148, 136, 0.15); color: #0d9488; }
 .role-official { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
 .role-chief { background: rgba(245, 158, 11, 0.15); color: #d97706; }
+.role-master { background: rgba(124, 58, 237, 0.15); color: #7c3aed; }
 .role-admin { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
 
 .event-popup__edit-btn {

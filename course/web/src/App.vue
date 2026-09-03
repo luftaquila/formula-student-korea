@@ -86,7 +86,7 @@ async function fetchStatus() {
 }
 
 onMounted(async () => {
-  // Rover control (status, e-stop) is admin-only; chief manages cones only, so
+  // Rover control (status, e-stop) is admin-only; master manages cones only, so
   // skip the status poll — roverConnected stays false and the global e-stop and
   // its underlying /api/rover/* calls never engage.
   if (isAdmin.value) await fetchStatus();

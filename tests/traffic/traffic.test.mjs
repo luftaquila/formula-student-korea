@@ -23,6 +23,8 @@ const Database = requireFromTraffic('better-sqlite3');
 const CURRENT_YEAR = currentCompetitionYear();
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
+const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 
 let server, baseUrl, client, db, dbPath;
 
@@ -626,6 +628,12 @@ describe('PUT /api/event-modes/:type', () => {
 
 // ─── Auth ────────────────────────────────────────────────────────────────
 describe('Auth enforcement', () => {
+  it('allows master and rejects chief on protected traffic APIs', async () => {
+    assert.equal((await client.get('/api/records', { cookie: masterCookie })).status, 200);
+    assert.equal((await client.get('/api/records', { cookie: chiefCookie })).status, 403);
+    assert.equal((await client.get('/api/logs', { cookie: masterCookie })).status, 403);
+  });
+
   it('POST /api/records without auth returns 401', async () => {
     const res = await client.post('/api/records', {
       body: {

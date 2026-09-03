@@ -409,7 +409,7 @@ function roleFn(req) {
   }
   // Rover control, mission history, and system logs stay admin-only. Only
   // course/cone management — plus the SPA shell and the SSE it needs for live
-  // cone sync — is exposed to chief. The frontend hides the 로버/기록 tabs from
+  // cone sync — is exposed to master. The frontend hides the 로버/기록 tabs from
   // non-admins; these gates are the enforcing backstop.
   if (p.startsWith("/api/rover")) return "admin";
   if (p.startsWith("/api/missions")) return "admin";
@@ -423,9 +423,9 @@ function roleFn(req) {
   if (/^\/api\/courses\/\d+\/snapshots/.test(p)) return "admin";
   // Deleting a course cascade-wipes its cones AND every snapshot of it (both
   // FK to course(id) ON DELETE CASCADE) — irreversible, so admin-only, in line
-  // with snapshot delete above. Create/rename and cone editing stay chief.
+  // with snapshot delete above. Create/rename and cone editing stay master.
   if (req.method === "DELETE" && /^\/api\/courses\/\d+$/.test(p)) return "admin";
-  return "chief";
+  return "master";
 }
 
 /* ============================================
@@ -453,9 +453,9 @@ function getMemos(courseId) {
 }
 
 // 연결에 role을 태깅해 rover 텔레메트리를 admin 연결로만 좁힐 수 있게 한다(rover-routes의
-// broadcast 래퍼가 filterFn으로 사용). courses/cones/memos는 chief+ 전체에 전송된다.
+// broadcast 래퍼가 filterFn으로 사용). courses/cones/memos는 master+ 전체에 전송된다.
 // meta.role은 연결 시점 스냅샷이므로, sse 매니저의 주기 재검증으로 강등을 반영한다(즉시-권한-반영):
-// 최신 role로 meta를 갱신(→ admin 필터가 재평가)하거나, chief 미만/삭제 시 연결을 종료한다.
+// 최신 role로 meta를 갱신(→ admin 필터가 재평가)하거나, master 미만/삭제 시 연결을 종료한다.
 async function revalidateSseRole(meta) {
   const email = meta.email;
   if (!email) return meta; // 검증 불가 → 유지
@@ -472,7 +472,7 @@ async function revalidateSseRole(meta) {
   // 주입 stub이 role을 생략하면 예전 코드가 끊었을 연결을 유지하게 되므로, 그 차이를
   // 모르고 stub을 쓰지 않도록 남긴다.
   const role = result.role ?? meta.role;
-  if (!role || (ROLE_LEVELS[role] || 0) < ROLE_LEVELS.chief) return null; // chief 미만 → 종료
+  if (!role || (ROLE_LEVELS[role] || 0) < ROLE_LEVELS.master) return null; // master 미만 → 종료
   return { ...meta, role };                    // 최신 role 반영
 }
 app.get("/api/events", sseHandler(() => ({ courses: getCourses() }), {
@@ -1089,7 +1089,7 @@ app.post("/api/courses/:id/cones", (req, res) => {
 
 // DELETE /api/courses/:id/cones - 코스의 모든 콘 삭제 (전체 삭제).
 // Destructive bulk wipe: a single audit entry (vs. N per-cone deletes) and one
-// SSE broadcast. Chief-allowed, matching per-cone/multi-select delete — a chief
+// SSE broadcast. Master-allowed, matching per-cone/multi-select delete — a master
 // can already clear every cone one by one.
 app.delete("/api/courses/:id/cones", (req, res) => {
   const courseId = parseInt(req.params.id, 10);

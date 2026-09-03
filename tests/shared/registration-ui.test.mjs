@@ -5,6 +5,7 @@ import {
   admins,
   chiefs,
   getIcon,
+  masters,
   officials,
   resources,
   services,
@@ -33,7 +34,7 @@ test("registration navigation uses distinct queue-style icons and concise labels
   assert.equal(getIcon(registration?.icon), "🎫");
   assert.equal(getIcon(registrationAdmin?.icon), "🎛️");
 
-  const menuItems = [...services, ...resources, ...staff, ...officials, ...chiefs, ...admins];
+  const menuItems = [...services, ...resources, ...staff, ...officials, ...chiefs, ...masters, ...admins];
   const otherIcons = menuItems
     .filter((item) => item !== registration && item !== registrationAdmin)
     .map((item) => getIcon(item.icon));
@@ -47,7 +48,8 @@ test("staff sits below official and only owns registration management", () => {
     staff: 2,
     official: 3,
     chief: 4,
-    admin: 5,
+    master: 5,
+    admin: 6,
   });
   assert.deepEqual(staff.map(({ href, auth }) => ({ href, auth })), [
     { href: "/registration/manage", auth: "staff" },
@@ -58,8 +60,12 @@ test("staff sits below official and only owns registration management", () => {
   ]);
   assert.deepEqual(chiefs.map(({ href, auth }) => ({ href, auth })), [
     { href: "/documents/admin", auth: "chief" },
-    { href: "/course", auth: "chief" },
     { href: "/files/", auth: "chief" },
+  ]);
+  assert.deepEqual(masters.map(({ href, auth }) => ({ href, auth })), [
+    { href: "/course", auth: "master" },
+    { href: "/traffic", auth: "master" },
+    { href: "/score", auth: "master" },
   ]);
 });
 
@@ -73,6 +79,7 @@ test("landing groups role menus and makes resources collapsible", async () => {
   assert.match(landing, /<h2 class="section-title">Staff<\/h2>/);
   assert.match(landing, /<h2 class="section-title">Officials<\/h2>/);
   assert.match(landing, /<h2 class="section-title">Chief<\/h2>/);
+  assert.match(landing, /<h2 class="section-title">Master<\/h2>/);
   assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);
   assert.match(navMenu, /fsk\.resources\.menu\.open/);
 });

@@ -611,7 +611,7 @@ const remainingDistanceM = computed(() => {
 });
 
 // Inspector (desktop right panel). Rover control and mission history are
-// admin-only; chief sees only the 코스 (cone-editing) tab. The backend enforces
+// admin-only; master sees only the 코스 (cone-editing) tab. The backend enforces
 // the same split — /api/rover/* and /api/missions/* require admin.
 const INSPECTOR_TABS = [
   { key: "rover", label: "로버", icon: "🚗", adminOnly: true },
@@ -811,7 +811,7 @@ const activeTab = ref((() => {
   // Migrate stale tab keys from the pre-merge layout.
   if (v === "cones") v = "courses";
   if (v === "logs" || v === "missions") v = "history";
-  // Rover/history are admin-only — a non-admin (chief) only ever lands on 코스,
+  // Rover/history are admin-only — a non-admin (master) only ever lands on 코스,
   // even if a stale localStorage pref from a prior admin session says otherwise.
   if (!isAdmin.value && v !== "courses") v = "courses";
   return v;
@@ -2651,7 +2651,7 @@ async function deleteCourse(id) {
 /* ── Calibration popup (antenna + wheel encoder) ───── */
 // One modal hosts both rover calibrations. The rover persists each
 // offset on its end (/var/lib/pilot/{antenna_offset,wheel_cal}.json)
-// and reports every attempt back via SSE — so the chief can spot a
+// and reports every attempt back via SSE — so the admin can spot a
 // stale or wildly wrong value before a mission. Both triggers are
 // gated on roverStatus (connected + IDLE); mid-mission calibration
 // would require interrupting the rover and is intentionally not allowed.
@@ -5768,7 +5768,7 @@ onMounted(async () => {
   }
   recomputeCenterline(); // draw the restored course's centerline on first paint
   connectSSE();
-  // /api/rover/status is admin-only; chief never opens the rover tab, so skip it.
+  // /api/rover/status is admin-only; master never opens the rover tab, so skip it.
   if (isAdmin.value) fetchRoverStatus();
   // Prime the GPS-management tab if it's the persisted active tab on load.
   if (isAdmin.value && activeTab.value === "gps") loadGps();

@@ -28,13 +28,19 @@ test.describe("Cross-application RBAC", () => {
       {
         role: "chief",
         headings: ["Services", "Officials", "Chief"],
-        paths: ["/queue/admin", "/inspection", "/documents/admin", "/course", "/files/"],
-        absentPaths: ["/registration/manage"],
+        paths: ["/queue/admin", "/inspection", "/documents/admin", "/files/"],
+        absentPaths: ["/registration/manage", "/course", "/traffic", "/score"],
+      },
+      {
+        role: "master",
+        headings: ["Services", "Officials", "Chief", "Master"],
+        paths: ["/queue/admin", "/inspection", "/documents/admin", "/files/", "/course", "/traffic", "/score"],
+        absentPaths: ["/registration/manage", "/entry", "/auth"],
       },
       {
         role: "admin",
-        headings: ["Services", "Staff", "Officials", "Chief", "Admin"],
-        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin"],
+        headings: ["Services", "Staff", "Officials", "Chief", "Master", "Admin"],
+        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/course", "/traffic", "/score"],
         absentPaths: [],
       },
     ];
@@ -127,6 +133,20 @@ test.describe("Cross-application RBAC", () => {
       await page.goto("/queue/admin");
       await expect(page).toHaveURL(/\/queue\/admin/);
       expect((await page.request.get("/competition/api/v1/traffic/records")).status()).toBe(403);
+    });
+  });
+
+  test("masters can use course, traffic, and score but not admin applications", async ({ browser }) => {
+    await withPage(browser, storageStatePath("master"), async (page) => {
+      for (const path of ["/course", "/traffic", "/score"]) {
+        await page.goto(path);
+        await expect(page).toHaveURL(new RegExp(path));
+      }
+
+      for (const path of ["/entry", "/auth", "/email"]) {
+        await page.goto(path);
+        await expect(page).toHaveURL("/");
+      }
     });
   });
 

@@ -858,6 +858,7 @@ describe("Competition modular monolith", () => {
     const staff = makeAuthCookie({ email: "staff@test.invalid", name: "Staff", role: "staff" });
     const official = makeAuthCookie({ email: "official@test.invalid", name: "Official", role: "official" });
     const chief = makeAuthCookie({ email: "chief@test.invalid", name: "Chief", role: "chief" });
+    const master = makeAuthCookie({ email: "master@test.invalid", name: "Master", role: "master" });
     const admin = makeAuthCookie({ email: "admin@test.invalid", name: "Admin", role: "admin" });
     const get = (pathname, cookie) => fetch(`${baseUrl}${pathname}`, {
       redirect: "manual",
@@ -869,7 +870,11 @@ describe("Competition modular monolith", () => {
       assert.equal((await get("/entry/", admin)).status, 200);
       assert.equal((await get("/inspection/", official)).status, 200);
       assert.equal((await get("/traffic/", official)).status, 302);
+      assert.equal((await get("/traffic/", chief)).status, 302);
+      assert.equal((await get("/traffic/", master)).status, 200);
       assert.equal((await get("/score/", official)).status, 302);
+      assert.equal((await get("/score/", chief)).status, 302);
+      assert.equal((await get("/score/", master)).status, 200);
       assert.equal((await get("/score/", admin)).status, 200);
       assert.equal((await get("/documents/", student)).status, 200);
       assert.equal((await get("/queue/")).status, 200);

@@ -16,7 +16,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE NOT NULL,
   name TEXT,
-  role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
+  role TEXT NOT NULL CHECK(role IN ('admin', 'master', 'chief', 'official', 'staff', 'student')),
   memo TEXT DEFAULT '',
   realname TEXT DEFAULT '',
   phone TEXT DEFAULT '',
@@ -39,9 +39,9 @@ db.exec("UPDATE users SET realname = memo WHERE (realname IS NULL OR realname = 
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
 db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
 
-// 마이그레이션: role CHECK 제약조건에 staff 추가
+// 마이그레이션: role CHECK 제약조건에 staff, master 추가
 const roleCheck = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
-if (roleCheck && !roleCheck.sql.includes("'staff'")) {
+if (roleCheck && !roleCheck.sql.includes("'master'")) {
   // SQLite enables foreign-key enforcement by default in this runtime. Temporarily
   // disable it outside the transaction so the referenced users table can be rebuilt
   // without deleting ops_display rows, then fail closed if any reference is invalid.
@@ -53,7 +53,7 @@ if (roleCheck && !roleCheck.sql.includes("'staff'")) {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           email TEXT UNIQUE NOT NULL,
           name TEXT,
-          role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
+          role TEXT NOT NULL CHECK(role IN ('admin', 'master', 'chief', 'official', 'staff', 'student')),
           memo TEXT DEFAULT '',
           realname TEXT DEFAULT '',
           phone TEXT DEFAULT '',
@@ -1028,7 +1028,7 @@ app.post("/api/ops-contacts", (req, res) => {
 
   const user = db.prepare("SELECT email, name, role FROM users WHERE id = ? AND active = 1").get(user_id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
-  if (!["official", "chief", "admin"].includes(user.role)) {
+  if ((ROLE_LEVELS[user.role] || 0) < ROLE_LEVELS.official) {
     logger.warn(req, "ops_contact.create", { reason: "insufficient_role", role: user.role }, user.email);
     return res.status(400).send("official 이상 권한 사용자만 추가할 수 있습니다.");
   }

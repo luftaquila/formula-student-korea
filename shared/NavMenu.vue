@@ -2,10 +2,10 @@
 import { ref, watch } from "vue";
 import ThemeToggle from "./ThemeToggle.vue";
 import { readDisclosureState, writeDisclosureState } from "./persistent-disclosure.js";
-import { services, resources, staff, officials, chiefs, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { user, isAuthenticated, isStudent, isStaff, showStaff, showOfficials, isChief, isAdmin } from "./officialsStore.js";
+import { services, resources, staff, officials, chiefs, masters, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
+import { user, isAuthenticated, isStudent, isStaff, showStaff, showOfficials, isChief, isMaster, isAdmin } from "./officialsStore.js";
 
-const roleCheck = { student: isAuthenticated, staff: showStaff, official: showOfficials, chief: isChief, admin: isAdmin };
+const roleCheck = { student: isAuthenticated, staff: showStaff, official: showOfficials, chief: isChief, master: isMaster, admin: isAdmin };
 function canShow(item) {
   if (item.studentOnly) return isStudent.value; // exact student, hidden from staff
   return !item.auth || roleCheck[item.auth]?.value;
@@ -82,7 +82,7 @@ function isActive(href) {
   }
   if (href !== "/" && props.currentPath.startsWith(href + "/")) {
     // Only match prefix if no other item is a more specific match
-    const allItems = [...services, ...staff, ...officials, ...chiefs, ...admins];
+    const allItems = [...services, ...staff, ...officials, ...chiefs, ...masters, ...admins];
     const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
     if (!hasMoreSpecific) return true;
   }
@@ -269,6 +269,21 @@ async function logout() {
                     <polyline points="15 3 21 3 21 9" />
                     <line x1="10" y1="14" x2="21" y2="3" />
                   </svg>
+                </a>
+              </template>
+            </div>
+
+            <div v-if="isMaster" class="nav-section">
+              <span class="nav-section-title">Master</span>
+              <template v-for="item in masters" :key="item.href">
+                <a
+                  v-if="canShow(item)"
+                  :href="item.href"
+                  class="nav-item"
+                  :class="{ active: isActive(item.href) }"
+                >
+                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                  <span>{{ item.name }}</span>
                 </a>
               </template>
             </div>

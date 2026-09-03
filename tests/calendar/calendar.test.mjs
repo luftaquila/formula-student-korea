@@ -22,6 +22,7 @@ const MOCK_USERS = [
   { email: 'staff@test.com', name: 'Staff', role: 'staff', active: 1 },
   { email: 'official@test.com', name: 'Official', role: 'official', active: 1 },
   { email: 'chief@test.com', name: 'Chief', role: 'chief', active: 1 },
+  { email: 'master@test.com', name: 'Master', role: 'master', active: 1 },
   { email: 'admin@test.com', name: 'Admin', role: 'admin', active: 1 },
 ];
 
@@ -48,6 +49,7 @@ const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student
 const staffCookie = makeAuthCookie({ email: 'staff@test.com', name: 'Staff', role: 'staff' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
 before(async () => {
@@ -128,6 +130,22 @@ describe('Calendar API', () => {
       assert.equal(res.status, 403);
     });
 
+    it('prevents chief from setting master-level visibility', async () => {
+      const res = await client.post('/api/events', {
+        cookie: chiefCookie,
+        body: { title: 'Master Only', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'master' },
+      });
+      assert.equal(res.status, 403);
+    });
+
+    it('allows master to set master-level visibility', async () => {
+      const res = await client.post('/api/events', {
+        cookie: masterCookie,
+        body: { title: 'Master Event', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'master' },
+      });
+      assert.equal(res.status, 201);
+    });
+
     it('allows admin to set admin-level visibility', async () => {
       const res = await client.post('/api/events', {
         cookie: adminCookie,
@@ -147,7 +165,7 @@ describe('Calendar API', () => {
 
   describe('Role-based event filtering', () => {
     const visibilityPrefix = 'Visibility fixture: ';
-    const roles = ['public', 'student', 'staff', 'official', 'chief', 'admin'];
+    const roles = ['public', 'student', 'staff', 'official', 'chief', 'master', 'admin'];
 
     before(async () => {
       for (const role of roles) {
@@ -196,11 +214,17 @@ describe('Calendar API', () => {
       assert.deepEqual(fixtureRoles(await res.json()), ['official', 'public', 'staff', 'student']);
     });
 
+    it('master sees every event below admin', async () => {
+      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: masterCookie });
+      assert.equal(res.status, 200);
+      assert.deepEqual(fixtureRoles(await res.json()), ['chief', 'master', 'official', 'public', 'staff', 'student']);
+    });
+
     it('admin sees all events including admin-role events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: adminCookie });
       assert.equal(res.status, 200);
       const events = await res.json();
-      assert.deepEqual(fixtureRoles(events), ['admin', 'chief', 'official', 'public', 'staff', 'student']);
+      assert.deepEqual(fixtureRoles(events), ['admin', 'chief', 'master', 'official', 'public', 'staff', 'student']);
     });
   });
 

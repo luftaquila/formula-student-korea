@@ -25,6 +25,7 @@ test.describe("User management", () => {
 
     // Verify seeded users appear in the table
     await expect(table.getByRole("cell", { name: "e2e-admin@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-master@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-chief@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-official@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-staff@test.com", exact: true })).toBeVisible();

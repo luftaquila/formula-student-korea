@@ -37,9 +37,9 @@ All mutating endpoints are logged via `shared/logger.mjs`.
 
 ### Role Hierarchy
 
-`public < student < staff < official < chief < admin`
+`public < student < staff < official < chief < master < admin`
 
-Levels: `{ student: 1, staff: 2, official: 3, chief: 4, admin: 5 }`. Higher roles can access lower-level resources.
+Levels: `{ student: 1, staff: 2, official: 3, chief: 4, master: 5, admin: 6 }`. Higher roles can access lower-level resources.
 
 ### Rate Limiting
 
@@ -300,36 +300,36 @@ A successful answer or memo change automatically adds the authenticated account'
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/events` | admin | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent GREEN emits `{ event_type, cleared: true }`. |
+| GET | `/events` | master | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent GREEN emits `{ event_type, cleared: true }`. |
 
 ### Record Management
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/records` | admin | — | `["FSK 2025 가속 1차", ...]` | List all record table names |
-| GET | `/records/:name` | admin | — | `[{ rowid, time, num, univ, team, type, result, status, detail, cones, oc, scoreboard }]` | Get records. `status` is `null` (normal), `DNS`, `DNF`, or `DSQ`; a classified row may retain its positive raw `result` |
-| GET | `/records/year/:year` | admin | — | `[{ name, records: [...] }]` | 연도별 기록 일괄 조회 (visibility 필터 적용, score 집계용) |
-| GET | `/records/visibility` | admin | — | `{ name: bool }` | 기록 파일별 성적 반영 여부 |
-| PUT | `/records/:name/visibility` | admin | — | `{ name, visible }` | 기록 파일 성적 반영 토글 |
-| POST | `/records` | admin | `{ name, data: { time, type, entry: { id, num, univ, team }, result?, status?, detail? } }` | `{ name, record }` (201) | Add record (auto-creates table with `FSK {year}` prefix). `status=null` requires a positive integer `result`; `DNS`/`DNF`/`DSQ` allow a null or positive raw result. The stable team `id` is re-resolved at save time |
-| PATCH | `/records/:name/:rowid` | admin | `{ field, value }` | `{ num, ... }` | Update `status`, `scoreboard`, `detail`, `cones`, `oc`, or `result`. `status` is explicit and scoreboard visibility is independent. An untimed status row cannot be restored to normal; cancel it with DELETE |
-| DELETE | `/records/:name/:rowid` | admin | — | `{ name, rowid, deleted }` | Cancel and delete an untimed (`result=null`) status row only. Timed rows must be retained and reclassified |
-| DELETE | `/records/:name` | admin | — | 200 | Drop record table |
+| GET | `/records` | master | — | `["FSK 2025 가속 1차", ...]` | List all record table names |
+| GET | `/records/:name` | master | — | `[{ rowid, time, num, univ, team, type, result, status, detail, cones, oc, scoreboard }]` | Get records. `status` is `null` (normal), `DNS`, `DNF`, or `DSQ`; a classified row may retain its positive raw `result` |
+| GET | `/records/year/:year` | master | — | `[{ name, records: [...] }]` | 연도별 기록 일괄 조회 (visibility 필터 적용, score 집계용) |
+| GET | `/records/visibility` | master | — | `{ name: bool }` | 기록 파일별 성적 반영 여부 |
+| PUT | `/records/:name/visibility` | master | — | `{ name, visible }` | 기록 파일 성적 반영 토글 |
+| POST | `/records` | master | `{ name, data: { time, type, entry: { id, num, univ, team }, result?, status?, detail? } }` | `{ name, record }` (201) | Add record (auto-creates table with `FSK {year}` prefix). `status=null` requires a positive integer `result`; `DNS`/`DNF`/`DSQ` allow a null or positive raw result. The stable team `id` is re-resolved at save time |
+| PATCH | `/records/:name/:rowid` | master | `{ field, value }` | `{ num, ... }` | Update `status`, `scoreboard`, `detail`, `cones`, `oc`, or `result`. `status` is explicit and scoreboard visibility is independent. An untimed status row cannot be restored to normal; cancel it with DELETE |
+| DELETE | `/records/:name/:rowid` | master | — | `{ name, rowid, deleted }` | Cancel and delete an untimed (`result=null`) status row only. Timed rows must be retained and reclassified |
+| DELETE | `/records/:name` | master | — | 200 | Drop record table |
 
 ### Controller Logs
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/controllers` | admin | — | `[{ timestamp, data }]` | All controller logs (DESC) |
-| POST | `/controllers` | admin | `{ timestamp, data }` | 201 | Add controller log |
-| DELETE | `/controllers` | admin | — | 200 | Clear all controller logs |
+| GET | `/controllers` | master | — | `[{ timestamp, data }]` | All controller logs (DESC) |
+| POST | `/controllers` | master | `{ timestamp, data }` | 201 | Add controller log |
+| DELETE | `/controllers` | master | — | 200 | Clear all controller logs |
 
 ### Event Modes
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/event-modes` | admin | — | `[{ event_type, enabled }]` | Event mode statuses |
-| PUT | `/event-modes/:type` | admin | — | `{ event_type, enabled }` | Toggle event mode (broadcasts SSE) |
+| GET | `/event-modes` | master | — | `[{ event_type, enabled }]` | Event mode statuses |
+| PUT | `/event-modes/:type` | master | — | `{ event_type, enabled }` | Toggle event mode (broadcasts SSE) |
 
 ### Wireless LoRa Timing (one master + ≤6 sensors, single channel)
 
@@ -339,23 +339,23 @@ A successful answer or memo change automatically adds the authenticated account'
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/wireless/ingest` | admin | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, flags?, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state?, rx_miss?, beacon_gap?, temp_c10?, batt_mv?, sec_drop?, provisioned?, sync_valid?, skew_valid?, clock_source?, sync_age_ms?, capture_overflow?, event_drop?, queue_depth?, queue_overflow?, usb_ref_valid?, usb_ref_ppm? }] }` (각 ≤200) | `{ stored, deduped, rejected, acknowledged: [{ node_id, ev_seq, master_tick }] }` | 브리지 배치 ingest. `(node_id, ev_seq, master_tick)` 멱등. `acknowledged`는 DB insert 또는 기존 행 dedupe가 확인된 정확한 키만 포함하며, 브리지는 이 키를 USB `C` ACK로 돌려 마스터 RAM 큐를 비운다. 불량 항목은 배치 전체 실패 없이 skip. 상태 악화는 armed 세션을 중단하고 `wireless.quality_fault`를 기록한다. 보안 관측은 `wireless.security` 로그로 남긴다. |
-| POST | `/wireless/light` | admin | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고. 새 green 보고도 해당 경기 품질 게이트를 통과해야 하며, 거부되면 409이고 브리지는 마스터에 OFF를 보낸다. |
-| PUT | `/wireless/physical-event` | admin | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
-| PUT | `/wireless/debounce` | admin | `{ ms: 0~5000 정수 }` | `{ ...light }` | 센서 디바운스 창(ms). 한 통과의 다중 엣지(바운스)를 접는 간격. 기본 300, 0이면 끔. `wireless_light.debounce_ms`에 저장, `wireless:light` 브로드캐스트(모든 화면 공유) |
-| GET | `/wireless/mapping` | admin | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
-| PUT | `/wireless/mapping/:node_id` | admin | `{ event_type, role(start\|finish\|lane1~lane9), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트). 가속·오토크로스=start+finish, 스키드패드·내구=start(단일 센서 멀티랩). 기록 엔진은 finish만 센서2로 취급, 그 외(start·lane*)는 센서1 |
-| DELETE | `/wireless/mapping/:node_id` | admin | — | 200 | 매핑 삭제 |
-| GET | `/wireless/state` | admin | — | `{ light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId }` | 신선 로드용 종합 스냅샷. 각 session은 물리 초기화의 OFF 확인 대기 여부인 `reset_pending`을 포함. `qualityFaults`는 새 GREEN이 품질 검사를 통과할 때까지 유지되는 자동 중단 원인이다. |
-| GET | `/wireless/events` | admin | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
-| POST | `/wireless/arm` | admin | `{ event_type, action: green\|red\|off\|reset, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm. green은 필수 역할 센서 전부의 최신 link/provisioned/HFXO/sync/skew/beacon/capture/delivery 상태와 마스터 큐가 정상일 때만 허용(아니면 409). lease·reset 규칙은 동일하다. |
-| POST | `/wireless/select` | admin | `{ event_type, team?: { id, num, univ, team }\|null, event_name?: string\|null }` | `{ ...session }` | 경기 선택(팀·이벤트명) 공유 — 서버 기록 귀속. 안정적 팀 ID를 현재 활성 팀으로 재확인하며 오래되거나 유효하지 않으면 409, null=해제. lease 점유자만. `wireless:session` 브로드캐스트 |
-| POST | `/wireless/status` | admin | `{ event_type, status: DNS\|DNF\|DSQ }` | `{ name, record, session }` | 선택된 팀/이벤트의 현재 시도를 판정한다. arm 단계와 무관하게 가능하며, 부분·완료 기록이 있으면 raw result를 보존한 같은 행을 갱신하고 없으면 untimed status 행을 만든다. lease 점유자만 |
-| POST | `/wireless/command` | admin | `{ event_type, action: green\|red\|off\|reset }` | `{ ok, session? }` | 물리 신호등 원격 제어 다운링크. green은 `/wireless/arm`과 같은 품질 게이트를 통과해야 한다. reset은 `reset_pending`을 즉시 브로드캐스트하고 마스터 OFF 보고에서 런 폐기를 확정한다. |
-| POST | `/wireless/lease/:event` | admin | — | `{ ...session }` | 경기 독점 제어 lease 획득/갱신(heartbeat). 타인 점유 시 409. 점유자 변경 시만 `wireless:session` 브로드캐스트(heartbeat는 조용히 만료 연장) |
-| DELETE | `/wireless/lease/:event` | admin | — | `{ ...session }` | lease 해제(보유자 또는 admin 강제 회수). `wireless:session` 브로드캐스트 |
+| POST | `/wireless/ingest` | master | `{ events?: [{ node_id, master_tick(str 64-bit), ev_seq, flags?, rssi?, snr?, link_state? }], telemetry?: [{ node_id, rssi?, snr?, offset_us?, skew_ppm?, latency_ms?, link_state?, rx_miss?, beacon_gap?, temp_c10?, batt_mv?, sec_drop?, provisioned?, sync_valid?, skew_valid?, clock_source?, sync_age_ms?, capture_overflow?, event_drop?, queue_depth?, queue_overflow?, usb_ref_valid?, usb_ref_ppm? }] }` (각 ≤200) | `{ stored, deduped, rejected, acknowledged: [{ node_id, ev_seq, master_tick }] }` | 브리지 배치 ingest. `(node_id, ev_seq, master_tick)` 멱등. `acknowledged`는 DB insert 또는 기존 행 dedupe가 확인된 정확한 키만 포함하며, 브리지는 이 키를 USB `C` ACK로 돌려 마스터 RAM 큐를 비운다. 불량 항목은 배치 전체 실패 없이 skip. 상태 악화는 armed 세션을 중단하고 `wireless.quality_fault`를 기록한다. 보안 관측은 `wireless.security` 로그로 남긴다. |
+| POST | `/wireless/light` | master | `{ color: red\|green\|yellow\|off, green_tick?(str) }` | `{ ...light }` | 브리지가 물리 신호등 색 보고. 새 green 보고도 해당 경기 품질 게이트를 통과해야 하며, 거부되면 409이고 브리지는 마스터에 OFF를 보낸다. |
+| PUT | `/wireless/physical-event` | master | `{ event_type: <type>\|null }` | `{ ...light }` | 실제 신호등(SSR)을 사용할 경기 지정(`owner_event`). null=없음(전부 가상). 기본은 모든 경기가 가상, 지정 경기만 실제 제어. `wireless:light` 브로드캐스트 |
+| PUT | `/wireless/debounce` | master | `{ ms: 0~5000 정수 }` | `{ ...light }` | 센서 디바운스 창(ms). 한 통과의 다중 엣지(바운스)를 접는 간격. 기본 300, 0이면 끔. `wireless_light.debounce_ms`에 저장, `wireless:light` 브로드캐스트(모든 화면 공유) |
+| GET | `/wireless/mapping` | master | — | `[{ node_id, event_type, role, label, enabled, updated_at }]` | 센서→경기·역할 매핑 |
+| PUT | `/wireless/mapping/:node_id` | master | `{ event_type, role(start\|finish\|lane1~lane9), label?, enabled? }` | `{ ...row }` | 매핑 upsert (`wireless:mapping` 브로드캐스트). 가속·오토크로스=start+finish, 스키드패드·내구=start(단일 센서 멀티랩). 기록 엔진은 finish만 센서2로 취급, 그 외(start·lane*)는 센서1 |
+| DELETE | `/wireless/mapping/:node_id` | master | — | 200 | 매핑 삭제 |
+| GET | `/wireless/state` | master | — | `{ light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId }` | 신선 로드용 종합 스냅샷. 각 session은 물리 초기화의 OFF 확인 대기 여부인 `reset_pending`을 포함. `qualityFaults`는 새 GREEN이 품질 검사를 통과할 때까지 유지되는 자동 중단 원인이다. |
+| GET | `/wireless/events` | master | `?since=<id>&limit=<n≤1000>` | `[{ id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state }]` | 늦게 합류한 클라이언트의 raw 이벤트 백필 |
+| POST | `/wireless/arm` | master | `{ event_type, action: green\|red\|off\|reset, green_tick?(str) }` | `{ ...session }` | 경기 arm/disarm. green은 필수 역할 센서 전부의 최신 link/provisioned/HFXO/sync/skew/beacon/capture/delivery 상태와 마스터 큐가 정상일 때만 허용(아니면 409). lease·reset 규칙은 동일하다. |
+| POST | `/wireless/select` | master | `{ event_type, team?: { id, num, univ, team }\|null, event_name?: string\|null }` | `{ ...session }` | 경기 선택(팀·이벤트명) 공유 — 서버 기록 귀속. 안정적 팀 ID를 현재 활성 팀으로 재확인하며 오래되거나 유효하지 않으면 409, null=해제. lease 점유자만. `wireless:session` 브로드캐스트 |
+| POST | `/wireless/status` | master | `{ event_type, status: DNS\|DNF\|DSQ }` | `{ name, record, session }` | 선택된 팀/이벤트의 현재 시도를 판정한다. arm 단계와 무관하게 가능하며, 부분·완료 기록이 있으면 raw result를 보존한 같은 행을 갱신하고 없으면 untimed status 행을 만든다. lease 점유자만 |
+| POST | `/wireless/command` | master | `{ event_type, action: green\|red\|off\|reset }` | `{ ok, session? }` | 물리 신호등 원격 제어 다운링크. green은 `/wireless/arm`과 같은 품질 게이트를 통과해야 한다. reset은 `reset_pending`을 즉시 브로드캐스트하고 마스터 OFF 보고에서 런 폐기를 확정한다. |
+| POST | `/wireless/lease/:event` | master | — | `{ ...session }` | 경기 독점 제어 lease 획득/갱신(heartbeat). 타인 점유 시 409. 점유자 변경 시만 `wireless:session` 브로드캐스트(heartbeat는 조용히 만료 연장) |
+| DELETE | `/wireless/lease/:event` | master | — | `{ ...session }` | lease 해제(보유자 또는 admin 강제 회수). `wireless:session` 브로드캐스트 |
 | GET | `/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |
-| POST | `/wireless/bridge/offline` | admin | — | `{ ...bridge }` | 브리지가 종료 직전 오프라인을 즉시 보고 (15초 무수신 감지 대기 없이) |
+| POST | `/wireless/bridge/offline` | master | — | `{ ...bridge }` | 브리지가 종료 직전 오프라인을 즉시 보고 (15초 무수신 감지 대기 없이) |
 
 ## Score module (Competition port 9200)
 
@@ -363,42 +363,42 @@ A successful answer or memo change automatically adds the authenticated account'
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/score/events` | admin | — | SSE stream | 화이트리스트만 재전파: entry `entries`, inspection `category-result`/`answer`, traffic `records`/`record-visibility`/`event-mode`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance`/`publication` |
+| GET | `/score/events` | master | — | SSE stream | 화이트리스트만 재전파: entry `entries`, inspection `category-result`/`answer`, traffic `records`/`record-visibility`/`event-mode`. 재연결 시 `refresh`. 로컬 이벤트: `manual-score`/`penalty`/`setting`/`endurance`/`publication` |
 | GET | `/score/public/:year/events` | public (공개 활성 시) | — | SSE stream | 공개 성적표 갱신용 `refresh`, 공개 전환용 `publication`. 관리자 이벤트 페이로드는 노출하지 않음. 전체 500개·IP당 10개 연결 제한 |
 
 ### Score Aggregation
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/score` | admin | `?year=` | `{ entries, inspection, events, manualScores, penalties, settings, energy }` | Main aggregation. `energy` contains configuration, reference values, and per-team `PENDING`/`DSQ`/`SCORED` results |
+| GET | `/score` | master | `?year=` | `{ entries, inspection, events, manualScores, penalties, settings, energy }` | Main aggregation. `energy` contains configuration, reference values, and per-team `PENDING`/`DSQ`/`SCORED` results |
 
 ### Public Scoreboard
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/score/publication` | admin | `?year=` | `{ year, enabled }` | 연도별 공개 상태 조회 |
-| PUT | `/score/publication` | admin | `{ year, enabled }` | `{ year, enabled }` | 연도별 공개 상태 변경 |
+| GET | `/score/publication` | master | `?year=` | `{ year, enabled }` | 연도별 공개 상태 조회 |
+| PUT | `/score/publication` | master | `{ year, enabled }` | `{ year, enabled }` | 연도별 공개 상태 변경 |
 | GET | `/score/public/:year` | public (공개 활성 시) | — | `{ year, entries, events }` | 번호/학교·팀/유형과 내구 제외 경기 모드의 최종 기록만 반환 |
 
 ### Manual Scores
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| PUT | `/score/manual` | admin | `{ year, team_num, score_type, value }` | 200 | Upsert manual report/bonus/deduction score. `energy` is rejected because it is calculated from endurance measurements; report values cannot exceed `보고서.total` when configured |
+| PUT | `/score/manual` | master | `{ year, team_num, score_type, value }` | 200 | Upsert manual report/bonus/deduction score. `energy` is rejected because it is calculated from endurance measurements; report values cannot exceed `보고서.total` when configured |
 
 ### Penalty & Score Settings
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| PUT | `/score/penalty` | admin | `{ year, event_type, cone_penalty, oc_penalty, start_delay }` | 200 | Set per-event penalty values |
-| PUT | `/score/setting` | admin | `{ year, event_type, setting_key, value }` | 200 | Set score settings. Events use `total`/`finish`/`cutoff`; report uses `보고서.total`; energy uses `에너지.total` plus `distance_km`/`fuel_factor` (2.31 L or 2.95 kg) |
+| PUT | `/score/penalty` | master | `{ year, event_type, cone_penalty, oc_penalty, start_delay }` | 200 | Set per-event penalty values |
+| PUT | `/score/setting` | master | `{ year, event_type, setting_key, value }` | 200 | Set score settings. Events use `total`/`finish`/`cutoff`; report uses `보고서.total`; energy uses `에너지.total` plus `distance_km`/`fuel_factor` (2.31 L or 2.95 kg) |
 
 ### Endurance
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/score/endurance` | admin | `?year=` | `{ team_num: { status, driver1_name, driver1_time, driver2_name, ... } }` | Endurance driver names, results, and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
-| PUT | `/score/endurance` | admin | `{ year, team_num, field, value }` | 200 | Update endurance fields, including `driver1_name`/`driver2_name` (trimmed, up to 100 characters), the `qualified` flag, or energy fields (C fuel/extra fuel, E net energy, official energy DSQ flag). Boolean flags accept `0` or `1`. Energy class cannot be written manually; negative values are accepted only for E net energy |
+| GET | `/score/endurance` | master | `?year=` | `{ team_num: { status, driver1_name, driver1_time, driver2_name, ... } }` | Endurance driver names, results, and energy measurement records for year. Energy class is derived from the entry vehicle type (`C-Formula` or `E-Formula`) |
+| PUT | `/score/endurance` | master | `{ year, team_num, field, value }` | 200 | Update endurance fields, including `driver1_name`/`driver2_name` (trimmed, up to 100 characters), the `qualified` flag, or energy fields (C fuel/extra fuel, E net energy, official energy DSQ flag). Boolean flags accept `0` or `1`. Energy class cannot be written manually; negative values are accepted only for E net energy |
 
 ## Documents module (Competition port 9200)
 
@@ -490,19 +490,19 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 ## Course Service (port 10000)
 
-RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스/콘 CRUD와 SSE(`/api/events`)는 **chief**, 스냅샷·코스 삭제·로버 운용은 **admin**, 로버 기기 인입 엔드포인트는 `X-Internal-Service`(INTERNAL_SECRET) 검증. 역할 표기: `internal` = 내부 시크릿 전용(관리자 JWT로도 불가), `internal/admin` = 내부 시크릿 또는 admin JWT.
+RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스/콘 CRUD와 SSE(`/api/events`)는 **master**, 스냅샷·코스 삭제·로버 운용은 **admin**, 로버 기기 인입 엔드포인트는 `X-Internal-Service`(INTERNAL_SECRET) 검증. 역할 표기: `internal` = 내부 시크릿 전용(관리자 JWT로도 불가), `internal/admin` = 내부 시크릿 또는 admin JWT.
 
-### Courses (chief)
+### Courses (master)
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses` | chief | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
-| POST | `/api/courses` | chief | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
-| PATCH | `/api/courses/:id` | chief | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
-| PATCH | `/api/courses/:id/direction` | chief | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). 주행 마커가 없는 코스의 폴백 값이며 UI는 시작 콘만 노출한다. `courses` SSE(type=direction) 브로드캐스트 |
+| GET | `/api/courses` | master | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
+| POST | `/api/courses` | master | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
+| PATCH | `/api/courses/:id` | master | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
+| PATCH | `/api/courses/:id/direction` | master | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). 주행 마커가 없는 코스의 폴백 값이며 UI는 시작 콘만 노출한다. `courses` SSE(type=direction) 브로드캐스트 |
 | DELETE | `/api/courses/:id` | admin | — | 200 | 코스 삭제 (콘·스냅샷·주행 마커 CASCADE 삭제). 활성 미션이 사용 중이면 감사 로그를 남기고 `409 { reason:"active_mission_course" }` |
-| GET | `/api/courses/:id/export` | chief | — | `{ name, cones, memos, route_markers, route_steps, ... }` | 코스 JSON 다운로드. `route_steps`는 DB id가 아닌 `route_markers` 배열 인덱스 |
-| POST | `/api/courses/import` | chief | `{ name, cones, memos?, route_markers?, route_steps? }` | 201 `{ id, name, ... }` | JSON으로 코스 일괄 생성 (트랜잭션, 주행 단계의 마커 인덱스를 새 id로 재매핑) |
+| GET | `/api/courses/:id/export` | master | — | `{ name, cones, memos, route_markers, route_steps, ... }` | 코스 JSON 다운로드. `route_steps`는 DB id가 아닌 `route_markers` 배열 인덱스 |
+| POST | `/api/courses/import` | master | `{ name, cones, memos?, route_markers?, route_steps? }` | 201 `{ id, name, ... }` | JSON으로 코스 일괄 생성 (트랜잭션, 주행 단계의 마커 인덱스를 새 id로 재매핑) |
 
 ### Course Snapshots (admin)
 
@@ -513,15 +513,15 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 | POST | `/api/courses/:id/snapshots/:sid/restore` | admin | — | 200 | 스냅샷으로 콘 상태 복원 (복원 직전 자동 스냅샷) |
 | DELETE | `/api/courses/:id/snapshots/:sid` | admin | — | 200 | 스냅샷 삭제 |
 
-### Cones (chief)
+### Cones (master)
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses/:id/cones` | chief | — | `[{ id, course_id, lat, lng, alt, side, created_at, updated_at }]` | 코스의 콘 목록 |
-| POST | `/api/courses/:id/cones` | chief | `{ lat, lng, alt?, side }` | 201 `{ id, course_id, lat, lng, side, ... }` | 콘 추가 (side: "left"\|"center"\|"right") |
-| DELETE | `/api/courses/:id/cones` | chief | — | 200 | 코스의 콘 전체 삭제 (bulk wipe) |
-| PATCH | `/api/cones/:id` | chief | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
-| DELETE | `/api/cones/:id` | chief | — | 200 | 콘 삭제 |
+| GET | `/api/courses/:id/cones` | master | — | `[{ id, course_id, lat, lng, alt, side, created_at, updated_at }]` | 코스의 콘 목록 |
+| POST | `/api/courses/:id/cones` | master | `{ lat, lng, alt?, side }` | 201 `{ id, course_id, lat, lng, side, ... }` | 콘 추가 (side: "left"\|"center"\|"right") |
+| DELETE | `/api/courses/:id/cones` | master | — | 200 | 코스의 콘 전체 삭제 (bulk wipe) |
+| PATCH | `/api/cones/:id` | master | `{ lat?, lng?, side? }` | `{ id, course_id, lat, lng, side, updated_at }` | 콘 수정 (위치/방향) |
+| DELETE | `/api/cones/:id` | master | — | 200 | 콘 삭제 |
 
 ### 주행 순서 마커
 
@@ -543,11 +543,11 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 | Method | Path | Role | Body | Response | 설명 |
 |---|---|---|---|---|---|
-| GET | `/api/courses/:id/route` | chief | — | `{ markers, steps }` | 물리 마커와 방문 순서 조회 |
-| POST | `/api/courses/:id/route/markers` | chief | `{ lat, lng, label? }` | 201 `{ id, course_id, ... }` | 물리 마커 추가(방문 단계는 자동 추가하지 않음, 코스당 최대 200개) |
-| PATCH | `/api/route/markers/:id` | chief | `{ lat?, lng?, label? }` | `{ id, course_id, ... }` | 마커 이동·이름 수정 |
-| DELETE | `/api/route/markers/:id` | chief | — | `{ markers, steps }` | 마커와 그 마커를 참조하는 모든 방문 삭제, position 재정렬 |
-| PUT | `/api/courses/:id/route/steps` | chief | `{ steps: [marker_id, ...] }` | `{ markers, steps }` | 방문 순서 전체 교체(반복 id 허용, 최대 500단계) |
+| GET | `/api/courses/:id/route` | master | — | `{ markers, steps }` | 물리 마커와 방문 순서 조회 |
+| POST | `/api/courses/:id/route/markers` | master | `{ lat, lng, label? }` | 201 `{ id, course_id, ... }` | 물리 마커 추가(방문 단계는 자동 추가하지 않음, 코스당 최대 200개) |
+| PATCH | `/api/route/markers/:id` | master | `{ lat?, lng?, label? }` | `{ id, course_id, ... }` | 마커 이동·이름 수정 |
+| DELETE | `/api/route/markers/:id` | master | — | `{ markers, steps }` | 마커와 그 마커를 참조하는 모든 방문 삭제, position 재정렬 |
+| PUT | `/api/courses/:id/route/steps` | master | `{ steps: [marker_id, ...] }` | `{ markers, steps }` | 방문 순서 전체 교체(반복 id 허용, 최대 500단계) |
 
 #### 메모 스티커 (지도 주석)
 
@@ -555,10 +555,10 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses/:id/memos` | chief | — | `[{ id, course_id, lat, lng, width, height, rotation, content, created_at, updated_at }]` | 코스의 메모 목록 |
-| POST | `/api/courses/:id/memos` | chief | `{ lat, lng, width, height, rotation?, content? }` | 201 `{ id, course_id, lat, lng, width, height, rotation, content, ... }` | 메모 추가 (width/height 단위 m, 0 초과 100000 이하; rotation deg, [0,360) 정규화; content 최대 5000자) |
-| PATCH | `/api/memos/:id` | chief | `{ lat?, lng?, width?, height?, rotation?, content? }` | `{ id, course_id, lat, lng, width, height, rotation, content, updated_at }` | 메모 수정 (이동/크기/회전/내용) |
-| DELETE | `/api/memos/:id` | chief | — | 200 | 메모 삭제 |
+| GET | `/api/courses/:id/memos` | master | — | `[{ id, course_id, lat, lng, width, height, rotation, content, created_at, updated_at }]` | 코스의 메모 목록 |
+| POST | `/api/courses/:id/memos` | master | `{ lat, lng, width, height, rotation?, content? }` | 201 `{ id, course_id, lat, lng, width, height, rotation, content, ... }` | 메모 추가 (width/height 단위 m, 0 초과 100000 이하; rotation deg, [0,360) 정규화; content 최대 5000자) |
+| PATCH | `/api/memos/:id` | master | `{ lat?, lng?, width?, height?, rotation?, content? }` | `{ id, course_id, lat, lng, width, height, rotation, content, updated_at }` | 메모 수정 (이동/크기/회전/내용) |
+| DELETE | `/api/memos/:id` | master | — | 200 | 메모 삭제 |
 
 ### Rover — 기기 인입 (로버 → 서버)
 
@@ -673,7 +673,7 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | GET | `/api/missions/:id` | admin | — | v2: `{ ...mission, waypoints, events }`; legacy: 기존 좌표 배열 | 미션 상세와 모든 lifecycle/command/route-edit 감사 이벤트 |
 | GET | `/api/missions/:id/telemetry` | admin | — | `{ samples: [...] }` | 미션 텔레메트리 전체 (대용량 가능 — 페이지네이션 미지원, 후속 과제) |
 
-### SSE (`/api/events`, chief)
+### SSE (`/api/events`, master)
 
 | Event | Data | Description |
 |-------|------|-------------|

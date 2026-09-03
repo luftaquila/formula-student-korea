@@ -71,7 +71,7 @@ application revision compatible with that state.
 
 ## Authentication and audit
 
-Roles are `public < student < staff < official < chief < admin`. Services revalidate through Auth and fail closed; only HTTP 200 confirms a user. Caddy removes externally supplied internal-auth headers.
+Roles are `public < student < staff < official < chief < master < admin`. Services revalidate through Auth and fail closed; only HTTP 200 confirms a user. Caddy removes externally supplied internal-auth headers.
 
 All Competition module logs live in the shared database with a module discriminator. Every successful mutation and every business, database, or integration failure records enough before/after context to audit destructive changes.
 

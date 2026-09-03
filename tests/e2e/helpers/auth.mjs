@@ -11,6 +11,7 @@ const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "e2e-internal-secret";
 
 export const TEST_USERS = {
   admin: { email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" },
+  master: { email: "e2e-master@test.com", name: "E2E Master", role: "master" },
   chief: { email: "e2e-chief@test.com", name: "E2E Chief", role: "chief" },
   official: { email: "e2e-official@test.com", name: "E2E Official", role: "official" },
   staff: { email: "e2e-staff@test.com", name: "E2E Staff", role: "staff" },

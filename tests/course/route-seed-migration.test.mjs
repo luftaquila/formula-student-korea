@@ -20,7 +20,7 @@ import { computeCenterline } from "../../course/lib/centerline.mjs";
 import { resolveCourseRoute, ROUTE_MODE } from "../../course/lib/route-mode.mjs";
 
 const SEED_MIGRATION = "course.seed_route_markers_from_direction.v1";
-const chiefCookie = makeAuthCookie({ email: "chief@test.com", name: "Chief", role: "chief" });
+const masterCookie = makeAuthCookie({ email: "master@test.com", name: "Master", role: "master" });
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/endurance.json", import.meta.url), "utf8"));
 
 // Courses created before route markers existed carry their travel direction in
@@ -78,7 +78,7 @@ describe("route marker seeding migration", () => {
 
   it("seeds two markers and a two-step order per legacy course", async () => {
     for (const course of [reversedCourse, forwardCourse]) {
-      const res = await client.get(`/api/courses/${course.courseId}/route`, { cookie: chiefCookie });
+      const res = await client.get(`/api/courses/${course.courseId}/route`, { cookie: masterCookie });
       assert.equal(res.status, 200);
       const route = await res.json();
       assert.equal(route.markers.length, 2, "one start marker plus one direction marker");
@@ -87,7 +87,7 @@ describe("route marker seeding migration", () => {
   });
 
   it("leaves a half-authored route alone rather than adding markers to it", async () => {
-    const res = await client.get(`/api/courses/${inProgress.courseId}/route`, { cookie: chiefCookie });
+    const res = await client.get(`/api/courses/${inProgress.courseId}/route`, { cookie: masterCookie });
     assert.equal(res.status, 200);
     const route = await res.json();
     assert.deepEqual(route.markers.map((marker) => marker.id), [inProgressMarkerId],
@@ -96,7 +96,7 @@ describe("route marker seeding migration", () => {
   });
 
   it("leaves a course with no cones alone", async () => {
-    const res = await client.get(`/api/courses/${emptyCourseId}/route`, { cookie: chiefCookie });
+    const res = await client.get(`/api/courses/${emptyCourseId}/route`, { cookie: masterCookie });
     assert.equal(res.status, 200);
     const route = await res.json();
     assert.deepEqual(route, { markers: [], steps: [] });
@@ -107,7 +107,7 @@ describe("route marker seeding migration", () => {
   for (const [label, get] of [["reverse=true", () => reversedCourse], ["reverse=false", () => forwardCourse]]) {
     it(`resolves ${label} to the same centerline the stored row produced`, async () => {
       const course = get();
-      const res = await client.get(`/api/courses/${course.courseId}/route`, { cookie: chiefCookie });
+      const res = await client.get(`/api/courses/${course.courseId}/route`, { cookie: masterCookie });
       const route = await res.json();
 
       const stored = {
@@ -126,13 +126,13 @@ describe("route marker seeding migration", () => {
   }
 
   it("does not re-seed a course that already has an order", async () => {
-    const before = await (await client.get(`/api/courses/${forwardCourse.courseId}/route`, { cookie: chiefCookie })).json();
+    const before = await (await client.get(`/api/courses/${forwardCourse.courseId}/route`, { cookie: masterCookie })).json();
     db.prepare("DELETE FROM schema_migrations WHERE name = ?").run(SEED_MIGRATION);
 
     const again = createCourseApp({ dbPath, validateUser: TRUST_JWT });
     again.db.close();
 
-    const after = await (await client.get(`/api/courses/${forwardCourse.courseId}/route`, { cookie: chiefCookie })).json();
+    const after = await (await client.get(`/api/courses/${forwardCourse.courseId}/route`, { cookie: masterCookie })).json();
     assert.deepEqual(after, before, "an existing order must not gain extra markers");
   });
 });

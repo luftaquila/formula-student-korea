@@ -7,6 +7,7 @@ const ROLE_OPTIONS = [
   { value: "staff", label: "staff" },
   { value: "official", label: "official" },
   { value: "chief", label: "chief" },
+  { value: "master", label: "master" },
   { value: "admin", label: "admin" },
 ];
 

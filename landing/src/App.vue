@@ -53,6 +53,13 @@
         </div>
       </section>
 
+      <section v-if="isMaster" class="section">
+        <h2 class="section-title">Master</h2>
+        <div class="services">
+          <ServiceCard v-for="item in masters" :key="item.href" v-bind="cardProps(item)" />
+        </div>
+      </section>
+
       <section v-if="isAdmin" class="section">
         <h2 class="section-title">Admin</h2>
         <div class="services">
@@ -70,8 +77,8 @@ import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useNotification } from "@shared/useNotification.js";
 import { readDisclosureState, writeDisclosureState } from "@shared/persistent-disclosure.js";
-import { user, isStudent, isStaff, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
-import { services, resources, staff, officials, chiefs, admins, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
+import { user, isStudent, isStaff, showOfficials, isChief, isMaster, isAdmin } from "@shared/officialsStore.js";
+import { services, resources, staff, officials, chiefs, masters, admins, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
 
 // 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
 // "홈"은 landing 자신이므로 카드에서 제외하고, 학생 전용 항목은 exact role로 제한한다.

@@ -35,7 +35,8 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "traffic", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health" || req.path === "/api/time") return null;
-    return "admin";
+    if (req.path === "/api/logs") return "admin";
+    return "master";
   },
 });
 ensureInactiveTeamView(db);

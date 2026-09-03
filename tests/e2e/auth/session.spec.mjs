@@ -28,7 +28,7 @@ test.describe("Auth session API", () => {
   });
 
   test("GET /auth/api/session works for each role", async ({ browser }) => {
-    for (const role of ["admin", "chief", "official", "staff", "student"]) {
+    for (const role of ["admin", "master", "chief", "official", "staff", "student"]) {
       const context = await browser.newContext({ storageState: storageStatePath(role) });
       const page = await context.newPage();
 

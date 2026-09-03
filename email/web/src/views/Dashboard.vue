@@ -218,6 +218,7 @@
                   <select v-model="roleFilter" class="form-select">
                     <option value="">전체 역할</option>
                     <option value="admin">Admin</option>
+                    <option value="master">Master</option>
                     <option value="chief">Chief</option>
                     <option value="official">Official</option>
                     <option value="staff">Staff</option>
@@ -540,7 +541,7 @@ watch(showCompose, async (open) => {
 });
 
 // ── Util ──
-const ROLE_BADGE = { admin: "badge-danger", chief: "badge-warning", official: "badge-primary", staff: "badge-default", student: "badge-success" };
+const ROLE_BADGE = { admin: "badge-danger", master: "badge-warning", chief: "badge-warning", official: "badge-primary", staff: "badge-default", student: "badge-success" };
 function roleBadgeClass(role) { return ROLE_BADGE[role] || "badge-primary"; }
 
 function formatTime(ts) {

@@ -57,7 +57,7 @@ failed run with `gh run view <run-id> --log-failed`.
 
 ## Authentication and service calls
 
-- Roles are `public < student < staff < official < chief < admin`.
+- Roles are `public < student < staff < official < chief < master < admin`.
 - Non-auth services revalidate through Auth and fail closed; only HTTP `200` confirms
   a user. Tests may inject `TRUST_JWT` through an application factory. Production
   has no authentication bypass.

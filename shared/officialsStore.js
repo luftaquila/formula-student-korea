@@ -18,6 +18,7 @@ export const isStaff = computed(() => user.value?.role === "staff");
 export const showStaff = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.staff);
 export const showOfficials = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.official);
 export const isChief = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.chief);
+export const isMaster = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.master);
 export const isAdmin = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.admin);
 
 if (typeof document !== "undefined") {

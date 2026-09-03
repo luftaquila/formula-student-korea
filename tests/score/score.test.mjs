@@ -112,6 +112,8 @@ setupTestEnv();
 let server, baseUrl, client, db, dbPath;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
+const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 
 before(async () => {
   dbPath = tmpDbPath();
@@ -967,6 +969,12 @@ describe('Energy score integration', () => {
 // ─── Auth ───────────────────────────────────────────────────────────────
 
 describe('Auth', () => {
+  it('allows master and rejects chief on protected score APIs', async () => {
+    assert.equal((await client.get('/api/score?year=2026', { cookie: masterCookie })).status, 200);
+    assert.equal((await client.get('/api/score?year=2026', { cookie: chiefCookie })).status, 403);
+    assert.equal((await client.get('/api/logs', { cookie: masterCookie })).status, 403);
+  });
+
   it('PUT /api/score/manual without auth returns 401', async () => {
     const res = await client.put('/api/score/manual', {
       body: { year: 2026, team_num: 1, score_type: 'report', value: 50 },

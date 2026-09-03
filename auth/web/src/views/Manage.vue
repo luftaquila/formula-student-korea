@@ -97,7 +97,7 @@ async function addUser() {
 }
 
 function roleBadgeClass(role) {
-  return { student: "badge-success", staff: "badge-default", official: "badge-primary", chief: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
+  return { student: "badge-success", staff: "badge-default", official: "badge-primary", chief: "badge-warning", master: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
 }
 
 async function changeRole(user, newRole) {
@@ -435,7 +435,7 @@ const sortedUsers = computed(() => {
 
 // official 이상 활성 사용자 목록 (연락처 선택용)
 const officialUsers = computed(() =>
-  users.value.filter((u) => u.active && ["official", "chief", "admin"].includes(u.role)),
+  users.value.filter((u) => u.active && (ROLE_LEVELS[u.role] || 0) >= ROLE_LEVELS.official),
 );
 
 async function fetchOpsDisplay() {
@@ -710,6 +710,7 @@ onUnmounted(() => {
             <option value="staff">Staff</option>
             <option value="official">Official</option>
             <option value="chief">Chief</option>
+            <option value="master">Master</option>
             <option value="admin">Admin</option>
           </select>
           <button type="submit" class="btn btn-primary">추가</button>
@@ -725,6 +726,7 @@ onUnmounted(() => {
             <select v-model="filterRole" class="filter-select">
               <option value="all">전체 역할</option>
               <option value="admin">Admin</option>
+              <option value="master">Master</option>
               <option value="chief">Chief</option>
               <option value="official">Official</option>
               <option value="staff">Staff</option>
@@ -824,6 +826,7 @@ onUnmounted(() => {
                       <option value="staff">Staff</option>
                       <option value="official">Official</option>
                       <option value="chief">Chief</option>
+                      <option value="master">Master</option>
                       <option value="admin">Admin</option>
                     </select>
                     <button

@@ -134,7 +134,7 @@ test.describe("Ops contacts management", () => {
     const usersResponse = await page.request.get("/auth/api/users");
     expect(usersResponse.status()).toBe(200);
     const contacts = (await usersResponse.json())
-      .filter((user) => user.active && ["official", "chief", "admin"].includes(user.role))
+      .filter((user) => user.active && ["official", "chief", "master", "admin"].includes(user.role))
       .slice(0, 2);
     expect(contacts).toHaveLength(2);
 

@@ -21,7 +21,7 @@ setupTestEnv();
 const require = createRequire(import.meta.url);
 const Database = require("../../registration/node_modules/better-sqlite3");
 const YEAR = currentCompetitionYear();
-const cookies = Object.fromEntries(["student", "staff", "official", "chief", "admin"].map((role) => [
+const cookies = Object.fromEntries(["student", "staff", "official", "chief", "master", "admin"].map((role) => [
   role,
   makeAuthCookie({ email: `${role}@test.invalid`, name: role, role }),
 ]));
@@ -185,6 +185,8 @@ describe("Registration queue", () => {
     response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.student });
     assert.equal(response.status, 403);
     response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.staff });
+    assert.equal(response.status, 200);
+    response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.master });
     assert.equal(response.status, 200);
     response = await f.client.post("/api/queue", {
       cookie: cookies.staff,

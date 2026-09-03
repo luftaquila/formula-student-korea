@@ -180,6 +180,7 @@ onMounted(() => {
             <option value="staff">Staff</option>
             <option value="official">Official</option>
             <option value="chief">Chief</option>
+            <option value="master">Master</option>
             <option value="admin">Admin</option>
           </select>
           <button class="btn btn-sm btn-primary" :disabled="selectedIds.size === 0" @click="approveSelected">
