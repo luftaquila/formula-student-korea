@@ -6,7 +6,7 @@ import "@shared/styles/layout.css";
 import "@shared/styles/lookup-status.css";
 import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
-import { hasPermission } from "@shared/officialsStore.js";
+import { user, hasPermission } from "@shared/officialsStore.js";
 import { refreshDevice } from "@shared/deviceStore.js";
 import App from "./App.vue";
 import "./styles/main.css";
@@ -25,12 +25,14 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   if (!to.meta.permission || hasPermission(to.meta.permission)) return;
-  if (to.meta.kioskScope && (await refreshDevice())?.scope === to.meta.kioskScope) return;
-  if (to.meta.kioskScope) {
+  // The pairing page is only for browsers with no human session. A signed-in
+  // Official who lacks the grant lands on the operations view instead.
+  if (to.meta.kioskScope && !user.value) {
+    if ((await refreshDevice())?.scope === to.meta.kioskScope) return;
     window.location.href = "/auth/device";
     return false;
   }
-  return "/";
+  return to.meta.kioskScope ? "/manage" : "/";
 });
 
 createApp(App).use(router).mount("#app");

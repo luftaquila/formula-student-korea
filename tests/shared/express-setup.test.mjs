@@ -249,6 +249,18 @@ describe('createApp auth middleware', () => {
     if (server) await stopServer(server);
   });
 
+  it('refuses a request that carries both a human and a device cookie', async () => {
+    validateUserResult = { valid: true, role: 'admin' };
+    const cookie = `${makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'admin' })}; fsk_device=some-device-token`;
+    const res = await client.get('/api/admin', { cookie });
+    assert.equal(res.status, 401);
+    assert.equal((await res.json()).code, 'AMBIGUOUS_PRINCIPAL');
+    // Public routes still answer, with no principal attached.
+    const pub = await client.get('/public', { cookie });
+    assert.equal(pub.status, 200);
+    assert.equal((await pub.json()).user, null);
+  });
+
   // Cookie parsing
   it('parses valid cookies', async () => {
     validateUserResult = { valid: true, role: null };

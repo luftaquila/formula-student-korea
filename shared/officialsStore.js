@@ -27,8 +27,11 @@ export function permissionComputed(permission) {
 export async function refreshUser() {
   try {
     const response = await fetch("/auth/api/session");
-    user.value = response.ok ? await response.json() : null;
-  } catch { /* retain the last display snapshot during a transient outage */ }
+    if (response.ok) user.value = await response.json();
+    else if (response.status === 401) user.value = null;
+    // Any other status (502/503 from auth) is an outage, not a sign-out: keep the
+    // last display snapshot so the navigation does not vanish until it recovers.
+  } catch { /* same: retain the last display snapshot during a transient outage */ }
 }
 
 if (typeof document !== "undefined") {

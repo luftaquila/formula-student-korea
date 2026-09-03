@@ -7,6 +7,8 @@ import { useNotification } from "@shared/useNotification.js";
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();
 const devices = ref([]);
+// Server status keys rendered in the page's language.
+const DEVICE_STATUS_LABELS = { active: "활성", pending: "페어링 대기", revoked: "폐기", unpaired: "미페어링" };
 const name = ref("");
 const scope = ref("kiosk.queue.register");
 const issued = ref(null);
@@ -98,7 +100,7 @@ onUnmounted(() => clearInterval(timer));
             <tr v-for="device in devices" :key="device.id">
               <td>{{ device.name }}</td>
               <td>{{ scopeLabel(device.scope) }}</td>
-              <td>{{ device.status }}</td>
+              <td>{{ DEVICE_STATUS_LABELS[device.status] || device.status }}</td>
               <td>{{ device.pairedAt ? formatTimestamp(device.pairedAt) : "-" }}</td>
               <td>{{ device.lastSeenAt ? formatTimestamp(device.lastSeenAt) : "-" }}</td>
               <td class="actions">

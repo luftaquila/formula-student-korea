@@ -15,7 +15,7 @@ import {
   measurementWithinLimits,
 } from "./lib/event-timing.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
-import { access } from "../shared/access-control.js";
+import { access, principalHasPermission } from "../shared/access-control.js";
 
 const CONTROLLER_MAX_ROWS = 100000;
 const RETAIN_EVENTS = 500000;
@@ -2790,7 +2790,7 @@ app.post("/api/wireless/lease/:event", (req, res) => {
   res.json(result.result);
 });
 
-// DELETE /api/wireless/lease/:event - lease 해제(보유자 또는 admin 강제 회수).
+// DELETE /api/wireless/lease/:event - lease 해제(보유자 또는 계측 관리 권한의 강제 회수).
 app.delete("/api/wireless/lease/:event", (req, res) => {
   const event_type = decodeURIComponent(req.params.event);
   if (!EVENT_TYPES.includes(event_type)) {
@@ -2800,7 +2800,8 @@ app.delete("/api/wireless/lease/:event", (req, res) => {
     });
   }
   // release/takeover는 email 기준: 같은 계정은 자기 다른 세션(멈춘 탭 등)을 회수 가능,
-  // 타 계정 회수는 admin만. (claim/제어는 세션 단위라 다른 세션이면 명시적 가로채기 필요.)
+  // 타 계정 회수는 traffic.manage(설정·전체 삭제와 같은 관리 권한)만. admin은 이를 포함한다.
+  // (claim/제어는 세션 단위라 다른 세션이면 명시적 가로채기 필요.)
   const sessionPreflight = runMutationPreflight(req, res, {
     action: "wireless.lease", operation: "release", target: event_type,
     context: { event_type }, lookup: () => getSession(event_type),
@@ -2808,7 +2809,8 @@ app.delete("/api/wireless/lease/:event", (req, res) => {
   });
   if (!sessionPreflight.ok) return;
   const sess = sessionPreflight.value;
-  if (sess?.controller && controllerEmail(sess.controller) !== (req.user?.email || null) && req.user?.role !== "admin") {
+  if (sess?.controller && controllerEmail(sess.controller) !== (req.user?.email || null)
+    && !principalHasPermission(req.user, "traffic.manage")) {
     return rejectMutation(req, res, {
       action: "wireless.lease", status: 409, message: "다른 사용자의 제어를 해제할 수 없습니다.",
       target: event_type, operation: "release",

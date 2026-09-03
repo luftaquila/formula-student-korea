@@ -1351,6 +1351,20 @@ describe('Wireless sessions & arm', () => {
 describe('Wireless lease (per-event exclusive control)', () => {
   const otherCookie = makeAuthCookie({ email: 'other@test.com', name: 'Other', role: 'admin' });
 
+  it("lets traffic.manage reclaim another user's lease while operate-only officials cannot", async () => {
+    await refreshWirelessQuality('가속');
+    const claim = await client.post('/api/wireless/lease/가속', { cookie: adminCookie });
+    assert.equal(claim.status, 200);
+    assert.equal((await claim.json()).controller, 'admin@test.com');
+
+    const denied = await client.delete('/api/wireless/lease/가속', { cookie: trafficOperatorCookie });
+    assert.equal(denied.status, 409);
+
+    const reclaimed = await client.delete('/api/wireless/lease/가속', { cookie: trafficManagerCookie });
+    assert.equal(reclaimed.status, 200);
+    assert.equal((await reclaimed.json()).controller, null);
+  });
+
   it('claim sets controller; another user is blocked (409); release clears', async () => {
     await refreshWirelessQuality('오토크로스');
     const claim = await client.post('/api/wireless/lease/오토크로스', { cookie: adminCookie });

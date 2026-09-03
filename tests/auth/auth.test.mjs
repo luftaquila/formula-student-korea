@@ -569,32 +569,9 @@ describe('GET /api/users/exists/:email', () => {
 });
 
 describe('GET /api/users/role/:email', () => {
-  it('returns role for existing active user', async () => {
+  it('is gone: the path falls under the admin-only /api/users gate, so the internal principal is refused', async () => {
     const res = await client.get('/api/users/role/admin@test.com', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.role, 'admin');
-  });
-
-  it('returns 404 for non-existent user', async () => {
-    const res = await client.get('/api/users/role/nonexistent@example.com', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 404);
-  });
-
-  it('returns 404 for inactive user', async () => {
-    const res = await client.get('/api/users/role/inactive@test.com', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 404);
-  });
-
-  it('rejects an admin cookie because the endpoint is internal-only', async () => {
-    const res = await client.get('/api/users/role/admin@test.com', {
-      cookie: adminCookie,
     });
     assert.equal(res.status, 403);
   });
@@ -869,11 +846,6 @@ describe('Ops contacts', () => {
     assert.equal(res.status, 403);
   });
 
-  it('GET /api/contact-candidates requires admin role', async () => {
-    const res = await client.get('/api/contact-candidates', { cookie: officialCookie });
-    assert.equal(res.status, 403);
-  });
-
   it('PATCH /api/ops-contacts/:userId updates and trims the description', async () => {
     const res = await client.patch(`/api/ops-contacts/${officialUserId}`, {
       body: { description: '  검차 총괄  ' },
@@ -1136,9 +1108,25 @@ describe('POST /api/logout', () => {
     assert.ok(setCookie.includes('Max-Age=0'), 'should expire cookies');
   });
 
-  it('requires auth (401 without cookie)', async () => {
+  it('clears every principal cookie even without a valid session', async () => {
     const res = await client.post('/api/logout');
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 200);
+    const setCookie = res.headers.get('set-cookie');
+    assert.ok(setCookie.includes('fsk_session=;'));
+    assert.ok(setCookie.includes('fsk_device=;'));
+  });
+
+  it('lets a browser holding both a human and a device cookie escape the ambiguous state', async () => {
+    const res = await fetch(`${baseUrl}/api/logout`, {
+      method: 'POST',
+      headers: { Cookie: `${adminCookie}; fsk_device=stale-device-token` },
+      redirect: 'manual',
+    });
+    assert.equal(res.status, 200);
+    const cookies = res.headers.getSetCookie();
+    for (const name of ['fsk_session', 'fsk_user', 'fsk_device']) {
+      assert.ok(cookies.some((c) => c.startsWith(`${name}=;`) && c.includes('Max-Age=0')), `${name} cleared`);
+    }
   });
 });
 

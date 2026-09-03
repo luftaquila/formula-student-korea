@@ -84,7 +84,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/login` | public | `?redirect=<path>` | 302 → Google OAuth | Initiates Google OAuth flow with CSRF nonce |
 | GET | `/api/callback` | public | `?code=<code>&state=<state>` | 302 → redirect URL | OAuth callback; exchanges code for token, sets JWT cookies |
-| POST | `/api/logout` | public* | — | 200 | Clears session cookies (*requires valid session) |
+| POST | `/api/logout` | public | — | 200 | Clears the human and device session cookies regardless of the current principal state |
 | GET | `/api/session` | public | — | `{ name, picture, role, permissions, accessRevision }` or 401 | Validates the current human session; `picture` is the Google profile image URL (empty when unavailable) |
 | GET | `/api/device/session` | public | — | `{ id, name, scope, startPath }` or 401 | Validates the current device session |
 | GET | `/api/forward-auth` | internal key | `?permission=<permission>`, `X-Forward-Auth-Key` header | 200 + `X-Forwarded-User` header, or 400/401/403 | Caddy forward_auth for an exact human permission |
@@ -109,7 +109,6 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/users/exists/:email` | internal | — | 200 or 404 | Check if user exists and is active |
-| GET | `/api/users/role/:email` | internal | — | `{ role }` or 404 | Get an active user's role |
 | GET | `/api/users/access/:email` | internal | — | `{ id, role, permissions, accessRevision }` or 404 | Authoritative access snapshot used by services |
 | GET | `/api/internal/users` | internal | — | `[{ id, email, name, role, realname, phone, active }]` | List minimal user profiles for trusted Documents and Email consumers without opening the Admin API |
 
@@ -129,7 +128,6 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/ops-contacts` | official/admin | — | `[{ id, email, name, realname, phone, description, sort_order }]` | List users displayed in sidebar, ordered by `sort_order` |
-| GET | `/api/contact-candidates` | admin | — | Active Officials and Admins | List candidates for the contact display |
 | POST | `/api/ops-contacts` | admin | `{ user_id }` | 201 | Add an Official/Admin to the display |
 | POST | `/api/ops-contacts/reorder` | admin | `{ user_ids: [...] }` | 200 | Replace the display order |
 | PATCH | `/api/ops-contacts/:userId` | admin | `{ description }` | `{ description }` | Update the short description (max 30 characters) |

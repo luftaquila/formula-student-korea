@@ -399,13 +399,12 @@ const app = createApp({
   if (req.path === "/api/device/pair") return null;
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
   if (req.path === "/api/devices/validate") return access.internal;
-  if (/^\/api\/users\/(?:exists|role|access)\//.test(req.path)) return access.internal;
+  if (/^\/api\/users\/(?:exists|access)\//.test(req.path)) return access.internal;
   if (req.path.startsWith("/api/devices")) return access.admin;
   if (req.path === "/api/access/catalog") return access.admin;
   if (req.path === "/api/internal/users") return access.internal;
   if (req.path.startsWith("/api/admin")) return access.admin;
   if (req.path.startsWith("/api/users")) return access.admin;
-  if (req.path === "/api/contact-candidates") return access.admin;
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return access.admin;
   if (req.path.startsWith("/api/ops-contacts")) return access.official;
   if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
@@ -530,8 +529,9 @@ function deviceResponse(row) {
 }
 
 app.get("/api/devices", (req, res) => {
-  const rows = db.prepare("SELECT * FROM kiosk_device ORDER BY created_at DESC, id").all();
-  res.json(rows.map(deviceResponse));
+  const result = dbRun(() => db.prepare("SELECT * FROM kiosk_device ORDER BY created_at DESC, id").all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result.map(deviceResponse));
 });
 
 app.post("/api/devices", (req, res) => {
@@ -931,15 +931,22 @@ app.get("/api/callback", async (req, res) => {
 });
 
 // POST /api/logout - 쿠키 삭제
+// Logout is principal-agnostic: it always clears the human and device cookies so a
+// browser holding both (AMBIGUOUS_PRINCIPAL everywhere else) can get out without
+// a fresh OAuth round trip.
 app.post("/api/logout", (req, res) => {
-  if (req.user?.kind !== "human") return res.status(401).send("인증이 필요합니다.");
-  logger.log(req, "user.logout", null, req.user.email);
+  const actor = req.user?.kind === "human" ? req.user.email
+    : req.user?.kind === "device" ? `device:${req.user.id}`
+    : null;
+  logger.log(req, "user.logout", req.authAmbiguous ? { reason: "ambiguous_principal" } : null, actor);
 
   const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
+  const deviceCookieOpts = `Path=/; SameSite=Strict; Max-Age=0${isSecureConnection(req) ? "; Secure" : ""}`;
 
   res.setHeader("Set-Cookie", [
     `fsk_session=; HttpOnly; ${cookieOpts}`,
     `fsk_user=; ${cookieOpts}`,
+    `fsk_device=; HttpOnly; ${deviceCookieOpts}`,
   ]);
 
   res.status(200).send();
@@ -1141,13 +1148,6 @@ app.get("/api/users/exists/:email", (req, res) => {
   const user = db.prepare("SELECT 1 FROM users WHERE email = ? AND active = 1").get(req.params.email);
   if (!user) return res.status(404).send();
   res.status(200).send();
-});
-
-// GET /api/users/role/:email - 사용자 역할 조회 (내부 서비스용, 슬라이딩 갱신)
-app.get("/api/users/role/:email", (req, res) => {
-  const user = db.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(req.params.email);
-  if (!user) return res.status(404).send();
-  res.json({ role: user.role });
 });
 
 // GET /api/users/access/:email - authoritative service authorization snapshot
@@ -1615,17 +1615,6 @@ app.delete("/api/users/:id", (req, res) => {
 /* ============================================
    운영 오피셜 연락처 (사이드바 표시)
    ============================================ */
-
-app.get("/api/contact-candidates", (req, res) => {
-  const result = dbRun(() => db.prepare(`
-    SELECT id, email, name, realname, phone, role
-    FROM users
-    WHERE active = 1 AND role IN ('official', 'admin')
-    ORDER BY COALESCE(NULLIF(realname, ''), NULLIF(name, ''), email), id
-  `).all());
-  if (!result.success) return res.status(result.status).send(result.error);
-  res.json(result.result);
-});
 
 // GET /api/ops-contacts - 사이드바에 표시할 사용자 목록
 app.get("/api/ops-contacts", (req, res) => {
