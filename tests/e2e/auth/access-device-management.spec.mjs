@@ -35,8 +35,12 @@ test.describe("Access and kiosk device management", () => {
       const saved = page.waitForResponse((response) =>
         response.url().endsWith(`/auth/api/users/${userId}/access`)
         && response.request().method() === "PUT");
+      const refreshed = page.waitForResponse((response) =>
+        response.url().endsWith("/auth/api/users")
+        && response.request().method() === "GET");
       await dialog.getByRole("button", { name: "저장", exact: true }).click();
       expect((await saved).status()).toBe(200);
+      expect((await refreshed).status()).toBe(200);
       await expectNotification(page, "success", "서비스 권한을 변경했습니다");
 
       await expect(row.getByRole("button", { name: "권한 3" })).toBeVisible();

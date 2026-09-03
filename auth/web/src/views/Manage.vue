@@ -106,11 +106,19 @@ const selectedBundles = ref(new Set());
 const selectedDirectPermissions = ref(new Set());
 const accessSaving = ref(false);
 
-function toggleSet(target, key, checked) {
+function updateSelection(target, key, checked) {
   const next = new Set(target.value);
   if (checked) next.add(key);
   else next.delete(key);
   target.value = next;
+}
+
+function toggleBundle(key, checked) {
+  updateSelection(selectedBundles, key, checked);
+}
+
+function toggleDirectPermission(key, checked) {
+  updateSelection(selectedDirectPermissions, key, checked);
 }
 
 function editAccess(user) {
@@ -1034,7 +1042,7 @@ onUnmounted(() => {
               <input
                 type="checkbox"
                 :checked="selectedBundles.has(bundle.key)"
-                @change="toggleSet(selectedBundles, bundle.key, $event.target.checked)"
+                @change="toggleBundle(bundle.key, $event.target.checked)"
               />
               <span><strong>{{ bundle.label }}</strong><small>{{ bundle.permissions.join(', ') }}</small></span>
             </label>
@@ -1045,7 +1053,7 @@ onUnmounted(() => {
               <input
                 type="checkbox"
                 :checked="selectedDirectPermissions.has(permission.key)"
-                @change="toggleSet(selectedDirectPermissions, permission.key, $event.target.checked)"
+                @change="toggleDirectPermission(permission.key, $event.target.checked)"
               />
               <span><strong>{{ permission.label }}</strong><small>{{ permission.description }}</small></span>
             </label>
