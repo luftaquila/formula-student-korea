@@ -61,7 +61,7 @@ test.describe("Inspection rule reference UI", () => {
   });
 
   test("renders verified, review, hidden, multiple, and print states", async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     await page.route("**/competition/api/v1/inspection/sheet/template?year=*", async route => {
       const response = await route.fetch();
