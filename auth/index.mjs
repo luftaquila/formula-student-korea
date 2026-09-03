@@ -42,26 +42,38 @@ db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS
 // 마이그레이션: role CHECK 제약조건에 staff 추가
 const roleCheck = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
 if (roleCheck && !roleCheck.sql.includes("'staff'")) {
-  db.transaction(() => {
-    db.exec(`
-      CREATE TABLE users_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        name TEXT,
-        role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
-        memo TEXT DEFAULT '',
-        realname TEXT DEFAULT '',
-        phone TEXT DEFAULT '',
-        created_at TEXT,
-        active INTEGER DEFAULT 1,
-        affiliation TEXT DEFAULT ''
-      );
-      INSERT INTO users_new (id, email, name, role, memo, realname, phone, affiliation, created_at, active)
-        SELECT id, email, name, role, memo, realname, phone, affiliation, created_at, active FROM users;
-      DROP TABLE users;
-      ALTER TABLE users_new RENAME TO users;
-    `);
-  })();
+  // SQLite enables foreign-key enforcement by default in this runtime. Temporarily
+  // disable it outside the transaction so the referenced users table can be rebuilt
+  // without deleting ops_display rows, then fail closed if any reference is invalid.
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
+          memo TEXT DEFAULT '',
+          realname TEXT DEFAULT '',
+          phone TEXT DEFAULT '',
+          created_at TEXT,
+          active INTEGER DEFAULT 1,
+          affiliation TEXT DEFAULT ''
+        );
+        INSERT INTO users_new (id, email, name, role, memo, realname, phone, affiliation, created_at, active)
+          SELECT id, email, name, role, memo, realname, phone, affiliation, created_at, active FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+      `);
+    })();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+  const foreignKeyViolations = db.pragma("foreign_key_check");
+  if (foreignKeyViolations.length > 0) {
+    throw new Error("Auth role migration left invalid foreign-key references");
+  }
 }
 
 // 관리자 토글 등 key/value 설정 저장소

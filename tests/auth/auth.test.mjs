@@ -619,6 +619,13 @@ describe('Staff role schema migration', () => {
         );
         INSERT INTO users (email, name, role, affiliation)
           VALUES ('preserved@test.com', 'Preserved', 'official', '기존 소속');
+        CREATE TABLE ops_display (
+          user_id INTEGER PRIMARY KEY REFERENCES users(id),
+          description TEXT NOT NULL DEFAULT '',
+          sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO ops_display (user_id, description, sort_order)
+          SELECT id, '기존 연락처', 3 FROM users WHERE email = 'preserved@test.com';
       `);
       legacyDb.close();
       legacyDb = null;
@@ -628,6 +635,11 @@ describe('Staff role schema migration', () => {
         migratedDb.prepare("SELECT email, name, role, affiliation FROM users WHERE email = 'preserved@test.com'").get(),
         { email: 'preserved@test.com', name: 'Preserved', role: 'official', affiliation: '기존 소속' },
       );
+      assert.deepEqual(
+        migratedDb.prepare('SELECT user_id, description, sort_order FROM ops_display').get(),
+        { user_id: 1, description: '기존 연락처', sort_order: 0 },
+      );
+      assert.deepEqual(migratedDb.pragma('foreign_key_check'), []);
       migratedDb.prepare("INSERT INTO users (email, role) VALUES ('migrated-staff@test.com', 'staff')").run();
       assert.equal(
         migratedDb.prepare("SELECT role FROM users WHERE email = 'migrated-staff@test.com'").get().role,
