@@ -3,7 +3,7 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // Course service RBAC backstop. The frontend hides tabs/buttons by role, but
 // these gates (course/index.mjs authRoleFn) are the enforcing layer:
-//   chief  → course/cone management + snapshot LIST
+//   master → course/cone management
 //   admin  → rover, missions, logs, snapshot create/restore/delete, course DELETE
 //   internal-strict (deny even an admin browser) → /api/rover/stream, /camera,
 //     /camera/control, /obstacle, /calibration-progress
@@ -13,10 +13,10 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // short 200 header for /stream) immediately and is closed by .close().
 
 test.describe("Course RBAC gates", () => {
-  test("chief can create a course and a cone (201)", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("master can create a course and a cone (201)", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("master") });
     try {
-      const name = `e2e-rbac-chief-${Date.now()}-${test.info().parallelIndex}`;
+      const name = `e2e-rbac-master-${Date.now()}-${test.info().parallelIndex}`;
       const created = await ctx.request.post("/course/api/courses", { data: { name } });
       expect(created.status()).toBe(201);
       const course = await created.json();
@@ -36,13 +36,13 @@ test.describe("Course RBAC gates", () => {
     }
   });
 
-  test("chief is denied (403) on admin-only operations", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("master is denied (403) on admin-only operations", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("master") });
     try {
-      // Seed a chief-owned course (+1 cone so a snapshot create would be valid
+      // Seed a course (+1 cone so a snapshot create would be valid
       // were it not for the role gate) to exercise the snapshot/delete gates on a
       // real id rather than a 404 path.
-      const name = `e2e-rbac-chief-deny-${Date.now()}-${test.info().parallelIndex}`;
+      const name = `e2e-rbac-master-deny-${Date.now()}-${test.info().parallelIndex}`;
       const admin = await browser.newContext({ storageState: storageStatePath("admin") });
       const created = await admin.request.post("/course/api/courses", { data: { name } });
       expect(created.status()).toBe(201);
@@ -78,8 +78,8 @@ test.describe("Course RBAC gates", () => {
     }
   });
 
-  test("official and student are denied (403) on course create", async ({ browser }) => {
-    for (const role of ["official", "student"]) {
+  test("chief, official, and student are denied (403) on course create", async ({ browser }) => {
+    for (const role of ["chief", "official", "student"]) {
       const ctx = await browser.newContext({ storageState: storageStatePath(role) });
       try {
         const res = await ctx.request.post("/course/api/courses", {
