@@ -1104,10 +1104,17 @@ onUnmounted(() => {
 
 .access-option {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 0.6rem;
   padding: 0.55rem 0;
   border-bottom: 1px solid var(--border-color);
+}
+
+.access-option input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
 }
 
 .access-option span,
