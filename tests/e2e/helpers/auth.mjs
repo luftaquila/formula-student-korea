@@ -80,8 +80,8 @@ export function createStorageState(profile) {
   }));
   return {
     cookies: [
-      { name: "fsk_session", value: jwt, domain: "localhost", path: "/", expires: -1, httpOnly: true, sameSite: "Lax" },
-      { name: "fsk_user", value: fskUser, domain: "localhost", path: "/", expires: -1, sameSite: "Lax" },
+      { name: "fsk_session", value: jwt, domain: "localhost", path: "/", expires: -1, httpOnly: true, secure: false, sameSite: "Lax" },
+      { name: "fsk_user", value: fskUser, domain: "localhost", path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" },
     ],
     origins: [],
   };

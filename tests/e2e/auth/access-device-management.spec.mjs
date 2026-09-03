@@ -55,6 +55,7 @@ test.describe("Access and kiosk device management", () => {
         path: "/",
         expires: -1,
         httpOnly: true,
+        secure: false,
         sameSite: "Lax",
       }]);
 
