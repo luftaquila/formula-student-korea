@@ -3,8 +3,7 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // Course service RBAC backstop. The frontend hides tabs/buttons by permission,
 // while these gates (course/index.mjs authRoleFn) remain the enforcing layer:
-//   course.operate → course/cone editing
-//   course.manage  → snapshots and course deletion
+//   Course checkbox → course.manage, which includes course.operate
 //   rover.operate  → rover and missions
 //   audit.view     → logs
 //   internal-strict (deny even an admin browser) → /api/rover/stream, /camera,
@@ -15,7 +14,7 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // short 200 header for /stream) immediately and is closed by .close().
 
 test.describe("Course RBAC gates", () => {
-  test("course editor can create a course and a cone (201)", async ({ browser }) => {
+  test("course access can create a course and a cone (201)", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("technicalOperator") });
     try {
       const name = `e2e-rbac-course-editor-${Date.now()}-${test.info().parallelIndex}`;
@@ -29,22 +28,18 @@ test.describe("Course RBAC gates", () => {
       });
       expect(cone.status()).toBe(201);
 
-      // Cleanup the seeded course (requires course.manage, so use an admin ctx).
-      const admin = await browser.newContext({ storageState: storageStatePath("admin") });
-      await admin.request.delete(`/course/api/courses/${course.id}`);
-      await admin.close();
+      const deleted = await ctx.request.delete(`/course/api/courses/${course.id}`);
+      expect(deleted.status()).toBe(200);
     } finally {
       await ctx.close();
     }
   });
 
-  test("course editor is denied operations requiring other permissions", async ({ browser }) => {
+  test("course access includes management but excludes unrelated permissions", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("technicalOperator") });
     try {
-      // Seed a course (+1 cone so a snapshot create would be valid
-      // were it not for the permission gate) to exercise the snapshot/delete gates on a
-      // real id rather than a 404 path.
-      const name = `e2e-rbac-course-editor-deny-${Date.now()}-${test.info().parallelIndex}`;
+      // Seed a real course and cone to exercise all management operations.
+      const name = `e2e-rbac-course-manager-${Date.now()}-${test.info().parallelIndex}`;
       const admin = await browser.newContext({ storageState: storageStatePath("admin") });
       const created = await admin.request.post("/course/api/courses", { data: { name } });
       expect(created.status()).toBe(201);
@@ -61,19 +56,18 @@ test.describe("Course RBAC gates", () => {
       const logs = await ctx.request.get("/course/api/logs");
       expect(logs.status()).toBe(403);
 
-      // Snapshot create / restore / delete require course.manage.
+      // The single Course checkbox grants snapshot and destructive management too.
       const snapCreate = await ctx.request.post(`/course/api/courses/${courseId}/snapshots`, { data: {} });
-      expect(snapCreate.status()).toBe(403);
-      const snapRestore = await ctx.request.post(`/course/api/courses/${courseId}/snapshots/1/restore`);
-      expect(snapRestore.status()).toBe(403);
-      const snapDelete = await ctx.request.delete(`/course/api/courses/${courseId}/snapshots/1`);
-      expect(snapDelete.status()).toBe(403);
+      expect(snapCreate.status()).toBe(201);
+      const snapshotId = (await snapCreate.json()).id;
+      const snapRestore = await ctx.request.post(`/course/api/courses/${courseId}/snapshots/${snapshotId}/restore`);
+      expect(snapRestore.status()).toBe(200);
+      const snapDelete = await ctx.request.delete(`/course/api/courses/${courseId}/snapshots/${snapshotId}`);
+      expect(snapDelete.status()).toBe(204);
 
-      // DELETE course requires course.manage (cascade-wipes cones + snapshots).
       const courseDelete = await ctx.request.delete(`/course/api/courses/${courseId}`);
-      expect(courseDelete.status()).toBe(403);
+      expect(courseDelete.status()).toBe(200);
 
-      await admin.request.delete(`/course/api/courses/${courseId}`);
       await admin.close();
     } finally {
       await ctx.close();
