@@ -121,7 +121,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
       ops_display: Object.freeze([fk("users", "user_id", "id", "NO ACTION")]),
     }),
     tableSqlFragments: Object.freeze({
-      users: Object.freeze(["unique", "check(rolein('admin','chief','official','student'))"]),
+      users: Object.freeze(["unique", "check(rolein('admin','chief','official','staff','student'))"]),
       applications: Object.freeze(["emailtextuniquenotnull"]),
     }),
     triggers: Object.freeze([LOG_TRIGGER]),

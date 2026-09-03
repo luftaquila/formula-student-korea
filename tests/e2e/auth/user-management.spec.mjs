@@ -27,6 +27,7 @@ test.describe("User management", () => {
     await expect(table.getByRole("cell", { name: "e2e-admin@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-chief@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-official@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-staff@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-student@test.com", exact: true })).toBeVisible();
   });
 

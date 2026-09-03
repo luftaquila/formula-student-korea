@@ -220,6 +220,7 @@
                     <option value="admin">Admin</option>
                     <option value="chief">Chief</option>
                     <option value="official">Official</option>
+                    <option value="staff">Staff</option>
                     <option value="student">Student</option>
                   </select>
                   <select v-model="activeFilter" class="form-select">
@@ -539,7 +540,7 @@ watch(showCompose, async (open) => {
 });
 
 // ── Util ──
-const ROLE_BADGE = { admin: "badge-danger", chief: "badge-warning", official: "badge-primary", student: "badge-success" };
+const ROLE_BADGE = { admin: "badge-danger", chief: "badge-warning", official: "badge-primary", staff: "badge-default", student: "badge-success" };
 function roleBadgeClass(role) { return ROLE_BADGE[role] || "badge-primary"; }
 
 function formatTime(ts) {

@@ -3,11 +3,14 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   admins,
+  chiefs,
   getIcon,
   officials,
   resources,
   services,
+  staff,
 } from "../../shared/nav-config.js";
+import { ROLE_LEVELS } from "../../shared/constants.js";
 
 const registrationRoot = new URL("../../registration/web/", import.meta.url);
 
@@ -23,19 +26,55 @@ function templateOf(source) {
 
 test("registration navigation uses distinct queue-style icons and concise labels", () => {
   const registration = services.find((item) => item.href === "/registration");
-  const registrationAdmin = officials.find((item) => item.href === "/registration/manage");
+  const registrationAdmin = staff.find((item) => item.href === "/registration/manage");
 
   assert.equal(registration?.name, "등록 대기열");
   assert.equal(registrationAdmin?.name, "등록 대기 관리");
   assert.equal(getIcon(registration?.icon), "🎫");
   assert.equal(getIcon(registrationAdmin?.icon), "🎛️");
 
-  const menuItems = [...services, ...resources, ...officials, ...admins];
+  const menuItems = [...services, ...resources, ...staff, ...officials, ...chiefs, ...admins];
   const otherIcons = menuItems
     .filter((item) => item !== registration && item !== registrationAdmin)
     .map((item) => getIcon(item.icon));
   assert.equal(otherIcons.includes(getIcon(registration.icon)), false);
   assert.equal(otherIcons.includes(getIcon(registrationAdmin.icon)), false);
+});
+
+test("staff sits below official and only owns registration management", () => {
+  assert.deepEqual(ROLE_LEVELS, {
+    student: 1,
+    staff: 2,
+    official: 3,
+    chief: 4,
+    admin: 5,
+  });
+  assert.deepEqual(staff.map(({ href, auth }) => ({ href, auth })), [
+    { href: "/registration/manage", auth: "staff" },
+  ]);
+  assert.deepEqual(officials.map(({ href, auth }) => ({ href, auth })), [
+    { href: "/queue/admin", auth: "official" },
+    { href: "/inspection", auth: "official" },
+  ]);
+  assert.deepEqual(chiefs.map(({ href, auth }) => ({ href, auth })), [
+    { href: "/documents/admin", auth: "chief" },
+    { href: "/course", auth: "chief" },
+    { href: "/files/", auth: "chief" },
+  ]);
+});
+
+test("landing groups role menus and makes resources collapsible", async () => {
+  const landing = await readFile(new URL("../../landing/src/App.vue", import.meta.url), "utf8");
+  const navMenu = await readFile(new URL("../../shared/NavMenu.vue", import.meta.url), "utf8");
+
+  assert.match(landing, /<details :open="resourcesOpen" class="section resources-section" @toggle="persistResourcesState">/);
+  assert.match(landing, /<summary class="section-title collapsible-title">\s*Resources/);
+  assert.match(landing, /fsk\.resources\.home\.open/);
+  assert.match(landing, /<h2 class="section-title">Staff<\/h2>/);
+  assert.match(landing, /<h2 class="section-title">Officials<\/h2>/);
+  assert.match(landing, /<h2 class="section-title">Chief<\/h2>/);
+  assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);
+  assert.match(navMenu, /fsk\.resources\.menu\.open/);
 });
 
 test("registration pages do not expose service tabs or internal role names", async () => {

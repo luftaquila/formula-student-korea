@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -19,8 +20,11 @@ process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 
 import { createAuthApp } from '../../auth/index.mjs';
 
+const require = createRequire(import.meta.url);
+const Database = require('../../auth/node_modules/better-sqlite3');
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+const staffCookie = makeAuthCookie({ email: 'staff@test.com', name: 'Staff', role: 'staff' });
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
 
 let server, baseUrl, client, db, dbPath;
@@ -79,6 +83,15 @@ describe('GET /api/users', () => {
 });
 
 describe('POST /api/users', () => {
+  it('creates a staff user', async () => {
+    const res = await client.post('/api/users', {
+      body: { email: 'staff@test.com', role: 'staff' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 201);
+    assert.equal((await res.json()).role, 'staff');
+  });
+
   it('creates a user with valid email and role', async () => {
     const res = await client.post('/api/users', {
       body: { email: 'new@example.com', role: 'student' },
@@ -580,6 +593,51 @@ describe('GET /api/users/role/:email', () => {
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(data.role, 'admin');
+  });
+});
+
+describe('Staff role schema migration', () => {
+  it('preserves existing users while extending the deployed role constraint', () => {
+    const legacyPath = tmpDbPath();
+    let legacyDb;
+    let migratedDb;
+
+    try {
+      legacyDb = new Database(legacyPath);
+      legacyDb.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'student')),
+          memo TEXT DEFAULT '',
+          realname TEXT DEFAULT '',
+          phone TEXT DEFAULT '',
+          affiliation TEXT DEFAULT '',
+          created_at TEXT,
+          active INTEGER DEFAULT 1
+        );
+        INSERT INTO users (email, name, role, affiliation)
+          VALUES ('preserved@test.com', 'Preserved', 'official', '기존 소속');
+      `);
+      legacyDb.close();
+      legacyDb = null;
+
+      migratedDb = createAuthApp({ dbPath: legacyPath }).db;
+      assert.deepEqual(
+        migratedDb.prepare("SELECT email, name, role, affiliation FROM users WHERE email = 'preserved@test.com'").get(),
+        { email: 'preserved@test.com', name: 'Preserved', role: 'official', affiliation: '기존 소속' },
+      );
+      migratedDb.prepare("INSERT INTO users (email, role) VALUES ('migrated-staff@test.com', 'staff')").run();
+      assert.equal(
+        migratedDb.prepare("SELECT role FROM users WHERE email = 'migrated-staff@test.com'").get().role,
+        'staff',
+      );
+    } finally {
+      legacyDb?.close();
+      migratedDb?.close();
+      cleanup(legacyPath);
+    }
   });
 });
 
@@ -1310,6 +1368,20 @@ describe('GET /api/forward-auth', () => {
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 403);
+  });
+
+  it('places staff below official in the forward-auth hierarchy', async () => {
+    const denied = await client.get('/api/forward-auth?role=official', {
+      cookie: staffCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(denied.status, 403);
+
+    const allowed = await client.get('/api/forward-auth?role=staff', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(allowed.status, 200);
   });
 
   it('returns 200 with X-Forwarded-User when authorized', async () => {

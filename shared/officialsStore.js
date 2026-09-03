@@ -14,9 +14,11 @@ export const user = ref(getUserFromCookie());
 export const isAuthenticated = computed(() => roleLevel(user.value?.role) >= 1);
 // Exact-match (not hierarchical): student-facing items hidden from staff.
 export const isStudent = computed(() => user.value?.role === "student");
-export const showOfficials = computed(() => roleLevel(user.value?.role) >= 2);
-export const isChief = computed(() => roleLevel(user.value?.role) >= 3);
-export const isAdmin = computed(() => roleLevel(user.value?.role) >= 4);
+export const isStaff = computed(() => user.value?.role === "staff");
+export const showStaff = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.staff);
+export const showOfficials = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.official);
+export const isChief = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.chief);
+export const isAdmin = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.admin);
 
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {

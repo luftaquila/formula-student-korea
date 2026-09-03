@@ -75,9 +75,9 @@ export function createRegistrationApp(options = {}) {
       if (req.path === "/api/logs") return "admin";
       if (req.path === "/api/queue" && req.method === "POST") return "chief";
       if (req.path === "/api/settings" && req.method !== "GET") return "chief";
-      if (req.path.startsWith("/api/")) return "official";
+      if (req.path.startsWith("/api/")) return "staff";
       if (/^\/register(?:\/|$)/.test(req.path)) return "chief";
-      if (/^\/manage(?:\/|$)/.test(req.path)) return "official";
+      if (/^\/manage(?:\/|$)/.test(req.path)) return "staff";
       return null;
     },
   });

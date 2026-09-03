@@ -3,9 +3,10 @@ import express from "express";
 import Database from "better-sqlite3";
 import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
+import { ROLE_LEVELS } from "../shared/constants.js";
 
-const EVENT_ROLE_LEVELS = { public: 0, student: 1, official: 2, chief: 3, admin: 4 };
-const ALLOWED_EVENT_ROLES = ["public", "student", "official", "chief", "admin"];
+const EVENT_ROLE_LEVELS = { public: 0, ...ROLE_LEVELS };
+const ALLOWED_EVENT_ROLES = Object.keys(EVENT_ROLE_LEVELS);
 
 /* ============================================
    App

@@ -20,17 +20,36 @@
         </div>
       </section>
 
-      <section class="section">
-        <h2 class="section-title">Resources</h2>
+      <details :open="resourcesOpen" class="section resources-section" @toggle="persistResourcesState">
+        <summary class="section-title collapsible-title">
+          Resources
+          <svg class="collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </summary>
         <div class="services">
           <ServiceCard v-for="item in resources" :key="item.href" v-bind="cardProps(item)" />
+        </div>
+      </details>
+
+      <section v-if="isStaff || isAdmin" class="section">
+        <h2 class="section-title">Staff</h2>
+        <div class="services">
+          <ServiceCard v-for="item in staff" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
 
       <section v-if="showOfficials" class="section">
         <h2 class="section-title">Officials</h2>
         <div class="services">
-          <ServiceCard v-for="item in officialItems" :key="item.href" v-bind="cardProps(item)" />
+          <ServiceCard v-for="item in officials" :key="item.href" v-bind="cardProps(item)" />
+        </div>
+      </section>
+
+      <section v-if="isChief" class="section">
+        <h2 class="section-title">Chief</h2>
+        <div class="services">
+          <ServiceCard v-for="item in chiefs" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
 
@@ -45,22 +64,31 @@
 </template>
 
 <script setup>
-import { computed, onMounted } from "vue";
+import { computed, onMounted, ref } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useNotification } from "@shared/useNotification.js";
-import { user, isStudent, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
-import { services, resources, officials, admins, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
+import { readDisclosureState, writeDisclosureState } from "@shared/persistent-disclosure.js";
+import { user, isStudent, isStaff, showOfficials, isChief, isAdmin } from "@shared/officialsStore.js";
+import { services, resources, staff, officials, chiefs, admins, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
 
 // 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
-// "홈"은 landing 자신이므로 카드에서 제외, studentOnly/auth 가시성 규칙은 NavMenu와 동일.
+// "홈"은 landing 자신이므로 카드에서 제외하고, 학생 전용 항목은 exact role로 제한한다.
 const serviceItems = computed(() =>
   services.filter((item) => item.href !== "/" && (!item.studentOnly || isStudent.value)),
 );
-const officialItems = computed(() =>
-  officials.filter((item) => !item.auth || (item.auth === "chief" && isChief.value)),
-);
+const resourcesStorageKey = "fsk.resources.home.open";
+const browserStorage = (() => {
+  try { return window.localStorage; }
+  catch { return null; }
+})();
+const resourcesOpen = ref(readDisclosureState(browserStorage, resourcesStorageKey));
+
+function persistResourcesState(event) {
+  resourcesOpen.value = event.currentTarget.open;
+  writeDisclosureState(browserStorage, resourcesStorageKey, resourcesOpen.value);
+}
 
 function cardProps(item) {
   const props = { title: item.name, description: "", path: item.href, external: !!item.external };
@@ -169,6 +197,35 @@ onMounted(() => {
   letter-spacing: 0.04em;
   color: var(--text-secondary);
   margin-bottom: 1.25rem;
+}
+
+.resources-section > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.resources-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-title {
+  display: flex;
+  align-items: center;
+}
+
+.collapse-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-left: 0.5rem;
+  transition: transform 0.15s ease;
+}
+
+.resources-section:not([open]) .collapse-icon {
+  transform: rotate(-90deg);
+}
+
+.resources-section:not([open]) > summary {
+  margin-bottom: 0;
 }
 
 .services {

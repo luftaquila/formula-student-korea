@@ -177,6 +177,7 @@ onMounted(() => {
           </label>
           <select v-model="approveRole" class="role-select">
             <option value="student">Student</option>
+            <option value="staff">Staff</option>
             <option value="official">Official</option>
             <option value="chief">Chief</option>
             <option value="admin">Admin</option>

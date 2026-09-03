@@ -21,7 +21,7 @@ setupTestEnv();
 const require = createRequire(import.meta.url);
 const Database = require("../../registration/node_modules/better-sqlite3");
 const YEAR = currentCompetitionYear();
-const cookies = Object.fromEntries(["student", "official", "chief", "admin"].map((role) => [
+const cookies = Object.fromEntries(["student", "staff", "official", "chief", "admin"].map((role) => [
   role,
   makeAuthCookie({ email: `${role}@test.invalid`, name: role, role }),
 ]));
@@ -174,7 +174,7 @@ afterEach(async () => {
 });
 
 describe("Registration queue", () => {
-  it("enforces the public, official, chief, and admin flows", async () => {
+  it("enforces the public, staff, official, chief, and admin flows", async () => {
     const f = await fixture();
     const team = f.team(11);
 
@@ -183,6 +183,13 @@ describe("Registration queue", () => {
     assert.deepEqual(await response.json(), { year: YEAR, open: false, waiting: 0 });
 
     response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.student });
+    assert.equal(response.status, 403);
+    response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: cookies.staff });
+    assert.equal(response.status, 200);
+    response = await f.client.post("/api/queue", {
+      cookie: cookies.staff,
+      body: { teamId: team.id, phone: "01012345678" },
+    });
     assert.equal(response.status, 403);
     response = await f.client.post("/api/queue", {
       cookie: cookies.official,
@@ -213,6 +220,11 @@ describe("Registration queue", () => {
     response = await f.client.get(`/api/status?year=${YEAR}`);
     assert.deepEqual(await response.json(), { year: YEAR, open: true, waiting: 0 });
 
+    response = await f.client.patch("/api/settings", {
+      cookie: cookies.staff,
+      body: { year: YEAR, open: false },
+    });
+    assert.equal(response.status, 403);
     response = await f.client.patch("/api/settings", {
       cookie: cookies.official,
       body: { year: YEAR, open: false },

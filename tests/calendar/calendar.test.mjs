@@ -19,6 +19,7 @@ import { createCalendarApp } from '../../calendar/index.mjs';
    ============================================ */
 const MOCK_USERS = [
   { email: 'student@test.com', name: 'Student', role: 'student', active: 1 },
+  { email: 'staff@test.com', name: 'Staff', role: 'staff', active: 1 },
   { email: 'official@test.com', name: 'Official', role: 'official', active: 1 },
   { email: 'chief@test.com', name: 'Chief', role: 'chief', active: 1 },
   { email: 'admin@test.com', name: 'Admin', role: 'admin', active: 1 },
@@ -44,6 +45,7 @@ let server, baseUrl, client, db, dbPath;
 let mockAuthServer;
 
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
+const staffCookie = makeAuthCookie({ email: 'staff@test.com', name: 'Staff', role: 'staff' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
@@ -145,7 +147,7 @@ describe('Calendar API', () => {
 
   describe('Role-based event filtering', () => {
     const visibilityPrefix = 'Visibility fixture: ';
-    const roles = ['public', 'student', 'official', 'chief', 'admin'];
+    const roles = ['public', 'student', 'staff', 'official', 'chief', 'admin'];
 
     before(async () => {
       for (const role of roles) {
@@ -182,17 +184,23 @@ describe('Calendar API', () => {
       assert.deepEqual(fixtureRoles(events), ['public', 'student']);
     });
 
+    it('staff sees public, student, and staff events', async () => {
+      const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: staffCookie });
+      assert.equal(res.status, 200);
+      assert.deepEqual(fixtureRoles(await res.json()), ['public', 'staff', 'student']);
+    });
+
     it('official sees public, student, and official events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: officialCookie });
       assert.equal(res.status, 200);
-      assert.deepEqual(fixtureRoles(await res.json()), ['official', 'public', 'student']);
+      assert.deepEqual(fixtureRoles(await res.json()), ['official', 'public', 'staff', 'student']);
     });
 
     it('admin sees all events including admin-role events', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: adminCookie });
       assert.equal(res.status, 200);
       const events = await res.json();
-      assert.deepEqual(fixtureRoles(events), ['admin', 'chief', 'official', 'public', 'student']);
+      assert.deepEqual(fixtureRoles(events), ['admin', 'chief', 'official', 'public', 'staff', 'student']);
     });
   });
 

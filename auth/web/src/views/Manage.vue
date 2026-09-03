@@ -97,7 +97,7 @@ async function addUser() {
 }
 
 function roleBadgeClass(role) {
-  return { student: "badge-success", official: "badge-primary", chief: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
+  return { student: "badge-success", staff: "badge-default", official: "badge-primary", chief: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
 }
 
 async function changeRole(user, newRole) {
@@ -707,6 +707,7 @@ onUnmounted(() => {
           />
           <select v-model="newRole" class="form-select">
             <option value="student">Student</option>
+            <option value="staff">Staff</option>
             <option value="official">Official</option>
             <option value="chief">Chief</option>
             <option value="admin">Admin</option>
@@ -726,6 +727,7 @@ onUnmounted(() => {
               <option value="admin">Admin</option>
               <option value="chief">Chief</option>
               <option value="official">Official</option>
+              <option value="staff">Staff</option>
               <option value="student">Student</option>
             </select>
             <select v-model="filterActive" class="filter-select">
@@ -819,6 +821,7 @@ onUnmounted(() => {
                       :title="user.protected ? '기본 관리자의 역할은 변경할 수 없습니다' : user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 강등할 수 없습니다' : ''"
                     >
                       <option value="student">Student</option>
+                      <option value="staff">Staff</option>
                       <option value="official">Official</option>
                       <option value="chief">Chief</option>
                       <option value="admin">Admin</option>

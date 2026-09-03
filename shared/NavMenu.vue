@@ -1,10 +1,11 @@
 <script setup>
 import { ref, watch } from "vue";
 import ThemeToggle from "./ThemeToggle.vue";
-import { services, resources, officials, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { user, isAuthenticated, isStudent, showOfficials, isChief, isAdmin } from "./officialsStore.js";
+import { readDisclosureState, writeDisclosureState } from "./persistent-disclosure.js";
+import { services, resources, staff, officials, chiefs, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
+import { user, isAuthenticated, isStudent, isStaff, showStaff, showOfficials, isChief, isAdmin } from "./officialsStore.js";
 
-const roleCheck = { student: isAuthenticated, official: showOfficials, chief: isChief, admin: isAdmin };
+const roleCheck = { student: isAuthenticated, staff: showStaff, official: showOfficials, chief: isChief, admin: isAdmin };
 function canShow(item) {
   if (item.studentOnly) return isStudent.value; // exact student, hidden from staff
   return !item.auth || roleCheck[item.auth]?.value;
@@ -19,6 +20,17 @@ const props = defineProps({
 
 const isOpen = ref(false);
 const opsContacts = ref(null);
+const resourcesStorageKey = "fsk.resources.menu.open";
+const browserStorage = (() => {
+  try { return window.localStorage; }
+  catch { return null; }
+})();
+const resourcesOpen = ref(readDisclosureState(browserStorage, resourcesStorageKey));
+
+function persistResourcesState(event) {
+  resourcesOpen.value = event.currentTarget.open;
+  writeDisclosureState(browserStorage, resourcesStorageKey, resourcesOpen.value);
+}
 
 async function fetchOpsContacts() {
   try {
@@ -70,7 +82,7 @@ function isActive(href) {
   }
   if (href !== "/" && props.currentPath.startsWith(href + "/")) {
     // Only match prefix if no other item is a more specific match
-    const allItems = [...services, ...officials, ...admins];
+    const allItems = [...services, ...staff, ...officials, ...chiefs, ...admins];
     const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
     if (!hasMoreSpecific) return true;
   }
@@ -170,8 +182,13 @@ async function logout() {
               </template>
             </div>
 
-            <div class="nav-section">
-              <span class="nav-section-title">Resources</span>
+            <details :open="resourcesOpen" class="nav-section resources-section" @toggle="persistResourcesState">
+              <summary class="nav-section-title collapsible-title">
+                Resources
+                <svg class="collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </summary>
               <template v-for="item in resources" :key="item.href">
                 <a
                   :href="item.href"
@@ -195,6 +212,21 @@ async function logout() {
                   </svg>
                 </a>
               </template>
+            </details>
+
+            <div v-if="isStaff || isAdmin" class="nav-section">
+              <span class="nav-section-title">Staff</span>
+              <template v-for="item in staff" :key="item.href">
+                <a
+                  v-if="canShow(item)"
+                  :href="item.href"
+                  class="nav-item"
+                  :class="{ active: isActive(item.href) }"
+                >
+                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                  <span>{{ item.name }}</span>
+                </a>
+              </template>
             </div>
 
             <div v-if="showOfficials" class="nav-section">
@@ -208,6 +240,35 @@ async function logout() {
                 >
                   <span class="nav-icon">{{ getIcon(item.icon) }}</span>
                   <span>{{ item.name }}</span>
+                </a>
+              </template>
+            </div>
+
+            <div v-if="isChief" class="nav-section">
+              <span class="nav-section-title">Chief</span>
+              <template v-for="item in chiefs" :key="item.href">
+                <a
+                  v-if="canShow(item)"
+                  :href="item.href"
+                  :target="item.external ? '_blank' : undefined"
+                  :rel="item.external ? 'noopener noreferrer' : undefined"
+                  class="nav-item"
+                  :class="{ active: isActive(item.href) }"
+                >
+                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                  <span>{{ item.name }}</span>
+                  <svg
+                    v-if="item.external"
+                    class="external-icon"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                  >
+                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                    <polyline points="15 3 21 3 21 9" />
+                    <line x1="10" y1="14" x2="21" y2="3" />
+                  </svg>
                 </a>
               </template>
             </div>
@@ -458,6 +519,30 @@ async function logout() {
   padding: 0.5rem 0;
 }
 
+.resources-section > summary {
+  list-style: none;
+  cursor: pointer;
+}
+
+.resources-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsible-title {
+  display: flex;
+  align-items: center;
+}
+
+.collapse-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+
+.resources-section:not([open]) .collapse-icon {
+  transform: rotate(-90deg);
+}
 
 .nav-section-bottom {
   margin-top: auto;

@@ -17,10 +17,16 @@ export const resources = [
   { name: "자작자동차포럼", href: "https://dnf.luftaquila.io", icon: "forum", external: true },
 ];
 
+export const staff = [
+  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin", auth: "staff" },
+];
+
 export const officials = [
-  { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin" },
-  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin" },
-  { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
+  { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin", auth: "official" },
+  { name: "인스펙션 시트", href: "/inspection", icon: "sheet", auth: "official" },
+];
+
+export const chiefs = [
   { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
   { name: "코스 관리", href: "/course", icon: "course", auth: "chief" },
   // FileBrowser는 독립 SPA라 새 탭으로 연다 (landing 카드와 동일 동작)

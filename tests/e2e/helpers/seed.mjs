@@ -19,7 +19,7 @@ async function api(method, path, body, role = "admin", expectedStatus = 200) {
 
 export async function seedUsers() {
   // Admin is auto-created via ADMIN_EMAIL env var.
-  // Create the remaining 3 test users.
+  // Create every non-bootstrap test user.
   for (const [role, user] of Object.entries(TEST_USERS)) {
     if (role === "admin") continue;
     await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);

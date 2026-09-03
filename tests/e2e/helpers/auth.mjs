@@ -13,6 +13,7 @@ export const TEST_USERS = {
   admin: { email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" },
   chief: { email: "e2e-chief@test.com", name: "E2E Chief", role: "chief" },
   official: { email: "e2e-official@test.com", name: "E2E Official", role: "official" },
+  staff: { email: "e2e-staff@test.com", name: "E2E Staff", role: "staff" },
   student: { email: "e2e-student@test.com", name: "E2E Student", role: "student" },
 };
 

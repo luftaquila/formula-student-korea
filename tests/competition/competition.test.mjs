@@ -855,6 +855,7 @@ describe("Competition modular monolith", () => {
     });
     const { server, baseUrl } = await startServer(created.app);
     const student = makeAuthCookie({ email: "student@test.invalid", name: "Student", role: "student" });
+    const staff = makeAuthCookie({ email: "staff@test.invalid", name: "Staff", role: "staff" });
     const official = makeAuthCookie({ email: "official@test.invalid", name: "Official", role: "official" });
     const chief = makeAuthCookie({ email: "chief@test.invalid", name: "Chief", role: "chief" });
     const admin = makeAuthCookie({ email: "admin@test.invalid", name: "Admin", role: "admin" });
@@ -874,7 +875,12 @@ describe("Competition modular monolith", () => {
       assert.equal((await get("/queue/")).status, 200);
       assert.equal((await get("/registration/")).status, 200);
       assert.equal((await get("/registration/manage", student)).status, 302);
+      assert.equal((await get("/registration/manage", staff)).status, 200);
+      assert.equal((await get("/registration/register", staff)).status, 302);
+      assert.equal((await get("/queue/admin", staff)).status, 302);
+      assert.equal((await get("/inspection/", staff)).status, 302);
       assert.equal((await get("/registration/manage", official)).status, 200);
+      assert.equal((await get("/registration/manage", chief)).status, 200);
       assert.equal((await get("/registration/register", official)).status, 302);
       assert.equal((await get("/registration/register", chief)).status, 200);
     } finally {

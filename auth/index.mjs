@@ -16,7 +16,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE NOT NULL,
   name TEXT,
-  role TEXT NOT NULL CHECK(role IN ('admin', 'official')),
+  role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
   memo TEXT DEFAULT '',
   realname TEXT DEFAULT '',
   phone TEXT DEFAULT '',
@@ -32,38 +32,37 @@ addColumn(db, "users", "active INTEGER DEFAULT 1");
 // 마이그레이션: realname, phone 컬럼 추가 (memo → realname 전환)
 addColumn(db, "users", "realname TEXT DEFAULT ''");
 addColumn(db, "users", "phone TEXT DEFAULT ''");
+addColumn(db, "users", "affiliation TEXT DEFAULT ''");
 db.exec("UPDATE users SET realname = memo WHERE (realname IS NULL OR realname = '') AND memo IS NOT NULL AND memo != ''");
 
 // 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
 db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
 
-// 마이그레이션: role CHECK 제약조건에 student, chief 추가
+// 마이그레이션: role CHECK 제약조건에 staff 추가
 const roleCheck = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
-if (roleCheck && !roleCheck.sql.includes("student")) {
+if (roleCheck && !roleCheck.sql.includes("'staff'")) {
   db.transaction(() => {
     db.exec(`
       CREATE TABLE users_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT UNIQUE NOT NULL,
         name TEXT,
-        role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'student')),
+        role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
         memo TEXT DEFAULT '',
         realname TEXT DEFAULT '',
         phone TEXT DEFAULT '',
         created_at TEXT,
-        active INTEGER DEFAULT 1
+        active INTEGER DEFAULT 1,
+        affiliation TEXT DEFAULT ''
       );
-      INSERT INTO users_new (id, email, name, role, memo, realname, phone, created_at, active) SELECT id, email, name, role, memo, realname, phone, created_at, active FROM users;
+      INSERT INTO users_new (id, email, name, role, memo, realname, phone, affiliation, created_at, active)
+        SELECT id, email, name, role, memo, realname, phone, affiliation, created_at, active FROM users;
       DROP TABLE users;
       ALTER TABLE users_new RENAME TO users;
     `);
   })();
 }
-
-// 마이그레이션: affiliation(학교/팀) 컬럼 추가 (realname/phone과 동일하게 optional)
-// users_new 재빌드(위)는 1회성이라 affiliation을 포함하지 않으므로 idempotent한 addColumn으로 보강
-addColumn(db, "users", "affiliation TEXT DEFAULT ''");
 
 // 관리자 토글 등 key/value 설정 저장소
 db.exec(`CREATE TABLE IF NOT EXISTS settings (

@@ -37,9 +37,9 @@ All mutating endpoints are logged via `shared/logger.mjs`.
 
 ### Role Hierarchy
 
-`public < student < official < chief < admin`
+`public < student < staff < official < chief < admin`
 
-Levels: `{ student: 1, official: 2, chief: 3, admin: 4 }`. Higher roles can access lower-level resources.
+Levels: `{ student: 1, staff: 2, official: 3, chief: 4, admin: 5 }`. Higher roles can access lower-level resources.
 
 ### Rate Limiting
 
@@ -248,11 +248,11 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/queue` | official | `?year=` | `{ waiting, today, settings }` | Operational board; active rows include phone numbers |
+| GET | `/queue` | staff | `?year=` | `{ waiting, today, settings }` | Operational board; active rows include phone numbers |
 | POST | `/queue` | chief | `{ teamId, phone }` | `201 { id, teamId, number, position, waitingTotal, ... }` | Add one current-year active team while reception is open |
-| POST | `/queue/:id/done` | official | — | `{ id, status: "done" }` | Complete a waiting registration |
-| POST | `/queue/:id/cancel` | official | — | `{ id, status: "canceled" }` | Cancel a waiting registration |
-| GET | `/settings` | official | `?year=` | `{ year, open, sms, notifyRank, smsAvailable, ... }` | Read year-scoped reception and SMS settings |
+| POST | `/queue/:id/done` | staff | — | `{ id, status: "done" }` | Complete a waiting registration |
+| POST | `/queue/:id/cancel` | staff | — | `{ id, status: "canceled" }` | Cancel a waiting registration |
+| GET | `/settings` | staff | `?year=` | `{ year, open, sms, notifyRank, smsAvailable, ... }` | Read year-scoped reception and SMS settings |
 | PATCH | `/settings` | chief | `{ year, open?, sms?, notifyRank? }` | Settings | Atomically update current-year settings (`notifyRank`: 1–10) |
 
 Advance SMS delivery follows Queue behavior: when an active row is completed or canceled, the newly changed team at the exact configured rank receives one notification. Registration, settings, and team-deactivation changes do not send a message. A failed attempt releases its database claim without rolling back the queue mutation. The SMS provider configuration remains owned by the Email service.
