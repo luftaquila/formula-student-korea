@@ -8,25 +8,22 @@ const route = useRoute();
 const isLogs = computed(() => route.path === "/logs");
 const isApply = computed(() => route.path === "/apply");
 const isApplications = computed(() => route.path === "/applications");
-const isContacts = computed(() => route.path === "/contacts");
 const isDevices = computed(() => route.path === "/devices");
 const isDevicePair = computed(() => route.path === "/device");
 // 계정 관리(사용자 표)는 성적 관리처럼 화면 전체 너비를 사용한다.
 const isManage = computed(() => route.path === "/");
 const pageIcon = computed(() =>
-  isApply.value ? "📝" : isDevicePair.value || isDevices.value ? "📱" : isContacts.value ? "☎️" : isApplications.value ? "📋" : isLogs.value ? "📜" : "🔑");
+  isApply.value ? "📝" : isDevicePair.value || isDevices.value ? "📱" : isApplications.value ? "📋" : isLogs.value ? "📜" : "🔑");
 const pageTitle = computed(() =>
   isApply.value ? "FSK 계정 신청"
   : isDevicePair.value ? "FSK 태블릿 인증"
   : isDevices.value ? "FSK 태블릿 장비 관리"
-  : isContacts.value ? "FSK 운영 연락처 관리"
   : isApplications.value ? "FSK 계정 신청 관리"
   : isLogs.value ? "FSK 시스템 로그"
   : "FSK 계정 관리");
 const currentPath = computed(() =>
   isLogs.value ? "/auth/logs"
   : isDevices.value ? "/auth/devices"
-  : isContacts.value ? "/auth/contacts"
   : isApplications.value ? "/auth/applications"
   : "/auth");
 

@@ -19,8 +19,6 @@ const definitions = [
   ["score.operate", "성적 운영", "집계, 수동 점수와 내구 성적 입력"],
   ["score.manage", "성적 관리", "페널티, 설정과 성적 공개 변경", ["score.operate"]],
   ["entry.manage", "엔트리 관리", "팀과 차량 유형 관리"],
-  ["applications.manage", "계정 신청 관리", "계정 신청 조회, 승인과 거절"],
-  ["contacts.manage", "운영 연락처 관리", "운영 연락처 구성과 정렬"],
   ["messaging.operate", "메시지 운영", "이메일·SMS 발송, 테스트, 통계와 로그 조회"],
   ["audit.view", "감사 로그 조회", "서비스 감사 로그 조회"],
 ];
@@ -52,8 +50,6 @@ const toggleControls = [
   ["calendar", "일정 관리", "calendar.manage"],
   ["rover", "Rover 운영", "rover.operate", "Rover, 카메라, GPS와 미션 운영 (코스 운영 포함)"],
   ["entry", "엔트리 관리", "entry.manage"],
-  ["applications", "계정 신청 관리", "applications.manage"],
-  ["contacts", "운영 연락처 관리", "contacts.manage"],
   ["messaging", "이메일/SMS 운영", "messaging.operate"],
   ["audit", "감사 로그 조회", "audit.view"],
 ];

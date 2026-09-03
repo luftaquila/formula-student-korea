@@ -37,6 +37,8 @@ test("five services use three levels while Course and Score are full-access togg
     assert.equal(control.type, "toggle");
     assert.equal(control.permission, `${key}.manage`);
   }
+  assert.equal(PERMISSION_KEYS.includes("applications.manage"), false);
+  assert.equal(PERMISSION_KEYS.includes("contacts.manage"), false);
 });
 
 test("management implies operation and stored grants have one canonical source", () => {

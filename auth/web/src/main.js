@@ -13,8 +13,7 @@ const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: "/", component: () => import("./views/Manage.vue"), meta: { adminOnly: true } },
-    { path: "/applications", component: () => import("./views/Applications.vue"), meta: { permission: "applications.manage" } },
-    { path: "/contacts", component: () => import("./views/Contacts.vue"), meta: { permission: "contacts.manage" } },
+    { path: "/applications", component: () => import("./views/Applications.vue"), meta: { adminOnly: true } },
     { path: "/devices", component: () => import("./views/Devices.vue"), meta: { adminOnly: true } },
     { path: "/device", component: () => import("./views/DevicePair.vue") },
     {

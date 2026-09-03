@@ -50,6 +50,9 @@ test("human roles stay simple and operation links use explicit permissions", () 
   assert.equal(registrationAdmin.permission, "registration.operate");
   assert.equal(operations.find((item) => item.href === "/queue/admin")?.permission, "queue.operate");
   assert.equal(operations.find((item) => item.href === "/inspection")?.permission, "inspection.operate");
+  assert.equal(operations.some((item) => item.href === "/auth/applications"), false);
+  assert.equal(operations.some((item) => item.href === "/auth/contacts"), false);
+  assert.equal(operations.some((item) => item.href === "/auth/devices"), false);
   assert.ok(operations.filter((item) => item.permission).every((item) => PERMISSION_KEYS.includes(item.permission)));
   const registrationAccess = ACCESS_CONTROL_DEFINITIONS.find(({ key }) => key === "registration");
   assert.equal(registrationAccess?.type, "tiered");
@@ -65,11 +68,19 @@ test("landing renders one permission-filtered operation group and persists resou
   assert.match(landing, /<summary class="section-title collapsible-title">\s*Resources/);
   assert.match(landing, /<h2 class="section-title">Operations<\/h2>/);
   assert.match(landing, /operations\.filter/);
+  assert.match(landing, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
   assert.equal(RESOURCES_DISCLOSURE_STORAGE_KEY, "fsk.resources.open");
   assert.match(landing, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
   assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);
   assert.match(navMenu, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
   assert.match(navMenu, /visibleOperations/);
+});
+
+test("Auth administration is grouped under account and access", async () => {
+  const manage = await readFile(new URL("../../auth/web/src/views/Manage.vue", import.meta.url), "utf8");
+  assert.match(manage, /to="\/applications"[^>]*>계정 신청 관리<\/router-link>/);
+  assert.match(manage, /to="\/devices"[^>]*>태블릿 장비 관리<\/router-link>/);
+  assert.match(manage, /운영 오피셜 연락처/);
 });
 
 test("registration pages do not expose service tabs or internal role names", async () => {

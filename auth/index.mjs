@@ -37,8 +37,8 @@ const LEGACY_PERMISSION_BUNDLES = Object.freeze({
   score_operator: ["score.operate"],
   score_manager: ["score.manage"],
   entry_manager: ["entry.manage"],
-  application_manager: ["applications.manage"],
-  contacts_manager: ["contacts.manage"],
+  application_manager: [],
+  contacts_manager: [],
   messaging_operator: ["messaging.operate"],
   auditor: ["audit.view"],
 });
@@ -142,6 +142,11 @@ CREATE TABLE IF NOT EXISTS kiosk_device (
 );
 CREATE INDEX IF NOT EXISTS idx_kiosk_device_token_hash ON kiosk_device(token_hash);
 CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pairing_code_hash);`);
+
+// These Auth administration features were briefly exposed as Official service
+// grants in the preview. They belong to Account & Access and remain Admin-only.
+db.prepare(`DELETE FROM user_permission
+  WHERE permission_key IN ('applications.manage', 'contacts.manage')`).run();
 
 const legacyBundleTableExists = Boolean(db.prepare(
   "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'user_permission_bundle'",
@@ -392,11 +397,11 @@ const app = createApp({
   if (req.path === "/api/admin/logs") return access.permission("audit.view");
   if (req.path.startsWith("/api/admin")) return access.admin;
   if (req.path.startsWith("/api/users")) return access.admin;
-  if (req.path === "/api/contact-candidates") return access.permission("contacts.manage");
-  if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return access.permission("contacts.manage");
+  if (req.path === "/api/contact-candidates") return access.admin;
+  if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return access.admin;
   if (req.path.startsWith("/api/ops-contacts")) return access.official;
   if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
-  if (req.path.startsWith("/api/applications")) return access.permission("applications.manage");
+  if (req.path.startsWith("/api/applications")) return access.admin;
   if (req.path === "/api/apply/config") return null;            // 신청 가능 여부: 공개
   if (req.path.startsWith("/api/apply")) return null;           // 신청자 API: 공개(핸들러가 fsk_applicant 검증)
   if (req.path.startsWith("/api/")) return access.admin; // API 기본값: default-close
@@ -1058,10 +1063,6 @@ app.post("/api/applications/approve", (req, res) => {
   const { ids, role } = req.body;
   if (!Array.isArray(ids) || ids.length === 0) return res.status(400).send("신청을 선택하세요.");
   if (!VALID_ROLES.includes(role)) return res.status(400).send("올바르지 않은 역할입니다.");
-  if (req.user?.role !== "admin" && !["student", "official"].includes(role)) {
-    logger.warn(req, "applications.approve", { reason: "role_escalation", requested_role: role });
-    return res.status(403).send("해당 역할로 승인할 권한이 없습니다.");
-  }
 
   const numIds = ids.map(Number).filter((n) => Number.isInteger(n) && n > 0);
   if (numIds.length === 0) return res.status(400).send("유효한 ID가 없습니다.");

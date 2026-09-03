@@ -212,9 +212,15 @@ onMounted(() => {
 
 .services {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 1.5rem;
   width: 100%;
+}
+
+@media (max-width: 1024px) {
+  .services {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
 @media (max-width: 768px) {

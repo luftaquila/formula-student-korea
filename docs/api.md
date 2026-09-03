@@ -51,7 +51,7 @@ The permission keys are:
 `inspection.operate`, `inspection.manage`, `documents.operate`, `documents.manage`,
 `files.access`, `calendar.manage`, `course.operate`, `course.manage`, `rover.operate`,
 `traffic.operate`, `traffic.manage`, `score.operate`, `score.manage`, `entry.manage`,
-`applications.manage`, `contacts.manage`, `messaging.operate`, and `audit.view`.
+`messaging.operate`, and `audit.view`.
 
 Queue and Inspection are deliberately separate. `queue.manage` implies only
 `queue.operate`; `inspection.manage` implies only `inspection.operate`.
@@ -125,11 +125,11 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/ops-contacts` | official/admin | — | `[{ id, email, name, realname, phone, description, sort_order }]` | List users displayed in sidebar, ordered by `sort_order` |
-| GET | `/api/contact-candidates` | `contacts.manage` | — | Active Officials and Admins | List candidates for the contact display |
-| POST | `/api/ops-contacts` | `contacts.manage` | `{ user_id }` | 201 | Add an Official/Admin to the display |
-| POST | `/api/ops-contacts/reorder` | `contacts.manage` | `{ user_ids: [...] }` | 200 | Replace the display order |
-| PATCH | `/api/ops-contacts/:userId` | `contacts.manage` | `{ description }` | `{ description }` | Update the short description (max 30 characters) |
-| DELETE | `/api/ops-contacts/:userId` | `contacts.manage` | — | 200 | Remove a user from the display |
+| GET | `/api/contact-candidates` | admin | — | Active Officials and Admins | List candidates for the contact display |
+| POST | `/api/ops-contacts` | admin | `{ user_id }` | 201 | Add an Official/Admin to the display |
+| POST | `/api/ops-contacts/reorder` | admin | `{ user_ids: [...] }` | 200 | Replace the display order |
+| PATCH | `/api/ops-contacts/:userId` | admin | `{ description }` | `{ description }` | Update the short description (max 30 characters) |
+| DELETE | `/api/ops-contacts/:userId` | admin | — | 200 | Remove a user from the display |
 
 ### Account Applications (계정 신청)
 
@@ -139,10 +139,10 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | GET | `/api/apply/me` | public | — | `{ registered: true, email, name }`(로그인됨) 또는 `{ registered: false, email, name, application, applicationsOpen }`(신청자) 또는 401 | 내 세션/신청 상태 (`fsk_applicant` 쿠키 또는 세션 검증) |
 | POST | `/api/apply` | public | `{ realname, phone, affiliation }` | 201 | 계정 신청 접수 (`fsk_applicant` 쿠키 검증, 세 필드 모두 필수, 접수 열림 필요) |
 | PATCH | `/api/apply` | public | `{ realname, phone, affiliation }` | 200 | 신청 내용 수정 (`fsk_applicant` 쿠키 검증, 세 필드 모두 필수, 접수 닫혀도 허용) |
-| GET | `/api/applications` | `applications.manage` | — | `[{ id, email, name, realname, phone, affiliation, ... }]` | 신청 목록 |
-| PATCH | `/api/applications/config` | `applications.manage` | `{ open: bool }` | 200 | 신청 접수 열기/닫기 |
-| POST | `/api/applications/approve` | `applications.manage` | `{ ids: [int], role }` | 200 | 신청 승인. Officials may approve only Student/Official; Admin may also approve Admin |
-| DELETE | `/api/applications` | `applications.manage` | `{ ids: [int] }` | `{ deleted }` | 신청 삭제(거절/정리, 계정 추가 없음) |
+| GET | `/api/applications` | admin | — | `[{ id, email, name, realname, phone, affiliation, ... }]` | 신청 목록 |
+| PATCH | `/api/applications/config` | admin | `{ open: bool }` | 200 | 신청 접수 열기/닫기 |
+| POST | `/api/applications/approve` | admin | `{ ids: [int], role }` | 200 | 신청 승인 |
+| DELETE | `/api/applications` | admin | `{ ids: [int] }` | `{ deleted }` | 신청 삭제(거절/정리, 계정 추가 없음) |
 
 ### Log Aggregation
 

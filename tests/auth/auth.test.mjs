@@ -645,6 +645,10 @@ describe('Role schema migration', () => {
         INSERT INTO user_permission
           SELECT id, 'score.operate' FROM users WHERE email = 'preserved@test.com';
         INSERT INTO user_permission
+          SELECT id, 'applications.manage' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'contacts.manage' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
           SELECT id, 'queue.manage' FROM users WHERE email = 'legacy-chief@test.com';
         CREATE TABLE ops_display (
           user_id INTEGER PRIMARY KEY REFERENCES users(id),
@@ -854,6 +858,11 @@ describe('Ops contacts', () => {
       body: { user_id: officialUserId },
       cookie: officialCookie,
     });
+    assert.equal(res.status, 403);
+  });
+
+  it('GET /api/contact-candidates requires admin role', async () => {
+    const res = await client.get('/api/contact-candidates', { cookie: officialCookie });
     assert.equal(res.status, 403);
   });
 
@@ -1565,6 +1574,11 @@ describe('Account applications', () => {
   it('PATCH /api/applications/config requires admin (401 without cookie)', async () => {
     const res = await client.patch('/api/applications/config', { body: { open: true } });
     assert.equal(res.status, 401);
+  });
+
+  it('GET /api/applications rejects an official', async () => {
+    const res = await client.get('/api/applications', { cookie: officialCookie });
+    assert.equal(res.status, 403);
   });
 
   it('admin can open applications', async () => {

@@ -764,6 +764,7 @@ onUnmounted(() => {
         <div class="header-actions">
           <button type="button" class="btn btn-sm btn-ghost apply-url" title="클릭하여 복사" @click="copyApplyUrl">{{ applyUrl }}</button>
           <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
+          <router-link to="/devices" class="btn btn-sm btn-primary">태블릿 장비 관리</router-link>
         </div>
       </div>
       <div class="card-body">

@@ -40,8 +40,8 @@ test.describe("Cross-application RBAC", () => {
       {
         profile: "admin",
         headings: ["Services", "Operations"],
-        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/course", "/traffic", "/score"],
-        absentPaths: [],
+        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/course", "/traffic", "/score", "/auth"],
+        absentPaths: ["/auth/applications", "/auth/contacts", "/auth/devices"],
       },
     ];
 

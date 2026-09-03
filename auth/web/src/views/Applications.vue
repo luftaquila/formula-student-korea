@@ -2,12 +2,12 @@
 import { ref, computed, onMounted } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
-import { user, hasPermission } from "@shared/officialsStore.js";
+import { isAdmin } from "@shared/officialsStore.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();
 
-if (!hasPermission("applications.manage")) {
+if (!isAdmin.value) {
   window.location.href = "/";
 }
 
@@ -171,7 +171,7 @@ onMounted(() => {
           <select v-model="approveRole" class="role-select">
             <option value="student">Student</option>
             <option value="official">Official</option>
-            <option v-if="user?.role === 'admin'" value="admin">Admin</option>
+            <option value="admin">Admin</option>
           </select>
           <button class="btn btn-sm btn-primary" :disabled="selectedIds.size === 0" @click="approveSelected">
             선택 계정 추가 ({{ selectedIds.size }})

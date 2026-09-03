@@ -103,8 +103,10 @@ test.describe("Access and kiosk device management", () => {
     let deviceContext;
 
     try {
-      await page.goto("/auth/devices");
+      await page.goto("/auth");
       await waitForPageReady(page);
+      await page.getByRole("link", { name: "태블릿 장비 관리" }).click();
+      await expect(page).toHaveURL(/\/auth\/devices$/);
       await page.locator(".device-create input").fill(name);
       await page.locator(".device-create select").selectOption("kiosk.registration.register");
       const created = page.waitForResponse((response) =>
