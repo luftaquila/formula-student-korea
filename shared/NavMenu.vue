@@ -87,7 +87,7 @@ function isActive(href) {
   }
   if (href !== "/" && props.currentPath.startsWith(href + "/")) {
     // Only match prefix if no other item is a more specific match
-    const allItems = [...services, ...operations, ...administration];
+    const allItems = [...services, ...resources, ...operations, ...administration];
     const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
     if (!hasMoreSpecific) return true;
   }
@@ -197,14 +197,16 @@ async function logout() {
               <template v-for="item in resources" :key="item.href">
                 <a
                   :href="item.href"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  :target="item.external ? '_blank' : undefined"
+                  :rel="item.external ? 'noopener noreferrer' : undefined"
                   class="nav-item"
+                  :class="{ active: isActive(item.href) }"
                 >
                   <span v-if="isSvgIcon(item.icon)" class="nav-icon nav-icon-svg" v-html="forumSvg"></span>
                   <span v-else class="nav-icon">{{ getIcon(item.icon) }}</span>
                   <span>{{ item.name }}</span>
                   <svg
+                    v-if="item.external"
                     class="external-icon"
                     viewBox="0 0 24 24"
                     fill="none"
