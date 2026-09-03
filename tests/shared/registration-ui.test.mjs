@@ -87,6 +87,17 @@ test("landing renders permission-filtered operation and admin groups and persist
   assert.match(navMenu, /<span class="nav-section-title">Admin<\/span>/);
 });
 
+test("sidebar puts the account row first and prefers the Google profile picture", async () => {
+  const navMenu = await readFile(new URL("../../shared/NavMenu.vue", import.meta.url), "utf8");
+  const markup = templateOf(navMenu);
+  const account = markup.indexOf('class="nav-section nav-section-account"');
+  const contacts = markup.indexOf('class="nav-section ops-contacts-section"');
+  assert.ok(account >= 0 && contacts > account, "account row must precede Contacts");
+  assert.equal(markup.indexOf("nav-section-bottom"), -1);
+  assert.match(markup, /<img[^>]*v-if="user\.picture && !avatarFailed"[^>]*:src="user\.picture"[^>]*class="nav-avatar"/s);
+  assert.match(markup, /<span v-else class="nav-icon">👤<\/span>/);
+});
+
 test("Auth administration is grouped under account and access", async () => {
   const manage = await readFile(new URL("../../auth/web/src/views/Manage.vue", import.meta.url), "utf8");
   assert.match(manage, /to="\/applications"[^>]*>계정 신청 관리<\/router-link>/);

@@ -85,7 +85,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | GET | `/api/login` | public | `?redirect=<path>` | 302 → Google OAuth | Initiates Google OAuth flow with CSRF nonce |
 | GET | `/api/callback` | public | `?code=<code>&state=<state>` | 302 → redirect URL | OAuth callback; exchanges code for token, sets JWT cookies |
 | POST | `/api/logout` | public* | — | 200 | Clears session cookies (*requires valid session) |
-| GET | `/api/session` | public | — | `{ name, role, permissions, accessRevision }` or 401 | Validates the current human session |
+| GET | `/api/session` | public | — | `{ name, picture, role, permissions, accessRevision }` or 401 | Validates the current human session; `picture` is the Google profile image URL (empty when unavailable) |
 | GET | `/api/device/session` | public | — | `{ id, name, scope, startPath }` or 401 | Validates the current device session |
 | GET | `/api/forward-auth` | internal key | `?permission=<permission>`, `X-Forward-Auth-Key` header | 200 + `X-Forwarded-User` header, or 400/401/403 | Caddy forward_auth for an exact human permission |
 

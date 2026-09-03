@@ -348,20 +348,23 @@ export function createApp(deps, authRoleFn) {
             ? result.permissions
             : Array.isArray(tokenUser.permissions) ? tokenUser.permissions : [];
           const accessRevision = Number(result.accessRevision ?? tokenUser.accessRevision) || 0;
+          // The Google profile picture rides in the JWT only; Auth validated it at login.
+          const picture = typeof tokenUser.picture === "string" ? tokenUser.picture : "";
           req.user = {
             kind: "human",
             id: result.id,
             email: tokenUser.email,
             name: tokenUser.name,
+            picture,
             role,
             permissions,
             accessRevision,
           };
           const age = Math.floor(Date.now() / 1000) - (tokenUser.iat || 0);
           if (age > 24 * 3600 || role !== tokenUser.role || accessRevision !== Number(tokenUser.accessRevision || 0)) {
-            const jwt = createJWT({ email: req.user.email, name: req.user.name, role, accessRevision }, process.env.JWT_SECRET);
+            const jwt = createJWT({ email: req.user.email, name: req.user.name, picture, role, accessRevision }, process.env.JWT_SECRET);
             const cookieOpts = formatCookieOpts(7 * 24 * 3600, secure);
-            const readable = encodeURIComponent(JSON.stringify({ name: req.user.name, role, permissions, accessRevision }));
+            const readable = encodeURIComponent(JSON.stringify({ name: req.user.name, picture, role, permissions, accessRevision }));
             appendCookies(`fsk_session=${jwt}; HttpOnly; ${cookieOpts}`, `fsk_user=${readable}; ${cookieOpts}`);
           }
         } else if (!result?.transient) {

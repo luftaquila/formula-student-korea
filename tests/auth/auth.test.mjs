@@ -1762,7 +1762,7 @@ describe('users affiliation column', () => {
 // ─── OAuth callback → applicant branch ─────────────────────────────────────
 describe('OAuth callback applicant branch', () => {
   // Drives the real /api/login → /api/callback flow with Google token/userinfo mocked.
-  async function runCallback(email, name, redirect = undefined) {
+  async function runCallback(email, name, redirect = undefined, picture = undefined) {
     // Unique source IP so the per-IP OAuth rate limiter (20/min) doesn't trip
     // late in the suite after the many earlier login/callback calls.
     const xff = { 'X-Forwarded-For': '203.0.113.50' };
@@ -1779,7 +1779,7 @@ describe('OAuth callback applicant branch', () => {
         return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (u.includes('/oauth2/v2/userinfo')) {
-        return new Response(JSON.stringify({ email, name }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ email, name, picture }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return origFetch(url, opts);
     };
@@ -1792,6 +1792,27 @@ describe('OAuth callback applicant branch', () => {
       globalThis.fetch = origFetch;
     }
   }
+
+  it('registered login carries the Google profile picture into the session and readable cookie', async () => {
+    db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('cb-picture@example.com', 'CB Picture', 'official', 1)").run();
+    const picture = 'https://lh3.googleusercontent.com/a/ACg8ocK-example=s96-c';
+    const res = await runCallback('cb-picture@example.com', 'CB Picture', undefined, picture);
+    assert.equal(res.status, 302);
+    const cookies = res.headers.getSetCookie();
+    const readable = cookies.find((c) => c.startsWith('fsk_user='));
+    assert.deepEqual(JSON.parse(decodeURIComponent(readable.slice('fsk_user='.length).split(';')[0])), {
+      name: 'CB Picture', picture, role: 'official', permissions: [], accessRevision: 0,
+    });
+    const sessionCookie = cookies.find((c) => c.startsWith('fsk_session=')).split(';')[0];
+    const session = await client.get('/api/session', { cookie: sessionCookie });
+    assert.equal(session.status, 200);
+    assert.equal((await session.json()).picture, picture);
+
+    // Only Google's image CDN is accepted; anything else degrades to the emoji fallback.
+    const spoofed = await runCallback('cb-picture@example.com', 'CB Picture', undefined, 'https://evil.example/avatar.png');
+    const spoofedReadable = spoofed.headers.getSetCookie().find((c) => c.startsWith('fsk_user='));
+    assert.equal(JSON.parse(decodeURIComponent(spoofedReadable.slice('fsk_user='.length).split(';')[0])).picture, '');
+  });
 
   it('unregistered login while OPEN issues an applicant cookie and redirects to /auth/apply', async () => {
     await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });

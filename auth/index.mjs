@@ -43,6 +43,14 @@ const LEGACY_PERMISSION_BUNDLES = Object.freeze({
   auditor: [],
 });
 
+// Google profile pictures are the only avatars we render. Accept nothing else so the
+// URL that every page embeds in an <img> can only point at Google's image CDN, which
+// is also the single host the Caddy img-src allowlist admits.
+export function sessionPicture(url) {
+  if (typeof url !== "string" || url.length > 512) return "";
+  return /^https:\/\/[a-z0-9-]+\.googleusercontent\.com\//i.test(url) ? url : "";
+}
+
 export function createAuthApp(options = {}) {
 
 const db = createDatabase(Database, options.dbPath || "./data/auth.db");
@@ -417,6 +425,7 @@ app.get("/api/session", (req, res) => {
   if (req.user?.kind !== "human") return res.status(401).send();
   res.json({
     name: req.user.name,
+    picture: req.user.picture || "",
     role: req.user.role,
     permissions: req.user.permissions,
     accessRevision: req.user.accessRevision,
@@ -836,6 +845,7 @@ app.get("/api/callback", async (req, res) => {
     const userInfo = await userInfoRes.json();
     const email = userInfo.email;
     const name = userInfo.name || email;
+    const picture = sessionPicture(userInfo.picture);
 
     // Google가 이메일 소유를 검증하지 못한 계정은 거부한다(이메일이 계정 primary key이므로
     // 미검증 이메일 클레임 방어). verified_email이 명시적 false일 때만 차단해, 필드가 없는
@@ -898,13 +908,13 @@ app.get("/api/callback", async (req, res) => {
     // Set JWT cookie. Permissions stay authoritative in Auth; the readable
     // cookie is only a navigation hint and every service revalidates it.
     const snapshot = userAccess(user);
-    const jwt = createJWT({ email, name, role: user.role, accessRevision: snapshot.accessRevision }, process.env.JWT_SECRET);
+    const jwt = createJWT({ email, name, picture, role: user.role, accessRevision: snapshot.accessRevision }, process.env.JWT_SECRET);
     const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
     const deviceCookieOpts = `Path=/; SameSite=Strict; Max-Age=0${isSecureConnection(req) ? "; Secure" : ""}`;
 
     res.setHeader("Set-Cookie", [
       `fsk_session=${jwt}; HttpOnly; ${cookieOpts}`,
-      `fsk_user=${encodeURIComponent(JSON.stringify({ name, role: user.role, permissions: snapshot.permissions, accessRevision: snapshot.accessRevision }))}; ${cookieOpts}`,
+      `fsk_user=${encodeURIComponent(JSON.stringify({ name, picture, role: user.role, permissions: snapshot.permissions, accessRevision: snapshot.accessRevision }))}; ${cookieOpts}`,
       `fsk_device=; HttpOnly; ${deviceCookieOpts}`,
       clearNonceCookie,
       clearApplicantCookie,
