@@ -1,5 +1,6 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -19,6 +20,8 @@ process.env.GOOGLE_CLIENT_SECRET = 'test-client-secret';
 
 import { createAuthApp } from '../../auth/index.mjs';
 
+const require = createRequire(import.meta.url);
+const Database = require('../../auth/node_modules/better-sqlite3');
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
@@ -79,6 +82,22 @@ describe('GET /api/users', () => {
 });
 
 describe('POST /api/users', () => {
+  it('rejects the retired master role', async () => {
+    const res = await client.post('/api/users', {
+      body: { email: 'master@test.com', role: 'master' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
+  it('rejects the retired staff role', async () => {
+    const res = await client.post('/api/users', {
+      body: { email: 'staff@test.com', role: 'staff' },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 400);
+  });
+
   it('creates a user with valid email and role', async () => {
     const res = await client.post('/api/users', {
       body: { email: 'new@example.com', role: 'student' },
@@ -304,13 +323,13 @@ describe('PATCH /api/users/:id', () => {
 
   it('handles complex update (role + realname)', async () => {
     const res = await client.patch(`/api/users/${testUserId}`, {
-      body: { role: 'chief', realname: 'promoted' },
+      body: { role: 'student', realname: 'reassigned' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
     const user = db.prepare('SELECT role, realname FROM users WHERE id = ?').get(testUserId);
-    assert.equal(user.role, 'chief');
-    assert.equal(user.realname, 'promoted');
+    assert.equal(user.role, 'student');
+    assert.equal(user.realname, 'reassigned');
   });
 
   it('rejects invalid role (400)', async () => {
@@ -550,36 +569,130 @@ describe('GET /api/users/exists/:email', () => {
 });
 
 describe('GET /api/users/role/:email', () => {
-  it('returns role for existing active user', async () => {
+  it('is gone: the path falls under the admin-only /api/users gate, so the internal principal is refused', async () => {
     const res = await client.get('/api/users/role/admin@test.com', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.role, 'admin');
+    assert.equal(res.status, 403);
   });
+});
 
-  it('returns 404 for non-existent user', async () => {
-    const res = await client.get('/api/users/role/nonexistent@example.com', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 404);
-  });
+describe('Role schema migration', () => {
+  it('maps retired roles to grant-free officials and flattens preview bundles', () => {
+    const legacyPath = tmpDbPath();
+    let legacyDb;
+    let migratedDb;
 
-  it('returns 404 for inactive user', async () => {
-    const res = await client.get('/api/users/role/inactive@test.com', {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 404);
-  });
+    try {
+      legacyDb = new Database(legacyPath);
+      legacyDb.exec(`
+        CREATE TABLE users (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'master', 'chief', 'official', 'staff', 'student')),
+          memo TEXT DEFAULT '',
+          realname TEXT DEFAULT '',
+          phone TEXT DEFAULT '',
+          affiliation TEXT DEFAULT '',
+          created_at TEXT,
+          active INTEGER DEFAULT 1
+        );
+        INSERT INTO users (email, name, role, affiliation) VALUES
+          ('preserved@test.com', 'Preserved', 'official', '기존 소속'),
+          ('legacy-staff@test.com', 'Legacy Staff', 'staff', ''),
+          ('legacy-chief@test.com', 'Legacy Chief', 'chief', ''),
+          ('legacy-master@test.com', 'Legacy Master', 'master', '');
+        CREATE TABLE user_permission_bundle (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          bundle_key TEXT NOT NULL,
+          PRIMARY KEY (user_id, bundle_key)
+        );
+        CREATE TABLE user_permission (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          permission_key TEXT NOT NULL,
+          PRIMARY KEY (user_id, permission_key)
+        );
+        INSERT INTO user_permission_bundle
+          SELECT id, 'documents_manager' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission_bundle
+          SELECT id, 'queue_manager' FROM users WHERE email = 'legacy-staff@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'course.operate' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'score.operate' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'applications.manage' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'contacts.manage' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'entry.manage' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'messaging.operate' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'audit.view' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission_bundle
+          SELECT id, 'auditor' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'queue.manage' FROM users WHERE email = 'legacy-chief@test.com';
+        CREATE TABLE ops_display (
+          user_id INTEGER PRIMARY KEY REFERENCES users(id),
+          description TEXT NOT NULL DEFAULT '',
+          sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO ops_display (user_id, description, sort_order)
+          SELECT id, '기존 연락처', 3 FROM users WHERE email = 'preserved@test.com';
+      `);
+      legacyDb.close();
+      legacyDb = null;
 
-  it('accessible via admin cookie', async () => {
-    const res = await client.get('/api/users/role/admin@test.com', {
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.role, 'admin');
+      migratedDb = createAuthApp({ dbPath: legacyPath }).db;
+      assert.deepEqual(
+        migratedDb.prepare("SELECT email, name, role, affiliation FROM users WHERE email = 'preserved@test.com'").get(),
+        { email: 'preserved@test.com', name: 'Preserved', role: 'official', affiliation: '기존 소속' },
+      );
+      assert.deepEqual(
+        migratedDb.prepare('SELECT user_id, description, sort_order FROM ops_display').get(),
+        { user_id: 1, description: '기존 연락처', sort_order: 0 },
+      );
+      assert.deepEqual(migratedDb.pragma('foreign_key_check'), []);
+      assert.deepEqual(
+        migratedDb.prepare("SELECT email, role FROM users WHERE email LIKE 'legacy-%' ORDER BY email").all(),
+        [
+          { email: 'legacy-chief@test.com', role: 'official' },
+          { email: 'legacy-master@test.com', role: 'official' },
+          { email: 'legacy-staff@test.com', role: 'official' },
+        ],
+      );
+      assert.equal(migratedDb.prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'user_permission_bundle'",
+      ).get().count, 0);
+      assert.deepEqual(
+        migratedDb.prepare(`
+          SELECT permission_key FROM user_permission
+          WHERE user_id = (SELECT id FROM users WHERE email = 'preserved@test.com')
+          ORDER BY permission_key
+        `).all(),
+        [
+          { permission_key: 'course.manage' },
+          { permission_key: 'documents.manage' },
+          { permission_key: 'files.access' },
+          { permission_key: 'score.manage' },
+        ],
+      );
+      assert.equal(migratedDb.prepare(`
+        SELECT COUNT(*) AS count FROM user_permission
+        WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'legacy-%')
+      `).get().count, 0);
+      assert.throws(
+        () => migratedDb.prepare("INSERT INTO users (email, role) VALUES ('retired@test.com', 'master')").run(),
+        /CHECK constraint failed/,
+      );
+    } finally {
+      legacyDb?.close();
+      migratedDb?.close();
+      cleanup(legacyPath);
+    }
   });
 });
 
@@ -703,6 +816,18 @@ describe('Ops contacts', () => {
       cookie: adminCookie,
     });
     assert.equal(res.status, 400);
+  });
+
+  it('POST /api/ops-contacts accepts an admin user', async () => {
+    const admin = db.prepare("SELECT id FROM users WHERE email = 'admin@test.com'").get();
+    const add = await client.post('/api/ops-contacts', {
+      body: { user_id: admin.id },
+      cookie: adminCookie,
+    });
+    assert.equal(add.status, 201);
+
+    const remove = await client.delete(`/api/ops-contacts/${admin.id}`, { cookie: adminCookie });
+    assert.equal(remove.status, 200);
   });
 
   it('POST /api/ops-contacts rejects non-existent user (404)', async () => {
@@ -983,9 +1108,25 @@ describe('POST /api/logout', () => {
     assert.ok(setCookie.includes('Max-Age=0'), 'should expire cookies');
   });
 
-  it('requires auth (401 without cookie)', async () => {
+  it('clears every principal cookie even without a valid session', async () => {
     const res = await client.post('/api/logout');
-    assert.equal(res.status, 401);
+    assert.equal(res.status, 200);
+    const setCookie = res.headers.get('set-cookie');
+    assert.ok(setCookie.includes('fsk_session=;'));
+    assert.ok(setCookie.includes('fsk_device=;'));
+  });
+
+  it('lets a browser holding both a human and a device cookie escape the ambiguous state', async () => {
+    const res = await fetch(`${baseUrl}/api/logout`, {
+      method: 'POST',
+      headers: { Cookie: `${adminCookie}; fsk_device=stale-device-token` },
+      redirect: 'manual',
+    });
+    assert.equal(res.status, 200);
+    const cookies = res.headers.getSetCookie();
+    for (const name of ['fsk_session', 'fsk_user', 'fsk_device']) {
+      assert.ok(cookies.some((c) => c.startsWith(`${name}=;`) && c.includes('Max-Age=0')), `${name} cleared`);
+    }
   });
 });
 
@@ -1285,10 +1426,7 @@ describe('GET /api/forward-auth', () => {
     assert.equal(res.status, 403);
   });
 
-  it('returns 403 when INTERNAL_SECRET is unset', async () => {
-    const original = process.env.INTERNAL_SECRET;
-    // Note: INTERNAL_SECRET is read at request time in the handler, but the secret
-    // variable is captured at app creation. We test via wrong key instead.
+  it('returns 403 for an empty forward-auth key', async () => {
     const res = await client.get('/api/forward-auth', {
       cookie: adminCookie,
       headers: { 'X-Forward-Auth-Key': '' },
@@ -1297,32 +1435,40 @@ describe('GET /api/forward-auth', () => {
   });
 
   it('returns 401 without user session', async () => {
-    const res = await client.get('/api/forward-auth', {
+    const res = await client.get('/api/forward-auth?permission=files.access', {
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 401);
   });
 
-  it('returns 403 when role insufficient (official < chief)', async () => {
+  it('rejects a missing or unknown permission', async () => {
+    const missing = await client.get('/api/forward-auth', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(missing.status, 400);
+
+    const unknown = await client.get('/api/forward-auth?permission=unknown.service', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(unknown.status, 400);
+  });
+
+  it('returns 403 when an official lacks the requested permission', async () => {
     db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('official@test.com', 'Official', 'official', 1)").run();
-    const res = await client.get('/api/forward-auth?role=chief', {
+    db.prepare("DELETE FROM user_permission WHERE user_id = (SELECT id FROM users WHERE email = 'official@test.com')").run();
+    const res = await client.get('/api/forward-auth?permission=files.access', {
       cookie: officialCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 403);
   });
 
-  it('returns 200 with X-Forwarded-User when authorized', async () => {
-    const res = await client.get('/api/forward-auth?role=chief', {
-      cookie: adminCookie,
-      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get('x-forwarded-user'), 'admin@test.com');
-  });
-
-  it('defaults to official role when role query is omitted', async () => {
-    const res = await client.get('/api/forward-auth', {
+  it('authorizes an official through an explicit permission grant', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE email = 'official@test.com'").get();
+    db.prepare("INSERT OR IGNORE INTO user_permission (user_id, permission_key) VALUES (?, 'files.access')").run(user.id);
+    const res = await client.get('/api/forward-auth?permission=files.access', {
       cookie: officialCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
@@ -1330,8 +1476,25 @@ describe('GET /api/forward-auth', () => {
     assert.equal(res.headers.get('x-forwarded-user'), 'official@test.com');
   });
 
-  it('allows higher role (admin) for lower requirement (chief)', async () => {
-    const res = await client.get('/api/forward-auth?role=chief', {
+  it('expands management grants but keeps Queue and Inspection independent', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE email = 'official@test.com'").get();
+    db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(user.id);
+    db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, 'queue.manage')").run(user.id);
+    const queue = await client.get('/api/forward-auth?permission=queue.operate', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(queue.status, 200);
+
+    const inspection = await client.get('/api/forward-auth?permission=inspection.operate', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(inspection.status, 403);
+  });
+
+  it('lets an admin satisfy any known human permission', async () => {
+    const res = await client.get('/api/forward-auth?permission=inspection.manage', {
       cookie: adminCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
@@ -1342,13 +1505,25 @@ describe('GET /api/forward-auth', () => {
 
 // ─── Edge Cases & Auth Middleware Integration ─────────────────────────────
 describe('Auth middleware integration', () => {
-  it('X-Internal-Service header grants admin access', async () => {
-    const res = await client.get('/api/users', {
+  it('X-Internal-Service header is restricted to internal endpoints', async () => {
+    const internal = await client.get('/api/users/access/admin@test.com', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(Array.isArray(data));
+    assert.equal(internal.status, 200);
+
+    const users = await client.get('/api/internal/users', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(users.status, 200);
+    const internalUsers = await users.json();
+    assert.ok(internalUsers.some((user) => user.email === 'admin@test.com'));
+    assert.equal('permissions' in internalUsers[0], false);
+    assert.equal('protected' in internalUsers[0], false);
+
+    const admin = await client.get('/api/users', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(admin.status, 403);
   });
 
   it('wrong X-Internal-Service header is explicitly rejected', async () => {
@@ -1395,6 +1570,11 @@ describe('Account applications', () => {
   it('PATCH /api/applications/config requires admin (401 without cookie)', async () => {
     const res = await client.patch('/api/applications/config', { body: { open: true } });
     assert.equal(res.status, 401);
+  });
+
+  it('GET /api/applications rejects an official', async () => {
+    const res = await client.get('/api/applications', { cookie: officialCookie });
+    assert.equal(res.status, 403);
   });
 
   it('admin can open applications', async () => {
@@ -1570,7 +1750,7 @@ describe('users affiliation column', () => {
 // ─── OAuth callback → applicant branch ─────────────────────────────────────
 describe('OAuth callback applicant branch', () => {
   // Drives the real /api/login → /api/callback flow with Google token/userinfo mocked.
-  async function runCallback(email, name, redirect = undefined) {
+  async function runCallback(email, name, redirect = undefined, picture = undefined) {
     // Unique source IP so the per-IP OAuth rate limiter (20/min) doesn't trip
     // late in the suite after the many earlier login/callback calls.
     const xff = { 'X-Forwarded-For': '203.0.113.50' };
@@ -1587,7 +1767,7 @@ describe('OAuth callback applicant branch', () => {
         return new Response(JSON.stringify({ access_token: 'tok' }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (u.includes('/oauth2/v2/userinfo')) {
-        return new Response(JSON.stringify({ email, name }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ email, name, picture }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return origFetch(url, opts);
     };
@@ -1600,6 +1780,27 @@ describe('OAuth callback applicant branch', () => {
       globalThis.fetch = origFetch;
     }
   }
+
+  it('registered login carries the Google profile picture into the session and readable cookie', async () => {
+    db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('cb-picture@example.com', 'CB Picture', 'official', 1)").run();
+    const picture = 'https://lh3.googleusercontent.com/a/ACg8ocK-example=s96-c';
+    const res = await runCallback('cb-picture@example.com', 'CB Picture', undefined, picture);
+    assert.equal(res.status, 302);
+    const cookies = res.headers.getSetCookie();
+    const readable = cookies.find((c) => c.startsWith('fsk_user='));
+    assert.deepEqual(JSON.parse(decodeURIComponent(readable.slice('fsk_user='.length).split(';')[0])), {
+      name: 'CB Picture', picture, role: 'official', permissions: [], accessRevision: 0,
+    });
+    const sessionCookie = cookies.find((c) => c.startsWith('fsk_session=')).split(';')[0];
+    const session = await client.get('/api/session', { cookie: sessionCookie });
+    assert.equal(session.status, 200);
+    assert.equal((await session.json()).picture, picture);
+
+    // Only Google's image CDN is accepted; anything else degrades to the emoji fallback.
+    const spoofed = await runCallback('cb-picture@example.com', 'CB Picture', undefined, 'https://evil.example/avatar.png');
+    const spoofedReadable = spoofed.headers.getSetCookie().find((c) => c.startsWith('fsk_user='));
+    assert.equal(JSON.parse(decodeURIComponent(spoofedReadable.slice('fsk_user='.length).split(';')[0])).picture, '');
+  });
 
   it('unregistered login while OPEN issues an applicant cookie and redirects to /auth/apply', async () => {
     await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });

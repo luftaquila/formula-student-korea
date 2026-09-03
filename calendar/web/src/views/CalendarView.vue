@@ -6,12 +6,13 @@ import { createCalendar, viewMonthGrid, viewMonthAgenda } from "@schedule-x/cale
 import { createEventsServicePlugin } from "@schedule-x/events-service";
 import { createEventModalPlugin } from "@schedule-x/event-modal";
 import "@schedule-x/theme-default/dist/index.css";
-import { isAuthenticated, isChief } from "@shared/officialsStore.js";
+import { isAuthenticated, permissionComputed } from "@shared/officialsStore.js";
 import { useNotification } from "@shared/useNotification.js";
 import { request } from "../api.js";
 import EventModal from "../components/EventModal.vue";
 
 const { notyf } = useNotification();
+const canManage = permissionComputed("calendar.manage");
 
 const showEventModal = ref(false);
 const editingEvent = ref(null);
@@ -41,18 +42,6 @@ const ROLE_CALENDARS = {
     lightColors: { main: "#3b82f6", container: "rgba(59, 130, 246, 0.15)", onContainer: "#1d4ed8" },
     darkColors: { main: "#60a5fa", container: "#1e3a5f", onContainer: "#bfdbfe" },
   },
-  chief: {
-    colorName: "chief",
-    label: "chief",
-    lightColors: { main: "#d97706", container: "#fef3c7", onContainer: "#92400e" },
-    darkColors: { main: "#fcd34d", container: "#78350f", onContainer: "#fef3c7" },
-  },
-  admin: {
-    colorName: "admin",
-    label: "admin",
-    lightColors: { main: "#dc2626", container: "#fee2e2", onContainer: "#991b1b" },
-    darkColors: { main: "#fca5a5", container: "#7f1d1d", onContainer: "#fee2e2" },
-  },
 };
 
 const eventsServicePlugin = createEventsServicePlugin();
@@ -79,7 +68,7 @@ const calendarApp = createCalendar({
     onClickDate(date) {
       const dateStr = toDateString(date);
       if (!dateStr) return;
-      if (isChief.value) {
+      if (canManage.value) {
         editingEvent.value = { title: "", start: dateStr, end: dateStr, allDay: true, role: "official" };
         showEventModal.value = true;
       }
@@ -344,12 +333,12 @@ onUnmounted(() => {
             <span>{{ calendarEvent.description }}</span>
           </div>
 
-          <button v-if="isChief" class="event-popup__edit-btn" @click="openEditFromPopup(calendarEvent)">수정</button>
+          <button v-if="canManage" class="event-popup__edit-btn" @click="openEditFromPopup(calendarEvent)">수정</button>
         </div>
       </template>
     </ScheduleXCalendar>
 
-    <div v-if="isMobile && isChief && selectedAgendaDate" class="mobile-add-btn-wrap">
+    <div v-if="isMobile && canManage && selectedAgendaDate" class="mobile-add-btn-wrap">
       <button class="mobile-add-btn" @click="openAddForDate">+ 일정 추가</button>
     </div>
 
@@ -630,8 +619,6 @@ onUnmounted(() => {
 .role-public { background: rgba(100, 116, 139, 0.25); color: var(--text-secondary, #334155); }
 .role-student { background: rgba(16, 185, 129, 0.15); color: #059669; }
 .role-official { background: rgba(59, 130, 246, 0.15); color: #3b82f6; }
-.role-chief { background: rgba(245, 158, 11, 0.15); color: #d97706; }
-.role-admin { background: rgba(239, 68, 68, 0.15); color: #dc2626; }
 
 .event-popup__edit-btn {
   display: inline-block;

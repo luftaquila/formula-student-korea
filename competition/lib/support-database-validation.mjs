@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { DEVICE_SCOPES, PERMISSION_KEYS } from "../../shared/access-control.js";
 
 const column = (name, type, notnull = 0, pk = 0, defaultValue = null) =>
   Object.freeze({ name, type, notnull, pk, defaultValue });
@@ -89,6 +90,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
         column("created_at", "TEXT"),
         column("active", "INTEGER", 0, 0, "1"),
         column("affiliation", "TEXT", 0, 0, "''"),
+        column("access_revision", "INTEGER", 1, 0, "0"),
       ]),
       settings: Object.freeze([
         column("key", "TEXT", 0, 1),
@@ -109,20 +111,46 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
         column("description", "TEXT", 1, 0, "''"),
         column("sort_order", "INTEGER", 1, 0, "0"),
       ]),
+      user_permission: Object.freeze([
+        column("user_id", "INTEGER", 1, 1),
+        column("permission_key", "TEXT", 1, 2),
+      ]),
+      kiosk_device: Object.freeze([
+        column("id", "TEXT", 0, 1),
+        column("name", "TEXT", 1),
+        column("scope", "TEXT", 1),
+        column("token_hash", "TEXT"),
+        column("pairing_code_hash", "TEXT"),
+        column("pairing_code_expires_at", "TEXT"),
+        column("created_by", "INTEGER"),
+        column("created_at", "TEXT", 1, 0, "strftime('%Y-%m-%dT%H:%M:%fZ','now')"),
+        column("paired_at", "TEXT"),
+        column("last_seen_at", "TEXT"),
+        column("revoked_at", "TEXT"),
+      ]),
       logs: LOG_COLUMNS,
       schema_migrations: MIGRATION_COLUMNS,
     }),
-    indexes: Object.freeze([...LOG_INDEXES]),
+    indexes: Object.freeze([
+      ...LOG_INDEXES,
+      ["idx_kiosk_device_token_hash", "kiosk_device", 0, ["token_hash"]],
+      ["idx_kiosk_device_pairing_code_hash", "kiosk_device", 0, ["pairing_code_hash"]],
+    ]),
     uniqueIndexes: Object.freeze([
       ["users", ["email"]],
       ["applications", ["email"]],
+      ["user_permission", ["user_id", "permission_key"]],
+      ["kiosk_device", ["token_hash"]],
     ]),
     foreignKeys: Object.freeze({
       ops_display: Object.freeze([fk("users", "user_id", "id", "NO ACTION")]),
+      user_permission: Object.freeze([fk("users", "user_id", "id", "CASCADE")]),
+      kiosk_device: Object.freeze([fk("users", "created_by", "id", "SET NULL")]),
     }),
     tableSqlFragments: Object.freeze({
-      users: Object.freeze(["unique", "check(rolein('admin','chief','official','student'))"]),
+      users: Object.freeze(["unique", "check(rolein('admin','official','student'))"]),
       applications: Object.freeze(["emailtextuniquenotnull"]),
+      kiosk_device: Object.freeze(["check(scopein('kiosk.queue.register','kiosk.registration.register'))"]),
     }),
     triggers: Object.freeze([LOG_TRIGGER]),
   }),
@@ -576,6 +604,21 @@ export function validateSupportDatabase(db, service) {
   const foreignKeyErrors = db.pragma("foreign_key_check");
   if (foreignKeyErrors.length) {
     throw new Error(`SQLite foreign_key_check failed: ${JSON.stringify(foreignKeyErrors.slice(0, 20))}`);
+  }
+  if (service === "auth") {
+    const invalidRoles = db.prepare(`SELECT DISTINCT role FROM users
+      WHERE role NOT IN ('student','official','admin') ORDER BY role`).all();
+    const invalidPermissions = db.prepare(`SELECT DISTINCT permission_key FROM user_permission
+      WHERE permission_key NOT IN (${PERMISSION_KEYS.map(() => "?").join(",")}) ORDER BY permission_key`).all(...PERMISSION_KEYS);
+    const invalidScopes = db.prepare(`SELECT DISTINCT scope FROM kiosk_device
+      WHERE scope NOT IN (${DEVICE_SCOPES.map(() => "?").join(",")}) ORDER BY scope`).all(...DEVICE_SCOPES);
+    if (invalidRoles.length || invalidPermissions.length || invalidScopes.length) {
+      throw new Error(`invalid auth access-control values: ${JSON.stringify({
+        roles: invalidRoles.map(({ role }) => role),
+        permissions: invalidPermissions.map(({ permission_key: key }) => key),
+        deviceScopes: invalidScopes.map(({ scope }) => scope),
+      })}`);
+    }
   }
   if (service === "course") {
     const invalid = [];

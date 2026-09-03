@@ -10,8 +10,8 @@ test.describe("Inspection real-time sync via SSE", () => {
 
   test("syncs passfail answer between two browser contexts", async ({ browser }) => {
     // Create two independent contexts with the same auth
-    const context1 = await browser.newContext({ storageState: storageStatePath("official") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("official") });
+    const context1 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -57,8 +57,8 @@ test.describe("Inspection real-time sync via SSE", () => {
   });
 
   test("syncs category result between two browser contexts", async ({ browser }) => {
-    const context1 = await browser.newContext({ storageState: storageStatePath("official") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("official") });
+    const context1 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -96,7 +96,7 @@ test.describe("Inspection real-time sync via SSE", () => {
   });
 
   test("syncs automatic inspectors and answer edit metadata via SSE", async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const adminContext = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
     const adminPage = await adminContext.newPage();
@@ -135,7 +135,7 @@ test.describe("Inspection real-time sync via SSE", () => {
 
   test("syncs number answer via API save to browser SSE", async ({ browser }) => {
     // Use single context + API save to avoid slow dual-context setup
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
 
     const sse = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/events"));
@@ -177,7 +177,7 @@ test.describe("Inspection real-time sync via SSE", () => {
 
   test("syncs memo via API save to browser SSE", async ({ browser }) => {
     // Use single context + API save to avoid slow dual-context setup
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
 
     const sse = page.waitForResponse((res) => res.url().includes("/competition/api/v1/inspection/sheet/events"));
@@ -217,8 +217,8 @@ test.describe("Inspection real-time sync via SSE", () => {
   });
 
   test("discards a focused stale edit and requires refresh", async ({ browser }) => {
-    const context1 = await browser.newContext({ storageState: storageStatePath("official") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("official") });
+    const context1 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();

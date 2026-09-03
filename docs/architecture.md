@@ -14,7 +14,7 @@ Competition-critical domains run as modules in one `competition` process, one de
 | Runtime | Responsibility | Port |
 |---|---|---|
 | `landing` | Landing page and reverse proxy | 9000 |
-| `auth` | Google OAuth, users, roles, and aggregated logs | 9100 |
+| `auth` | Google OAuth, users, service grants, kiosk devices, and aggregated logs | 9100 |
 | `competition` | Teams, Queue, Registration, Inspection, Traffic, Score, Documents, and seven SPAs | 9200 |
 | `energymeter` | Energy meter viewer | 9800 |
 | `email` | Email/SMS provider integration | 9900 |
@@ -71,7 +71,28 @@ application revision compatible with that state.
 
 ## Authentication and audit
 
-Roles are `public < student < official < chief < admin`. Services revalidate through Auth and fail closed; only HTTP 200 confirms a user. Caddy removes externally supplied internal-auth headers.
+Human accounts use only `student`, `official`, and `admin`. An Official starts with
+no operational access and receives one explicit list of service grants. Registration,
+Queue, Inspection, Documents, and Traffic use none/operate/manage access levels.
+Course and Score use a single full-access grant; other single-action services use a
+single grant. Management permissions imply the matching operation permission; Admin
+satisfies every human permission. Queue (`queue.*`) and Inspection (`inspection.*`)
+are independent domains, so a grant in one never authorizes the other. Auth exposes
+the authoritative effective-permission snapshot and an access revision; services
+revalidate it and fail closed, and stale access edits are rejected by revision.
+During the schema cutover, retired `staff`, `chief`, and `master` accounts become
+Officials with no grants; access must be assigned explicitly after migration.
+
+`X-Internal-Service` creates a distinct internal principal, not an Admin. It is valid
+only for routes that explicitly require internal authentication. Caddy removes
+externally supplied internal-auth headers.
+
+Registration-only tablets use revocable device principals instead of human roles.
+An Admin creates a device with exactly one scope (`kiosk.queue.register` or
+`kiosk.registration.register`), and the tablet consumes a short-lived one-time
+pairing code to receive a long-lived HttpOnly, SameSite=Strict token. Auth stores only
+the token hash. A device can submit only the matching registration POST; it cannot
+read an operations board or alter settings. Revocation takes effect on its next request.
 
 All Competition module logs live in the shared database with a module discriminator. Every successful mutation and every business, database, or integration failure records enough before/after context to audit destructive changes.
 

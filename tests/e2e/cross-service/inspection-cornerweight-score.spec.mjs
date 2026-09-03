@@ -29,7 +29,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
   test.use({ storageState: storageStatePath("admin") });
 
   const adminHeaders = { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
-  const chiefHeaders = { "Content-Type": "application/json", Cookie: getAuthCookie("chief") };
+  const managerHeaders = { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") };
 
   // Template node IDs created in beforeAll.
   let categoryId;
@@ -38,7 +38,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
   async function createNode(body) {
     const res = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template`, {
       method: "POST",
-      headers: chiefHeaders, // template writes require chief+
+      headers: managerHeaders, // template writes require inspection.manage
       body: JSON.stringify({ year: YEAR, ...body }),
     });
     expect(res.status).toBe(200);
@@ -93,7 +93,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
       try {
         await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template/${categoryId}`, {
           method: "DELETE",
-          headers: chiefHeaders,
+          headers: managerHeaders,
         });
       } catch { /* ignore */ }
     }

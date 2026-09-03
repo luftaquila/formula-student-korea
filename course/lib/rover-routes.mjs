@@ -36,14 +36,12 @@ const DEFAULT_DEVICE_WATCHDOG_TICK_MS = 5 * 1000;
 
 export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent: _broadcastRaw, getCourseById, getCones, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
 
-  // rover 텔레메트리(rover / rover:* / gps:*)는 admin 연결에만 전달한다. /api/events SSE는
-  // 콘·코스 편집을 위해 chief+에게 열려 있으나, 로버 위치·배터리·미션 waypoint·NTRIP 등은
-  // REST GET /api/rover/status와 동일하게 admin 전용이어야 한다(chief 텔레메트리 누수 차단).
-  // 나머지 이벤트(courses/cones/memos 등)는 그대로 chief+ 전체에 전송한다. 명시적 filterFn을
-  // 넘긴 호출은 그 필터를 존중한다.
+  // Rover telemetry is visible only to connections with rover operation. The
+  // same SSE also carries course-editing events, so filter the rover subset at
+  // broadcast time rather than widening course.operate.
   const broadcastEvent = (event, data, filterFn) => {
     if (!filterFn && (event === "rover" || event.startsWith("rover:") || event.startsWith("gps:"))) {
-      return _broadcastRaw(event, data, (meta) => meta?.role === "admin");
+      return _broadcastRaw(event, data, (meta) => meta?.role === "admin" || meta?.permissions?.includes("rover.operate"));
     }
     return _broadcastRaw(event, data, filterFn);
   };
@@ -301,7 +299,7 @@ const roverState = {
   last_disconnect_at: 0,
   last_spray_result: null, // { waypoint, outcome, at }
   // Most recent antenna offset calibration outcome — surfaced in the UI so
-  // the chief can see whether the persisted offset on the rover matches
+  // the operator can see whether the persisted offset on the rover matches
   // what they just measured / whether a recent attempt failed (and why).
   // { ok, a_x, a_y, rms_residual_m, samples, drive_distance_m, calibrated_at, reason }
   antenna_calibration: null,
@@ -323,7 +321,7 @@ const roverState = {
   // ground-depth curve). { status, phase, captured, target, near_m, far_m, rows,
   // error, at }. Requires a stereo calibration first (metric depth).
   ground_calibration: { status: "idle", at: 0 },
-  // Proximity (obstacle) detection master on/off — operator toggle in the
+  // Proximity (obstacle) detection operator on/off — operator toggle in the
   // calibration modal's ground tab. Stored here so it broadcasts on rover:status
   // (UI reflects it at once) and is re-sent to the perception node on every
   // camera-control (re)connect. Default OFF — detection is opt-in per mission;

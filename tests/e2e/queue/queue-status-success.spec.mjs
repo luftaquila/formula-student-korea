@@ -7,7 +7,7 @@ const ENTRY_NUM = 95;
 const TYPE = "tilting";
 
 test.describe("Queue public status query success flow", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   test("successful status query shows queue name and rank", async ({ page }) => {
     const regRes = await page.request.post(`/competition/api/v1/queue/admin/register/${TYPE}`, {

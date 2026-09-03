@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute } from "vue-router";
 import { useSerialStore } from "../stores/serial";
 import { useSSE } from "../composables/useSSE";
+import { hasPermission } from "@shared/officialsStore.js";
 
 const route = useRoute();
 const serial = useSerialStore();
@@ -24,7 +25,7 @@ const wirelessNavItems = [
   { id: "wl-autocross", label: "🚧 오토크로스", path: "/wireless/autocross", eventType: "오토크로스" },
   { id: "wl-endurance", label: "🏁 내구", path: "/wireless/endurance", eventType: "내구" },
   { id: "wl-scoreboard", label: "📺 전광판", path: "/wireless/scoreboard" },
-  { id: "wl-settings", label: "⚙️ 무선 설정", path: "/wireless/settings" },
+  { id: "wl-settings", label: "⚙️ 무선 설정", path: "/wireless/settings", permission: "traffic.manage" },
 ];
 
 const isWireless = computed(() => route.path.startsWith("/wireless"));
@@ -36,7 +37,8 @@ const locked = computed(() => (isWireless.value ? false : serial.green.active));
 
 const navItems = computed(() => {
   const base = isWireless.value ? wirelessNavItems : wiredNavItems;
-  return base.filter((item) => !item.eventType || eventModes.value[item.eventType] !== false);
+  return base.filter((item) => (!item.permission || hasPermission(item.permission))
+    && (!item.eventType || eventModes.value[item.eventType] !== false));
 });
 </script>
 

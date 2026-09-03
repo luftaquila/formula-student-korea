@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  admins,
   getIcon,
-  officials,
+  operations,
+  administration,
   resources,
   services,
 } from "../../shared/nav-config.js";
+import { ROLE_SORT_ORDER } from "../../shared/constants.js";
+import { ACCESS_CONTROL_DEFINITIONS, PERMISSION_KEYS } from "../../shared/access-control.js";
+import { RESOURCES_DISCLOSURE_STORAGE_KEY } from "../../shared/persistent-disclosure.js";
 
 const registrationRoot = new URL("../../registration/web/", import.meta.url);
 
@@ -23,19 +26,88 @@ function templateOf(source) {
 
 test("registration navigation uses distinct queue-style icons and concise labels", () => {
   const registration = services.find((item) => item.href === "/registration");
-  const registrationAdmin = officials.find((item) => item.href === "/registration/manage");
+  const registrationAdmin = operations.find((item) => item.href === "/registration/manage");
 
   assert.equal(registration?.name, "등록 대기열");
   assert.equal(registrationAdmin?.name, "등록 대기 관리");
   assert.equal(getIcon(registration?.icon), "🎫");
   assert.equal(getIcon(registrationAdmin?.icon), "🎛️");
 
-  const menuItems = [...services, ...resources, ...officials, ...admins];
+  const menuItems = [...services, ...resources, ...operations, ...administration];
   const otherIcons = menuItems
     .filter((item) => item !== registration && item !== registrationAdmin)
     .map((item) => getIcon(item.icon));
   assert.equal(otherIcons.includes(getIcon(registration.icon)), false);
   assert.equal(otherIcons.includes(getIcon(registrationAdmin.icon)), false);
+});
+
+test("human roles stay simple and operation links use explicit permissions", () => {
+  const registrationAdmin = operations.find((item) => item.href === "/registration/manage");
+  assert.deepEqual(ROLE_SORT_ORDER, {
+    student: 1,
+    official: 2,
+    admin: 3,
+  });
+  assert.equal(registrationAdmin.permission, "registration.operate");
+  assert.equal(operations.find((item) => item.href === "/queue/admin")?.permission, "queue.operate");
+  assert.equal(operations.find((item) => item.href === "/inspection")?.permission, "inspection.operate");
+  assert.equal(operations.some((item) => item.href === "/auth/applications"), false);
+  assert.equal(operations.some((item) => item.href === "/auth/contacts"), false);
+  assert.equal(operations.some((item) => item.href === "/auth/devices"), false);
+  assert.ok(operations.every((item) => item.permission && PERMISSION_KEYS.includes(item.permission)));
+  // Admin tools form their own group and are never reachable through a grant.
+  assert.deepEqual(administration.map((item) => item.href), ["/entry", "/email", "/auth/logs", "/auth"]);
+  assert.ok(administration.every((item) => item.adminOnly && !item.permission));
+  for (const href of administration.map((item) => item.href)) {
+    assert.equal(operations.some((item) => item.href === href), false);
+  }
+  const registrationAccess = ACCESS_CONTROL_DEFINITIONS.find(({ key }) => key === "registration");
+  assert.equal(registrationAccess?.type, "tiered");
+  assert.equal(registrationAccess?.operate.key, "registration.operate");
+  assert.equal(registrationAccess?.manage.key, "registration.manage");
+});
+
+test("landing renders permission-filtered operation and admin groups and persists resource disclosure", async () => {
+  const landing = await readFile(new URL("../../landing/src/App.vue", import.meta.url), "utf8");
+  const navMenu = await readFile(new URL("../../shared/NavMenu.vue", import.meta.url), "utf8");
+
+  assert.match(landing, /<details :open="resourcesOpen" class="section resources-section" @toggle="persistResourcesState">/);
+  assert.match(landing, /<summary class="section-title collapsible-title">\s*Resources/);
+  assert.match(landing, /<h2 class="section-title">Operations<\/h2>/);
+  assert.match(landing, /<h2 class="section-title">Admin<\/h2>/);
+  assert.match(landing, /operations\.filter\(canOpen\)/);
+  assert.match(landing, /administration\.filter\(canOpen\)/);
+  assert.match(landing, /grid-template-columns: repeat\(auto-fit, minmax\(170px, 1fr\)\)/);
+  assert.equal(RESOURCES_DISCLOSURE_STORAGE_KEY, "fsk.resources.open");
+  assert.match(landing, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
+  assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);
+  assert.match(navMenu, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
+  assert.match(navMenu, /visibleOperations/);
+  assert.match(navMenu, /visibleAdministration/);
+  assert.match(navMenu, /<span class="nav-section-title">Admin<\/span>/);
+});
+
+test("sidebar puts the account row first and prefers the Google profile picture", async () => {
+  const navMenu = await readFile(new URL("../../shared/NavMenu.vue", import.meta.url), "utf8");
+  const markup = templateOf(navMenu);
+  const account = markup.indexOf('class="nav-section nav-section-account"');
+  const contacts = markup.indexOf('class="nav-section ops-contacts-section"');
+  assert.ok(account >= 0 && contacts > account, "account row must precede Contacts");
+  assert.equal(markup.indexOf("nav-section-bottom"), -1);
+  assert.match(markup, /<img[^>]*v-if="user\.picture && !avatarFailed"[^>]*:src="user\.picture"[^>]*class="nav-avatar"/s);
+  assert.match(markup, /<span v-else class="nav-icon">👤<\/span>/);
+});
+
+test("Auth administration is grouped under account and access", async () => {
+  const manage = await readFile(new URL("../../auth/web/src/views/Manage.vue", import.meta.url), "utf8");
+  assert.match(manage, /to="\/applications"[^>]*>계정 신청 관리<\/router-link>/);
+  assert.match(manage, /to="\/devices"[^>]*>태블릿 장비 관리<\/router-link>/);
+  assert.match(manage, /운영 오피셜 연락처/);
+  // The user list shows each account's grants and lets admins set several officials at once.
+  assert.match(manage, /<th class="col-access">권한<\/th>/);
+  assert.match(manage, /grantLabels\(user\)/);
+  assert.match(manage, /선택 권한 설정 \(\{\{ selectedOfficials\.length \}\}\)/);
+  assert.match(manage, /\/api\/users\/bulk\/access/);
 });
 
 test("registration pages do not expose service tabs or internal role names", async () => {

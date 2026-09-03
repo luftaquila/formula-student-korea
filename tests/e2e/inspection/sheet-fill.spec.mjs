@@ -36,7 +36,7 @@ async function replaceMemo(page, itemId, memo) {
 }
 
 test.describe("Inspection sheet filling", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test.beforeEach(async ({ page }) => {
     // Navigate to inspection sheet for team 1
@@ -291,11 +291,11 @@ test.describe("Inspection sheet filling", () => {
     await expect.poll(async () => {
       const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       return (await dataRes.json()).inspectors[chassis.id] || [];
-    }, { timeout: 10000 }).toContain("E2E Official");
-    await expect(page.locator(".inspector-list")).toContainText("E2E Official");
+    }, { timeout: 10000 }).toContain("E2E Multi-service Operator");
+    await expect(page.locator(".inspector-list")).toContainText("E2E Multi-service Operator");
     await expect(page.locator(".inspector-input")).toHaveCount(0);
     await expect(page.locator(".inspector-fill-btn")).toHaveCount(0);
-    await expect(answerMetadata).toContainText("E2E Official");
+    await expect(answerMetadata).toContainText("E2E Multi-service Operator");
     await expect(answerMetadata).not.toContainText("응답 ·");
     await expect(answerMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
     expect(await answerMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");
@@ -335,7 +335,7 @@ test.describe("Inspection sheet filling", () => {
       year: YEAR,
       teamNum,
       category,
-      role: "official",
+      profile: "operationsOperator",
     });
     const progress = page.locator(".inspection-progress-label");
     await expect.poll(async () => {
@@ -361,7 +361,7 @@ test.describe("Inspection sheet filling", () => {
       year: YEAR,
       teamNum,
       changes: completionChanges,
-      role: "official",
+      profile: "operationsOperator",
     });
   });
 
@@ -422,7 +422,7 @@ test.describe("Inspection sheet filling", () => {
       const data = await resp.json();
       return data.answers[firstItemId]?.memo === newMemo;
     }, { timeout: 10000 }).toBeTruthy();
-    await expect(memoMetadata).toContainText("E2E Official");
+    await expect(memoMetadata).toContainText("E2E Multi-service Operator");
     await expect(memoMetadata).not.toContainText("메모 ·");
     await expect(memoMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
     expect(await memoMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");

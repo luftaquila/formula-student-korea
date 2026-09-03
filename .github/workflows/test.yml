@@ -252,6 +252,7 @@ jobs:
           - shard: auth-core
             projects: >-
               --project=auth
+              tests/e2e/auth/access-device-management.spec.mjs
               tests/e2e/auth/account-applications.spec.mjs
               tests/e2e/auth/bulk-operations.spec.mjs
               tests/e2e/auth/csv-upload.spec.mjs

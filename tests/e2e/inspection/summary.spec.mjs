@@ -6,7 +6,7 @@ import { completeInspectionCategory, restoreInspectionAnswers } from "../helpers
 const YEAR = currentCompetitionYear();
 
 test.describe("Inspection summary dashboard", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test("renders team list with all seeded entries", async ({ page }) => {
     await page.goto("/inspection");
@@ -303,7 +303,7 @@ test.describe("Inspection summary dashboard", () => {
     const TEAM = 31;
     const TEAM_UNIV = "연세대학교";
 
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const apiPage = await context.newPage();
 
     // Get the template to find category IDs
@@ -315,7 +315,7 @@ test.describe("Inspection summary dashboard", () => {
       year: YEAR,
       teamNum: TEAM,
       category: firstCategory,
-      role: "official",
+      profile: "operationsOperator",
     });
 
     // Set category result to PASS for the team
@@ -333,10 +333,10 @@ test.describe("Inspection summary dashboard", () => {
     const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: TEAM_UNIV });
     const passBadge = teamRow.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
-    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Official");
+    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Multi-service Operator");
 
     // Clean up mutable values. Inspector participation intentionally remains as history.
-    const cleanupCtx = await browser.newContext({ storageState: storageStatePath("official") });
+    const cleanupCtx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const cleanupPage = await cleanupCtx.newPage();
     await cleanupPage.request.put("/competition/api/v1/inspection/sheet/category-result", {
       data: { year: YEAR, team_num: TEAM, category_id: firstCatId, result: "" },
@@ -345,7 +345,7 @@ test.describe("Inspection summary dashboard", () => {
       year: YEAR,
       teamNum: TEAM,
       changes: completionChanges,
-      role: "official",
+      profile: "operationsOperator",
     });
     await cleanupCtx.close();
   });

@@ -17,11 +17,11 @@ async function registrationRequest(request, role, method, path, data) {
 }
 
 async function clearActiveQueue(request) {
-  const queue = await registrationRequest(request, "official", "GET", `/queue?year=${YEAR}`);
+  const queue = await registrationRequest(request, "operationsOperator", "GET", `/queue?year=${YEAR}`);
   if (!queue.ok()) return;
   const body = await queue.json();
   for (const row of body.waiting) {
-    const response = await registrationRequest(request, "official", "POST", `/queue/${row.id}/cancel`);
+    const response = await registrationRequest(request, "operationsOperator", "POST", `/queue/${row.id}/cancel`);
     expect([200, 409]).toContain(response.status());
   }
 }
@@ -31,7 +31,7 @@ test.describe("Registration queue", () => {
 
   test.beforeEach(async ({ request }) => {
     await clearActiveQueue(request);
-    const opened = await registrationRequest(request, "chief", "PATCH", "/settings", {
+    const opened = await registrationRequest(request, "operationsManager", "PATCH", "/settings", {
       year: YEAR,
       open: true,
       sms: false,
@@ -42,7 +42,7 @@ test.describe("Registration queue", () => {
 
   test.afterEach(async ({ request }) => {
     await clearActiveQueue(request);
-    const closed = await registrationRequest(request, "chief", "PATCH", "/settings", {
+    const closed = await registrationRequest(request, "operationsManager", "PATCH", "/settings", {
       year: YEAR,
       open: false,
       sms: false,
@@ -50,39 +50,39 @@ test.describe("Registration queue", () => {
     expect(closed.status()).toBe(200);
   });
 
-  test("runs the chief registration, public lookup, and official processing flow in real time", async ({ browser }) => {
-    const chiefContext = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("runs manager registration, public lookup, and operator processing in real time", async ({ browser }) => {
+    const managerContext = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const publicContext = await browser.newContext();
-    const officialContext = await browser.newContext({ storageState: storageStatePath("official") });
-    const chiefPage = await chiefContext.newPage();
+    const officialContext = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
+    const managerPage = await managerContext.newPage();
     const publicPage = await publicContext.newPage();
     const officialPage = await officialContext.newPage();
 
     try {
-      await chiefPage.setViewportSize({ width: 1024, height: 768 });
-      const chiefStatus = chiefPage.waitForResponse((response) =>
+      await managerPage.setViewportSize({ width: 1024, height: 768 });
+      const managerStatus = managerPage.waitForResponse((response) =>
         response.url().includes(`${PREFIX}/status`) && response.status() === 200);
-      await chiefPage.goto("/registration/register");
-      await waitForPageReady(chiefPage);
-      await chiefStatus;
+      await managerPage.goto("/registration/register");
+      await waitForPageReady(managerPage);
+      await managerStatus;
 
-      await chiefPage.locator("#register-number").fill(String(ENTRY_NUMBER));
-      await expect(chiefPage.locator(".team-badge")).toContainText("부산대학교 PNU Racing");
-      await chiefPage.locator("#register-phone").fill(PHONE);
-      await chiefPage.locator(".consent-card").click();
-      const consentBox = await chiefPage.locator(".agreement-group").boundingBox();
-      const actionsBox = await chiefPage.locator(".submit-group").boundingBox();
+      await managerPage.locator("#register-number").fill(String(ENTRY_NUMBER));
+      await expect(managerPage.locator(".team-badge")).toContainText("부산대학교 PNU Racing");
+      await managerPage.locator("#register-phone").fill(PHONE);
+      await managerPage.locator(".consent-card").click();
+      const consentBox = await managerPage.locator(".agreement-group").boundingBox();
+      const actionsBox = await managerPage.locator(".submit-group").boundingBox();
       expect(consentBox).not.toBeNull();
       expect(actionsBox).not.toBeNull();
       expect(actionsBox.y - (consentBox.y + consentBox.height)).toBeLessThanOrEqual(32);
 
-      const registered = chiefPage.waitForResponse((response) =>
+      const registered = managerPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/queue`) && response.request().method() === "POST");
-      await chiefPage.getByRole("button", { name: "대기 등록", exact: true }).click();
+      await managerPage.getByRole("button", { name: "대기 등록", exact: true }).click();
       expect((await registered).status()).toBe(201);
-      await expect(chiefPage.getByText(`엔트리 ${ENTRY_NUMBER}번을 1번째 대기로 등록했습니다.`)).toBeVisible();
-      await expect(chiefPage.locator("#register-number")).toHaveValue("");
-      await expect(chiefPage.locator("#register-phone")).toHaveValue("010");
+      await expect(managerPage.getByText(`엔트리 ${ENTRY_NUMBER}번을 1번째 대기로 등록했습니다.`)).toBeVisible();
+      await expect(managerPage.locator("#register-number")).toHaveValue("");
+      await expect(managerPage.locator("#register-phone")).toHaveValue("010");
 
       const publicSse = publicPage.waitForResponse((response) => response.url().includes(`${PREFIX}/events`));
       await publicPage.goto("/registration");
@@ -125,12 +125,12 @@ test.describe("Registration queue", () => {
       await expect(publicPage.locator(".result-card")).toContainText("대기 중인 등록 내역이 없습니다.");
       await expect(publicPage.locator(".query-card")).not.toContainText("대기 중인 등록 내역이 없습니다.");
     } finally {
-      await Promise.all([chiefContext.close(), publicContext.close(), officialContext.close()]);
+      await Promise.all([managerContext.close(), publicContext.close(), officialContext.close()]);
     }
   });
 
-  test("keeps chief settings and kiosk registration unavailable to official users", async ({ browser, request }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+  test("keeps manager settings and kiosk registration unavailable to operators", async ({ browser, request }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
     try {
       await page.goto("/registration/manage");
@@ -143,12 +143,12 @@ test.describe("Registration queue", () => {
 
       const teams = await request.get(`/competition/api/v1/teams?year=${YEAR}`);
       const team = (await teams.json()).find((item) => item.number === ENTRY_NUMBER);
-      const create = await registrationRequest(request, "official", "POST", "/queue", {
+      const create = await registrationRequest(request, "operationsOperator", "POST", "/queue", {
         teamId: team.id,
         phone: PHONE,
       });
       expect(create.status()).toBe(403);
-      const settings = await registrationRequest(request, "official", "PATCH", "/settings", {
+      const settings = await registrationRequest(request, "operationsOperator", "PATCH", "/settings", {
         year: YEAR,
         open: false,
       });
@@ -159,7 +159,7 @@ test.describe("Registration queue", () => {
   });
 
   test("rolls a setting toggle back when the PATCH is rejected", async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const page = await context.newPage();
     try {
       await page.route(`**${PREFIX}/settings`, async (route) => {
@@ -191,7 +191,7 @@ test.describe("Registration queue", () => {
   test("does not reveal a queue record when the public phone credential is wrong", async ({ request }) => {
     const teams = await request.get(`/competition/api/v1/teams?year=${YEAR}`);
     const team = (await teams.json()).find((item) => item.number === ENTRY_NUMBER);
-    const create = await registrationRequest(request, "chief", "POST", "/queue", {
+    const create = await registrationRequest(request, "operationsManager", "POST", "/queue", {
       teamId: team.id,
       phone: PHONE,
     });

@@ -16,10 +16,10 @@ async function clearOwnedRegistration(request) {
 }
 
 test.describe("Queue statistics page", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test.beforeAll(async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     await clearOwnedRegistration(context.request);
     const registered = await context.request.post(`/competition/api/v1/queue/admin/register/${TYPE}`, {
       data: { num: ENTRY_NUM, phone: PHONE },
@@ -29,7 +29,7 @@ test.describe("Queue statistics page", () => {
   });
 
   test.afterAll(async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     await clearOwnedRegistration(context.request);
     await context.close();
   });

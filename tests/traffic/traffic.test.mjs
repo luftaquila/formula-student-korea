@@ -23,6 +23,15 @@ const Database = requireFromTraffic('better-sqlite3');
 const CURRENT_YEAR = currentCompetitionYear();
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const trafficOperatorCookie = makeAuthCookie({
+  email: 'traffic-operator@test.com', name: 'Traffic Operator', role: 'official', permissions: ['traffic.operate'],
+});
+const trafficManagerCookie = makeAuthCookie({
+  email: 'traffic-manager@test.com', name: 'Traffic Manager', role: 'official', permissions: ['traffic.manage'],
+});
+const unrelatedOfficialCookie = makeAuthCookie({
+  email: 'inspection-manager@test.com', name: 'Inspection Manager', role: 'official', permissions: ['inspection.manage'],
+});
 
 let server, baseUrl, client, db, dbPath;
 
@@ -626,6 +635,15 @@ describe('PUT /api/event-modes/:type', () => {
 
 // ─── Auth ────────────────────────────────────────────────────────────────
 describe('Auth enforcement', () => {
+  it('separates Traffic operation, management, unrelated grants, and audit access', async () => {
+    assert.equal((await client.get('/api/records', { cookie: trafficOperatorCookie })).status, 200);
+    assert.equal((await client.get('/api/records', { cookie: trafficManagerCookie })).status, 200);
+    assert.equal((await client.get('/api/records', { cookie: unrelatedOfficialCookie })).status, 403);
+    assert.equal((await client.put('/api/event-modes/not-found', { cookie: trafficOperatorCookie })).status, 403);
+    assert.equal((await client.put('/api/event-modes/not-found', { cookie: trafficManagerCookie })).status, 404);
+    assert.equal((await client.get('/api/logs', { cookie: trafficOperatorCookie })).status, 403);
+  });
+
   it('POST /api/records without auth returns 401', async () => {
     const res = await client.post('/api/records', {
       body: {
@@ -1332,6 +1350,20 @@ describe('Wireless sessions & arm', () => {
 
 describe('Wireless lease (per-event exclusive control)', () => {
   const otherCookie = makeAuthCookie({ email: 'other@test.com', name: 'Other', role: 'admin' });
+
+  it("lets traffic.manage reclaim another user's lease while operate-only officials cannot", async () => {
+    await refreshWirelessQuality('가속');
+    const claim = await client.post('/api/wireless/lease/가속', { cookie: adminCookie });
+    assert.equal(claim.status, 200);
+    assert.equal((await claim.json()).controller, 'admin@test.com');
+
+    const denied = await client.delete('/api/wireless/lease/가속', { cookie: trafficOperatorCookie });
+    assert.equal(denied.status, 409);
+
+    const reclaimed = await client.delete('/api/wireless/lease/가속', { cookie: trafficManagerCookie });
+    assert.equal(reclaimed.status, 200);
+    assert.equal((await reclaimed.json()).controller, null);
+  });
 
   it('claim sets controller; another user is blocked (409); release clears', async () => {
     await refreshWirelessQuality('오토크로스');

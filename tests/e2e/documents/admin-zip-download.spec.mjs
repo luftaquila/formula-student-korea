@@ -6,13 +6,13 @@ const SESSION_NAME = "E2E ZIP 다운로드 격리 세션";
 
 test.describe("Documents admin zip download", () => {
   test.describe.configure({ mode: "serial" });
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   let sessionId;
   let submissionId;
 
   test.beforeAll(async ({ browser }) => {
-    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
       sessionId = await createDocumentSession(chiefCtx.request, SESSION_NAME);
     } finally {
@@ -21,7 +21,7 @@ test.describe("Documents admin zip download", () => {
   });
 
   test.afterAll(async ({ browser }) => {
-    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
       await deleteDocumentSession(chiefCtx.request, sessionId);
     } finally {
@@ -128,7 +128,7 @@ test.describe("Documents admin zip download", () => {
 
     // Check admin view — single file should not show zip link
     const chiefCtx = await browser.newContext({
-      storageState: storageStatePath("chief"),
+      storageState: storageStatePath("operationsManager"),
     });
     const chiefPage = await chiefCtx.newPage();
     await chiefPage.goto("/documents/admin", { waitUntil: "networkidle" });

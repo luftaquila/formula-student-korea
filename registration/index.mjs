@@ -9,6 +9,7 @@ import {
   sendYearError,
 } from "../shared/competition-year.mjs";
 import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
+import { access } from "../shared/access-control.js";
 
 // 대기열에 남아 있는 유일한 상태. 'called' 는 운영 흐름에서 제거됐다(완료/취소만 쓴다).
 const ACTIVE_STATUS = "waiting";
@@ -72,12 +73,17 @@ export function createRegistrationApp(options = {}) {
     options,
     authRoleFn: (req) => {
       if (["/api/health", "/api/status", "/api/lookup", "/api/events"].includes(req.path)) return null;
-      if (req.path === "/api/logs") return "admin";
-      if (req.path === "/api/queue" && req.method === "POST") return "chief";
-      if (req.path === "/api/settings" && req.method !== "GET") return "chief";
-      if (req.path.startsWith("/api/")) return "official";
-      if (/^\/register(?:\/|$)/.test(req.path)) return "chief";
-      if (/^\/manage(?:\/|$)/.test(req.path)) return "official";
+      if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
+      if (req.path === "/api/queue" && req.method === "POST") {
+        return access.anyOf(access.permission("registration.manage"), access.device("kiosk.registration.register"));
+      }
+      if (req.path === "/api/settings" && req.method !== "GET") return access.permission("registration.manage");
+      if (req.path.startsWith("/api/")) return access.permission("registration.operate");
+      if (/^\/register(?:\/|$)/.test(req.path)) return {
+        ...access.anyOf(access.permission("registration.manage"), access.device("kiosk.registration.register")),
+        unauthenticatedRedirect: "/auth/device",
+      };
+      if (/^\/manage(?:\/|$)/.test(req.path)) return access.permission("registration.operate");
       return null;
     },
   });
@@ -175,6 +181,21 @@ export function createRegistrationApp(options = {}) {
       }
       return res.status(429).json({ code: "RATE_LIMITED", message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." });
     }
+    next();
+  }
+
+  function kioskRegisterRateLimit(req, res, next) {
+    if (req.user?.kind !== "device") return next();
+    const ip = req.headers["x-real-ip"]?.trim()
+      || req.headers["x-forwarded-for"]?.split(",")[0]?.trim()
+      || req.ip;
+    const key = `device:${req.user.id}:${ip}`;
+    const now = Date.now();
+    const entry = rateLimitMap.get(key) || { count: 0, resetAt: now + 60_000 };
+    if (now > entry.resetAt) Object.assign(entry, { count: 0, resetAt: now + 60_000 });
+    entry.count += 1;
+    rateLimitMap.set(key, entry);
+    if (entry.count > 30) return res.status(429).json({ code: "DEVICE_RATE_LIMITED" });
     next();
   }
 
@@ -448,7 +469,7 @@ export function createRegistrationApp(options = {}) {
     }
   }
 
-  app.post("/api/queue", (req, res) => {
+  app.post("/api/queue", kioskRegisterRateLimit, (req, res) => {
     let team;
     let phone;
     try {

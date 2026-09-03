@@ -11,6 +11,7 @@ import { validateYear } from "../shared/validation.mjs";
 import { parseDbTimestamp } from "../shared/parse-timestamp.js";
 import { serviceUrl } from "../shared/services.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
+import { access } from "../shared/access-control.js";
 
 export function createDocumentsApp(options = {}) {
 
@@ -23,12 +24,14 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "documents", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path.startsWith("/api/internal/")) return "admin";
-    if (req.path.startsWith("/api/admin")) return "chief";
-    if (req.path === "/api/logs") return "admin";
-    if (req.path.startsWith("/api/")) return "student";
-    if (req.path.startsWith("/admin")) return "chief";
-    return "student";
+    if (req.path.startsWith("/api/internal/")) return access.internal;
+    if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
+    if (req.path.startsWith("/api/admin")) {
+      return req.method === "GET" ? access.permission("documents.operate") : access.permission("documents.manage");
+    }
+    if (req.path.startsWith("/api/")) return access.student;
+    if (req.path.startsWith("/admin")) return access.permission("documents.operate");
+    return access.student;
   },
 });
 db.pragma("foreign_keys = ON");
@@ -192,7 +195,7 @@ let TMP_DIR = null;
 cleanupManagedUploads();
 
 // Documents에서는 엔트리 활성 상태와 무관하게 계정 할당과 제출을 허용한다.
-// 학생에게는 자신의 매핑 팀만, chief에게는 관리에 필요한 전체 목록만 반환한다.
+// 학생에게는 자신의 매핑 팀만, 운영 권한에는 관리에 필요한 전체 목록만 반환한다.
 // 두 경로 모두 브라우저가 Entry의 관리자 전용 includeInactive API를 직접 호출하지
 // 않도록 Documents가 내부 서비스 자격으로 조회한다.
 app.get("/api/entries", async (req, res) => {
@@ -1671,7 +1674,7 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
 // GET /api/admin/students - auth 서비스에서 student 역할 사용자 목록 조회
 app.get("/api/admin/students", async (req, res) => {
   try {
-    const authRes = await fetch(`${serviceUrl("auth")}/api/users`, {
+    const authRes = await fetch(`${serviceUrl("auth")}/api/internal/users`, {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
       signal: AbortSignal.timeout(5000),
     });

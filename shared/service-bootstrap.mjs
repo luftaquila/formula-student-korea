@@ -24,10 +24,14 @@ export function createServiceSkeleton({
     express,
     logger,
     validateUser: options.validateUser,
+    validateDevice: options.validateDevice,
     staticRoot: options.staticRoot,
   };
   const requestedCacheTtl = options.validateUserCacheTtl ?? validateUserCacheTtl;
   if (requestedCacheTtl !== undefined) deps.validateUserCacheTtl = requestedCacheTtl;
+  if (options.validateDeviceCacheTtl !== undefined) {
+    deps.validateDeviceCacheTtl = options.validateDeviceCacheTtl;
+  }
   const app = createApp(deps, authRoleFn);
   app.locals.staticRoot = options.staticRoot || "./web/dist";
   app.get("/api/logs", logger.queryHandler);

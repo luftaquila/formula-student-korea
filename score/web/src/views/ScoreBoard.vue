@@ -10,8 +10,10 @@ import { formatScoreResult as formatResult } from "../lib/scoreExport.js";
 import { buildOfficialScoreWorkbookModel, downloadOfficialScoreWorkbook } from "../lib/officialScoreWorkbook.js";
 import { calculateAdjustedResult } from "../../../lib/adjusted-result.mjs";
 import { useSSE } from "../composables/useSSE";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const { error, success } = useNotification();
+const canManage = permissionComputed("score.manage");
 const { lastInspectionUpdate, lastAnswerUpdate, lastTrafficRecordUpdate, lastManualScoreUpdate, lastPenaltyUpdate, lastSettingUpdate, lastEnduranceUpdate, lastPublicationUpdate, reconnected } = useSSE();
 
 const selectedYear = ref(currentCompetitionYear());
@@ -882,7 +884,7 @@ async function exportXlsx() {
           <span class="count-badge">{{ entryList.length }}개 팀</span>
         </div>
         <div class="publication-actions">
-          <label class="publication-toggle">
+          <label v-if="canManage" class="publication-toggle">
             <span>공개</span>
             <span class="toggle-switch">
               <input
@@ -1157,7 +1159,7 @@ async function exportXlsx() {
     </div>
 
     <!-- 페널티 + 점수 설정 -->
-    <div class="bottom-row" v-if="events.length > 0">
+    <div class="bottom-row" v-if="events.length > 0 && canManage">
       <div class="card setting-card">
         <div class="card-body table-body">
           <div class="table-container">

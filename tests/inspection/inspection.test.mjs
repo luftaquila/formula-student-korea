@@ -29,6 +29,17 @@ const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', rol
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 const secondOfficialCookie = makeAuthCookie({ email: 'second@test.com', name: 'Second Official', role: 'official' });
 const unnamedOfficialCookie = makeAuthCookie({ email: 'unnamed@test.com', role: 'official' });
+const inspectionOperatorCookie = makeAuthCookie({
+  email: 'inspection-operator@test.com', name: 'Inspection Operator', role: 'official',
+  permissions: ['inspection.operate'],
+});
+const inspectionManagerCookie = makeAuthCookie({
+  email: 'inspection-manager@test.com', name: 'Inspection Manager', role: 'official',
+  permissions: ['inspection.manage'],
+});
+const queueManagerCookie = makeAuthCookie({
+  email: 'queue-manager@test.com', name: 'Queue Manager', role: 'official', permissions: ['queue.manage'],
+});
 
 let server, baseUrl, client, db, dbPath;
 
@@ -55,6 +66,31 @@ describe('GET /api/health', () => {
     assert.equal(res.status, 200);
     const text = await res.text();
     assert.equal(text, 'ok');
+  });
+});
+
+describe('Explicit Inspection permissions', () => {
+  it('separates operation, template management, and Queue grants', async () => {
+    const operate = await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, {
+      cookie: inspectionOperatorCookie,
+    });
+    assert.equal(operate.status, 200);
+
+    const manageDenied = await client.post('/api/sheet/template', {
+      cookie: inspectionOperatorCookie,
+      body: {},
+    });
+    assert.equal(manageDenied.status, 403);
+    const manageAllowed = await client.post('/api/sheet/template', {
+      cookie: inspectionManagerCookie,
+      body: {},
+    });
+    assert.equal(manageAllowed.status, 400);
+
+    const queueDenied = await client.get(`/api/sheet/template?year=${CURRENT_YEAR}`, {
+      cookie: queueManagerCookie,
+    });
+    assert.equal(queueDenied.status, 403);
   });
 });
 

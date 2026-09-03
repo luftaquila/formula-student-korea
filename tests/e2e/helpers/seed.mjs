@@ -19,10 +19,17 @@ async function api(method, path, body, role = "admin", expectedStatus = 200) {
 
 export async function seedUsers() {
   // Admin is auto-created via ADMIN_EMAIL env var.
-  // Create the remaining 3 test users.
-  for (const [role, user] of Object.entries(TEST_USERS)) {
-    if (role === "admin") continue;
-    await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);
+  // Create every non-bootstrap test user.
+  for (const [profile, user] of Object.entries(TEST_USERS)) {
+    if (profile === "admin") continue;
+    const created = await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);
+    const { id } = await created.json();
+    if (user.role === "official" && user.grants.length > 0) {
+      await api("PUT", `/auth/api/users/${id}/access`, {
+        expectedRevision: 0,
+        grants: user.grants,
+      });
+    }
   }
   // Extra student for documents admin dropdown test (student-team mapping)
   await api("POST", "/auth/api/users", { email: "e2e-student2@test.com", role: "student" }, "admin", 201);
@@ -155,7 +162,7 @@ export async function seedDocuments() {
     email: TEST_USERS.student.email,
     team_num: 1,
     year,
-  }, "chief", 201);
+  }, "operationsManager", 201);
 
   // Create a submission session
   const now = new Date();
@@ -175,7 +182,7 @@ export async function seedDocuments() {
     allowed_extensions: "pdf,docx,xlsx",
     year,
     teams: [1, 2, 3],
-  }, "chief", 201);
+  }, "operationsManager", 201);
 }
 
 export async function seedAll() {

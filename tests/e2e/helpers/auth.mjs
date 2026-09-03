@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { createJWT } from "../../../shared/express-setup.mjs";
+import { expandPermissions, PERMISSION_KEYS } from "../../../shared/access-control.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "e2e-test-secret";
 const BASE_URL = process.env.BASE_URL || "http://localhost:9000";
@@ -9,25 +10,78 @@ const BASE_URL = process.env.BASE_URL || "http://localhost:9000";
 // and by tests that legitimately drive rover-side endpoints through Caddy.
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "e2e-internal-secret";
 
-export const TEST_USERS = {
-  admin: { email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" },
-  chief: { email: "e2e-chief@test.com", name: "E2E Chief", role: "chief" },
-  official: { email: "e2e-official@test.com", name: "E2E Official", role: "official" },
-  student: { email: "e2e-student@test.com", name: "E2E Student", role: "student" },
-};
+function account({ grants = [], ...user }) {
+  const permissions = user.role === "admin"
+    ? [...PERMISSION_KEYS]
+    : expandPermissions(grants);
+  return Object.freeze({
+    ...user,
+    grants: Object.freeze(grants),
+    permissions: Object.freeze(permissions),
+    accessRevision: user.role === "official" && grants.length > 0 ? 1 : 0,
+  });
+}
+
+// The keys name capability profiles, not application roles. Every operational
+// profile is an Official account with one explicit grant list.
+export const TEST_USERS = Object.freeze({
+  admin: account({ email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" }),
+  technicalOperator: account({
+    email: "e2e-technical-operator@test.com",
+    name: "E2E Technical Operator",
+    role: "official",
+    grants: ["course.manage", "traffic.operate", "score.manage"],
+  }),
+  operationsManager: account({
+    email: "e2e-operations-manager@test.com",
+    name: "E2E Operations Manager",
+    role: "official",
+    grants: [
+      "registration.manage",
+      "queue.manage",
+      "inspection.manage",
+      "documents.manage",
+      "files.access",
+      "calendar.manage",
+    ],
+  }),
+  operationsOperator: account({
+    email: "e2e-operations-operator@test.com",
+    name: "E2E Multi-service Operator",
+    role: "official",
+    grants: ["registration.operate", "queue.operate", "inspection.operate"],
+  }),
+  registrationOperator: account({
+    email: "e2e-registration-operator@test.com",
+    name: "E2E Registration Operator",
+    role: "official",
+    grants: ["registration.operate"],
+  }),
+  student: account({ email: "e2e-student@test.com", name: "E2E Student", role: "student" }),
+});
 
 export function getAdminJwt() {
   return createJWT(TEST_USERS.admin, JWT_SECRET);
 }
 
-export function createStorageState(role) {
-  const user = TEST_USERS[role];
-  const jwt = createJWT(user, JWT_SECRET);
-  const fskUser = encodeURIComponent(JSON.stringify({ name: user.name, role: user.role }));
+export function createStorageState(profile) {
+  const user = TEST_USERS[profile];
+  const jwt = createJWT({
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    accessRevision: user.accessRevision,
+  }, JWT_SECRET);
+  const fskUser = encodeURIComponent(JSON.stringify({
+    name: user.name,
+    role: user.role,
+    permissions: user.permissions,
+    accessRevision: user.accessRevision,
+  }));
   return {
     cookies: [
-      { name: "fsk_session", value: jwt, domain: "localhost", path: "/", httpOnly: true, sameSite: "Lax" },
-      { name: "fsk_user", value: fskUser, domain: "localhost", path: "/", sameSite: "Lax" },
+      { name: "fsk_session", value: jwt, domain: "localhost", path: "/", expires: -1, httpOnly: true, secure: false, sameSite: "Lax" },
+      { name: "fsk_user", value: fskUser, domain: "localhost", path: "/", expires: -1, httpOnly: false, secure: false, sameSite: "Lax" },
     ],
     origins: [],
   };
@@ -37,15 +91,20 @@ export function writeStorageStates() {
   const authDir = path.resolve("tests/e2e/.auth");
   if (!fs.existsSync(authDir)) fs.mkdirSync(authDir, { recursive: true });
 
-  for (const role of Object.keys(TEST_USERS)) {
-    const state = createStorageState(role);
-    fs.writeFileSync(path.join(authDir, `${role}.json`), JSON.stringify(state, null, 2));
+  for (const profile of Object.keys(TEST_USERS)) {
+    const state = createStorageState(profile);
+    fs.writeFileSync(path.join(authDir, `${profile}.json`), JSON.stringify(state, null, 2));
   }
 }
 
-export function getAuthCookie(role = "admin") {
-  const user = TEST_USERS[role];
-  return `fsk_session=${createJWT(user, JWT_SECRET)}`;
+export function getAuthCookie(profile = "admin") {
+  const user = TEST_USERS[profile];
+  return `fsk_session=${createJWT({
+    email: user.email,
+    name: user.name,
+    role: user.role,
+    accessRevision: user.accessRevision,
+  }, JWT_SECRET)}`;
 }
 
 // Header an internal service would send. Through Caddy this is stripped on every

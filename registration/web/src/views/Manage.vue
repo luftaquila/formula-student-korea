@@ -3,12 +3,13 @@ import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { displayPhone } from "@shared/format-phone.js";
-import { isChief } from "@shared/officialsStore.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 import { useNotification } from "@shared/useNotification.js";
 import * as api from "../api.js";
 import { useRegistrationSSE } from "../composables/useSSE.js";
 
 const router = useRouter();
+const canManage = permissionComputed("registration.manage");
 const { success, error: notifyError } = useNotification();
 const { registrationRevision, reconnected } = useRegistrationSSE();
 const year = currentCompetitionYear();
@@ -69,7 +70,7 @@ function cancel(row) {
 }
 
 async function patchSetting(change) {
-  if (!isChief.value || settingsBusy.value) return;
+  if (!canManage.value || settingsBusy.value) return;
   settingsBusy.value = true;
   try {
     const settings = await api.updateSettings({ year, ...change });
@@ -105,7 +106,7 @@ onMounted(async () => {
 <template>
   <div class="admin-panel">
     <div class="top-actions">
-      <button v-if="isChief" class="btn btn-primary" type="button" @click="router.push('/register')">
+      <button v-if="canManage" class="btn btn-primary" type="button" @click="router.push('/register')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18" aria-hidden="true">
           <path d="M12 5v14M5 12h14" />
         </svg>
@@ -116,7 +117,7 @@ onMounted(async () => {
 
     <p v-if="loadError" class="error-text">{{ loadError }}</p>
 
-    <div class="admin-grid" :class="{ 'no-settings': !isChief }">
+    <div class="admin-grid" :class="{ 'no-settings': !canManage }">
       <section class="card queue-panel">
         <div class="card-header queue-header">
           <div class="header-left">
@@ -171,7 +172,7 @@ onMounted(async () => {
         </template>
       </section>
 
-      <section v-if="board && isChief" class="card settings-panel">
+      <section v-if="board && canManage" class="card settings-panel">
         <div class="card-header"><h3>⚙️ 설정</h3></div>
         <div class="card-body settings-body">
           <div class="setting-line">

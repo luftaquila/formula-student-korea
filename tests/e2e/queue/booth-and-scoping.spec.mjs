@@ -5,12 +5,12 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 // Queue booth occupancy guards, public booth/state reads, rate limiting, and
 // settings read scoping (API-level). Endpoints/roles verified against
 // queue/index.mjs:
-//   - PATCH /api/admin/booths/:type/config            -> chief
-//   - POST  /api/admin/booths/:type/:boothNum/enter   -> official
-//   - POST  /api/admin/booths/:type/:boothNum/exit    -> official
+//   - PATCH /api/admin/booths/:type/config            -> queue.manage
+//   - POST  /api/admin/booths/:type/:boothNum/enter   -> queue.operate
+//   - POST  /api/admin/booths/:type/:boothNum/exit    -> queue.operate
 //   - GET   /api/booths/all, /api/booths/:type        -> public (null)
 //   - POST  /api/state/:num                           -> public (null), rateLimit (>30/min -> 429)
-//   - GET   /api/admin/settings/{sms,sms-rank,cancel-penalty} -> official (GET allowed)
+//   - GET   /api/admin/settings/{sms,sms-rank,cancel-penalty} -> queue.operate
 //
 // This file owns two entries on the tilting queue. The only sibling spec using
 // that queue scopes its cleanup to entry 95, so it cannot register or drain the
@@ -21,26 +21,26 @@ const STATE_NUM = 96;
 const BOOTH_NUM = 97;
 const MY_NUMS = [STATE_NUM, BOOTH_NUM];
 
-function chiefHeaders() {
-  return { "Content-Type": "application/json", Cookie: getAuthCookie("chief") };
+function managerHeaders() {
+  return { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") };
 }
 function adminHeaders() {
   return { "Content-Type": "application/json", Cookie: getAuthCookie("admin") };
 }
 function officialHeaders() {
-  return { "Content-Type": "application/json", Cookie: getAuthCookie("official") };
+  return { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") };
 }
 
 async function getQueue(type = TYPE) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
-    headers: { Cookie: getAuthCookie("official") },
+    headers: { Cookie: getAuthCookie("operationsOperator") },
   });
   return res.ok ? res.json() : [];
 }
 
 async function getBooths(type = TYPE) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}`, {
-    headers: { Cookie: getAuthCookie("official") },
+    headers: { Cookie: getAuthCookie("operationsOperator") },
   });
   return res.ok ? res.json() : [];
 }
@@ -109,12 +109,12 @@ test.describe("Queue booth occupancy + public scoping", () => {
     // Drop cancel penalty to 0 so register/enter churn never trips a penalty.
     // (Several queue specs do the same; they all converge on 0 during the run.)
     const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
     originalPenalty = (await res.json()).value;
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
-      headers: chiefHeaders(),
+      headers: managerHeaders(),
       body: JSON.stringify({ value: 0 }),
     });
   });
@@ -124,7 +124,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
     if (originalPenalty !== undefined) {
       await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
-        headers: chiefHeaders(),
+        headers: managerHeaders(),
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
@@ -143,7 +143,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
     const startCount = await getBoothCount();
     const grownCount = startCount + 1;
 
-    // Grow by one booth (chief).
+    // Grow by one booth with queue.manage.
     const grow = await setBoothCount(TYPE, grownCount);
     expect(grow.status).toBe(200);
 
@@ -222,7 +222,7 @@ test.describe("Queue booth occupancy + public scoping", () => {
   // worker. Not worth the cross-file flake for a P3 path.
 
   test("settings GET endpoints are readable by official (200)", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    const ctx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     try {
       const request = ctx.request;
 

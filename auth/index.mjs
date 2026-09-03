@@ -3,10 +3,53 @@ import express from "express";
 import Database from "better-sqlite3";
 import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, createJWT, verifyJWT, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
-import { ROLE_LEVELS } from "../shared/constants.js";
+import {
+  DEVICE_SCOPES,
+  PERMISSION_KEYS,
+  access,
+  accessCatalog,
+  expandPermissions,
+  normalizeAccessGrants,
+  principalHasPermission,
+} from "../shared/access-control.js";
 import { createLogger, buildLogFilter, parseLogCursor } from "../shared/logger.mjs";
 import { serviceUrl, logAggregationTargets } from "../shared/services.mjs";
 import { runIfDirect } from "../shared/service-bootstrap.mjs";
+
+// One-time compatibility map for databases written by the unmerged bundle-based
+// preview. Bundles are flattened into explicit grants and the legacy table is
+// removed during startup; runtime authorization never reads this map.
+const LEGACY_PERMISSION_BUNDLES = Object.freeze({
+  registration_operator: ["registration.operate"],
+  registration_manager: ["registration.manage"],
+  queue_operator: ["queue.operate"],
+  queue_manager: ["queue.manage"],
+  inspection_operator: ["inspection.operate"],
+  inspection_manager: ["inspection.manage"],
+  documents_reviewer: ["documents.operate"],
+  documents_manager: ["documents.manage", "files.access"],
+  calendar_manager: ["calendar.manage"],
+  course_editor: ["course.operate"],
+  course_manager: ["course.manage"],
+  rover_operator: ["rover.operate"],
+  timing_operator: ["traffic.operate"],
+  timing_manager: ["traffic.manage"],
+  score_operator: ["score.operate"],
+  score_manager: ["score.manage"],
+  entry_manager: [],
+  application_manager: [],
+  contacts_manager: [],
+  messaging_operator: [],
+  auditor: [],
+});
+
+// Google profile pictures are the only avatars we render. Accept nothing else so the
+// URL that every page embeds in an <img> can only point at Google's image CDN, which
+// is also the single host the Caddy img-src allowlist admits.
+export function sessionPicture(url) {
+  if (typeof url !== "string" || url.length > 512) return "";
+  return /^https:\/\/[a-z0-9-]+\.googleusercontent\.com\//i.test(url) ? url : "";
+}
 
 export function createAuthApp(options = {}) {
 
@@ -16,11 +59,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   email TEXT UNIQUE NOT NULL,
   name TEXT,
-  role TEXT NOT NULL CHECK(role IN ('admin', 'official')),
+  role TEXT NOT NULL CHECK(role IN ('admin', 'official', 'student')),
   memo TEXT DEFAULT '',
   realname TEXT DEFAULT '',
   phone TEXT DEFAULT '',
-  created_at TEXT
+  created_at TEXT,
+  active INTEGER DEFAULT 1,
+  affiliation TEXT DEFAULT '',
+  access_revision INTEGER NOT NULL DEFAULT 0
 )`);
 
 // 마이그레이션: memo 컬럼 추가
@@ -32,38 +78,152 @@ addColumn(db, "users", "active INTEGER DEFAULT 1");
 // 마이그레이션: realname, phone 컬럼 추가 (memo → realname 전환)
 addColumn(db, "users", "realname TEXT DEFAULT ''");
 addColumn(db, "users", "phone TEXT DEFAULT ''");
+addColumn(db, "users", "affiliation TEXT DEFAULT ''");
+addColumn(db, "users", "access_revision INTEGER NOT NULL DEFAULT 0");
 db.exec("UPDATE users SET realname = memo WHERE (realname IS NULL OR realname = '') AND memo IS NOT NULL AND memo != ''");
 
 // 마이그레이션: created_at 기본값 제거 (최초 로그인 시점으로 변경)
 // 아직 로그인하지 않은 사용자(name IS NULL)의 created_at 초기화
 db.exec("UPDATE users SET created_at = NULL WHERE name IS NULL AND created_at IS NOT NULL");
 
-// 마이그레이션: role CHECK 제약조건에 student, chief 추가
+// Final account model: operational ranks collapse to a permission-less Official.
+// Foreign keys are disabled outside the rebuilding transaction so existing
+// ops_display references survive the users table replacement.
 const roleCheck = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
-if (roleCheck && !roleCheck.sql.includes("student")) {
+const hasRetiredRoleSchema = roleCheck && /'(?:staff|chief|master)'/.test(roleCheck.sql);
+const retiredRoleUserIds = hasRetiredRoleSchema
+  ? db.prepare("SELECT id FROM users WHERE role IN ('staff', 'chief', 'master')").all().map(({ id }) => id)
+  : [];
+if (hasRetiredRoleSchema) {
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE users_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          role TEXT NOT NULL CHECK(role IN ('admin', 'official', 'student')),
+          memo TEXT DEFAULT '',
+          realname TEXT DEFAULT '',
+          phone TEXT DEFAULT '',
+          created_at TEXT,
+          active INTEGER DEFAULT 1,
+          affiliation TEXT DEFAULT '',
+          access_revision INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO users_new (id, email, name, role, memo, realname, phone, affiliation, created_at, active, access_revision)
+          SELECT id, email, name,
+                 CASE WHEN role IN ('staff', 'chief', 'master') THEN 'official' ELSE role END,
+                 memo, realname, phone, affiliation, created_at, active, access_revision
+          FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new RENAME TO users;
+      `);
+    })();
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+  const foreignKeyViolations = db.pragma("foreign_key_check");
+  if (foreignKeyViolations.length > 0) {
+    throw new Error("Auth account-role migration left invalid foreign-key references");
+  }
+}
+
+db.exec(`CREATE TABLE IF NOT EXISTS user_permission (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  permission_key TEXT NOT NULL,
+  PRIMARY KEY (user_id, permission_key)
+);
+CREATE TABLE IF NOT EXISTS kiosk_device (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK(scope IN ('kiosk.queue.register', 'kiosk.registration.register')),
+  token_hash TEXT UNIQUE,
+  pairing_code_hash TEXT,
+  pairing_code_expires_at TEXT,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  paired_at TEXT,
+  last_seen_at TEXT,
+  revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_kiosk_device_token_hash ON kiosk_device(token_hash);
+CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pairing_code_hash);`);
+
+// These administration features were briefly exposed as Official service grants
+// in the preview. Account & Access, Entry, Email/SMS, and the system logs are
+// Admin-only tools, so any stored grant for them is retired here.
+db.prepare(`DELETE FROM user_permission
+  WHERE permission_key IN ('applications.manage', 'contacts.manage', 'entry.manage', 'messaging.operate', 'audit.view')`).run();
+
+const legacyBundleTableExists = Boolean(db.prepare(
+  "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'user_permission_bundle'",
+).get());
+
+// A normal legacy database has no grant tables. Clear rows as well when this
+// migration sees a partially upgraded database, so retired ranks always become
+// grant-free Officials instead of inheriting grants from an interrupted rollout.
+if (retiredRoleUserIds.length > 0) {
+  const placeholders = retiredRoleUserIds.map(() => "?").join(",");
   db.transaction(() => {
-    db.exec(`
-      CREATE TABLE users_new (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        name TEXT,
-        role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'student')),
-        memo TEXT DEFAULT '',
-        realname TEXT DEFAULT '',
-        phone TEXT DEFAULT '',
-        created_at TEXT,
-        active INTEGER DEFAULT 1
-      );
-      INSERT INTO users_new (id, email, name, role, memo, realname, phone, created_at, active) SELECT id, email, name, role, memo, realname, phone, created_at, active FROM users;
-      DROP TABLE users;
-      ALTER TABLE users_new RENAME TO users;
-    `);
+    if (legacyBundleTableExists) {
+      db.prepare(`DELETE FROM user_permission_bundle WHERE user_id IN (${placeholders})`).run(...retiredRoleUserIds);
+    }
+    db.prepare(`DELETE FROM user_permission WHERE user_id IN (${placeholders})`).run(...retiredRoleUserIds);
   })();
 }
 
-// 마이그레이션: affiliation(학교/팀) 컬럼 추가 (realname/phone과 동일하게 optional)
-// users_new 재빌드(위)는 1회성이라 affiliation을 포함하지 않으므로 idempotent한 addColumn으로 보강
-addColumn(db, "users", "affiliation TEXT DEFAULT ''");
+if (legacyBundleTableExists) {
+  const rows = db.prepare(`
+    SELECT b.user_id, b.bundle_key
+    FROM user_permission_bundle b
+    JOIN users u ON u.id = b.user_id
+    WHERE u.role = 'official'
+    ORDER BY b.user_id, b.bundle_key
+  `).all();
+  for (const { bundle_key: key } of rows) {
+    if (!Object.hasOwn(LEGACY_PERMISSION_BUNDLES, key)) {
+      throw new Error(`Unknown stored permission bundle: ${key}`);
+    }
+  }
+  const insertPermission = db.prepare(
+    "INSERT OR IGNORE INTO user_permission (user_id, permission_key) VALUES (?, ?)",
+  );
+  db.transaction(() => {
+    for (const row of rows) {
+      for (const permission of LEGACY_PERMISSION_BUNDLES[row.bundle_key]) {
+        insertPermission.run(row.user_id, permission);
+      }
+    }
+    db.exec("DROP TABLE user_permission_bundle");
+  })();
+}
+for (const { permission_key: key } of db.prepare("SELECT DISTINCT permission_key FROM user_permission").all()) {
+  if (!PERMISSION_KEYS.includes(key)) throw new Error(`Unknown stored permission: ${key}`);
+}
+
+// Store one canonical source of grants. The UI deliberately exposes Course and
+// Score as all-or-nothing toggles, while tiered management supersedes the
+// matching operation grant. Rover's implied Course operation is not stored, so
+// a Rover-only account never gains Course deletion during this normalization.
+db.transaction(() => {
+  const officialIds = db.prepare("SELECT id FROM users WHERE role = 'official' ORDER BY id").all();
+  const selectPermissions = db.prepare(
+    "SELECT permission_key FROM user_permission WHERE user_id = ? ORDER BY permission_key",
+  );
+  const deletePermissions = db.prepare("DELETE FROM user_permission WHERE user_id = ?");
+  const insertPermission = db.prepare(
+    "INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)",
+  );
+  for (const { id } of officialIds) {
+    const grants = selectPermissions.all(id).map(({ permission_key: key }) => key);
+    const normalized = normalizeAccessGrants(grants);
+    if (grants.length === normalized.length && grants.every((key, index) => key === normalized[index])) continue;
+    deletePermissions.run(id);
+    for (const permission of normalized) insertPermission.run(id, permission);
+  }
+})();
 
 // 관리자 토글 등 key/value 설정 저장소
 db.exec(`CREATE TABLE IF NOT EXISTS settings (
@@ -137,9 +297,46 @@ if (isEnvEnabled(process.env.TEST_SERVER)) {
 /* ============================================
    Express 앱 설정
    ============================================ */
+function accessRows(userId) {
+  return db.prepare(
+    "SELECT permission_key FROM user_permission WHERE user_id = ? ORDER BY permission_key",
+  ).all(userId).map((row) => row.permission_key);
+}
+
+function userAccess(user) {
+  const grants = user.role === "official" ? accessRows(user.id) : [];
+  const permissions = user.role === "admin"
+    ? [...PERMISSION_KEYS]
+    : user.role === "official" ? expandPermissions(grants) : [];
+  return {
+    grants,
+    permissions,
+    accessRevision: Number(user.access_revision) || 0,
+  };
+}
+
 const validateUser = (email) => {
-  const user = db.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(email);
-  return user ? { valid: true, role: user.role } : { valid: false, role: null };
+  const user = db.prepare("SELECT id, role, access_revision FROM users WHERE email = ? AND active = 1").get(email);
+  return user ? { valid: true, id: user.id, role: user.role, ...userAccess(user) } : { valid: false, role: null };
+};
+
+function tokenHash(token) {
+  return crypto.createHash("sha256").update(token).digest("base64url");
+}
+
+const validateDevice = (token) => {
+  if (typeof token !== "string" || token.length < 32) return { valid: false };
+  const row = db.prepare(`
+    SELECT id, name, scope, last_seen_at
+    FROM kiosk_device
+    WHERE token_hash = ? AND revoked_at IS NULL
+  `).get(tokenHash(token));
+  if (!row) return { valid: false };
+  const lastSeen = row.last_seen_at ? Date.parse(row.last_seen_at) : 0;
+  if (!Number.isFinite(lastSeen) || Date.now() - lastSeen >= 60 * 60 * 1000) {
+    db.prepare("UPDATE kiosk_device SET last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?").run(row.id);
+  }
+  return { valid: true, id: row.id, name: row.name, scope: row.scope };
 };
 
 const logger = createLogger(db, "auth");
@@ -187,20 +384,34 @@ async function notifyNewUser(emails) {
 
 // validateUserCacheTtl: 0 — auth의 검증기는 로컬 인덱스 SELECT라 캐시가 무익하고,
 // auth 자신의 사용자 관리 UI는 역할 변경이 즉시 반영되어야 한다.
-const app = createApp({ express, logger, validateUser, validateUserCacheTtl: 0 }, (req) => {
+const app = createApp({
+  express,
+  logger,
+  validateUser,
+  validateDevice,
+  validateUserCacheTtl: 0,
+  validateDeviceCacheTtl: 0,
+}, (req) => {
   if (req.path === "/api/health") return null;
   if (req.path === "/api/forward-auth") return null;
   if (req.path === "/api/session") return null;
+  if (req.path === "/api/device/session") return null;
+  if (req.path === "/api/device/pair") return null;
   if (["/api/login", "/api/callback", "/api/logout"].includes(req.path)) return null;
-  if (req.path.startsWith("/api/admin")) return "admin";
-  if (req.path.startsWith("/api/users")) return "admin";
-  if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return "admin";
-  if (req.path.startsWith("/api/ops-contacts")) return "official";
-  if (req.path === "/api/logs") return "admin";
-  if (req.path.startsWith("/api/applications")) return "admin"; // 신청 관리: 관리자 전용
+  if (req.path === "/api/devices/validate") return access.internal;
+  if (/^\/api\/users\/(?:exists|access)\//.test(req.path)) return access.internal;
+  if (req.path.startsWith("/api/devices")) return access.admin;
+  if (req.path === "/api/access/catalog") return access.admin;
+  if (req.path === "/api/internal/users") return access.internal;
+  if (req.path.startsWith("/api/admin")) return access.admin;
+  if (req.path.startsWith("/api/users")) return access.admin;
+  if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return access.admin;
+  if (req.path.startsWith("/api/ops-contacts")) return access.official;
+  if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
+  if (req.path.startsWith("/api/applications")) return access.admin;
   if (req.path === "/api/apply/config") return null;            // 신청 가능 여부: 공개
   if (req.path.startsWith("/api/apply")) return null;           // 신청자 API: 공개(핸들러가 fsk_applicant 검증)
-  if (req.path.startsWith("/api/")) return "admin"; // API 기본값: default-close
+  if (req.path.startsWith("/api/")) return access.admin; // API 기본값: default-close
   return null; // SPA
 });
 
@@ -210,8 +421,24 @@ app.get("/api/health", (req, res) => res.send("ok"));
 
 // Session validation endpoint (landing page uses this to verify cookie state)
 app.get("/api/session", (req, res) => {
-  if (!req.user) return res.status(401).send();
-  res.json({ name: req.user.name, role: req.user.role });
+  if (req.user?.kind !== "human") return res.status(401).send();
+  res.json({
+    name: req.user.name,
+    picture: req.user.picture || "",
+    role: req.user.role,
+    permissions: req.user.permissions,
+    accessRevision: req.user.accessRevision,
+  });
+});
+
+app.get("/api/device/session", (req, res) => {
+  if (req.user?.kind !== "device") return res.status(401).json({ code: "DEVICE_AUTH_REQUIRED" });
+  res.json({
+    id: req.user.id,
+    name: req.user.name,
+    scope: req.user.scope,
+    startPath: req.user.scope === "kiosk.queue.register" ? "/queue/register" : "/registration/register",
+  });
 });
 
 // Forward auth endpoint for Caddy forward_auth (FileBrowser etc.)
@@ -226,17 +453,208 @@ app.get("/api/forward-auth", (req, res) => {
     logger.warn(req, "auth.forward_auth_denied", { reason: "key_mismatch" });
     return res.status(403).send();
   }
-  const requiredRole = req.query.role || "official";
-  if (!req.user) {
+  const requiredPermission = String(req.query.permission || "");
+  if (!PERMISSION_KEYS.includes(requiredPermission)) {
+    logger.warn(req, "auth.forward_auth_denied", { reason: "unknown_permission", required: requiredPermission });
+    return res.status(400).send("알 수 없는 권한입니다.");
+  }
+  if (req.user?.kind !== "human") {
     logger.warn(req, "auth.forward_auth_denied", { reason: "no_user" });
     return res.status(401).send("인증이 필요합니다.");
   }
-  if ((ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[requiredRole] || Infinity)) {
-    logger.warn(req, "auth.forward_auth_denied", { required: requiredRole, actual: req.user.role }, req.user.email);
+  if (!principalHasPermission(req.user, requiredPermission)) {
+    logger.warn(req, "auth.forward_auth_denied", {
+      required: requiredPermission,
+      actual: req.user.permissions,
+    }, req.user.email);
     return res.status(403).send("권한이 없습니다.");
   }
   res.setHeader("X-Forwarded-User", req.user.email);
   res.status(200).send();
+});
+
+/* ============================================
+   Kiosk device pairing and lifecycle
+   ============================================ */
+const PAIRING_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
+const pairingLimiter = new Map();
+const pairingLimiterTimer = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, value] of pairingLimiter) if (value.resetAt <= now) pairingLimiter.delete(ip);
+}, 60_000);
+pairingLimiterTimer.unref();
+
+function requestIp(req) {
+  return req.headers["x-real-ip"]?.trim() || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+}
+
+function pairingCodeHash(code) {
+  return crypto.createHmac("sha256", process.env.JWT_SECRET || "")
+    .update(`kiosk-pair:${code}`)
+    .digest("base64url");
+}
+
+function createPairingCode() {
+  return [...crypto.randomBytes(8)].map((byte) => PAIRING_ALPHABET[byte & 31]).join("");
+}
+
+function issuePairingCode(id) {
+  const code = createPairingCode();
+  db.prepare(`
+    UPDATE kiosk_device
+    SET pairing_code_hash = ?,
+        pairing_code_expires_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','+10 minutes'),
+        token_hash = NULL,
+        revoked_at = NULL
+    WHERE id = ?
+  `).run(pairingCodeHash(code), id);
+  const expiresAt = db.prepare("SELECT pairing_code_expires_at FROM kiosk_device WHERE id = ?").get(id)?.pairing_code_expires_at;
+  return { pairingCode: code, pairingCodeExpiresAt: expiresAt };
+}
+
+function deviceResponse(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    scope: row.scope,
+    status: row.revoked_at ? "revoked" : row.token_hash ? "active" : row.pairing_code_hash ? "pending" : "unpaired",
+    pairingPending: !row.revoked_at && !!row.pairing_code_hash,
+    pairingCodeExpiresAt: row.pairing_code_expires_at,
+    createdAt: row.created_at,
+    pairedAt: row.paired_at,
+    lastSeenAt: row.last_seen_at,
+    revokedAt: row.revoked_at,
+    createdBy: row.created_by,
+  };
+}
+
+app.get("/api/devices", (req, res) => {
+  const result = dbRun(() => db.prepare("SELECT * FROM kiosk_device ORDER BY created_at DESC, id").all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result.map(deviceResponse));
+});
+
+app.post("/api/devices", (req, res) => {
+  const name = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+  const scope = req.body?.scope;
+  if (!name || name.length > 80) {
+    logger.warn(req, "device.create", { reason: "invalid_name", name_length: name.length });
+    return res.status(400).json({ code: "INVALID_DEVICE_NAME" });
+  }
+  if (!DEVICE_SCOPES.includes(scope)) {
+    logger.warn(req, "device.create", { reason: "invalid_scope", scope });
+    return res.status(400).json({ code: "INVALID_DEVICE_SCOPE" });
+  }
+  const id = crypto.randomUUID();
+  const result = dbRun(() => db.transaction(() => {
+    db.prepare("INSERT INTO kiosk_device (id, name, scope, created_by) VALUES (?, ?, ?, ?)")
+      .run(id, name, scope, req.user.id || null);
+    return issuePairingCode(id);
+  })());
+  if (!result.success) {
+    logger.warn(req, "device.create", { error: result.internalError || result.error, name, scope });
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "device.create", { id, name, scope }, id);
+  res.status(201).json({ id, name, scope, ...result.result });
+});
+
+app.post("/api/devices/:id/pairing-code", (req, res) => {
+  const device = db.prepare("SELECT id, name, scope FROM kiosk_device WHERE id = ?").get(req.params.id);
+  if (!device) {
+    logger.warn(req, "device.pairing_code", { reason: "not_found" }, req.params.id);
+    return res.status(404).json({ code: "DEVICE_NOT_FOUND" });
+  }
+  const result = dbRun(() => issuePairingCode(device.id));
+  if (!result.success) {
+    logger.warn(req, "device.pairing_code", { error: result.internalError || result.error }, device.id);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "device.pairing_code", { name: device.name, scope: device.scope }, device.id);
+  res.json({ id: device.id, ...result.result });
+});
+
+app.post("/api/devices/:id/revoke", (req, res) => {
+  const device = db.prepare("SELECT id, name, scope, revoked_at FROM kiosk_device WHERE id = ?").get(req.params.id);
+  if (!device) {
+    logger.warn(req, "device.revoke", { reason: "not_found" }, req.params.id);
+    return res.status(404).json({ code: "DEVICE_NOT_FOUND" });
+  }
+  const result = dbRun(() => db.prepare(`
+    UPDATE kiosk_device
+    SET token_hash = NULL, pairing_code_hash = NULL, pairing_code_expires_at = NULL,
+        revoked_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE id = ?
+  `).run(device.id));
+  if (!result.success) {
+    logger.warn(req, "device.revoke", { error: result.internalError || result.error }, device.id);
+    return res.status(result.status).send(result.error);
+  }
+  logger.log(req, "device.revoke", { name: device.name, scope: device.scope }, device.id);
+  res.status(200).send();
+});
+
+app.post("/api/devices/validate", (req, res) => {
+  const result = validateDevice(req.headers["x-device-token"]);
+  if (!result.valid) return res.status(404).send();
+  res.json({ id: result.id, name: result.name, scope: result.scope });
+});
+
+app.post("/api/device/pair", (req, res) => {
+  const ip = requestIp(req);
+  const now = Date.now();
+  const limit = pairingLimiter.get(ip) || { count: 0, resetAt: now + 60_000 };
+  if (limit.resetAt <= now) Object.assign(limit, { count: 0, resetAt: now + 60_000 });
+  limit.count += 1;
+  pairingLimiter.set(ip, limit);
+  if (limit.count > 10) {
+    if (limit.count === 11) logger.warn(req, "device.pair_rate_limit", { ip });
+    return res.status(429).json({ code: "PAIRING_RATE_LIMITED" });
+  }
+
+  const code = typeof req.body?.code === "string" ? req.body.code.trim().toUpperCase() : "";
+  const hash = /^[23456789ABCDEFGHJKLMNPQRSTUVWXYZ]{8}$/.test(code) ? pairingCodeHash(code) : "invalid";
+  const device = db.prepare(`
+    SELECT id, name, scope FROM kiosk_device
+    WHERE pairing_code_hash = ?
+      AND pairing_code_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      AND revoked_at IS NULL
+  `).get(hash);
+  if (!device) {
+    logger.warn(req, "device.pair_failed", { reason: "invalid_or_expired_code", ip });
+    return res.status(401).json({ code: "INVALID_OR_EXPIRED_PAIRING_CODE" });
+  }
+
+  const token = crypto.randomBytes(32).toString("base64url");
+  const result = dbRun(() => db.transaction(() => {
+    const consumed = db.prepare(`
+      UPDATE kiosk_device
+      SET token_hash = ?, pairing_code_hash = NULL, pairing_code_expires_at = NULL,
+          paired_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+          last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'), revoked_at = NULL
+      WHERE id = ? AND pairing_code_hash = ?
+        AND pairing_code_expires_at > strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    `).run(tokenHash(token), device.id, hash);
+    if (consumed.changes !== 1) throw { status: 401, message: "페어링 코드가 만료되었습니다." };
+  })());
+  if (!result.success) {
+    logger.warn(req, "device.pair_failed", { reason: "code_consumed", device_id: device.id });
+    return res.status(401).json({ code: "INVALID_OR_EXPIRED_PAIRING_CODE" });
+  }
+
+  const secure = isSecureConnection(req);
+  const humanCookieOpts = formatCookieOpts(0, secure);
+  const maxAge = 400 * 24 * 3600;
+  const deviceCookieOpts = `Path=/; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+  res.setHeader("Set-Cookie", [
+    `fsk_session=; HttpOnly; ${humanCookieOpts}`,
+    `fsk_user=; ${humanCookieOpts}`,
+    `fsk_device=${encodeURIComponent(token)}; HttpOnly; ${deviceCookieOpts}`,
+  ]);
+  logger.log(req, "device.pair", { name: device.name, scope: device.scope }, device.id,
+    { email: `device:${device.id}`, name: device.name, role: "device" });
+  res.json({ id: device.id, name: device.name, scope: device.scope,
+    startPath: device.scope === "kiosk.queue.register" ? "/queue/register" : "/registration/register" });
 });
 
 /* ============================================
@@ -427,6 +845,7 @@ app.get("/api/callback", async (req, res) => {
     const userInfo = await userInfoRes.json();
     const email = userInfo.email;
     const name = userInfo.name || email;
+    const picture = sessionPicture(userInfo.picture);
 
     // Google가 이메일 소유를 검증하지 못한 계정은 거부한다(이메일이 계정 primary key이므로
     // 미검증 이메일 클레임 방어). verified_email이 명시적 false일 때만 차단해, 필드가 없는
@@ -486,13 +905,17 @@ app.get("/api/callback", async (req, res) => {
       if (!r.success) logger.warn(req, "user.created_at_init", { error: r.internalError || r.error }, email, { email, name, role: user.role });
     }
 
-    // Set JWT cookie
-    const jwt = createJWT({ email, name, role: user.role }, process.env.JWT_SECRET);
+    // Set JWT cookie. Permissions stay authoritative in Auth; the readable
+    // cookie is only a navigation hint and every service revalidates it.
+    const snapshot = userAccess(user);
+    const jwt = createJWT({ email, name, picture, role: user.role, accessRevision: snapshot.accessRevision }, process.env.JWT_SECRET);
     const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
+    const deviceCookieOpts = `Path=/; SameSite=Strict; Max-Age=0${isSecureConnection(req) ? "; Secure" : ""}`;
 
     res.setHeader("Set-Cookie", [
       `fsk_session=${jwt}; HttpOnly; ${cookieOpts}`,
-      `fsk_user=${encodeURIComponent(JSON.stringify({ name, role: user.role }))}; ${cookieOpts}`,
+      `fsk_user=${encodeURIComponent(JSON.stringify({ name, picture, role: user.role, permissions: snapshot.permissions, accessRevision: snapshot.accessRevision }))}; ${cookieOpts}`,
+      `fsk_device=; HttpOnly; ${deviceCookieOpts}`,
       clearNonceCookie,
       clearApplicantCookie,
     ]);
@@ -508,15 +931,22 @@ app.get("/api/callback", async (req, res) => {
 });
 
 // POST /api/logout - 쿠키 삭제
+// Logout is principal-agnostic: it always clears the human and device cookies so a
+// browser holding both (AMBIGUOUS_PRINCIPAL everywhere else) can get out without
+// a fresh OAuth round trip.
 app.post("/api/logout", (req, res) => {
-  if (!req.user) return res.status(401).send("인증이 필요합니다.");
-  logger.log(req, "user.logout", null, req.user.email);
+  const actor = req.user?.kind === "human" ? req.user.email
+    : req.user?.kind === "device" ? `device:${req.user.id}`
+    : null;
+  logger.log(req, "user.logout", req.authAmbiguous ? { reason: "ambiguous_principal" } : null, actor);
 
   const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
+  const deviceCookieOpts = `Path=/; SameSite=Strict; Max-Age=0${isSecureConnection(req) ? "; Secure" : ""}`;
 
   res.setHeader("Set-Cookie", [
     `fsk_session=; HttpOnly; ${cookieOpts}`,
     `fsk_user=; ${cookieOpts}`,
+    `fsk_device=; HttpOnly; ${deviceCookieOpts}`,
   ]);
 
   res.status(200).send();
@@ -720,18 +1150,169 @@ app.get("/api/users/exists/:email", (req, res) => {
   res.status(200).send();
 });
 
-// GET /api/users/role/:email - 사용자 역할 조회 (내부 서비스용, 슬라이딩 갱신)
-app.get("/api/users/role/:email", (req, res) => {
-  const user = db.prepare("SELECT role FROM users WHERE email = ? AND active = 1").get(req.params.email);
+// GET /api/users/access/:email - authoritative service authorization snapshot
+app.get("/api/users/access/:email", (req, res) => {
+  const user = db.prepare(
+    "SELECT id, role, access_revision FROM users WHERE email = ? AND active = 1",
+  ).get(req.params.email);
   if (!user) return res.status(404).send();
-  res.json({ role: user.role });
+  const snapshot = userAccess(user);
+  res.json({ id: user.id, role: user.role, permissions: snapshot.permissions, accessRevision: snapshot.accessRevision });
+});
+
+app.get("/api/access/catalog", (req, res) => res.json(accessCatalog()));
+
+app.get("/api/internal/users", (req, res) => {
+  const result = dbRun(() => db.prepare(
+    "SELECT id, email, name, role, realname, phone, active FROM users ORDER BY id",
+  ).all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
 });
 
 // GET /api/users - 전체 사용자 목록
 app.get("/api/users", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT id, email, name, role, realname, phone, affiliation, active, created_at FROM users ORDER BY id").all());
+  const result = dbRun(() => db.prepare(
+    "SELECT id, email, name, role, realname, phone, affiliation, active, created_at, access_revision FROM users ORDER BY id",
+  ).all());
   if (!result.success) return res.status(result.status).send(result.error);
-  res.json(result.result.map((u) => ({ ...u, protected: u.email === ADMIN_EMAIL })));
+  res.json(result.result.map((u) => ({
+    ...u,
+    ...userAccess(u),
+    protected: u.email === ADMIN_EMAIL,
+  })));
+});
+
+// PUT /api/users/bulk/access - 선택한 Official 여러 명의 권한을 같은 목록으로 교체
+// Declared before /api/users/:id/access so "bulk" is never read as a user id.
+app.put("/api/users/bulk/access", (req, res) => {
+  const { users: targets, grants } = req.body || {};
+  const validTargets = Array.isArray(targets) && targets.length > 0
+    && targets.every((target) => Number.isInteger(target?.id) && Number.isInteger(target?.expectedRevision))
+    && new Set(targets.map((target) => target.id)).size === targets.length;
+  if (!validTargets || !Array.isArray(grants)) {
+    logger.warn(req, "user.bulk_access_update", { reason: "invalid_request" });
+    return res.status(400).json({ code: "INVALID_ACCESS_REQUEST" });
+  }
+  if (new Set(grants).size !== grants.length || grants.some((key) => !PERMISSION_KEYS.includes(key))) {
+    logger.warn(req, "user.bulk_access_update", { reason: "invalid_access_key", grants });
+    return res.status(400).json({ code: "INVALID_ACCESS_KEY" });
+  }
+  const normalizedGrants = normalizeAccessGrants(grants);
+  const ids = targets.map((target) => target.id);
+  const expectedRevisions = new Map(targets.map((target) => [target.id, target.expectedRevision]));
+  const placeholders = ids.map(() => "?").join(",");
+  const selectTargets = db.prepare(
+    `SELECT id, email, role, access_revision FROM users WHERE id IN (${placeholders}) ORDER BY id`,
+  );
+
+  const result = dbRun(() => db.transaction(() => {
+    const rows = selectTargets.all(...ids);
+    const found = new Set(rows.map((row) => row.id));
+    const missing = ids.filter((id) => !found.has(id));
+    if (missing.length > 0) return { missing };
+    const nonOfficial = rows.filter((row) => row.role !== "official").map((row) => row.email);
+    if (nonOfficial.length > 0) return { nonOfficial };
+    const stale = rows
+      .filter((row) => row.access_revision !== expectedRevisions.get(row.id))
+      .map((row) => ({ id: row.id, email: row.email, current: userAccess(row) }));
+    if (stale.length > 0) return { stale };
+
+    const before = rows.map((row) => ({ email: row.email, ...userAccess(row) }));
+    const deletePermissions = db.prepare("DELETE FROM user_permission WHERE user_id = ?");
+    const insertPermission = db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)");
+    const bumpRevision = db.prepare("UPDATE users SET access_revision = access_revision + 1 WHERE id = ?");
+    for (const row of rows) {
+      deletePermissions.run(row.id);
+      for (const key of normalizedGrants) insertPermission.run(row.id, key);
+      bumpRevision.run(row.id);
+    }
+    const after = selectTargets.all(...ids).map((row) => ({ id: row.id, email: row.email, ...userAccess(row) }));
+    return { before, after };
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "user.bulk_access_update", { error: result.internalError || result.error, ids });
+    return res.status(result.status).send(result.error);
+  }
+  if (result.result.missing) {
+    logger.warn(req, "user.bulk_access_update", { reason: "not_found", ids: result.result.missing });
+    return res.status(404).json({ code: "USER_NOT_FOUND", ids: result.result.missing });
+  }
+  if (result.result.nonOfficial) {
+    logger.warn(req, "user.bulk_access_update", { reason: "official_only", emails: result.result.nonOfficial });
+    return res.status(409).json({ code: "OFFICIAL_ACCESS_ONLY", emails: result.result.nonOfficial });
+  }
+  if (result.result.stale) {
+    logger.warn(req, "user.bulk_access_update", {
+      reason: "stale_write",
+      stale: result.result.stale.map(({ id, email, current }) => ({ id, email, actual_revision: current.accessRevision })),
+    });
+    return res.status(409).json({ code: "ACCESS_STALE_WRITE", stale: result.result.stale });
+  }
+  logger.log(req, "user.bulk_access_update", {
+    grants: normalizedGrants,
+    before: result.result.before,
+    after: result.result.after,
+  });
+  res.json({ updated: result.result.after.length, users: result.result.after });
+});
+
+app.put("/api/users/:id/access", (req, res) => {
+  const id = Number(req.params.id);
+  const { expectedRevision, grants } = req.body || {};
+  if (!Number.isInteger(expectedRevision) || !Array.isArray(grants)) {
+    logger.warn(req, "user.access_update", { reason: "invalid_request", id }, String(req.params.id));
+    return res.status(400).json({ code: "INVALID_ACCESS_REQUEST" });
+  }
+  if (new Set(grants).size !== grants.length || grants.some((key) => !PERMISSION_KEYS.includes(key))) {
+    logger.warn(req, "user.access_update", {
+      reason: "invalid_access_key", id, grants,
+    }, String(req.params.id));
+    return res.status(400).json({ code: "INVALID_ACCESS_KEY" });
+  }
+  const normalizedGrants = normalizeAccessGrants(grants);
+
+  const beforeUser = db.prepare("SELECT id, email, role, access_revision FROM users WHERE id = ?").get(id);
+  if (!beforeUser) {
+    logger.warn(req, "user.access_update", { reason: "not_found", id }, String(req.params.id));
+    return res.status(404).send("사용자를 찾을 수 없습니다.");
+  }
+  if (beforeUser.role !== "official") {
+    logger.warn(req, "user.access_update", { reason: "official_only", role: beforeUser.role }, beforeUser.email);
+    return res.status(409).json({ code: "OFFICIAL_ACCESS_ONLY" });
+  }
+  const before = userAccess(beforeUser);
+
+  const result = dbRun(() => db.transaction(() => {
+    const current = db.prepare("SELECT id, role, access_revision FROM users WHERE id = ?").get(id);
+    if (!current || current.role !== "official") return { roleChanged: true };
+    if (current.access_revision !== expectedRevision) return { stale: true, current: userAccess(current) };
+    db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(id);
+    const insertPermission = db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)");
+    for (const key of normalizedGrants) insertPermission.run(id, key);
+    db.prepare("UPDATE users SET access_revision = access_revision + 1 WHERE id = ?").run(id);
+    return { current: userAccess(db.prepare("SELECT id, role, access_revision FROM users WHERE id = ?").get(id)) };
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "user.access_update", { error: result.internalError || result.error }, beforeUser.email);
+    return res.status(result.status).send(result.error);
+  }
+  if (result.result.roleChanged) {
+    logger.warn(req, "user.access_update", { reason: "role_changed" }, beforeUser.email);
+    return res.status(409).json({ code: "OFFICIAL_ACCESS_ONLY" });
+  }
+  if (result.result.stale) {
+    logger.warn(req, "user.access_update", {
+      reason: "stale_write",
+      expected_revision: expectedRevision,
+      actual_revision: result.result.current.accessRevision,
+    }, beforeUser.email);
+    return res.status(409).json({ code: "ACCESS_STALE_WRITE", current: result.result.current });
+  }
+  logger.log(req, "user.access_update", { before, after: result.result.current }, beforeUser.email);
+  res.json(result.result.current);
 });
 
 // POST /api/users - 사용자 추가
@@ -765,7 +1346,9 @@ app.post("/api/users/bulk", (req, res) => {
   if (!Array.isArray(rows) || rows.length === 0) return res.status(400).send("추가할 사용자 목록이 비어있습니다.");
 
   const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, realname, phone, affiliation) VALUES (?, ?, ?, ?, ?)");
+  const insertPermission = db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)");
   const added = [];
+  const addedAccess = [];
   const skipped = [];
   const errors = [];
 
@@ -784,9 +1367,25 @@ app.post("/api/users/bulk", (req, res) => {
       const realname = (row.realname || "").trim();
       const phone = (row.phone || "").trim();
       const affiliation = (row.affiliation || "").trim();
+      const grants = Array.isArray(row.grants) ? row.grants : [];
+      if (grants.some((key) => !PERMISSION_KEYS.includes(key))) {
+        errors.push({ row, reason: "알 수 없는 서비스 권한" });
+        continue;
+      }
+      const normalizedGrants = normalizeAccessGrants([...new Set(grants)]);
 
       const result = insert.run(email, role, realname, phone, affiliation);
-      if (result.changes > 0) added.push(email);
+      if (result.changes > 0) {
+        if (role === "official") {
+          for (const key of normalizedGrants) insertPermission.run(result.lastInsertRowid, key);
+        }
+        added.push(email);
+        addedAccess.push({
+          email,
+          role,
+          grants: role === "official" ? normalizedGrants : [],
+        });
+      }
       else skipped.push(email);
     }
   });
@@ -798,7 +1397,14 @@ app.post("/api/users/bulk", (req, res) => {
   }
 
   // 클라이언트로만 반환되고 버려지던 행별 거절 사유를 로그에도 남긴다(형식 오류·역할 보정).
-  logger.log(req, "user.bulk_create", { added, skipped, errors: errors.map((e) => ({ email: e.row?.email, reason: e.reason })) });
+  logger.log(req, "user.bulk_create", {
+    // Keep the established email list for log consumers and record the new
+    // service grants alongside it for a complete access audit.
+    added,
+    access: addedAccess,
+    skipped,
+    errors: errors.map((e) => ({ email: e.row?.email, reason: e.reason })),
+  });
   if (added.length > 0) notifyNewUser(added);
   res.json({ added: added.length, skipped: skipped.length, errors });
 });
@@ -835,7 +1441,7 @@ app.patch("/api/users/bulk", (req, res) => {
 
   const placeholders = numIds.map(() => "?").join(",");
   const emails = db.prepare(`SELECT email FROM users WHERE id IN (${placeholders})`).all(...numIds).map(r => r.email);
-  const stmt = db.prepare(`UPDATE users SET active = ? WHERE id IN (${placeholders})`);
+  const stmt = db.prepare(`UPDATE users SET active = ?, access_revision = access_revision + 1 WHERE id IN (${placeholders})`);
   const run = db.transaction(() => stmt.run(active ? 1 : 0, ...numIds));
 
   const txResult = dbRun(() => run());
@@ -899,6 +1505,7 @@ app.patch("/api/users/:id", (req, res) => {
 
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
+  const beforeAccess = userAccess(user);
 
   // 사전 검증
   if (role !== undefined) {
@@ -935,11 +1542,19 @@ app.patch("/api/users/:id", (req, res) => {
           throw { status: 400, message: "마지막 활성 관리자는 비활성화할 수 없습니다." };
         }
       }
-      if (role !== undefined) db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
+      const roleChanged = role !== undefined && role !== user.role;
+      const activeChanged = active !== undefined && Number(!!active) !== Number(user.active);
+      if (roleChanged) {
+        db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(id);
+        db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
+      }
       if (realname !== undefined) db.prepare("UPDATE users SET realname = ? WHERE id = ?").run(realname, id);
       if (phone !== undefined) db.prepare("UPDATE users SET phone = ? WHERE id = ?").run(phone, id);
       if (affiliation !== undefined) db.prepare("UPDATE users SET affiliation = ? WHERE id = ?").run(affiliation, id);
-      if (active !== undefined) db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
+      if (activeChanged) db.prepare("UPDATE users SET active = ? WHERE id = ?").run(active ? 1 : 0, id);
+      if (roleChanged || activeChanged) {
+        db.prepare("UPDATE users SET access_revision = access_revision + 1 WHERE id = ?").run(id);
+      }
     })();
   });
 
@@ -949,7 +1564,10 @@ app.patch("/api/users/:id", (req, res) => {
   }
 
   const changes = {};
-  if (role !== undefined) changes.role = role;
+  if (role !== undefined) {
+    changes.role = { from: user.role, to: role };
+    if (role !== user.role) changes.clearedAccess = beforeAccess;
+  }
   if (realname !== undefined) changes.realname = realname;
   if (phone !== undefined) changes.phone = phone;
   if (affiliation !== undefined) changes.affiliation = affiliation;
@@ -1017,7 +1635,7 @@ app.post("/api/ops-contacts", (req, res) => {
 
   const user = db.prepare("SELECT email, name, role FROM users WHERE id = ? AND active = 1").get(user_id);
   if (!user) return res.status(404).send("사용자를 찾을 수 없습니다.");
-  if (!["official", "chief", "admin"].includes(user.role)) {
+  if (!["official", "admin"].includes(user.role)) {
     logger.warn(req, "ops_contact.create", { reason: "insufficient_role", role: user.role }, user.email);
     return res.status(400).send("official 이상 권한 사용자만 추가할 수 있습니다.");
   }

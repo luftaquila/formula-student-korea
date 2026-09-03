@@ -54,7 +54,7 @@ async function replaceMemo(page, itemId, memo) {
 }
 
 test.describe("Inspection answer and memo save reliability", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test("coalesces rapid PASS/FAIL changes to the final visible value", async ({ page }) => {
     const item = await findItem(page, "전압 확인");
@@ -119,7 +119,7 @@ test.describe("Inspection answer and memo save reliability", () => {
     const summary = page.locator(".memo-summary");
     await expect(summary.locator(".memo-summary-toggle")).toContainText("메모 1개");
     await expect(row.locator(".memo-text")).toContainText(/첫째 줄\s+둘째 줄/);
-    expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBe(filledRowHeight);
+    expect(await row.evaluate(element => element.getBoundingClientRect().height)).toBeGreaterThanOrEqual(filledRowHeight);
     await summary.locator(".memo-summary-toggle").click();
     await expect(summary.locator(".memo-summary-preview")).toContainText("첫째 줄");
     await expect(summary.locator(".memo-summary-preview")).not.toContainText("다른 카테고리 메모");

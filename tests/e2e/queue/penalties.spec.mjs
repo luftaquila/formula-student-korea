@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
 
 test.describe("Queue active penalties modal", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test("offers separate clear-only and clear-with-restore actions", async ({ page }) => {
     const until = Date.now() + 10 * 60 * 1000;
@@ -168,8 +168,8 @@ test.describe("Queue active penalties modal", () => {
     await expect(modal).not.toBeVisible();
   });
 
-  test("keeps all chief actions on one mobile row with penalty immediately after stats", async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("keeps all manager actions on one mobile row with penalty immediately after stats", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const page = await context.newPage();
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/queue/admin");

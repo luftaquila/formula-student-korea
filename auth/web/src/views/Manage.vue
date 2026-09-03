@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
-import { ROLE_LEVELS } from "@shared/constants.js";
+import { ROLE_SORT_ORDER } from "@shared/constants.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
@@ -21,6 +21,7 @@ async function copyApplyUrl() {
 }
 
 const users = ref([]);
+const accessCatalog = ref({ permissions: [], accessControls: [] });
 const loading = ref(true);
 const newEmail = ref("");
 const newRole = ref("official");
@@ -97,7 +98,111 @@ async function addUser() {
 }
 
 function roleBadgeClass(role) {
-  return { student: "badge-success", official: "badge-primary", chief: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
+  return { student: "badge-success", official: "badge-primary", admin: "badge-danger" }[role] || "badge-primary";
+}
+
+const editingAccessUser = ref(null);
+const selectedGrants = ref(new Set());
+const accessSaving = ref(false);
+// 일괄 권한 설정 대상(Official만). 비어 있으면 단건 편집 모드다.
+const bulkAccessTargets = ref([]);
+const bulkAccessSkipped = ref(0);
+const bulkGrantsDiffer = ref(false);
+const accessDialogOpen = computed(() => Boolean(editingAccessUser.value) || bulkAccessTargets.value.length > 0);
+const permissionLabels = computed(() =>
+  new Map(accessCatalog.value.permissions.map((permission) => [permission.key, permission.label])),
+);
+
+// 목록에 표시하는 권한 이름. grants는 정규화된 목록이라 "관리"가 "운영"을 대신한다.
+function grantLabels(user) {
+  return (user.grants || []).map((key) => permissionLabels.value.get(key) || key);
+}
+
+function accessLevel(control) {
+  if (selectedGrants.value.has(control.manage.key)) return "manage";
+  if (selectedGrants.value.has(control.operate.key)) return "operate";
+  return "none";
+}
+
+function setAccessLevel(control, level) {
+  const next = new Set(selectedGrants.value);
+  next.delete(control.operate.key);
+  next.delete(control.manage.key);
+  if (level === "operate") next.add(control.operate.key);
+  if (level === "manage") next.add(control.manage.key);
+  selectedGrants.value = next;
+}
+
+function toggleAccess(control, checked) {
+  const next = new Set(selectedGrants.value);
+  if (checked) next.add(control.permission);
+  else next.delete(control.permission);
+  selectedGrants.value = next;
+}
+
+function editAccess(user) {
+  bulkAccessTargets.value = [];
+  editingAccessUser.value = user;
+  selectedGrants.value = new Set(user.grants || []);
+}
+
+// 선택한 Official 전원에게 같은 권한 목록을 적용한다. 권한이 서로 다르면 공통
+// 권한만 미리 체크해 두고, 저장 시 모든 대상의 권한이 이 목록으로 교체된다.
+function editBulkAccess() {
+  const targets = selectedOfficials.value;
+  if (targets.length === 0) return;
+  const grantSets = targets.map((u) => new Set(u.grants || []));
+  const common = [...grantSets[0]].filter((key) => grantSets.every((set) => set.has(key)));
+  editingAccessUser.value = null;
+  bulkAccessTargets.value = targets;
+  bulkAccessSkipped.value = selectedIds.value.size - targets.length;
+  bulkGrantsDiffer.value = grantSets.some((set) => set.size !== common.length);
+  selectedGrants.value = new Set(common);
+}
+
+function closeAccessDialog() {
+  editingAccessUser.value = null;
+  bulkAccessTargets.value = [];
+  bulkAccessSkipped.value = 0;
+  bulkGrantsDiffer.value = false;
+}
+
+async function saveAccess() {
+  if (accessSaving.value || !accessDialogOpen.value) return;
+  const single = editingAccessUser.value;
+  const targets = single ? [single] : bulkAccessTargets.value;
+  const headers = { "Content-Type": "application/json" };
+  accessSaving.value = true;
+  try {
+    const res = single
+      ? await fetch(`${BASE_URL}/api/users/${single.id}/access`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ expectedRevision: single.accessRevision, grants: [...selectedGrants.value] }),
+      })
+      : await fetch(`${BASE_URL}/api/users/bulk/access`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          users: targets.map((u) => ({ id: u.id, expectedRevision: u.accessRevision })),
+          grants: [...selectedGrants.value],
+        }),
+      });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body?.code === "ACCESS_STALE_WRITE") throw new Error("다른 관리자가 먼저 권한을 변경했습니다. 다시 확인하세요.");
+      if (body?.code === "OFFICIAL_ACCESS_ONLY") throw new Error("Official 계정에만 서비스 권한을 부여할 수 있습니다.");
+      throw new Error(body?.message || "권한을 저장하지 못했습니다.");
+    }
+    notyf.success(single ? "서비스 권한을 변경했습니다." : `${targets.length}명의 서비스 권한을 변경했습니다.`);
+  } catch (e) {
+    notyf.error(e.message);
+  } finally {
+    accessSaving.value = false;
+    // 성공·실패 모두 대화상자의 기준 revision이 더 이상 유효하지 않으므로 닫고 다시 불러온다.
+    closeAccessDialog();
+    await fetchUsers();
+  }
 }
 
 async function changeRole(user, newRole) {
@@ -258,6 +363,10 @@ function toggleOne(id) {
   else s.add(id);
   selectedIds.value = s;
 }
+// 서비스 권한은 Official에게만 있으므로 일괄 설정 대상도 Official로 제한한다.
+const selectedOfficials = computed(() =>
+  users.value.filter((u) => selectedIds.value.has(u.id) && u.role === "official"),
+);
 
 // Bulk deactivate
 async function bulkDeactivate() {
@@ -311,8 +420,11 @@ function csvCell(v) {
 
 // CSV export
 function exportCSV() {
-  const header = "email,name,role,realname,phone,affiliation";
-  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || ""].map(csvCell).join(","));
+  const header = "email,name,role,realname,phone,affiliation,grants";
+  const rows = users.value.map((u) => [
+    u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || "",
+    (u.grants || []).join(";"),
+  ].map(csvCell).join(","));
   const csv = "\uFEFF" + [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -343,9 +455,13 @@ function uploadCSV() {
     const users = [];
     for (let i = start; i < rows.length; i++) {
       // CSV format: email, name (ignored — set via Google OAuth), role, realname, phone, affiliation
-      const [email, , role, realname, phone, affiliation] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4], rows[i][5]];
+      const [email, , role, realname, phone, affiliation, grants = ""] = rows[i];
       if (!email || !email.trim()) continue;
-      users.push({ email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "", phone: phone?.trim() || "", affiliation: affiliation?.trim() || "" });
+      users.push({
+        email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "",
+        phone: phone?.trim() || "", affiliation: affiliation?.trim() || "",
+        grants: grants.split(";").map((v) => v.trim()).filter(Boolean),
+      });
     }
 
     if (users.length === 0) { notyf.error("추가할 사용자가 없습니다."); return; }
@@ -425,7 +541,7 @@ const sortedUsers = computed(() => {
   const dir = sortOrder.value === "asc" ? 1 : -1;
   return [...filteredUsers.value].sort((a, b) => {
     if (k === "role") {
-      return ((ROLE_LEVELS[a.role] || 0) - (ROLE_LEVELS[b.role] || 0)) * dir;
+      return ((ROLE_SORT_ORDER[a.role] || 0) - (ROLE_SORT_ORDER[b.role] || 0)) * dir;
     }
     const va = (a[k] || "").toString().toLowerCase();
     const vb = (b[k] || "").toString().toLowerCase();
@@ -433,9 +549,9 @@ const sortedUsers = computed(() => {
   });
 });
 
-// official 이상 활성 사용자 목록 (연락처 선택용)
+// 운영 연락처 후보는 사람 운영 계정으로 제한한다.
 const officialUsers = computed(() =>
-  users.value.filter((u) => u.active && ["official", "chief", "admin"].includes(u.role)),
+  users.value.filter((u) => u.active && ["official", "admin"].includes(u.role)),
 );
 
 async function fetchOpsDisplay() {
@@ -450,7 +566,7 @@ async function fetchOpsDisplay() {
   } catch {}
 }
 
-// 추가 가능한 official 이상 사용자 (이미 표시 중인 사용자 제외)
+// 추가 가능한 운영 사용자 (이미 표시 중인 사용자 제외)
 const opsFilteredUsers = computed(() => {
   const q = opsDropdownSearch.value.toLowerCase();
   return officialUsers.value.filter((u) => {
@@ -676,7 +792,9 @@ async function removeOpsDisplay(user) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  const response = await fetch(`${BASE_URL}/api/access/catalog`);
+  if (response.ok) accessCatalog.value = await response.json();
   fetchUsers(true);
 });
 
@@ -694,6 +812,7 @@ onUnmounted(() => {
         <div class="header-actions">
           <button type="button" class="btn btn-sm btn-ghost apply-url" title="클릭하여 복사" @click="copyApplyUrl">{{ applyUrl }}</button>
           <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
+          <router-link to="/devices" class="btn btn-sm btn-primary">태블릿 장비 관리</router-link>
         </div>
       </div>
       <div class="card-body">
@@ -708,7 +827,6 @@ onUnmounted(() => {
           <select v-model="newRole" class="form-select">
             <option value="student">Student</option>
             <option value="official">Official</option>
-            <option value="chief">Chief</option>
             <option value="admin">Admin</option>
           </select>
           <button type="submit" class="btn btn-primary">추가</button>
@@ -724,7 +842,6 @@ onUnmounted(() => {
             <select v-model="filterRole" class="filter-select">
               <option value="all">전체 역할</option>
               <option value="admin">Admin</option>
-              <option value="chief">Chief</option>
               <option value="official">Official</option>
               <option value="student">Student</option>
             </select>
@@ -735,6 +852,15 @@ onUnmounted(() => {
             </select>
           </div>
           <div class="header-btns">
+            <button
+              v-if="selectedIds.size > 0"
+              class="btn btn-sm btn-primary"
+              :disabled="selectedOfficials.length === 0"
+              :title="selectedOfficials.length === 0 ? '선택한 계정 중 Official이 없습니다' : ''"
+              @click="editBulkAccess"
+            >
+              선택 권한 설정 ({{ selectedOfficials.length }})
+            </button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
             <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 다운로드</button>
@@ -756,6 +882,7 @@ onUnmounted(() => {
                 <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
                 <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
+                <th class="col-access">권한</th>
                 <th class="col-realname sortable" @click="handleSort('realname')">실명 <span class="sort-icon">{{ getSortIcon('realname') }}</span></th>
                 <th class="col-phone">전화번호</th>
                 <th class="col-affiliation">학교/팀</th>
@@ -770,6 +897,14 @@ onUnmounted(() => {
                 <td class="col-name">{{ user.name || "-" }}</td>
                 <td class="col-role">
                   <span class="badge" :class="roleBadgeClass(user.role)">{{ user.role }}</span>
+                </td>
+                <td class="col-access">
+                  <span v-if="user.role === 'admin'" class="badge badge-danger access-badge">전체</span>
+                  <div v-else-if="user.role === 'official'" class="access-badges">
+                    <span v-for="label in grantLabels(user)" :key="label" class="badge badge-primary access-badge">{{ label }}</span>
+                    <span v-if="!user.grants?.length" class="access-empty">없음</span>
+                  </div>
+                  <span v-else class="access-empty">-</span>
                 </td>
                 <td class="col-realname inline-edit-cell" @click="startRealnameEdit(user.id)">
                   <input
@@ -820,9 +955,9 @@ onUnmounted(() => {
                     >
                       <option value="student">Student</option>
                       <option value="official">Official</option>
-                      <option value="chief">Chief</option>
                       <option value="admin">Admin</option>
                     </select>
+                    <button v-if="user.role === 'official'" class="btn btn-sm btn-primary" @click="editAccess(user)">권한 편집</button>
                     <button
                       class="btn btn-sm"
                       :class="user.active ? 'btn-ghost' : 'btn-primary'"
@@ -844,7 +979,7 @@ onUnmounted(() => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="9" class="empty-state">사용자가 없습니다.</td>
+                <td colspan="10" class="empty-state">사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -855,7 +990,7 @@ onUnmounted(() => {
     <div class="card ops-card" @click="closeOpsDropdown">
       <div class="card-header">
         <h3>운영 오피셜 연락처</h3>
-        <span class="ops-desc">official 이상 권한 사용자의 사이드바에 표시</span>
+        <span class="ops-desc">Official과 Admin의 사이드바에 표시</span>
       </div>
       <div class="ops-body">
         <div class="ops-select">
@@ -958,6 +1093,69 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <div v-if="accessDialogOpen" class="access-overlay" @click.self="closeAccessDialog">
+      <section class="access-dialog card" role="dialog" aria-modal="true" aria-label="서비스 권한 편집">
+        <div class="card-header access-dialog-header">
+          <div class="access-dialog-title">
+            <h3>서비스 권한</h3>
+            <span v-if="editingAccessUser" class="access-dialog-target">{{ editingAccessUser.email }}</span>
+            <span v-else class="access-dialog-target">Official {{ bulkAccessTargets.length }}명 일괄 설정</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" @click="closeAccessDialog">닫기</button>
+        </div>
+        <div v-if="!editingAccessUser" class="access-bulk-summary">
+          <ul class="access-target-list">
+            <li v-for="target in bulkAccessTargets" :key="target.id">{{ target.email }}</li>
+          </ul>
+          <p v-if="bulkAccessSkipped > 0" class="access-note">Official이 아닌 {{ bulkAccessSkipped }}명은 제외되었습니다.</p>
+          <p v-if="bulkGrantsDiffer" class="access-note access-note-warning">
+            선택한 계정의 권한이 서로 다릅니다. 공통 권한만 표시되며, 저장하면 모든 계정의 권한이 이 설정으로 바뀝니다.
+          </p>
+        </div>
+        <div class="access-list">
+          <div
+            v-for="control in accessCatalog.accessControls"
+            :key="control.key"
+            class="access-option"
+            :data-access-key="control.key"
+          >
+            <div class="access-option-copy">
+              <strong>{{ control.label }}</strong>
+              <template v-if="control.type === 'tiered'">
+                <small><b>운영</b> {{ control.operate.description }}</small>
+                <small><b>관리</b> {{ control.manage.description }}</small>
+              </template>
+              <small v-else>{{ control.description }}</small>
+            </div>
+            <select
+              v-if="control.type === 'tiered'"
+              class="access-level-select"
+              :aria-label="`${control.label} 권한`"
+              :value="accessLevel(control)"
+              @change="setAccessLevel(control, $event.target.value)"
+            >
+              <option value="none">없음</option>
+              <option value="operate">운영</option>
+              <option value="manage">관리</option>
+            </select>
+            <label v-else class="access-toggle">
+              <input
+                type="checkbox"
+                :aria-label="`${control.label} 허용`"
+                :checked="selectedGrants.has(control.permission)"
+                @change="toggleAccess(control, $event.target.checked)"
+              />
+              <span>허용</span>
+            </label>
+          </div>
+        </div>
+        <div class="access-actions">
+          <button class="btn btn-ghost" @click="closeAccessDialog">취소</button>
+          <button class="btn btn-primary" :disabled="accessSaving" @click="saveAccess">저장</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -970,6 +1168,125 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+}
+
+.access-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.access-dialog {
+  width: min(1000px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+/* Header: title + target on the left, close button pinned right. The base h3 is a
+   flex row, so the target must sit beside it explicitly instead of wrapping under. */
+.access-dialog-header {
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.access-dialog-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+
+.access-dialog-target {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.access-bulk-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0;
+}
+
+.access-target-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.access-target-list li {
+  padding: 0.125rem 0.5rem;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.access-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.access-note-warning {
+  color: var(--accent-warning);
+}
+
+.access-list {
+  padding: 1rem;
+}
+
+.access-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.access-option-copy strong,
+.access-option-copy small { display: block; }
+.access-option-copy small { margin-top: 0.25rem; color: var(--text-tertiary); }
+.access-option-copy small b { color: var(--text-secondary); }
+
+.access-level-select {
+  min-width: 7rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.access-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+
+.access-toggle input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+}
+
+.access-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem; }
+
+@media (max-width: 720px) {
+  .access-option { grid-template-columns: 1fr; gap: 0.6rem; }
+  .access-level-select { width: 100%; }
 }
 
 .form-row {
@@ -1078,6 +1395,28 @@ onUnmounted(() => {
 
 .col-role {
   text-align: center !important;
+}
+
+/* The only column allowed to wrap; it absorbs the width the 1% columns give up. */
+.col-access {
+  min-width: 14rem;
+}
+
+.access-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.access-badge {
+  padding: 0.125rem 0.4rem;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.access-empty {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
 }
 
 /* Sortable headers */

@@ -72,8 +72,8 @@ test.describe("Three concurrent inspection editors", () => {
     // Use three different authenticated accounts so the automatic inspector list
     // proves that every editor is retained by real name.
     const context1 = await browser.newContext({ storageState: storageStatePath("admin") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("chief") });
-    const context3 = await browser.newContext({ storageState: storageStatePath("official") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("operationsManager") });
+    const context3 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
@@ -139,14 +139,14 @@ test.describe("Three concurrent inspection editors", () => {
     for (const page of [page1, page2, page3]) {
       const inspectors = page.locator(".inspector-list");
       await expect(inspectors).toContainText("E2E Admin", { timeout: 5000 });
-      await expect(inspectors).toContainText("E2E Chief", { timeout: 5000 });
-      await expect(inspectors).toContainText("E2E Official", { timeout: 5000 });
+      await expect(inspectors).toContainText("E2E Operations Manager", { timeout: 5000 });
+      await expect(inspectors).toContainText("E2E Multi-service Operator", { timeout: 5000 });
       await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".answer-edit-metadata"))
         .toContainText("E2E Admin");
       await expect(page.locator(".item-row").filter({ hasText: "절연 저항 측정" }).locator(".answer-edit-metadata"))
-        .toContainText("E2E Chief");
+        .toContainText("E2E Operations Manager");
       await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-edit-metadata"))
-        .toContainText("E2E Official");
+        .toContainText("E2E Multi-service Operator");
     }
 
     await context1.close();

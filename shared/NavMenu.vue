@@ -1,14 +1,26 @@
 <script setup>
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import ThemeToggle from "./ThemeToggle.vue";
-import { services, resources, officials, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { user, isAuthenticated, isStudent, showOfficials, isChief, isAdmin } from "./officialsStore.js";
+import {
+  RESOURCES_DISCLOSURE_STORAGE_KEY,
+  readDisclosureState,
+  writeDisclosureState,
+} from "./persistent-disclosure.js";
+import { services, resources, operations, administration, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
+import { user, isStudent, isOfficial, isAdmin, hasPermission } from "./officialsStore.js";
 
-const roleCheck = { student: isAuthenticated, official: showOfficials, chief: isChief, admin: isAdmin };
 function canShow(item) {
-  if (item.studentOnly) return isStudent.value; // exact student, hidden from staff
-  return !item.auth || roleCheck[item.auth]?.value;
+  if (item.studentOnly) return isStudent.value;
+  if (item.adminOnly) return isAdmin.value;
+  return !item.permission || hasPermission(item.permission);
 }
+const visibleOperations = computed(() => operations.filter(canShow));
+const visibleAdministration = computed(() => administration.filter(canShow));
+
+// Show the Google profile picture when the session carries one; fall back to the
+// emoji if the image fails to load. Reset the failure when the account changes.
+const avatarFailed = ref(false);
+watch(user, () => { avatarFailed.value = false; });
 
 const props = defineProps({
   currentPath: {
@@ -19,6 +31,16 @@ const props = defineProps({
 
 const isOpen = ref(false);
 const opsContacts = ref(null);
+const browserStorage = (() => {
+  try { return window.localStorage; }
+  catch { return null; }
+})();
+const resourcesOpen = ref(readDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY));
+
+function persistResourcesState(event) {
+  resourcesOpen.value = event.currentTarget.open;
+  writeDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY, resourcesOpen.value);
+}
 
 async function fetchOpsContacts() {
   try {
@@ -31,7 +53,7 @@ async function fetchOpsContacts() {
 }
 
 watch(isOpen, (open) => {
-  if (open && showOfficials.value) fetchOpsContacts();
+  if (open && isOfficial.value) fetchOpsContacts();
 });
 
 function isActive(href) {
@@ -70,7 +92,7 @@ function isActive(href) {
   }
   if (href !== "/" && props.currentPath.startsWith(href + "/")) {
     // Only match prefix if no other item is a more specific match
-    const allItems = [...services, ...officials, ...admins];
+    const allItems = [...services, ...resources, ...operations, ...administration];
     const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
     if (!hasMoreSpecific) return true;
   }
@@ -129,7 +151,32 @@ async function logout() {
           </div>
 
           <nav class="drawer-nav">
-            <div v-if="showOfficials && opsContacts" class="nav-section ops-contacts-section">
+            <div class="nav-section nav-section-account">
+              <div v-if="user" class="nav-item user-info">
+                <img
+                  v-if="user.picture && !avatarFailed"
+                  :src="user.picture"
+                  class="nav-avatar"
+                  alt=""
+                  referrerpolicy="no-referrer"
+                  @error="avatarFailed = true"
+                />
+                <span v-else class="nav-icon">👤</span>
+                <span>{{ user.name }}</span>
+                <button class="logout-btn" @click="logout">로그아웃</button>
+              </div>
+              <a v-else :href="'/auth/api/login?redirect=' + encodeURIComponent(currentPath)" class="nav-item google-login-btn">
+                <svg class="nav-icon google-logo" viewBox="0 0 24 24">
+                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
+                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
+                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
+                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
+                </svg>
+                <span>Google 계정으로 로그인</span>
+              </a>
+            </div>
+
+            <div v-if="isOfficial && opsContacts" class="nav-section ops-contacts-section">
               <span class="nav-section-title">Contacts</span>
               <div v-for="c in opsContacts" :key="c.id" class="ops-contact">
                 <span class="ops-contact-identity">
@@ -170,19 +217,26 @@ async function logout() {
               </template>
             </div>
 
-            <div class="nav-section">
-              <span class="nav-section-title">Resources</span>
+            <details :open="resourcesOpen" class="nav-section resources-section" @toggle="persistResourcesState">
+              <summary class="nav-section-title collapsible-title">
+                Resources
+                <svg class="collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </summary>
               <template v-for="item in resources" :key="item.href">
                 <a
                   :href="item.href"
-                  target="_blank"
-                  rel="noopener noreferrer"
+                  :target="item.external ? '_blank' : undefined"
+                  :rel="item.external ? 'noopener noreferrer' : undefined"
                   class="nav-item"
+                  :class="{ active: isActive(item.href) }"
                 >
                   <span v-if="isSvgIcon(item.icon)" class="nav-icon nav-icon-svg" v-html="forumSvg"></span>
                   <span v-else class="nav-icon">{{ getIcon(item.icon) }}</span>
                   <span>{{ item.name }}</span>
                   <svg
+                    v-if="item.external"
                     class="external-icon"
                     viewBox="0 0 24 24"
                     fill="none"
@@ -195,27 +249,12 @@ async function logout() {
                   </svg>
                 </a>
               </template>
-            </div>
+            </details>
 
-            <div v-if="showOfficials" class="nav-section">
-              <span class="nav-section-title">Officials</span>
-              <template v-for="item in officials" :key="item.href">
-                <a
-                  v-if="canShow(item)"
-                  :href="item.href"
-                  class="nav-item"
-                  :class="{ active: isActive(item.href) }"
-                >
-                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
-                  <span>{{ item.name }}</span>
-                </a>
-              </template>
-            </div>
-
-            <div v-if="isAdmin" class="nav-section">
-              <span class="nav-section-title">Admin</span>
+            <div v-if="visibleOperations.length" class="nav-section">
+              <span class="nav-section-title">Operations</span>
               <a
-                v-for="item in admins"
+                v-for="item in visibleOperations"
                 :key="item.href"
                 :href="item.href"
                 :target="item.external ? '_blank' : undefined"
@@ -240,22 +279,18 @@ async function logout() {
               </a>
             </div>
 
-            <div class="nav-section nav-section-bottom">
-              <div v-if="user" class="nav-item user-info">
-                <span class="nav-icon">👤</span>
-                <span>{{ user.name }}</span>
-                <button class="logout-btn" @click="logout">로그아웃</button>
-              </div>
-              <a v-else :href="'/auth/api/login?redirect=' + encodeURIComponent(currentPath)" class="nav-item google-login-btn">
-                <svg class="nav-icon google-logo" viewBox="0 0 24 24">
-                  <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z" fill="#4285F4"/>
-                  <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/>
-                  <path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/>
-                  <path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/>
-                </svg>
-                <span>Google 계정으로 로그인</span>
+            <div v-if="visibleAdministration.length" class="nav-section">
+              <span class="nav-section-title">Admin</span>
+              <a
+                v-for="item in visibleAdministration"
+                :key="item.href"
+                :href="item.href"
+                class="nav-item"
+                :class="{ active: isActive(item.href) }"
+              >
+                <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                <span>{{ item.name }}</span>
               </a>
-              <hr class="nav-divider" />
             </div>
           </nav>
         </div>
@@ -405,7 +440,9 @@ async function logout() {
 .drawer-nav {
   flex: 1;
   overflow-y: auto;
-  padding: 0.5rem 0 0;
+  /* No top padding: the account row is the first child and sits flush under the
+     header border. Sections below keep their own 0.5rem vertical padding. */
+  padding: 0;
   display: flex;
   flex-direction: column;
 }
@@ -458,16 +495,49 @@ async function logout() {
   padding: 0.5rem 0;
 }
 
+.resources-section > summary {
+  list-style: none;
+  cursor: pointer;
+}
 
-.nav-section-bottom {
-  margin-top: auto;
-  border-top: 1px solid var(--border-color);
+.resources-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+/* The summary also carries .nav-section-title, whose later `display: block` would
+   otherwise win the tie and drop the chevron out of vertical alignment. */
+.nav-section-title.collapsible-title {
+  display: flex;
+  align-items: center;
+}
+
+.collapse-icon {
+  width: 1rem;
+  height: 1rem;
+  margin-left: auto;
+  transition: transform 0.15s ease;
+}
+
+.resources-section:not([open]) .collapse-icon {
+  transform: rotate(-90deg);
+}
+
+.nav-section-account {
+  border-bottom: 1px solid var(--border-color);
   padding: 0;
 }
 
-.nav-section-bottom .nav-item {
+.nav-section-account .nav-item {
   padding-top: 1rem;
   padding-bottom: 1rem;
+}
+
+.nav-avatar {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
 }
 
 .nav-section-title {
@@ -550,12 +620,6 @@ async function logout() {
 .logout-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
-}
-
-.nav-divider {
-  border: none;
-  border-top: 1px solid var(--border-color);
-  margin: 0;
 }
 
 .google-login-btn {

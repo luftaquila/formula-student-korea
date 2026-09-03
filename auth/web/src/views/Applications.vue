@@ -2,19 +2,12 @@
 import { ref, computed, onMounted } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { isAdmin } from "@shared/officialsStore.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();
 
-// 관리자 확인
-function getUserFromCookie() {
-  const m = document.cookie.match(/fsk_user=([^;]+)/);
-  if (!m) return null;
-  try { return JSON.parse(decodeURIComponent(m[1])); }
-  catch { return null; }
-}
-const currentUser = getUserFromCookie();
-if (!currentUser || currentUser.role !== "admin") {
+if (!isAdmin.value) {
   window.location.href = "/";
 }
 
@@ -161,7 +154,7 @@ onMounted(() => {
 <template>
   <div class="applications-container">
     <div class="page-nav">
-      <router-link to="/" class="btn btn-sm btn-ghost">← 계정 관리</router-link>
+      <a href="/" class="btn btn-sm btn-ghost">← 홈</a>
     </div>
 
     <div class="card">
@@ -178,7 +171,6 @@ onMounted(() => {
           <select v-model="approveRole" class="role-select">
             <option value="student">Student</option>
             <option value="official">Official</option>
-            <option value="chief">Chief</option>
             <option value="admin">Admin</option>
           </select>
           <button class="btn btn-sm btn-primary" :disabled="selectedIds.size === 0" @click="approveSelected">

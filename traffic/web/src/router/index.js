@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { useSerialStore } from "../stores/serial";
 import { useWirelessStore } from "../stores/wireless";
+import { hasPermission } from "@shared/officialsStore.js";
 
 const routes = [
   {
@@ -21,6 +22,7 @@ const routes = [
     path: "/wireless/settings",
     name: "WirelessSettings",
     component: () => import("../views/WirelessHomeView.vue"),
+    meta: { permission: "traffic.manage" },
   },
   {
     path: "/wireless/scoreboard",
@@ -87,6 +89,7 @@ const router = createRouter({
 });
 
 router.beforeEach((to, from) => {
+  if (to.meta.permission && !hasPermission(to.meta.permission)) return "/wireless/record";
   const serial = useSerialStore();
   if (serial.green.active && to.path !== from.path) {
     return false;

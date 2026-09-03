@@ -112,6 +112,15 @@ setupTestEnv();
 let server, baseUrl, client, db, dbPath;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const scoreOperatorCookie = makeAuthCookie({
+  email: 'score-operator@test.com', name: 'Score Operator', role: 'official', permissions: ['score.operate'],
+});
+const scoreManagerCookie = makeAuthCookie({
+  email: 'score-manager@test.com', name: 'Score Manager', role: 'official', permissions: ['score.manage'],
+});
+const unrelatedOfficialCookie = makeAuthCookie({
+  email: 'traffic-manager@test.com', name: 'Traffic Manager', role: 'official', permissions: ['traffic.manage'],
+});
 
 before(async () => {
   dbPath = tmpDbPath();
@@ -967,6 +976,15 @@ describe('Energy score integration', () => {
 // ─── Auth ───────────────────────────────────────────────────────────────
 
 describe('Auth', () => {
+  it('separates Score operation, management, unrelated grants, and audit access', async () => {
+    assert.equal((await client.get('/api/score?year=2026', { cookie: scoreOperatorCookie })).status, 200);
+    assert.equal((await client.get('/api/score?year=2026', { cookie: scoreManagerCookie })).status, 200);
+    assert.equal((await client.get('/api/score?year=2026', { cookie: unrelatedOfficialCookie })).status, 403);
+    assert.equal((await client.put('/api/score/penalty', { cookie: scoreOperatorCookie, body: {} })).status, 403);
+    assert.equal((await client.put('/api/score/penalty', { cookie: scoreManagerCookie, body: {} })).status, 400);
+    assert.equal((await client.get('/api/logs', { cookie: scoreOperatorCookie })).status, 403);
+  });
+
   it('PUT /api/score/manual without auth returns 401', async () => {
     const res = await client.put('/api/score/manual', {
       body: { year: 2026, team_num: 1, score_type: 'report', value: 50 },

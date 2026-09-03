@@ -4,6 +4,7 @@ import App from "./App.vue";
 import "vue-sonner/style.css";
 import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
+import { hasPermission, isAdmin } from "@shared/officialsStore.js";
 
 initTheme();
 initTestBanner();
@@ -11,8 +12,10 @@ initTestBanner();
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
-    { path: "/", component: () => import("./views/Manage.vue") },
-    { path: "/applications", component: () => import("./views/Applications.vue") },
+    { path: "/", component: () => import("./views/Manage.vue"), meta: { adminOnly: true } },
+    { path: "/applications", component: () => import("./views/Applications.vue"), meta: { adminOnly: true } },
+    { path: "/devices", component: () => import("./views/Devices.vue"), meta: { adminOnly: true } },
+    { path: "/device", component: () => import("./views/DevicePair.vue") },
     {
       path: "/apply",
       component: () => import("./views/Apply.vue"),
@@ -26,8 +29,14 @@ const router = createRouter({
         }
       },
     },
-    { path: "/logs", component: () => import("./views/Logs.vue") },
+    { path: "/logs", component: () => import("./views/Logs.vue"), meta: { adminOnly: true } },
   ],
+});
+
+router.beforeEach((to) => {
+  if ((!to.meta.adminOnly || isAdmin.value) && (!to.meta.permission || hasPermission(to.meta.permission))) return;
+  window.location.href = "/";
+  return false;
 });
 
 createApp(App).use(router).mount("#app");

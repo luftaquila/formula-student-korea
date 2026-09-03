@@ -11,7 +11,7 @@ const TEAM_NUM = 32;
 async function apiRegister(num) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${INSPECTION_TYPE}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
 }
@@ -19,7 +19,7 @@ async function apiRegister(num) {
 async function apiEnterBooth(num, boothNum = 1) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
     body: JSON.stringify({ num }),
   });
 }
@@ -27,13 +27,13 @@ async function apiEnterBooth(num, boothNum = 1) {
 async function apiExitBooth(boothNum = 1) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
   });
 }
 
 async function apiGetQueue() {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${INSPECTION_TYPE}`, {
-    headers: { Cookie: getAuthCookie("official") },
+    headers: { Cookie: getAuthCookie("operationsOperator") },
   });
   return res.json();
 }
@@ -58,12 +58,12 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
   test.beforeAll(async () => {
     // Save cancel penalty
     const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
     originalPenalty = (await res.json()).value;
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ value: 0 }),
     });
 
@@ -80,7 +80,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
     if (originalPenalty !== undefined) {
       await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
@@ -99,7 +99,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
       year: YEAR,
       teamNum: TEAM_NUM,
       changes: completionChanges,
-      role: "admin",
+      profile: "admin",
     });
     completionChanges = [];
 
@@ -126,7 +126,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
       year: YEAR,
       teamNum: TEAM_NUM,
       category,
-      role: "admin",
+      profile: "admin",
     });
     const setResultRes = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",

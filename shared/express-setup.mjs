@@ -1,9 +1,13 @@
 import fs from "fs";
 import crypto from "crypto";
 
-import { ROLE_LEVELS } from "./constants.js";
+import {
+  HUMAN_ROLES,
+  authorizePrincipal,
+  isHumanRole,
+} from "./access-control.js";
 import { serviceUrl } from "./services.mjs";
-export const VALID_ROLES = Object.keys(ROLE_LEVELS);
+export const VALID_ROLES = HUMAN_ROLES;
 
 // 불리언 환경변수 파싱. env 값은 항상 문자열이므로 "false"/"0"도 truthy가 되는
 // 함정을 막는다. "1"/"true"/"yes"/"on"(대소문자 무시)만 활성으로 간주하고,
@@ -77,16 +81,17 @@ export function createSecretChecker(secret) {
 // 같은 이메일의 동시 검증은 한 번의 inner 호출을 공유한다(동시 API 요청·SSE 재검증
 // 루프의 중복 왕복 제거). inner의 예외는 그대로 전파한다 — 요청 미들웨어는 transient
 // fail-close로, sse.mjs 재검증은 fail-open으로 각자의 계약대로 처리한다.
-export function createCachedValidator(inner, ttlMs = 5000, maxEntries = 10000) {
-  const cache = new Map();    // email -> { role, expires }
-  const inflight = new Map(); // email -> Promise<result>
-  async function validate(email) {
-    const hit = cache.get(email);
-    if (hit && hit.expires > Date.now()) return { valid: true, role: hit.role };
-    if (inflight.has(email)) return inflight.get(email);
+export function createCachedValidator(inner, ttlMs = 5000, maxEntries = 10000, keyFn = (value) => value) {
+  const cache = new Map();
+  const inflight = new Map();
+  async function validate(value, context) {
+    const key = keyFn(value);
+    const hit = cache.get(key);
+    if (hit && hit.expires > Date.now()) return hit.result;
+    if (inflight.has(key)) return inflight.get(key);
     const p = (async () => {
       try {
-        const result = await inner(email);
+        const result = await inner(value, context);
         if (result?.valid) {
           if (cache.size >= maxEntries) {
             const now = Date.now();
@@ -94,24 +99,24 @@ export function createCachedValidator(inner, ttlMs = 5000, maxEntries = 10000) {
             // 만료분 청소로도 모자라면 최고령 삽입분부터 축출(Map은 삽입 순서 유지)
             if (cache.size >= maxEntries) cache.delete(cache.keys().next().value);
           }
-          cache.set(email, { role: result.role ?? null, expires: Date.now() + ttlMs });
+          cache.set(key, { result: { ...result }, expires: Date.now() + ttlMs });
         }
         return result;
       } finally {
-        inflight.delete(email);
+        inflight.delete(key);
       }
     })();
-    inflight.set(email, p);
+    inflight.set(key, p);
     return p;
   }
-  validate.invalidate = (email) => (email == null ? cache.clear() : cache.delete(email));
+  validate.invalidate = (value) => (value == null ? cache.clear() : cache.delete(keyFn(value)));
   return validate;
 }
 
 export function createRemoteUserValidator() {
   return async (email) => {
     try {
-      const res = await fetch(`${serviceUrl("auth")}/api/users/role/${encodeURIComponent(email)}`, {
+      const res = await fetch(`${serviceUrl("auth")}/api/users/access/${encodeURIComponent(email)}`, {
         // 시크릿이 없으면 빈 헤더로 나간다. 빈 값은 falsy라 auth의 내부 인증 분기가
         // 아예 잡히지 않고 쿠키 경로로 흘러 401로 거부된다 → transient fail-close.
         headers: { "X-Internal-Service": process.env.INTERNAL_SECRET || "" },
@@ -119,7 +124,13 @@ export function createRemoteUserValidator() {
       });
       if (res.ok) {
         const data = await res.json();
-        return { valid: true, role: data.role };
+        return {
+          valid: true,
+          id: data.id,
+          role: data.role,
+          permissions: Array.isArray(data.permissions) ? data.permissions : [],
+          accessRevision: Number(data.accessRevision) || 0,
+        };
       }
       if (res.status === 404) return { valid: false, role: null };
       // 404(사용자 삭제/비활성)만 확정 무효다. 5xx/네트워크 오류는 auth 일시 장애이므로
@@ -130,6 +141,28 @@ export function createRemoteUserValidator() {
     } catch (e) {
       console.warn(`[auth] fail-close: auth unreachable for ${email}: ${e.message || e}`);
       return { valid: false, role: null, transient: true };
+    }
+  };
+}
+
+export function createRemoteDeviceValidator() {
+  return async (token) => {
+    try {
+      const res = await fetch(`${serviceUrl("auth")}/api/devices/validate`, {
+        method: "POST",
+        headers: {
+          "X-Internal-Service": process.env.INTERNAL_SECRET || "",
+          "X-Device-Token": token,
+        },
+        signal: AbortSignal.timeout(3000),
+      });
+      if (res.ok) return { valid: true, ...(await res.json()) };
+      if (res.status === 404 || res.status === 401) return { valid: false };
+      console.warn(`[auth] fail-close: auth returned ${res.status} for device validation`);
+      return { valid: false, transient: true };
+    } catch (e) {
+      console.warn(`[auth] fail-close: auth unreachable for device validation: ${e.message || e}`);
+      return { valid: false, transient: true };
     }
   };
 }
@@ -228,7 +261,7 @@ export function createApp(deps, authRoleFn) {
     next();
   });
 
-  // 3. JWT user extraction
+  // 3. Human/device principal extraction and authoritative revalidation.
   // Build validateUser: direct function from deps, or auto HTTP to the auth service.
   // 재검증은 기본 동작이다. 예전에는 AUTH_SERVER env가 있을 때만 켜져서, 배포 설정에서
   // URL을 빠뜨리면 JWT가 무검증으로 신뢰됐다 — 삭제·강등된 사용자가 세션 만료(최대 7일)
@@ -240,6 +273,7 @@ export function createApp(deps, authRoleFn) {
   // INTERNAL_SECRET 누락도 위 부팅 검사가 담당한다. 여기서 다시 검사하면 "설정이 없으면
   // 조용히 재검증을 끈다"는 이 PR이 없애려는 실패 모드가 한 칸 옆에서 되살아난다.
   let validateUser = deps.validateUser || createRemoteUserValidator();
+  let validateDevice = deps.validateDevice || createRemoteDeviceValidator();
 
   // 유효 결과만 5초 캐시. N개 서비스 × 매 요청이 auth로 동기 왕복하던 비용을 없애되,
   // 삭제·강등 전파 지연 상한은 TTL로 유계된다(5초, 운영 승인값). 무효·transient는
@@ -247,6 +281,18 @@ export function createApp(deps, authRoleFn) {
   // 캐시가 무익하고 자기 UI의 즉시 반영을 잃으므로 validateUserCacheTtl: 0으로 끈다.
   const cacheTtl = deps.validateUserCacheTtl ?? 5000;
   if (cacheTtl > 0) validateUser = createCachedValidator(validateUser, cacheTtl);
+  // Device revocation/re-pairing is an emergency control and must take effect
+  // on the next request. Kiosk traffic is sparse enough that caching valid
+  // device tokens is not worth a revocation window.
+  const deviceCacheTtl = deps.validateDeviceCacheTtl ?? 0;
+  if (deviceCacheTtl > 0) {
+    validateDevice = createCachedValidator(
+      validateDevice,
+      deviceCacheTtl,
+      10000,
+      (token) => crypto.createHash("sha256").update(String(token)).digest("base64url"),
+    );
+  }
 
   // Pre-compute INTERNAL_SECRET hash (immutable for process lifetime)
   const internalSecret = process.env.INTERNAL_SECRET;
@@ -257,7 +303,7 @@ export function createApp(deps, authRoleFn) {
     const header = req.headers["x-internal-service"];
     if (internalSecret && header) {
       if (isInternalSecret(header)) {
-        req.user = { email: "internal", name: "Service", role: "admin" };
+        req.user = { kind: "internal", email: "internal", name: "Service", role: "admin", permissions: [] };
         return next();
       }
       // Caddy가 외부의 이 헤더를 벗기므로, 불일치는 시크릿 로테이션 실수(장애급 설정
@@ -270,80 +316,85 @@ export function createApp(deps, authRoleFn) {
       }, path, `[auth] internal-secret mismatch on ${req.method} ${path} from ${req.headers["x-real-ip"] || req.ip}`);
       return res.status(403).send("Forbidden");
     }
-    const token = req.cookies.fsk_session;
-    if (token && process.env.JWT_SECRET) {
-      try {
-        req.user = verifyJWT(token, process.env.JWT_SECRET);
-
-        // Sliding session: 발급(iat) 후 하루가 지난 첫 요청에서만 토큰 자동 갱신 —
-        // 재서명·Set-Cookie를 하루 최대 1회로 제한한다. 잔여기간 기준(만료까지 6일 미만)
-        // 이었을 때는 발급 하루 뒤부터 "매 요청"이 재서명이었다. iat 없는 외부 토큰은
-        // age가 커져 갱신 경로를 타므로 안전하다. (role은 validateUser 블록에서 처리)
-        const age = Math.floor(Date.now() / 1000) - (req.user.iat || 0);
-        if (age > 24 * 3600) {
-          const { email, name, role } = req.user;
-          const newJwt = createJWT({ email, name, role }, process.env.JWT_SECRET);
-          const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
-          const userPayload = encodeURIComponent(JSON.stringify({ name, role }));
-          res.setHeader("Set-Cookie", [
-            `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
-            `fsk_user=${userPayload}; ${cookieOpts}`,
-          ]);
-        }
-      } catch { /* invalid token */ }
+    const humanToken = req.cookies.fsk_session;
+    const deviceToken = req.cookies.fsk_device;
+    if (humanToken && deviceToken) {
+      req.authAmbiguous = true;
+      return next();
     }
 
-    // Validate user still exists + sync role from auth. validateUser는 위에서 항상
-    // 채워지므로(주입 아니면 내장 HTTP) 존재 여부를 다시 보지 않는다.
-    if (req.user) {
-      // 계약은 `{ valid, role, transient? }` 하나뿐이다. 예전에는 bare boolean도 받았지만,
-      // validateUser가 10개 팩토리의 공개 주입 지점이 된 지금은 두 형태를 허용하면
-      // 소비자마다 해석이 갈린다 — course의 SSE 재검증은 `result?.valid`를 보므로
-      // `true`를 반환하는 stub이 거기서만 연결을 끊는다.
-      //
-      // 예외도 같은 이유로 계약에 넣는다. 내장 HTTP 검증기는 네트워크 오류를 자체 catch로
-      // `{ valid: false, transient: true }`로 바꾸지만, 주입된 검증기는 그대로 던진다
-      // (auth의 것은 db.prepare().get()을 무방비로 호출한다). 감싸지 않으면 같은 예외가
-      // 여기서는 500이 되고 sse.mjs에서는 fail-open이 된다. 내장 경로와 동일하게 일시 장애로
-      // 취급해 쿠키를 보존한 채 fail-close 한다.
-      // 내장 경로가 두 실패 분기 모두 로그를 남기므로 여기도 남긴다. 조용히 삼키면 auth의
-      // 검증기가 DB 오류로 던졌을 때 전 요청이 401이 되면서 아무 흔적도 남지 않는다.
-      //
-      // logger.warn이 아니라 console.warn인 이유는 이 계층에 logger가 없어서가 아니라,
-      // logger의 저장소가 방금 실패한 바로 그것이기 때문이다 — createLogger(db)는 검증기가
-      // 조회하던 같은 DB에 INSERT 하고, 로그 뷰어도 그 DB를 읽는다. 이 분기를 타게 만드는
-      // 대표적 원인(auth의 SQLITE_BUSY/IOERR)에서는 DB 로깅이 정확히 무용하다. 프로세스
-      // stderr는 그 상황에서도 남는 유일한 채널이다. CONTRIBUTING.md 로깅 정책의 예외 항목 참고.
+    const secure = isSecureConnection(req);
+    const appendCookies = (...cookies) => {
+      const current = res.getHeader("Set-Cookie");
+      res.setHeader("Set-Cookie", [...(Array.isArray(current) ? current : current ? [current] : []), ...cookies]);
+    };
+
+    if (humanToken && process.env.JWT_SECRET) {
+      let tokenUser = null;
+      try { tokenUser = verifyJWT(humanToken, process.env.JWT_SECRET); }
+      catch { /* invalid token */ }
+
+      if (tokenUser?.email) {
+        let result;
+        try {
+          result = await validateUser(tokenUser.email, tokenUser);
+        } catch (e) {
+          console.warn(`[auth] fail-close: validator threw for ${tokenUser.email}: ${e.message || e}`);
+          result = { valid: false, transient: true };
+        }
+        const role = result?.role ?? tokenUser.role;
+        if (result?.valid && isHumanRole(role)) {
+          const permissions = Array.isArray(result.permissions)
+            ? result.permissions
+            : Array.isArray(tokenUser.permissions) ? tokenUser.permissions : [];
+          const accessRevision = Number(result.accessRevision ?? tokenUser.accessRevision) || 0;
+          // The Google profile picture rides in the JWT only; Auth validated it at login.
+          const picture = typeof tokenUser.picture === "string" ? tokenUser.picture : "";
+          req.user = {
+            kind: "human",
+            id: result.id,
+            email: tokenUser.email,
+            name: tokenUser.name,
+            picture,
+            role,
+            permissions,
+            accessRevision,
+          };
+          const age = Math.floor(Date.now() / 1000) - (tokenUser.iat || 0);
+          if (age > 24 * 3600 || role !== tokenUser.role || accessRevision !== Number(tokenUser.accessRevision || 0)) {
+            const jwt = createJWT({ email: req.user.email, name: req.user.name, picture, role, accessRevision }, process.env.JWT_SECRET);
+            const cookieOpts = formatCookieOpts(7 * 24 * 3600, secure);
+            const readable = encodeURIComponent(JSON.stringify({ name: req.user.name, picture, role, permissions, accessRevision }));
+            appendCookies(`fsk_session=${jwt}; HttpOnly; ${cookieOpts}`, `fsk_user=${readable}; ${cookieOpts}`);
+          }
+        } else if (!result?.transient) {
+          const cookieOpts = formatCookieOpts(0, secure);
+          appendCookies(`fsk_session=; HttpOnly; ${cookieOpts}`, `fsk_user=; ${cookieOpts}`);
+        }
+      }
+    } else if (deviceToken) {
       let result;
       try {
-        result = await validateUser(req.user.email);
+        result = await validateDevice(deviceToken);
       } catch (e) {
-        console.warn(`[auth] fail-close: validator threw for ${req.user.email}: ${e.message || e}`);
+        console.warn(`[auth] fail-close: device validator threw: ${e.message || e}`);
         result = { valid: false, transient: true };
       }
-      const valid = result?.valid;
-      const freshRole = result?.role ?? null;
-      if (!valid) {
-        req.user = null;
-        // 확정 무효(404)에서만 쿠키를 지운다. transient(auth 5xx/네트워크 장애)면 이 요청은
-        // 거부하되 쿠키를 보존해 복구 후 재-OAuth 없이 세션이 이어지게 한다.
-        if (!result?.transient) {
-          const cookieOpts = formatCookieOpts(0, isSecureConnection(req));
-          res.setHeader("Set-Cookie", [
-            `fsk_session=; HttpOnly; ${cookieOpts}`,
-            `fsk_user=; ${cookieOpts}`,
-          ]);
-        }
-      } else if (freshRole && freshRole !== req.user.role && process.env.JWT_SECRET) {
-        req.user.role = freshRole;
-        const { email, name } = req.user;
-        const newJwt = createJWT({ email, name, role: freshRole }, process.env.JWT_SECRET);
-        const cookieOpts = formatCookieOpts(7 * 24 * 3600, isSecureConnection(req));
-        const userPayload = encodeURIComponent(JSON.stringify({ name, role: freshRole }));
-        res.setHeader("Set-Cookie", [
-          `fsk_session=${newJwt}; HttpOnly; ${cookieOpts}`,
-          `fsk_user=${userPayload}; ${cookieOpts}`,
-        ]);
+      if (result?.valid && result.id && result.scope) {
+        req.user = {
+          kind: "device",
+          id: result.id,
+          email: `device:${result.id}`,
+          name: result.name || `Device ${result.id}`,
+          role: "device",
+          scope: result.scope,
+        };
+        const maxAge = 400 * 24 * 3600;
+        const opts = `Path=/; SameSite=Strict; Max-Age=${maxAge}${secure ? "; Secure" : ""}`;
+        appendCookies(`fsk_device=${encodeURIComponent(deviceToken)}; HttpOnly; ${opts}`);
+      } else if (!result?.transient) {
+        const opts = `Path=/; SameSite=Strict; Max-Age=0${secure ? "; Secure" : ""}`;
+        appendCookies(`fsk_device=; HttpOnly; ${opts}`);
       }
     }
 
@@ -367,20 +418,34 @@ export function createApp(deps, authRoleFn) {
           return typeof v === "function" ? v.bind(target) : v;
         },
       });
-      const role = authRoleFn(gateReq);
-      if (!role) return next(); // public
+      let requirement = authRoleFn(gateReq);
+      if (!requirement) return next(); // public
+      // Small compatibility surface for service factories while their callers
+      // migrate from role strings. Operational authorization is never numeric.
+      if (typeof requirement === "string") {
+        requirement = requirement === "admin"
+          ? { humanRoles: ["admin"] }
+          : requirement === "official"
+            ? { humanRoles: ["official", "admin"] }
+            : requirement === "student"
+              ? { humanRoles: ["student"] }
+              : { deny: true };
+      }
       // Nested module apps see `/years/...` here even when Express mounted
       // them below `/competition/api/v1/...`. Include baseUrl so versioned API
       // routes keep API-style 401/403 responses instead of UI redirects.
       const basePath = String(req.baseUrl || "").toLowerCase().replace(/\/+$/, "");
       const isApi = gatePath.startsWith("/api/") || basePath.startsWith("/competition/api/");
-      if (!req.user) {
-        if (!isApi) return res.redirect("/");
-        return res.status(401).send("인증이 필요합니다.");
+      if (!req.user || req.authAmbiguous) {
+        if (!isApi) return res.redirect(requirement.unauthenticatedRedirect || "/");
+        return res.status(401).json({
+          code: req.authAmbiguous ? "AMBIGUOUS_PRINCIPAL" : "AUTH_REQUIRED",
+          message: "인증이 필요합니다.",
+        });
       }
-      if (!VALID_ROLES.includes(req.user.role) || (ROLE_LEVELS[req.user.role] || 0) < (ROLE_LEVELS[role] || Infinity)) {
+      if (!authorizePrincipal(req.user, requirement)) {
         if (!isApi) return res.redirect("/");
-        return res.status(403).send("권한이 없습니다.");
+        return res.status(403).json({ code: "ACCESS_DENIED", message: "권한이 없습니다." });
       }
       next();
     });
@@ -404,6 +469,7 @@ export function createApp(deps, authRoleFn) {
   // 해야 하는 곳이 자체 HTTP 클라이언트를 다시 구현하면, 404-vs-non-ok 해석이 두 곳에
   // 생기고 그중 한쪽만 테스트로 덮인다.
   app.validateUser = validateUser;
+  app.validateDevice = validateDevice;
 
   return app;
 }
@@ -416,10 +482,10 @@ export function setupProcessHandlers(db) {
 }
 
 // 내부 서비스 호출만 허용하는 가드. createApp 미들웨어가 X-Internal-Service
-// 헤더 검증에 성공하면 req.user = { email: "internal", role: "admin" }로 설정한다.
+// 헤더 검증에 성공하면 req.user = { kind: "internal", ... }로 설정한다.
 // 허용 시 true, 아니면 403 응답 후 false를 반환한다.
 export function requireInternalRequest(req, res) {
-  if (req.user?.email === "internal" && req.user?.role === "admin") return true;
+  if (req.user?.kind === "internal") return true;
   res.status(403).send("내부 서비스 호출만 허용됩니다.");
   return false;
 }

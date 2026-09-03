@@ -10,7 +10,12 @@ process.env.INTERNAL_SECRET = 'test-secret';
 import { createLogger } from '../../shared/logger.mjs';
 
 function mockReq(query = {}, user = null, headers = {}) {
-  return { query, user, headers, ip: '127.0.0.1' };
+  return {
+    query,
+    user: user ? { kind: 'human', ...user } : null,
+    headers,
+    ip: '127.0.0.1',
+  };
 }
 
 function mockRes() {

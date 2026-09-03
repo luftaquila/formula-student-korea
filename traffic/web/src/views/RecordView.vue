@@ -18,9 +18,11 @@ import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
 import { useRoute } from "vue-router";
 import RecordStatusControl from "../components/RecordStatusControl.vue";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 
 const { notyf } = useNotification();
+const canManage = permissionComputed("traffic.manage");
 const route = useRoute();
 // 같은 RecordView를 유선(/record)·무선(/wireless/record) 양쪽에서 쓰고, 토글 버튼만 방향을 바꾼다.
 const measureToggle = computed(() =>
@@ -227,7 +229,7 @@ async function loadRecords() {
 }
 
 async function handleDelete() {
-  if (!selectedFile.value) return;
+  if (!canManage.value || !selectedFile.value) return;
   if (!confirm(`"${selectedFile.value}" 기록을 삭제하시겠습니까?`)) return;
 
   try {
@@ -567,7 +569,7 @@ async function handleAddRecord() {
 <template>
   <div class="page-layout">
     <!-- 경기 모드 활성화/비활성화 -->
-    <section class="event-mode-card">
+    <section v-if="canManage" class="event-mode-card">
       <div class="card-header record-header-row">
         <h3>경기 모드 활성화</h3>
         <router-link :to="measureToggle.to" class="wireless-switch" data-testid="wireless-switch">{{ measureToggle.label }}</router-link>
@@ -617,7 +619,7 @@ async function handleAddRecord() {
             XLSX
           </button>
           <button
-            v-if="!isControllerLog"
+            v-if="!isControllerLog && canManage"
             class="btn-visibility"
             :class="{ active: recordVisibility[selectedFile] !== false }"
             @click="handleToggleVisibility"
@@ -635,7 +637,7 @@ async function handleAddRecord() {
             </svg>
             기록 추가
           </button>
-          <button class="btn btn-danger" @click="handleDelete">
+          <button v-if="canManage" class="btn btn-danger" @click="handleDelete">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <polyline points="3 6 5 6 21 6" />
               <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />

@@ -7,7 +7,7 @@ const INSPECTION_TYPE = "chassis";
 async function apiRegister(num) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${INSPECTION_TYPE}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
 }
@@ -15,7 +15,7 @@ async function apiRegister(num) {
 async function apiEnterBooth(num, boothNum = 1) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
     body: JSON.stringify({ num }),
   });
 }
@@ -23,13 +23,13 @@ async function apiEnterBooth(num, boothNum = 1) {
 async function apiExitBooth(boothNum = 1) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
   });
 }
 
 async function apiGetQueue() {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${INSPECTION_TYPE}`, {
-    headers: { Cookie: getAuthCookie("official") },
+    headers: { Cookie: getAuthCookie("operationsOperator") },
   });
   return res.json();
 }
@@ -37,7 +37,7 @@ async function apiGetQueue() {
 async function apiSetBoothCount(count) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/config`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ count }),
   });
 }
@@ -60,18 +60,18 @@ test.describe("Concurrent officials simultaneous booth ops", () => {
   test.beforeAll(async () => {
     // Save cancel penalty
     const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
     originalPenalty = (await res.json()).value;
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ value: 0 }),
     });
 
     // Get original booth count
     const boothsRes = await fetch(`${BASE_URL}/competition/api/v1/queue/booths/all`, {
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
     const booths = await boothsRes.json();
     if (booths[INSPECTION_TYPE]) {
@@ -92,7 +92,7 @@ test.describe("Concurrent officials simultaneous booth ops", () => {
     if (originalPenalty !== undefined) {
       await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
@@ -107,8 +107,8 @@ test.describe("Concurrent officials simultaneous booth ops", () => {
     await apiRegister(20);
 
     // Create two official contexts
-    const context1 = await browser.newContext({ storageState: storageStatePath("official") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("official") });
+    const context1 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();

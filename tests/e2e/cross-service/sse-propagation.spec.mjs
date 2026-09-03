@@ -79,7 +79,7 @@ test.describe("Cross-service SSE propagation", () => {
       year: YEAR,
       teamNum,
       category,
-      role: "admin",
+      profile: "admin",
     });
 
     // Open score dashboard
@@ -158,7 +158,7 @@ test.describe("Cross-service SSE propagation", () => {
       year: YEAR,
       teamNum,
       changes: completionChanges,
-      role: "admin",
+      profile: "admin",
     });
   });
 

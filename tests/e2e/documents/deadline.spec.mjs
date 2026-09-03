@@ -10,7 +10,7 @@ const fmt = (d) => d.toISOString().slice(0, 16).replace("T", " ");
 async function apiCreateSession(data) {
   return fetch(`${BASE_URL}/competition/api/v1/documents/admin/sessions`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify(data),
   });
 }
@@ -18,7 +18,7 @@ async function apiCreateSession(data) {
 async function apiDeleteSession(id) {
   return fetch(`${BASE_URL}/competition/api/v1/documents/admin/sessions/${id}`, {
     method: "DELETE",
-    headers: { Cookie: getAuthCookie("chief") },
+    headers: { Cookie: getAuthCookie("operationsManager") },
   });
 }
 

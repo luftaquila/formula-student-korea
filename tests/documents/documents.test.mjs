@@ -30,6 +30,8 @@ const MOCK_USERS = [
   { email: 'student1@test.com', name: 'Student 1', role: 'student', active: 1 },
   { email: 'student2@test.com', name: 'Student 2', role: 'student', active: 1 },
   { email: 'official@test.com', name: 'Official', role: 'official', active: 1 },
+  { email: 'documents-operator@test.com', name: 'Documents Operator', role: 'official', active: 1,
+    permissions: ['documents.operate'] },
   { email: 'chief@test.com', name: 'Chief', role: 'chief', active: 1 },
   { email: 'admin@test.com', name: 'Admin', role: 'admin', active: 1 },
 ];
@@ -37,13 +39,24 @@ const MOCK_USERS = [
 function createMockAuthServer() {
   const app = express();
   app.use(express.json());
-  app.get('/api/users', (req, res) => {
+  app.get('/api/internal/users', (req, res) => {
     res.json(MOCK_USERS);
   });
   app.get('/api/users/role/:email', (req, res) => {
     const user = MOCK_USERS.find(u => u.email === decodeURIComponent(req.params.email));
     if (!user) return res.status(404).json({ error: 'not found' });
     res.json({ role: user.role });
+  });
+  app.get('/api/users/access/:email', async (req, res) => {
+    const user = MOCK_USERS.find(u => u.email === decodeURIComponent(req.params.email));
+    if (!user || !user.active) return res.status(404).json({ error: 'not found' });
+    const authoritative = await TRUST_JWT(user.email, user);
+    res.json({
+      id: user.email,
+      role: authoritative.role,
+      permissions: authoritative.permissions,
+      accessRevision: authoritative.accessRevision,
+    });
   });
   return app;
 }
@@ -78,6 +91,10 @@ const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', rol
 const studentCookie = makeAuthCookie({ email: 'student1@test.com', name: 'Student 1', role: 'student' });
 const student2Cookie = makeAuthCookie({ email: 'student2@test.com', name: 'Student 2', role: 'student' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+const documentsOperatorCookie = makeAuthCookie({
+  email: 'documents-operator@test.com', name: 'Documents Operator', role: 'official',
+  permissions: ['documents.operate'],
+});
 const teamsByYear = new Map([
   [2025, {
     1: { id: 1, num: 1, univ: '서울대', team: '팀A', type: 'EV', active: true },
@@ -1867,7 +1884,7 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 401);
   });
 
-  it('POST /api/admin/sessions with student cookie returns 403 (chief required)', async () => {
+  it('POST /api/admin/sessions with student cookie returns 403 (documents.manage required)', async () => {
     const res = await client.post('/api/admin/sessions', {
       body: {
         name: 'Student Admin Session',
@@ -1881,14 +1898,24 @@ describe('Auth enforcement', () => {
     assert.equal(res.status, 403);
   });
 
-  it('GET /api/sessions with chief cookie returns 200 (chief > student)', async () => {
+  it('GET /api/sessions rejects an operations-only official principal', async () => {
     const res = await client.get('/api/sessions', { cookie: chiefCookie });
-    assert.equal(res.status, 200);
+    assert.equal(res.status, 403);
   });
 
-  it('GET /api/admin/sessions with official cookie returns 403 (chief required)', async () => {
+  it('GET /api/admin/sessions with an unrelated official grant returns 403', async () => {
     const res = await client.get('/api/admin/sessions', { cookie: officialCookie });
     assert.equal(res.status, 403);
+  });
+
+  it('allows documents.operate reads but requires documents.manage for writes', async () => {
+    const read = await client.get('/api/admin/sessions', { cookie: documentsOperatorCookie });
+    assert.equal(read.status, 200);
+    const write = await client.post('/api/admin/sessions', {
+      cookie: documentsOperatorCookie,
+      body: {},
+    });
+    assert.equal(write.status, 403);
   });
 
   it('GET /api/admin/student-teams without auth returns 401', async () => {

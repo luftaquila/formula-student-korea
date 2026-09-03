@@ -5,7 +5,7 @@ import { storageStatePath, waitForPageReady, expectNotification } from "../helpe
 const YEAR = currentCompetitionYear();
 
 test.describe("Documents session CRUD", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   test("creates, edits, and deletes a session", async ({ page }) => {
     // Navigate to admin dashboard

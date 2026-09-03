@@ -6,9 +6,9 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 // and is intentionally not driven through the grid here (library-controlled DOM,
 // fragile). This exercises the stable, user-visible subscribe affordance.
 test.describe("Calendar subscribe UI", () => {
-  for (const role of ["chief", "student"]) {
-    test(`${role} can open the subscribe dialog and gets a role-scoped iCal URL`, async ({ browser }) => {
-      const context = await browser.newContext({ storageState: storageStatePath(role) });
+  for (const [profile, audience] of [["operationsManager", "official"], ["student", "student"]]) {
+    test(`${profile} can open the subscribe dialog and gets an audience-scoped iCal URL`, async ({ browser }) => {
+      const context = await browser.newContext({ storageState: storageStatePath(profile) });
       const page = await context.newPage();
       await page.goto("/calendar");
       await waitForPageReady(page);
@@ -20,7 +20,7 @@ test.describe("Calendar subscribe UI", () => {
       await sub;
 
       const url = page.locator(".subscribe-dialog__url");
-      await expect(url).toHaveValue(new RegExp(`/calendar/api/events/ical\\?role=${role}&sig=[0-9a-f]+`));
+      await expect(url).toHaveValue(new RegExp(`/calendar/api/events/ical\\?role=${audience}&sig=[0-9a-f]+`));
       await context.close();
     });
   }

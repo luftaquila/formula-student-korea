@@ -56,39 +56,70 @@ describe('GET /api/health', () => {
 
 // ─── Auth ───────────────────────────────────────────────────────────────
 describe('Auth enforcement', () => {
-  const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
   const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+  const queueManagerCookie = makeAuthCookie({
+    email: 'queue-manager@test.com', name: 'Queue Manager', role: 'official', permissions: ['queue.manage'],
+  });
+  const courseOperatorCookie = makeAuthCookie({
+    email: 'course-operator@test.com', name: 'Course Operator', role: 'official', permissions: ['course.operate'],
+  });
+  const courseManagerCookie = makeAuthCookie({
+    email: 'course-manager@test.com', name: 'Course Manager', role: 'official', permissions: ['course.manage'],
+  });
+  const roverOperatorCookie = makeAuthCookie({
+    email: 'rover-operator@test.com', name: 'Rover Operator', role: 'official', permissions: ['rover.operate'],
+  });
 
   it('rejects unauthenticated requests to /api/courses', async () => {
     const res = await client.get('/api/courses');
     assert.equal(res.status, 401);
   });
 
-  it('rejects below-chief roles from /api/courses', async () => {
+  it('rejects human roles and unrelated service grants from /api/courses', async () => {
     const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
     const studentRes = await client.get('/api/courses', { cookie: studentCookie });
     assert.equal(studentRes.status, 403);
     const officialRes = await client.get('/api/courses', { cookie: officialCookie });
     assert.equal(officialRes.status, 403);
+    const unrelatedRes = await client.get('/api/courses', { cookie: queueManagerCookie });
+    assert.equal(unrelatedRes.status, 403);
   });
 
-  it('allows chief to manage courses (cone management is chief-level)', async () => {
-    const res = await client.get('/api/courses', { cookie: chiefCookie });
+  it('allows course.operate to edit courses', async () => {
+    const res = await client.get('/api/courses', { cookie: courseOperatorCookie });
     assert.equal(res.status, 200);
   });
 
-  it('keeps rover control and mission history admin-only (chief is rejected)', async () => {
-    const rover = await client.get('/api/rover/status', { cookie: chiefCookie });
-    assert.equal(rover.status, 403);
-    const missions = await client.get('/api/missions', { cookie: chiefCookie });
-    assert.equal(missions.status, 403);
+  it('keeps rover operations independent from course management', async () => {
+    const courseManagerRover = await client.get('/api/rover/status', { cookie: courseManagerCookie });
+    assert.equal(courseManagerRover.status, 403);
+    const courseManagerVr = await fetch(`${baseUrl}/vr`, {
+      headers: { Cookie: courseManagerCookie },
+      redirect: 'manual',
+    });
+    assert.equal(courseManagerVr.status, 302);
+    assert.equal(courseManagerVr.headers.get('location'), '/');
+    const rover = await client.get('/api/rover/status', { cookie: roverOperatorCookie });
+    assert.equal(rover.status, 200);
+    const missions = await client.get('/api/missions', { cookie: roverOperatorCookie });
+    assert.equal(missions.status, 200);
+    const roverVr = await fetch(`${baseUrl}/vr`, {
+      headers: { Cookie: roverOperatorCookie },
+      redirect: 'manual',
+    });
+    assert.notEqual(roverVr.status, 302);
   });
 
-  it('makes course deletion admin-only (chief is rejected, gate runs before handler)', async () => {
-    // The auth gate returns 403 ahead of the handler, so this holds whether or
-    // not a course with this id exists. Chief keeps create/rename/cone edits.
-    const res = await client.delete('/api/courses/1', { cookie: chiefCookie });
-    assert.equal(res.status, 403);
+  it('requires course.manage for destructive course and snapshot operations', async () => {
+    const deleteDenied = await client.delete('/api/courses/1', { cookie: courseOperatorCookie });
+    assert.equal(deleteDenied.status, 403);
+    const snapshotDenied = await client.get('/api/courses/1/snapshots', { cookie: courseOperatorCookie });
+    assert.equal(snapshotDenied.status, 403);
+
+    const deleteAllowed = await client.delete('/api/courses/99999', { cookie: courseManagerCookie });
+    assert.equal(deleteAllowed.status, 404);
+    const snapshotAllowed = await client.get('/api/courses/99999/snapshots', { cookie: courseManagerCookie });
+    assert.equal(snapshotAllowed.status, 404);
   });
 });
 
@@ -844,17 +875,21 @@ describe('PATCH /api/courses/:id/direction', () => {
     assert.equal(res.status, 404);
   });
 
-  it('allows chief but rejects below-chief roles', async () => {
-    const chiefCookie = makeAuthCookie({ email: 'chief2@test.com', name: 'Chief', role: 'chief' });
-    const officialCookie = makeAuthCookie({ email: 'official2@test.com', name: 'Official', role: 'official' });
-    const chiefRes = await client.patch(`/api/courses/${courseId}/direction`, {
-      body: { reverse: false }, cookie: chiefCookie,
+  it('allows course operation but rejects an unrelated grant', async () => {
+    const editorCookie = makeAuthCookie({
+      email: 'course-editor@test.com', name: 'Course editor', role: 'official', permissions: ['course.operate'],
     });
-    assert.equal(chiefRes.status, 200);
-    const officialRes = await client.patch(`/api/courses/${courseId}/direction`, {
-      body: { reverse: true }, cookie: officialCookie,
+    const otherCookie = makeAuthCookie({
+      email: 'queue-operator@test.com', name: 'Queue operator', role: 'official', permissions: ['queue.operate'],
     });
-    assert.equal(officialRes.status, 403);
+    const editorRes = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: false }, cookie: editorCookie,
+    });
+    assert.equal(editorRes.status, 200);
+    const otherRes = await client.patch(`/api/courses/${courseId}/direction`, {
+      body: { reverse: true }, cookie: otherCookie,
+    });
+    assert.equal(otherRes.status, 403);
   });
 });
 
@@ -906,7 +941,7 @@ describe('start_cone_id dangling cleanup', () => {
 // ─── Bulk cone delete (전체 삭제) ──────────────────────────────────────────
 describe('DELETE /api/courses/:id/cones (delete all)', () => {
   let courseId, coneIds;
-  const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+  const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
   const startOf = async (id) =>
     (await (await client.get('/api/courses', { cookie: adminCookie })).json())
       .find((c) => c.id === id)?.start_cone_id;
@@ -930,11 +965,11 @@ describe('DELETE /api/courses/:id/cones (delete all)', () => {
     assert.equal(res.status, 404);
   });
 
-  it('is allowed for chief (parity with per-cone delete)', async () => {
+  it('is allowed for master (parity with per-cone delete)', async () => {
     // Throwaway course so the main course's cones survive for the next test.
-    const tmpId = (await (await client.post('/api/courses', { body: { name: '전체삭제 chief' }, cookie: adminCookie })).json()).id;
+    const tmpId = (await (await client.post('/api/courses', { body: { name: '전체삭제 master' }, cookie: adminCookie })).json()).id;
     await client.post(`/api/courses/${tmpId}/cones`, { body: { lat: 37.0, lng: 126.0, side: 'left' }, cookie: adminCookie });
-    const res = await client.delete(`/api/courses/${tmpId}/cones`, { cookie: chiefCookie });
+    const res = await client.delete(`/api/courses/${tmpId}/cones`, { cookie: masterCookie });
     assert.equal(res.status, 200);
     await client.delete(`/api/courses/${tmpId}`, { cookie: adminCookie });
   });
@@ -992,6 +1027,14 @@ describe('POST /api/rover/position', () => {
       body: { lat: 35.0, lng: 126.0 },
     });
     assert.equal(res.status, 401);
+  });
+
+  it('rejects a human admin because device ingest is internal-only', async () => {
+    const res = await client.post('/api/rover/position', {
+      body: { lat: 35.0, lng: 126.0 },
+      cookie: adminCookie,
+    });
+    assert.equal(res.status, 403);
   });
 
   it('rejects invalid coordinates', async () => {
@@ -1445,8 +1488,7 @@ describe('Rover telemetry + status (internal)', () => {
       body: { nav_state: 'IDLE' },
       cookie: adminCookie,
     });
-    // admin cookie can still reach it (falls through to admin role), so ensure public 401
-    assert.ok(res.status === 200 || res.status === 401 || res.status === 403);
+    assert.equal(res.status, 403);
   });
 
   it('public request to /api/rover/telemetry is rejected', async () => {
@@ -1775,6 +1817,11 @@ describe('Rover log cache', () => {
   it('rejects non-internal upload', async () => {
     const res = await client.post('/api/rover/logs', { body: { entries: [] } });
     assert.equal(res.status, 401);
+
+    const adminRes = await client.post('/api/rover/logs', {
+      body: { entries: [] }, cookie: adminCookie,
+    });
+    assert.equal(adminRes.status, 403);
   });
 
   it('accepts upload and returns the cached entries', async () => {
@@ -3059,7 +3106,7 @@ describe('Mission telemetry historizes NTRIP link health', () => {
 
 // ─── Snapshots (admin-only + delete) ──────────────────────────────────────
 describe('Course snapshots', () => {
-  const chiefCookie = makeAuthCookie({ email: 'chief-snap@test.com', name: 'Chief', role: 'chief' });
+  const masterCookie = makeAuthCookie({ email: 'master-snap@test.com', name: 'Master', role: 'master' });
   let courseId;
 
   before(async () => {
@@ -3069,11 +3116,11 @@ describe('Course snapshots', () => {
     await client.post(`/api/courses/${courseId}/cones`, { body: { lat: 35.2, lng: 126.2, side: 'right' }, cookie: adminCookie });
   });
 
-  it('rejects chief from every snapshot route (admin-only)', async () => {
-    assert.equal((await client.get(`/api/courses/${courseId}/snapshots`, { cookie: chiefCookie })).status, 403);
-    assert.equal((await client.post(`/api/courses/${courseId}/snapshots`, { body: { reason: 'x' }, cookie: chiefCookie })).status, 403);
-    assert.equal((await client.post(`/api/courses/${courseId}/snapshots/1/restore`, { cookie: chiefCookie })).status, 403);
-    assert.equal((await client.delete(`/api/courses/${courseId}/snapshots/1`, { cookie: chiefCookie })).status, 403);
+  it('rejects master from every snapshot route (admin-only)', async () => {
+    assert.equal((await client.get(`/api/courses/${courseId}/snapshots`, { cookie: masterCookie })).status, 403);
+    assert.equal((await client.post(`/api/courses/${courseId}/snapshots`, { body: { reason: 'x' }, cookie: masterCookie })).status, 403);
+    assert.equal((await client.post(`/api/courses/${courseId}/snapshots/1/restore`, { cookie: masterCookie })).status, 403);
+    assert.equal((await client.delete(`/api/courses/${courseId}/snapshots/1`, { cookie: masterCookie })).status, 403);
   });
 
   it('lets admin create, list, restore, and delete a snapshot', async () => {
@@ -3309,22 +3356,22 @@ describe('Memo stickers', () => {
     assert.equal(res.status, 404);
   });
 
-  it('allows chief to manage memos (course-level annotation)', async () => {
-    const chiefCookie = makeAuthCookie({ email: 'chief2@test.com', name: 'Chief2', role: 'chief' });
+  it('allows master to manage memos (course-level annotation)', async () => {
+    const masterCookie = makeAuthCookie({ email: 'master2@test.com', name: 'Master2', role: 'master' });
     const res = await client.post(`/api/courses/${memoCourseId}/memos`, {
       body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
-      cookie: chiefCookie,
+      cookie: masterCookie,
     });
     assert.equal(res.status, 201);
   });
 
-  it('rejects below-chief roles from memo management', async () => {
-    const officialCookie = makeAuthCookie({ email: 'official2@test.com', name: 'Official2', role: 'official' });
-    const list = await client.get(`/api/courses/${memoCourseId}/memos`, { cookie: officialCookie });
+  it('rejects below-master roles from memo management', async () => {
+    const chiefCookie = makeAuthCookie({ email: 'chief2@test.com', name: 'Chief2', role: 'chief' });
+    const list = await client.get(`/api/courses/${memoCourseId}/memos`, { cookie: chiefCookie });
     assert.equal(list.status, 403);
     const create = await client.post(`/api/courses/${memoCourseId}/memos`, {
       body: { lat: 37.5, lng: 126.9, width: 10, height: 10 },
-      cookie: officialCookie,
+      cookie: chiefCookie,
     });
     assert.equal(create.status, 403);
   });

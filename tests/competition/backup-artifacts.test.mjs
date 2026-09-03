@@ -146,6 +146,7 @@ function scriptProject() {
   }
   fs.mkdirSync(path.join(root, "shared"), { recursive: true });
   fs.copyFileSync(path.resolve("shared", "competition-year.mjs"), path.join(root, "shared", "competition-year.mjs"));
+  fs.copyFileSync(path.resolve("shared", "access-control.js"), path.join(root, "shared", "access-control.js"));
   fs.symlinkSync(path.resolve("competition/node_modules"), path.join(root, "competition", "node_modules"), "dir");
   return root;
 }

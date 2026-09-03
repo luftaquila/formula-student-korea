@@ -10,23 +10,23 @@ test.describe("Documents student resubmission flow", () => {
   let sessionId;
 
   test.beforeAll(async ({ browser }) => {
-    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const manager = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const student = await browser.newContext({ storageState: storageStatePath("student") });
     try {
-      sessionId = await createDocumentSession(chief.request, SESSION_NAME);
+      sessionId = await createDocumentSession(manager.request, SESSION_NAME);
       await submitDocument(student.request, sessionId, "resubmit-original.pdf");
     } finally {
       await student.close();
-      await chief.close();
+      await manager.close();
     }
   });
 
   test.afterAll(async ({ browser }) => {
-    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const manager = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
-      await deleteDocumentSession(chief.request, sessionId);
+      await deleteDocumentSession(manager.request, sessionId);
     } finally {
-      await chief.close();
+      await manager.close();
     }
   });
 

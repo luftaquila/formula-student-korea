@@ -1,8 +1,5 @@
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const express = require('../../calendar/node_modules/express/index.js');
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -11,29 +8,9 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TRUST_JWT,
 } from '../helpers/test-utils.mjs';
 import { createCalendarApp } from '../../calendar/index.mjs';
-
-/* ============================================
-   Mock Auth Server
-   ============================================ */
-const MOCK_USERS = [
-  { email: 'student@test.com', name: 'Student', role: 'student', active: 1 },
-  { email: 'official@test.com', name: 'Official', role: 'official', active: 1 },
-  { email: 'chief@test.com', name: 'Chief', role: 'chief', active: 1 },
-  { email: 'admin@test.com', name: 'Admin', role: 'admin', active: 1 },
-];
-
-function createMockAuthServer() {
-  const app = express();
-  app.use(express.json());
-  app.get('/api/users/role/:email', (req, res) => {
-    const user = MOCK_USERS.find(u => u.email === decodeURIComponent(req.params.email));
-    if (!user) return res.status(404).json({ error: 'not found' });
-    res.json({ role: user.role });
-  });
-  return app;
-}
 
 /* ============================================
    Setup
@@ -41,21 +18,19 @@ function createMockAuthServer() {
 setupTestEnv();
 
 let server, baseUrl, client, db, dbPath;
-let mockAuthServer;
-
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
-const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+const managerCookie = makeAuthCookie({
+  email: 'calendar-manager@test.com',
+  name: 'Calendar Manager',
+  role: 'official',
+  permissions: ['calendar.manage'],
+});
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
 before(async () => {
-  const mockApp = createMockAuthServer();
-  const mockStarted = await startServer(mockApp);
-  mockAuthServer = mockStarted.server;
-  process.env.AUTH_SERVER = mockStarted.baseUrl;
-
   dbPath = tmpDbPath();
-  const result = createCalendarApp({ dbPath });
+  const result = createCalendarApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
   const started = await startServer(result.app);
   server = started.server;
@@ -65,7 +40,6 @@ before(async () => {
 
 after(async () => {
   await stopServer(server);
-  await stopServer(mockAuthServer);
   cleanup(dbPath);
 });
 
@@ -97,7 +71,7 @@ describe('Calendar API', () => {
   describe('Role validation on write endpoints', () => {
     it('rejects invalid role value on create', async () => {
       const res = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'Bad Role', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'superadmin' },
       });
       assert.equal(res.status, 400);
@@ -107,45 +81,39 @@ describe('Calendar API', () => {
 
     it('rejects invalid role value on update', async () => {
       const create = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'To Update', start: '2026-08-01', end: '2026-08-01', allDay: true },
       });
       const { id } = await create.json();
       const res = await client.put(`/api/events/${id}`, {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'To Update', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'hacker' },
       });
       assert.equal(res.status, 400);
     });
 
-    it('prevents chief from setting admin-level visibility', async () => {
-      const res = await client.post('/api/events', {
-        cookie: chiefCookie,
-        body: { title: 'Admin Only', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'admin' },
-      });
-      assert.equal(res.status, 403);
-    });
+    it('accepts exactly public, student, and official audiences', async () => {
+      for (const role of ['public', 'student', 'official']) {
+        const res = await client.post('/api/events', {
+          cookie: managerCookie,
+          body: { title: `${role} audience`, start: '2026-08-01', end: '2026-08-01', allDay: true, role },
+        });
+        assert.equal(res.status, 201);
+      }
 
-    it('allows admin to set admin-level visibility', async () => {
-      const res = await client.post('/api/events', {
-        cookie: adminCookie,
-        body: { title: 'Admin Event', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'admin' },
-      });
-      assert.equal(res.status, 201);
-    });
-
-    it('allows chief to set chief-level visibility', async () => {
-      const res = await client.post('/api/events', {
-        cookie: chiefCookie,
-        body: { title: 'Chief Event 2', start: '2026-08-01', end: '2026-08-01', allDay: true, role: 'chief' },
-      });
-      assert.equal(res.status, 201);
+      for (const role of ['staff', 'chief', 'master', 'admin']) {
+        const res = await client.post('/api/events', {
+          cookie: adminCookie,
+          body: { title: `${role} retired audience`, start: '2026-08-01', end: '2026-08-01', allDay: true, role },
+        });
+        assert.equal(res.status, 400);
+      }
     });
   });
 
   describe('Role-based event filtering', () => {
     const visibilityPrefix = 'Visibility fixture: ';
-    const roles = ['public', 'student', 'official', 'chief', 'admin'];
+    const roles = ['public', 'student', 'official'];
 
     before(async () => {
       for (const role of roles) {
@@ -188,11 +156,11 @@ describe('Calendar API', () => {
       assert.deepEqual(fixtureRoles(await res.json()), ['official', 'public', 'student']);
     });
 
-    it('admin sees all events including admin-role events', async () => {
+    it('admin sees every audience', async () => {
       const res = await client.get('/api/events?timeMin=2026-01-01&timeMax=2026-12-31', { cookie: adminCookie });
       assert.equal(res.status, 200);
       const events = await res.json();
-      assert.deepEqual(fixtureRoles(events), ['admin', 'chief', 'official', 'public', 'student']);
+      assert.deepEqual(fixtureRoles(events), ['official', 'public', 'student']);
     });
   });
 
@@ -204,7 +172,7 @@ describe('Calendar API', () => {
 
     it('includes all-day events when range bounds are ISO timestamps', async () => {
       const create = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'ISO Bound All Day', start: '2026-09-03', end: '2026-09-03', allDay: true },
       });
       assert.equal(create.status, 201);
@@ -221,7 +189,7 @@ describe('Calendar API', () => {
 
     it('POST /api/events - creates an all-day event', async () => {
       const res = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'Technical Inspection', start: '2026-07-15', end: '2026-07-16', allDay: true, location: 'KARA Track' },
       });
       assert.equal(res.status, 201);
@@ -234,7 +202,7 @@ describe('Calendar API', () => {
 
     it('POST /api/events - creates a timed event', async () => {
       const res = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: {
           title: 'Design Event',
           start: '2026-07-15 09:00',
@@ -251,7 +219,7 @@ describe('Calendar API', () => {
 
     it('POST /api/events - rejects missing fields', async () => {
       const res = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'No dates' },
       });
       assert.equal(res.status, 400);
@@ -259,7 +227,7 @@ describe('Calendar API', () => {
 
     it('POST /api/events - rejects start after end', async () => {
       const res = await client.post('/api/events', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'Backwards', start: '2026-07-20', end: '2026-07-15', allDay: true },
       });
       assert.equal(res.status, 400);
@@ -269,7 +237,7 @@ describe('Calendar API', () => {
 
     it('PUT /api/events/:id - rejects start after end', async () => {
       const res = await client.put(`/api/events/${createdId}`, {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'Backwards', start: '2026-07-20', end: '2026-07-15', allDay: true },
       });
       assert.equal(res.status, 400);
@@ -279,7 +247,7 @@ describe('Calendar API', () => {
 
     it('PUT /api/events/:id - updates an event', async () => {
       const res = await client.put(`/api/events/${createdId}`, {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'Updated Inspection', start: '2026-07-16', end: '2026-07-17', allDay: true },
       });
       assert.equal(res.status, 200);
@@ -289,16 +257,16 @@ describe('Calendar API', () => {
 
     it('PUT /api/events/:id - returns 404 for non-existent event', async () => {
       const res = await client.put('/api/events/99999', {
-        cookie: chiefCookie,
+        cookie: managerCookie,
         body: { title: 'Ghost', start: '2026-07-16', end: '2026-07-17', allDay: true },
       });
       assert.equal(res.status, 404);
     });
 
     it('DELETE /api/events/:id - deletes an event', async () => {
-      const res = await client.delete(`/api/events/${createdId}`, { cookie: chiefCookie });
+      const res = await client.delete(`/api/events/${createdId}`, { cookie: managerCookie });
       assert.equal(res.status, 204);
-      const again = await client.delete(`/api/events/${createdId}`, { cookie: chiefCookie });
+      const again = await client.delete(`/api/events/${createdId}`, { cookie: managerCookie });
       assert.equal(again.status, 404);
     });
   });

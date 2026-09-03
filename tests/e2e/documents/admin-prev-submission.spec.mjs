@@ -6,12 +6,12 @@ const SESSION_NAME = "E2E 이전 제출 격리 세션";
 
 test.describe("Documents admin previous submission display", () => {
   test.describe.configure({ mode: "serial" });
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   let sessionId;
 
   test.beforeAll(async ({ browser }) => {
-    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const studentCtx = await browser.newContext({
       storageState: storageStatePath("student"),
     });
@@ -26,7 +26,7 @@ test.describe("Documents admin previous submission display", () => {
   });
 
   test.afterAll(async ({ browser }) => {
-    const chiefCtx = await browser.newContext({ storageState: storageStatePath("chief") });
+    const chiefCtx = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
       await deleteDocumentSession(chiefCtx.request, sessionId);
     } finally {

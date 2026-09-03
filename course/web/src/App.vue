@@ -3,9 +3,10 @@ import { ref, watch, provide, onMounted, onUnmounted } from "vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
-import { isAdmin } from "@shared/officialsStore.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const { error: notifyError } = useNotification();
+const canOperateRover = permissionComputed("rover.operate");
 
 const roverConnected = ref(false);
 const navState = ref(null);
@@ -86,10 +87,7 @@ async function fetchStatus() {
 }
 
 onMounted(async () => {
-  // Rover control (status, e-stop) is admin-only; chief manages cones only, so
-  // skip the status poll — roverConnected stays false and the global e-stop and
-  // its underlying /api/rover/* calls never engage.
-  if (isAdmin.value) await fetchStatus();
+  if (canOperateRover.value) await fetchStatus();
 });
 
 onUnmounted(() => {

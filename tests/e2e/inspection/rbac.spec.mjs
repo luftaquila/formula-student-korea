@@ -3,13 +3,13 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
 // Inspection gate (inspection/index.mjs authRoleFn ~lines 109-115):
-//   /api/sheet/template* with method != GET  -> "chief"
-//   everything else under /api/ (and SPA)    -> "official"
-// official sits one level below chief -> expect 403 on template writes.
+//   /api/sheet/template* with method != GET  -> inspection.manage
+//   operational sheet APIs                  -> inspection.operate
+// An operator has no template-management permission, so writes return 403.
 // /api/sheet/answer requires official and a valid seeded item.
 // Unauthenticated -> 401 on any gated /api/ path.
 
-// chief-gated template writes
+// inspection.manage template writes
 const chiefTemplateWrites = [
   { method: "post", path: "/competition/api/v1/inspection/sheet/template", body: { year: currentCompetitionYear(), level: "category", name: `rbac-${Date.now()}` } },
   { method: "put", path: "/competition/api/v1/inspection/sheet/template/999999", body: { name: `rbac-${Date.now()}` } },
@@ -19,7 +19,7 @@ const chiefTemplateWrites = [
 
 test.describe("inspection RBAC", () => {
   test("official is rejected on every representative template write", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    const ctx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     try {
       for (const { method, path, body } of chiefTemplateWrites) {
         await test.step(`${method.toUpperCase()} ${path}`, async () => {
@@ -46,7 +46,7 @@ test.describe("inspection RBAC", () => {
   });
 
   test("official can save an answer through the deployed route", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("official") });
+    const ctx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     try {
       const year = currentCompetitionYear();
       const templateRes = await ctx.request.get(`/competition/api/v1/inspection/sheet/template?year=${year}`);

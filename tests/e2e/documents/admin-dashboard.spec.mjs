@@ -13,7 +13,7 @@ async function removeDropdownMapping(request) {
 }
 
 test.describe("Documents admin dashboard", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   test.beforeEach(async ({ page }) => {
     await removeDropdownMapping(page.request);

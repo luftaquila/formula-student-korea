@@ -2,17 +2,17 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
 // The signed iCal feed is the only unauthenticated data-export path. The
-// subscribe URL binds an HMAC signature to the caller's role, and the feed
-// itself returns only events at/below that role. Tamper/forge must be rejected.
+// subscribe URL binds an HMAC signature to the caller's audience, and the feed
+// itself returns only events visible to that audience. Tamper/forge must be rejected.
 const PREFIX = `ical-${Date.now()}-`;
 let adminCtx;
 const created = [];
 const pubTitle = `${PREFIX}public`;
-const chiefTitle = `${PREFIX}chief`;
+const officialTitle = `${PREFIX}official`;
 
 test.beforeAll(async ({ browser }) => {
   adminCtx = await browser.newContext({ storageState: storageStatePath("admin") });
-  for (const [title, role] of [[pubTitle, "public"], [chiefTitle, "chief"]]) {
+  for (const [title, role] of [[pubTitle, "public"], [officialTitle, "official"]]) {
     const res = await adminCtx.request.post("/calendar/api/events", {
       data: { title, start: "2099-01-01", end: "2099-01-01", allDay: true, role },
     });
@@ -35,7 +35,7 @@ async function subscribePath(role) {
   return body;
 }
 
-test("subscribe returns a role-scoped signed URL", async () => {
+test("subscribe returns an audience-scoped signed URL", async () => {
   const sub = await subscribePath("student");
   expect(sub.role).toBe("student");
   expect(sub.path).toContain("role=student");
@@ -53,15 +53,15 @@ test("anonymous cannot subscribe (student+ only)", async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test("valid signed feed returns text/calendar with only at-or-below-role events", async ({ request }) => {
+test("valid signed feed returns only events visible to the subscribed audience", async ({ request }) => {
   const sub = await subscribePath("student");
   const res = await request.get(sub.path);
   expect(res.status()).toBe(200);
   expect(res.headers()["content-type"]).toContain("text/calendar");
   const body = await res.text();
   expect(body).toContain("BEGIN:VCALENDAR");
-  expect(body).toContain(pubTitle); // public ≤ student → visible
-  expect(body).not.toContain(chiefTitle); // chief > student → hidden
+  expect(body).toContain(pubTitle);
+  expect(body).not.toContain(officialTitle);
 });
 
 test("tampered signature → 403", async ({ request }) => {

@@ -4,12 +4,12 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // Documents gate (documents/index.mjs authRoleFn ~lines 168-176):
 //   Legacy team lifecycle endpoints are absent from the Competition boundary.
-//   /api/admin*     -> "chief"
-//   /api/*          -> "student"  (and SPA -> "student", /admin -> "chief")
-// student sits one level below chief -> expect 403 on /api/admin/* endpoints.
+//   /api/admin*     -> documents.operate/documents.manage by operation
+//   /api/*          -> exact-student self-service
+// A student has no document-operation permission, so admin APIs return 403.
 // Unauthenticated -> 401 on /api/admin/*.
 
-// chief-gated admin endpoints; student must be rejected (403).
+// Document-operation endpoints; a student must be rejected (403).
 const adminGated = [
   { method: "get", path: "/competition/api/v1/documents/admin/sessions", body: undefined },
   { method: "post", path: "/competition/api/v1/documents/admin/sessions", body: { name: `rbac-${Date.now()}`, year: currentCompetitionYear() } },

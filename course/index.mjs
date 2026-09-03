@@ -4,7 +4,7 @@ import { runMigrationOnce, normalizeTimestampColumn, setupRowCapRetention } from
 import { createSecretChecker } from "../shared/express-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
-import { ROLE_LEVELS } from "../shared/constants.js";
+import { access, authorizePrincipal } from "../shared/access-control.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
 import { setupMissionV2Schema } from "./lib/mission-v2.mjs";
 import { seedOrientationMarkers } from "./lib/route-mode.mjs";
@@ -393,39 +393,42 @@ function roleFn(req) {
     // Calibration progress is reported by the perception node only.
     p === "/api/rover/calibration-progress"
   ) {
-    return isInternalRequest(req) ? null : "deny";
+    return isInternalRequest(req) ? null : access.deny;
   }
+  // Remaining device reports are also ingestion endpoints. They used to admit
+  // an admin browser for diagnostics, but doing so makes a human session an
+  // alternate device credential and bypasses the service-grant model.
   if (
-    p === "/api/rover/position" ||
-    p === "/api/rover/telemetry" ||
-    p === "/api/rover/waypoint_reached" ||
-    p === "/api/rover/waypoint_skipped" ||
-    p === "/api/rover/spray_result" ||
-    p === "/api/rover/antenna_calibration_result" ||
-    p === "/api/rover/wheel_calibration_result" ||
-    p === "/api/rover/logs"
+    req.method === "POST" && (
+      p === "/api/rover/position" ||
+      p === "/api/rover/telemetry" ||
+      p === "/api/rover/waypoint_reached" ||
+      p === "/api/rover/waypoint_skipped" ||
+      p === "/api/rover/spray_result" ||
+      p === "/api/rover/antenna_calibration_result" ||
+      p === "/api/rover/wheel_calibration_result" ||
+      p === "/api/rover/logs"
+    )
   ) {
-    return isInternalRequest(req) ? null : "admin";
+    return isInternalRequest(req) ? null : access.deny;
   }
-  // Rover control, mission history, and system logs stay admin-only. Only
-  // course/cone management — plus the SPA shell and the SSE it needs for live
-  // cone sync — is exposed to chief. The frontend hides the 로버/기록 tabs from
-  // non-admins; these gates are the enforcing backstop.
-  if (p.startsWith("/api/rover")) return "admin";
-  if (p.startsWith("/api/missions")) return "admin";
-  // GPS(수신기 소스 선택 + base station 측량점) — admin 전용. 프론트에서도
-  // GPS 탭을 admin에게만 노출하며, 이 게이트가 강제한다.
-  if (p.startsWith("/api/gps")) return "admin";
-  if (p === "/api/logs") return "admin";
-  // Snapshots overwrite the whole course on restore (destructive) and can be
-  // deleted — admin-only, above plain cone management. Covers list/create/
-  // restore/delete. The frontend hides the 스냅샷 button from non-admins too.
-  if (/^\/api\/courses\/\d+\/snapshots/.test(p)) return "admin";
+  // Rover control, mission history, GPS management and course editing use
+  // independent grants. The frontend mirrors these gates, but this is the
+  // enforcing boundary.
+  if (p.startsWith("/api/rover")) return access.permission("rover.operate");
+  if (p.startsWith("/api/missions")) return access.permission("rover.operate");
+  // GPS receiver source selection and base-station survey share rover operation.
+  if (p.startsWith("/api/gps")) return access.permission("rover.operate");
+  if (p === "/api/logs") return access.anyOf(access.admin, access.internal);
+  if (/^\/vr(?:\/|$)/.test(p)) return access.permission("rover.operate");
+  // Snapshots overwrite the whole course on restore and can be deleted, so they
+  // require course management above plain course operation.
+  if (/^\/api\/courses\/\d+\/snapshots/.test(p)) return access.permission("course.manage");
   // Deleting a course cascade-wipes its cones AND every snapshot of it (both
-  // FK to course(id) ON DELETE CASCADE) — irreversible, so admin-only, in line
-  // with snapshot delete above. Create/rename and cone editing stay chief.
-  if (req.method === "DELETE" && /^\/api\/courses\/\d+$/.test(p)) return "admin";
-  return "chief";
+  // FK to course(id) ON DELETE CASCADE) — irreversible, so it follows the same
+  // course-management boundary. Create/rename and cone editing are operation.
+  if (req.method === "DELETE" && /^\/api\/courses\/\d+$/.test(p)) return access.permission("course.manage");
+  return access.permission("course.operate");
 }
 
 /* ============================================
@@ -452,10 +455,9 @@ function getMemos(courseId) {
   return db.prepare("SELECT * FROM memo WHERE course_id = ? ORDER BY id").all(courseId);
 }
 
-// 연결에 role을 태깅해 rover 텔레메트리를 admin 연결로만 좁힐 수 있게 한다(rover-routes의
-// broadcast 래퍼가 filterFn으로 사용). courses/cones/memos는 chief+ 전체에 전송된다.
-// meta.role은 연결 시점 스냅샷이므로, sse 매니저의 주기 재검증으로 강등을 반영한다(즉시-권한-반영):
-// 최신 role로 meta를 갱신(→ admin 필터가 재평가)하거나, chief 미만/삭제 시 연결을 종료한다.
+// 연결에 service grants를 태깅해 rover 텔레메트리를 rover.operate 연결로만 좁힌다.
+// courses/cones/memos는 course.operate 연결에 전송된다. 권한은 연결 시점 스냅샷이므로
+// SSE 매니저가 주기적으로 재검증해 변경·삭제 시 metadata를 갱신하거나 연결을 종료한다.
 async function revalidateSseRole(meta) {
   const email = meta.email;
   if (!email) return meta; // 검증 불가 → 유지
@@ -472,11 +474,13 @@ async function revalidateSseRole(meta) {
   // 주입 stub이 role을 생략하면 예전 코드가 끊었을 연결을 유지하게 되므로, 그 차이를
   // 모르고 stub을 쓰지 않도록 남긴다.
   const role = result.role ?? meta.role;
-  if (!role || (ROLE_LEVELS[role] || 0) < ROLE_LEVELS.chief) return null; // chief 미만 → 종료
-  return { ...meta, role };                    // 최신 role 반영
+  const permissions = Array.isArray(result.permissions) ? result.permissions : meta.permissions || [];
+  const principal = { kind: "human", role, permissions };
+  if (!authorizePrincipal(principal, access.permission("course.operate"))) return null;
+  return { ...meta, role, permissions };
 }
 app.get("/api/events", sseHandler(() => ({ courses: getCourses() }), {
-  meta: (req) => ({ role: req.user?.role, email: req.user?.email }),
+  meta: (req) => ({ role: req.user?.role, permissions: req.user?.permissions || [], email: req.user?.email }),
   revalidate: revalidateSseRole,
 }));
 
@@ -1089,7 +1093,7 @@ app.post("/api/courses/:id/cones", (req, res) => {
 
 // DELETE /api/courses/:id/cones - 코스의 모든 콘 삭제 (전체 삭제).
 // Destructive bulk wipe: a single audit entry (vs. N per-cone deletes) and one
-// SSE broadcast. Chief-allowed, matching per-cone/multi-select delete — a chief
+// SSE broadcast. Course-operation allowed, matching per-cone/multi-select delete — an editor
 // can already clear every cone one by one.
 app.delete("/api/courses/:id/cones", (req, res) => {
   const courseId = parseInt(req.params.id, 10);

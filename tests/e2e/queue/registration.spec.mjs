@@ -26,7 +26,7 @@ async function clearOwnedRegistration(request) {
 }
 
 test.describe("Queue registration", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   test.beforeEach(async ({ page }) => {
     await clearOwnedRegistration(page.request);

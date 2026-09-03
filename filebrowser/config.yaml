@@ -26,7 +26,7 @@ userDefaults:
     admin: false
     modify: true
     # share=false: 기본적으로 공개(인증 불필요) 공유 링크 생성을 막는다. 이 파일저장소는
-    # caddy forward_auth로 chief+만 접근하는데, share 링크는 그 게이트를 우회해 링크만
+    # caddy forward_auth로 files.access 권한만 접근하는데, share 링크는 그 게이트를 우회해 링크만
     # 알면 누구나 받을 수 있으므로 기본 차단한다. 공유가 필요하면 true로 되돌린다.
     share: false
     create: true

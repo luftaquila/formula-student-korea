@@ -1,39 +1,40 @@
 export const services = [
   { name: "홈", href: "/", icon: "home" },
-  // studentOnly (exact role, not hierarchical): staff use 서류 제출 관리 instead.
+  // Student self-service is exact-role only. Officials use the review route.
   // Shown to any student — including those without an assigned team; the
   // documents page itself explains "팀이 배정되지 않았습니다" on entry.
   { name: "서류 제출", href: "/documents", icon: "documents", studentOnly: true },
   { name: "검차 대기열", href: "/queue", icon: "queue" },
   { name: "등록 대기열", href: "/registration", icon: "registration" },
-  { name: "에너지미터", href: "/energymeter", icon: "energy" },
-  { name: "대회 일정", href: "/calendar", icon: "calendar" },
 ];
 
+// Reference links. Internal entries stay in-tab; external ones open a new tab.
 export const resources = [
+  { name: "대회 일정", href: "/calendar", icon: "calendar" },
+  { name: "에너지미터", href: "https://fsk-energymeter.luftaquila.io/", icon: "energy", external: true },
   { name: "공지 알림봇", href: "https://ksae-notice.luftaquila.io", icon: "notice", external: true },
+  { name: "자작차 AI 챗봇", href: "https://ksae-qna.luftaquila.io", icon: "pitbot", external: true },
   { name: "대회 규정집", href: "https://ksae-rule.luftaquila.io", icon: "rules", external: true },
-  { name: "AI 규정 챗봇", href: "https://ksae-qna.luftaquila.io", icon: "pitbot", external: true },
   { name: "자작자동차포럼", href: "https://dnf.luftaquila.io", icon: "forum", external: true },
 ];
 
-export const officials = [
-  { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin" },
-  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin" },
-  { name: "인스펙션 시트", href: "/inspection", icon: "sheet" },
-  { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
-  { name: "코스 관리", href: "/course", icon: "course", auth: "chief" },
-  // FileBrowser는 독립 SPA라 새 탭으로 연다 (landing 카드와 동일 동작)
-  { name: "파일 클라우드", href: "/files/", icon: "files", auth: "chief", external: true },
+export const operations = [
+  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin", permission: "registration.operate" },
+  { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin", permission: "queue.operate" },
+  { name: "인스펙션 시트", href: "/inspection", icon: "sheet", permission: "inspection.operate" },
+  { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", permission: "documents.operate" },
+  { name: "코스 관리", href: "/course", icon: "course", permission: "course.operate" },
+  { name: "계측 시스템", href: "/traffic", icon: "traffic", permission: "traffic.operate" },
+  { name: "성적 관리", href: "/score", icon: "score", permission: "score.operate" },
+  { name: "파일 클라우드", href: "/files/", icon: "files", permission: "files.access", external: true },
 ];
 
-export const admins = [
-  { name: "엔트리 관리", href: "/entry", icon: "entry" },
-  { name: "계측 시스템", href: "/traffic", icon: "traffic" },
-  { name: "성적 관리", href: "/score", icon: "score" },
-  { name: "계정 관리", href: "/auth", icon: "auth" },
-  { name: "이메일/SMS", href: "/email", icon: "email" },
-  { name: "시스템 로그", href: "/auth/logs", icon: "logs" },
+// Admin-only tools. These are not service grants: no Official can be given them.
+export const administration = [
+  { name: "엔트리 관리", href: "/entry", icon: "entry", adminOnly: true },
+  { name: "이메일/SMS", href: "/email", icon: "email", adminOnly: true },
+  { name: "시스템 로그", href: "/auth/logs", icon: "logs", adminOnly: true },
+  { name: "계정 및 권한", href: "/auth", icon: "auth", adminOnly: true },
 ];
 
 const icons = {
