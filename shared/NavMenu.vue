@@ -504,7 +504,9 @@ async function logout() {
   display: none;
 }
 
-.collapsible-title {
+/* The summary also carries .nav-section-title, whose later `display: block` would
+   otherwise win the tie and drop the chevron out of vertical alignment. */
+.nav-section-title.collapsible-title {
   display: flex;
   align-items: center;
 }
