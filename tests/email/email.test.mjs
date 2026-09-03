@@ -41,7 +41,7 @@ function createMockAuthServer() {
       accessRevision: 0,
     });
   });
-  app.get('/api/users', (req, res) => {
+  app.get('/api/internal/users', (req, res) => {
     res.json(MOCK_USERS.map(u => ({ ...u, protected: false })));
   });
   return app;
@@ -88,7 +88,7 @@ function createMockFetch(authBaseUrl) {
     }
 
     // Auth server requests — proxy to mock auth
-    if (urlStr.includes('/api/users')) {
+    if (urlStr.includes('/api/users') || urlStr.includes('/api/internal/users')) {
       return fetch(urlStr.replace(/http:\/\/[^/]+/, authBaseUrl), options);
     }
 

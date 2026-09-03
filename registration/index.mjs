@@ -73,7 +73,7 @@ export function createRegistrationApp(options = {}) {
     options,
     authRoleFn: (req) => {
       if (["/api/health", "/api/status", "/api/lookup", "/api/events"].includes(req.path)) return null;
-      if (req.path === "/api/logs") return access.permission("audit.view");
+      if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
       if (req.path === "/api/queue" && req.method === "POST") {
         return access.anyOf(access.permission("registration.manage"), access.device("kiosk.registration.register"));
       }

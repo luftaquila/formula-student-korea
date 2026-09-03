@@ -99,7 +99,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
       year: YEAR,
       teamNum: TEAM_NUM,
       changes: completionChanges,
-      role: "admin",
+      profile: "admin",
     });
     completionChanges = [];
 
@@ -126,7 +126,7 @@ test.describe("Full journey: Queue -> Inspection -> Score", () => {
       year: YEAR,
       teamNum: TEAM_NUM,
       category,
-      role: "admin",
+      profile: "admin",
     });
     const setResultRes = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/category-result`, {
       method: "PUT",

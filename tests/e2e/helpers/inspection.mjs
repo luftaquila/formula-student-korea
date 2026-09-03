@@ -36,10 +36,10 @@ async function replaceAnswer({ year, teamNum, itemId, value, expectedValue, head
   }
 }
 
-export async function completeInspectionCategory({ year, teamNum, category, role = "admin" }) {
+export async function completeInspectionCategory({ year, teamNum, category, profile = "admin" }) {
   const headers = {
     "Content-Type": "application/json",
-    Cookie: getAuthCookie(role),
+    Cookie: getAuthCookie(profile),
   };
   const dataResponse = await fetch(
     `${BASE_URL}/competition/api/v1/inspection/sheet/data/${year}/${teamNum}`,
@@ -59,11 +59,11 @@ export async function completeInspectionCategory({ year, teamNum, category, role
   return changes;
 }
 
-export async function restoreInspectionAnswers({ year, teamNum, changes, role = "admin" }) {
+export async function restoreInspectionAnswers({ year, teamNum, changes, profile = "admin" }) {
   if (!changes?.length) return;
   const headers = {
     "Content-Type": "application/json",
-    Cookie: getAuthCookie(role),
+    Cookie: getAuthCookie(profile),
   };
   const dataResponse = await fetch(
     `${BASE_URL}/competition/api/v1/inspection/sheet/data/${year}/${teamNum}`,

@@ -22,7 +22,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "calendar", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     if (req.method === "GET" && req.path === "/api/events") return null;
     if (req.path === "/api/events/ical") return null;
     if (req.path === "/api/events/subscribe") return access.authenticated;

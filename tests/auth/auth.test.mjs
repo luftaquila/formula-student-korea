@@ -1483,6 +1483,15 @@ describe('Auth middleware integration', () => {
     });
     assert.equal(internal.status, 200);
 
+    const users = await client.get('/api/internal/users', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(users.status, 200);
+    const internalUsers = await users.json();
+    assert.ok(internalUsers.some((user) => user.email === 'admin@test.com'));
+    assert.equal('permissions' in internalUsers[0], false);
+    assert.equal('protected' in internalUsers[0], false);
+
     const admin = await client.get('/api/users', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });

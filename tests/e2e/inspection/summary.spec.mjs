@@ -315,7 +315,7 @@ test.describe("Inspection summary dashboard", () => {
       year: YEAR,
       teamNum: TEAM,
       category: firstCategory,
-      role: "official",
+      profile: "operationsOperator",
     });
 
     // Set category result to PASS for the team
@@ -333,7 +333,7 @@ test.describe("Inspection summary dashboard", () => {
     const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: TEAM_UNIV });
     const passBadge = teamRow.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
-    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Official");
+    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Multi-service Operator");
 
     // Clean up mutable values. Inspector participation intentionally remains as history.
     const cleanupCtx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
@@ -345,7 +345,7 @@ test.describe("Inspection summary dashboard", () => {
       year: YEAR,
       teamNum: TEAM,
       changes: completionChanges,
-      role: "official",
+      profile: "operationsOperator",
     });
     await cleanupCtx.close();
   });

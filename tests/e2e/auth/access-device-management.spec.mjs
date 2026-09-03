@@ -53,6 +53,7 @@ test.describe("Access and kiosk device management", () => {
         value: createJWT({ email, name: "E2E Access Editor", role: "official", accessRevision: 0 }, JWT_SECRET),
         domain: "localhost",
         path: "/",
+        expires: -1,
         httpOnly: true,
         sameSite: "Lax",
       }]);

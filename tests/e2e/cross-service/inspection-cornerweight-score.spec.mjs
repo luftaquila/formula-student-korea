@@ -93,7 +93,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
       try {
         await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template/${categoryId}`, {
           method: "DELETE",
-          headers: chiefHeaders,
+          headers: managerHeaders,
         });
       } catch { /* ignore */ }
     }

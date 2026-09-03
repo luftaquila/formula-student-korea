@@ -49,11 +49,14 @@ test.describe("Cross-application RBAC", () => {
       await withPage(browser, storageStatePath(expectation.profile), async (page) => {
         await page.goto("/");
         await expect(page.locator("main h2")).toHaveText(expectation.headings);
+        const operations = page.locator("main section").filter({
+          has: page.getByRole("heading", { name: "Operations", exact: true }),
+        });
         for (const path of expectation.paths) {
-          await expect(page.locator('main .service-card[href="' + path + '"]')).toHaveCount(1);
+          await expect(operations.locator('.service-card[href="' + path + '"]')).toHaveCount(1);
         }
         for (const path of expectation.absentPaths) {
-          await expect(page.locator('main .service-card[href="' + path + '"]')).toHaveCount(0);
+          await expect(operations.locator('.service-card[href="' + path + '"]')).toHaveCount(0);
         }
       });
     }

@@ -47,7 +47,7 @@ export function createTeamsModule({
     if (req.path === "/health") return null;
     if (req.method === "GET" && req.path === "/teams" && req.query.includeInactive !== "true") return null;
     if (req.method === "GET" && req.path === "/vehicle-types") return null;
-    if (req.path === "/logs") return access.permission("audit.view");
+    if (req.path === "/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     return access.permission("entry.manage");
   });
   app.locals.staticRoot = staticRoot;

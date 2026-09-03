@@ -67,7 +67,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
 | GET | `/health` | public | Module health check, returns `"ok"` |
-| GET | `/logs` | `audit.view` | Module-scoped structured logs from the shared Competition DB |
+| GET | `/logs` | `audit.view` or internal | Module-scoped structured logs from the shared Competition DB |
 
 ---
 
@@ -105,6 +105,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | GET | `/api/users/exists/:email` | internal | — | 200 or 404 | Check if user exists and is active |
 | GET | `/api/users/role/:email` | internal | — | `{ role }` or 404 | Get an active user's role |
 | GET | `/api/users/access/:email` | internal | — | `{ id, role, permissions, accessRevision }` or 404 | Authoritative access snapshot used by services |
+| GET | `/api/internal/users` | internal | — | `[{ id, email, name, role, realname, phone, active }]` | List minimal user profiles for trusted Documents and Email consumers without opening the Admin API |
 
 ### Kiosk devices
 

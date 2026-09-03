@@ -22,7 +22,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     if (req.path === "/api/health") return null;
     if (req.path.startsWith("/api/internal/")) return access.internal;
     if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return access.permission("inspection.manage");
-    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     if (req.path.startsWith("/api/")) return access.permission("inspection.operate");
     return access.permission("inspection.operate"); // SPA
   },

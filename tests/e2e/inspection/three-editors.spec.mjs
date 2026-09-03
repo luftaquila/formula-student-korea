@@ -139,14 +139,14 @@ test.describe("Three concurrent inspection editors", () => {
     for (const page of [page1, page2, page3]) {
       const inspectors = page.locator(".inspector-list");
       await expect(inspectors).toContainText("E2E Admin", { timeout: 5000 });
-      await expect(inspectors).toContainText("E2E Chief", { timeout: 5000 });
-      await expect(inspectors).toContainText("E2E Official", { timeout: 5000 });
+      await expect(inspectors).toContainText("E2E Operations Manager", { timeout: 5000 });
+      await expect(inspectors).toContainText("E2E Multi-service Operator", { timeout: 5000 });
       await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".answer-edit-metadata"))
         .toContainText("E2E Admin");
       await expect(page.locator(".item-row").filter({ hasText: "절연 저항 측정" }).locator(".answer-edit-metadata"))
-        .toContainText("E2E Chief");
+        .toContainText("E2E Operations Manager");
       await expect(page.locator(".item-row").filter({ hasText: "전압 확인" }).locator(".memo-edit-metadata"))
-        .toContainText("E2E Official");
+        .toContainText("E2E Multi-service Operator");
     }
 
     await context1.close();

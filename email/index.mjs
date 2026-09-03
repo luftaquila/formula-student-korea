@@ -39,7 +39,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
     if (req.path.startsWith("/api/internal/")) return access.internal;
-    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     if (req.path.startsWith("/api/config")) return access.admin;
     if (req.path.startsWith("/api/")) return access.permission("messaging.operate");
     return access.permission("messaging.operate");
@@ -529,7 +529,7 @@ app.get("/api/recipients", async (req, res) => {
   try {
     const headers = {};
     if (process.env.INTERNAL_SECRET) headers["X-Internal-Service"] = process.env.INTERNAL_SECRET;
-    const resp = await fetchFn(`${authServer}/api/users`, {
+    const resp = await fetchFn(`${authServer}/api/internal/users`, {
       headers,
       signal: AbortSignal.timeout(5000),
     });

@@ -320,13 +320,14 @@ const app = createApp({
   if (/^\/api\/users\/(?:exists|role|access)\//.test(req.path)) return access.internal;
   if (req.path.startsWith("/api/devices")) return access.admin;
   if (req.path === "/api/access/catalog") return access.admin;
+  if (req.path === "/api/internal/users") return access.internal;
   if (req.path === "/api/admin/logs") return access.permission("audit.view");
   if (req.path.startsWith("/api/admin")) return access.admin;
   if (req.path.startsWith("/api/users")) return access.admin;
   if (req.path === "/api/contact-candidates") return access.permission("contacts.manage");
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return access.permission("contacts.manage");
   if (req.path.startsWith("/api/ops-contacts")) return access.official;
-  if (req.path === "/api/logs") return access.permission("audit.view");
+  if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
   if (req.path.startsWith("/api/applications")) return access.permission("applications.manage");
   if (req.path === "/api/apply/config") return null;            // 신청 가능 여부: 공개
   if (req.path.startsWith("/api/apply")) return null;           // 신청자 API: 공개(핸들러가 fsk_applicant 검증)
@@ -1081,6 +1082,14 @@ app.get("/api/users/access/:email", (req, res) => {
 });
 
 app.get("/api/access/catalog", (req, res) => res.json(accessCatalog()));
+
+app.get("/api/internal/users", (req, res) => {
+  const result = dbRun(() => db.prepare(
+    "SELECT id, email, name, role, realname, phone, active FROM users ORDER BY id",
+  ).all());
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
+});
 
 // GET /api/users - 전체 사용자 목록
 app.get("/api/users", (req, res) => {

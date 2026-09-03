@@ -97,7 +97,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
     if (req.path.startsWith("/api/internal/")) return access.internal;
-    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     if (req.method === "POST" && /^\/api\/admin\/register\/[^/]+$/.test(req.path)) {
       return access.anyOf(access.permission("queue.manage"), access.device("kiosk.queue.register"));
     }

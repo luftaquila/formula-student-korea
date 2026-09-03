@@ -36,7 +36,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "traffic", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health" || req.path === "/api/time") return null;
-    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     if (req.method === "PUT" && /^\/api\/records\/[^/]+\/visibility$/.test(req.path)) return access.permission("traffic.manage");
     if (req.method === "DELETE" && /^\/api\/records\/[^/]+$/.test(req.path)) return access.permission("traffic.manage");
     if (req.method === "DELETE" && req.path === "/api/controllers") return access.permission("traffic.manage");

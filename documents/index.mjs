@@ -25,7 +25,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
     if (req.path.startsWith("/api/internal/")) return access.internal;
-    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
     if (req.path.startsWith("/api/admin")) {
       return req.method === "GET" ? access.permission("documents.operate") : access.permission("documents.manage");
     }
@@ -1674,7 +1674,7 @@ app.get("/api/admin/submissions/:subId/zip", async (req, res) => {
 // GET /api/admin/students - auth 서비스에서 student 역할 사용자 목록 조회
 app.get("/api/admin/students", async (req, res) => {
   try {
-    const authRes = await fetch(`${serviceUrl("auth")}/api/users`, {
+    const authRes = await fetch(`${serviceUrl("auth")}/api/internal/users`, {
       headers: { "X-Internal-Service": process.env.INTERNAL_SECRET },
       signal: AbortSignal.timeout(5000),
     });

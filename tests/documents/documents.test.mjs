@@ -39,7 +39,7 @@ const MOCK_USERS = [
 function createMockAuthServer() {
   const app = express();
   app.use(express.json());
-  app.get('/api/users', (req, res) => {
+  app.get('/api/internal/users', (req, res) => {
     res.json(MOCK_USERS);
   });
   app.get('/api/users/role/:email', (req, res) => {
