@@ -57,12 +57,15 @@ failed run with `gh run view <run-id> --log-failed`.
 
 ## Authentication and service calls
 
-- Roles are `public < student < staff < official < chief < master < admin`.
+- Human roles are `student`, `official`, and `admin`. Officials receive explicit
+  permission bundles and/or direct service permissions; management permissions imply
+  the matching operation permission. Admin satisfies every human permission.
 - Non-auth services revalidate through Auth and fail closed; only HTTP `200` confirms
   a user. Tests may inject `TRUST_JWT` through an application factory. Production
   has no authentication bypass.
 - Caddy removes external `X-Internal-Service` and `Authuser` headers. Internal calls
-  use `X-Internal-Service` with `INTERNAL_SECRET`.
+  use `X-Internal-Service` with `INTERNAL_SECRET`; the resulting internal principal
+  can access only routes that explicitly require internal authentication.
 - Competition modules communicate in-process. Do not add HTTP calls between them or
   split them into separate runtime profiles.
 

@@ -7,12 +7,12 @@ const INSPECTION_TYPE = "battery";
 async function apiResetPriorities(type = INSPECTION_TYPE) {
   await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${type}/all`, {
     method: "DELETE",
-    headers: { Cookie: getAuthCookie("chief") },
+    headers: { Cookie: getAuthCookie("operationsManager") },
   });
 }
 
 test.describe("Queue priority management", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   test.beforeEach(async () => {
     await apiResetPriorities();
@@ -99,7 +99,7 @@ test.describe("Queue priority management", () => {
     // First set a priority via API
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ num: 2, priority: 1 }),
     });
 
@@ -152,12 +152,12 @@ test.describe("Queue priority management", () => {
     // First set priorities for entries 1 and 2 via API
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ num: 1, priority: 1 }),
     });
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ num: 2, priority: 2 }),
     });
 
@@ -178,7 +178,7 @@ test.describe("Queue priority management", () => {
     // Reset all priorities via API (since the UI button is per-inspection-type within inspection-config)
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}/all`, {
       method: "DELETE",
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
 
     // Reload and verify priorities are cleared

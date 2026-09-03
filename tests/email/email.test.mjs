@@ -22,7 +22,8 @@ import { createEmailApp } from '../../email/index.mjs';
 const MOCK_USERS = [
   { email: 'student@test.com', name: 'Student', role: 'student', active: 1 },
   { email: 'official@test.com', name: 'Official', role: 'official', active: 1 },
-  { email: 'chief@test.com', name: 'Chief', role: 'chief', active: 1 },
+  { email: 'messaging@test.com', name: 'Messaging Operator', role: 'official', active: 1,
+    permissions: ['messaging.operate'] },
   { email: 'admin@test.com', name: 'Admin', role: 'admin', realname: 'Admin Kim', active: 1 },
   { email: 'inactive@test.com', name: 'Inactive', role: 'student', active: 0 },
 ];
@@ -30,10 +31,15 @@ const MOCK_USERS = [
 function createMockAuthServer() {
   const app = express();
   app.use(express.json());
-  app.get('/api/users/role/:email', (req, res) => {
+  app.get('/api/users/access/:email', (req, res) => {
     const user = MOCK_USERS.find(u => u.email === decodeURIComponent(req.params.email));
     if (!user) return res.status(404).json({ error: 'not found' });
-    res.json({ role: user.role });
+    res.json({
+      id: MOCK_USERS.indexOf(user) + 1,
+      role: user.role,
+      permissions: user.permissions || [],
+      accessRevision: 0,
+    });
   });
   app.get('/api/users', (req, res) => {
     res.json(MOCK_USERS.map(u => ({ ...u, protected: false })));
@@ -99,9 +105,9 @@ let server, baseUrl, client, db, dbPath;
 let mockAuthServer;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
-const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
+const messagingCookie = makeAuthCookie({ email: 'messaging@test.com', name: 'Messaging Operator', role: 'official' });
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
-// officialCookie omitted: email service requires admin role for all endpoints; chief test covers non-admin rejection
 
 before(async () => {
   const mockApp = createMockAuthServer();
@@ -197,9 +203,14 @@ describe('Email API', () => {
       assert.equal(res.status, 403);
     });
 
-    it('rejects chief users', async () => {
-      const res = await client.get('/api/stats', { cookie: chiefCookie });
+    it('rejects officials without a messaging grant', async () => {
+      const res = await client.get('/api/stats', { cookie: officialCookie });
       assert.equal(res.status, 403);
+    });
+
+    it('allows officials with messaging.operate', async () => {
+      const res = await client.get('/api/stats', { cookie: messagingCookie });
+      assert.equal(res.status, 200);
     });
 
     it('allows admin users', async () => {
@@ -209,8 +220,8 @@ describe('Email API', () => {
   });
 
   describe('SPA gating (non-API paths)', () => {
-    // The email SPA is admin-only: authRoleFn returns "admin" for the SPA
-    // fallback, so non-admins are redirected instead of being served a shell
+    // The email SPA requires messaging.operate, so ungranted users are redirected
+    // instead of being served a shell
     // whose every API call then 401/403s.
     it('redirects unauthenticated users away from the SPA', async () => {
       const res = await fetch(`${baseUrl}/`, { redirect: 'manual' });

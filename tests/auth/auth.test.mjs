@@ -23,9 +23,7 @@ import { createAuthApp } from '../../auth/index.mjs';
 const require = createRequire(import.meta.url);
 const Database = require('../../auth/node_modules/better-sqlite3');
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
-const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
-const staffCookie = makeAuthCookie({ email: 'staff@test.com', name: 'Staff', role: 'staff' });
 const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student', role: 'student' });
 
 let server, baseUrl, client, db, dbPath;
@@ -84,22 +82,20 @@ describe('GET /api/users', () => {
 });
 
 describe('POST /api/users', () => {
-  it('creates a master user', async () => {
+  it('rejects the retired master role', async () => {
     const res = await client.post('/api/users', {
       body: { email: 'master@test.com', role: 'master' },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 201);
-    assert.equal((await res.json()).role, 'master');
+    assert.equal(res.status, 400);
   });
 
-  it('creates a staff user', async () => {
+  it('rejects the retired staff role', async () => {
     const res = await client.post('/api/users', {
       body: { email: 'staff@test.com', role: 'staff' },
       cookie: adminCookie,
     });
-    assert.equal(res.status, 201);
-    assert.equal((await res.json()).role, 'staff');
+    assert.equal(res.status, 400);
   });
 
   it('creates a user with valid email and role', async () => {
@@ -327,13 +323,13 @@ describe('PATCH /api/users/:id', () => {
 
   it('handles complex update (role + realname)', async () => {
     const res = await client.patch(`/api/users/${testUserId}`, {
-      body: { role: 'chief', realname: 'promoted' },
+      body: { role: 'student', realname: 'reassigned' },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
     const user = db.prepare('SELECT role, realname FROM users WHERE id = ?').get(testUserId);
-    assert.equal(user.role, 'chief');
-    assert.equal(user.realname, 'promoted');
+    assert.equal(user.role, 'student');
+    assert.equal(user.realname, 'reassigned');
   });
 
   it('rejects invalid role (400)', async () => {
@@ -596,18 +592,16 @@ describe('GET /api/users/role/:email', () => {
     assert.equal(res.status, 404);
   });
 
-  it('accessible via admin cookie', async () => {
+  it('rejects an admin cookie because the endpoint is internal-only', async () => {
     const res = await client.get('/api/users/role/admin@test.com', {
       cookie: adminCookie,
     });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.role, 'admin');
+    assert.equal(res.status, 403);
   });
 });
 
 describe('Role schema migration', () => {
-  it('preserves existing users and references while adding master to the staff schema', () => {
+  it('maps retired operational roles to grant-free officials and preserves references', () => {
     const legacyPath = tmpDbPath();
     let legacyDb;
     let migratedDb;
@@ -619,7 +613,7 @@ describe('Role schema migration', () => {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           email TEXT UNIQUE NOT NULL,
           name TEXT,
-          role TEXT NOT NULL CHECK(role IN ('admin', 'chief', 'official', 'staff', 'student')),
+          role TEXT NOT NULL CHECK(role IN ('admin', 'master', 'chief', 'official', 'staff', 'student')),
           memo TEXT DEFAULT '',
           realname TEXT DEFAULT '',
           phone TEXT DEFAULT '',
@@ -627,8 +621,25 @@ describe('Role schema migration', () => {
           created_at TEXT,
           active INTEGER DEFAULT 1
         );
-        INSERT INTO users (email, name, role, affiliation)
-          VALUES ('preserved@test.com', 'Preserved', 'official', '기존 소속');
+        INSERT INTO users (email, name, role, affiliation) VALUES
+          ('preserved@test.com', 'Preserved', 'official', '기존 소속'),
+          ('legacy-staff@test.com', 'Legacy Staff', 'staff', ''),
+          ('legacy-chief@test.com', 'Legacy Chief', 'chief', ''),
+          ('legacy-master@test.com', 'Legacy Master', 'master', '');
+        CREATE TABLE user_permission_bundle (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          bundle_key TEXT NOT NULL,
+          PRIMARY KEY (user_id, bundle_key)
+        );
+        CREATE TABLE user_permission (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          permission_key TEXT NOT NULL,
+          PRIMARY KEY (user_id, permission_key)
+        );
+        INSERT INTO user_permission_bundle
+          SELECT id, 'queue_manager' FROM users WHERE email = 'legacy-staff@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'queue.manage' FROM users WHERE email = 'legacy-chief@test.com';
         CREATE TABLE ops_display (
           user_id INTEGER PRIMARY KEY REFERENCES users(id),
           description TEXT NOT NULL DEFAULT '',
@@ -650,10 +661,19 @@ describe('Role schema migration', () => {
         { user_id: 1, description: '기존 연락처', sort_order: 0 },
       );
       assert.deepEqual(migratedDb.pragma('foreign_key_check'), []);
-      migratedDb.prepare("INSERT INTO users (email, role) VALUES ('migrated-master@test.com', 'master')").run();
-      assert.equal(
-        migratedDb.prepare("SELECT role FROM users WHERE email = 'migrated-master@test.com'").get().role,
-        'master',
+      assert.deepEqual(
+        migratedDb.prepare("SELECT email, role FROM users WHERE email LIKE 'legacy-%' ORDER BY email").all(),
+        [
+          { email: 'legacy-chief@test.com', role: 'official' },
+          { email: 'legacy-master@test.com', role: 'official' },
+          { email: 'legacy-staff@test.com', role: 'official' },
+        ],
+      );
+      assert.equal(migratedDb.prepare('SELECT COUNT(*) AS count FROM user_permission_bundle').get().count, 0);
+      assert.equal(migratedDb.prepare('SELECT COUNT(*) AS count FROM user_permission').get().count, 0);
+      assert.throws(
+        () => migratedDb.prepare("INSERT INTO users (email, role) VALUES ('retired@test.com', 'master')").run(),
+        /CHECK constraint failed/,
       );
     } finally {
       legacyDb?.close();
@@ -785,15 +805,15 @@ describe('Ops contacts', () => {
     assert.equal(res.status, 400);
   });
 
-  it('POST /api/ops-contacts accepts a master role user', async () => {
-    const master = db.prepare("SELECT id FROM users WHERE email = 'master@test.com'").get();
+  it('POST /api/ops-contacts accepts an admin user', async () => {
+    const admin = db.prepare("SELECT id FROM users WHERE email = 'admin@test.com'").get();
     const add = await client.post('/api/ops-contacts', {
-      body: { user_id: master.id },
+      body: { user_id: admin.id },
       cookie: adminCookie,
     });
     assert.equal(add.status, 201);
 
-    const remove = await client.delete(`/api/ops-contacts/${master.id}`, { cookie: adminCookie });
+    const remove = await client.delete(`/api/ops-contacts/${admin.id}`, { cookie: adminCookie });
     assert.equal(remove.status, 200);
   });
 
@@ -1377,10 +1397,7 @@ describe('GET /api/forward-auth', () => {
     assert.equal(res.status, 403);
   });
 
-  it('returns 403 when INTERNAL_SECRET is unset', async () => {
-    const original = process.env.INTERNAL_SECRET;
-    // Note: INTERNAL_SECRET is read at request time in the handler, but the secret
-    // variable is captured at app creation. We test via wrong key instead.
+  it('returns 403 for an empty forward-auth key', async () => {
     const res = await client.get('/api/forward-auth', {
       cookie: adminCookie,
       headers: { 'X-Forward-Auth-Key': '' },
@@ -1389,61 +1406,41 @@ describe('GET /api/forward-auth', () => {
   });
 
   it('returns 401 without user session', async () => {
-    const res = await client.get('/api/forward-auth', {
+    const res = await client.get('/api/forward-auth?permission=files.access', {
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 401);
   });
 
-  it('returns 403 when role insufficient (official < chief)', async () => {
+  it('rejects a missing or unknown permission', async () => {
+    const missing = await client.get('/api/forward-auth', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(missing.status, 400);
+
+    const unknown = await client.get('/api/forward-auth?permission=unknown.service', {
+      cookie: adminCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(unknown.status, 400);
+  });
+
+  it('returns 403 when an official lacks the requested permission', async () => {
     db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('official@test.com', 'Official', 'official', 1)").run();
-    const res = await client.get('/api/forward-auth?role=chief', {
+    db.prepare("DELETE FROM user_permission WHERE user_id = (SELECT id FROM users WHERE email = 'official@test.com')").run();
+    db.prepare("DELETE FROM user_permission_bundle WHERE user_id = (SELECT id FROM users WHERE email = 'official@test.com')").run();
+    const res = await client.get('/api/forward-auth?permission=files.access', {
       cookie: officialCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 403);
   });
 
-  it('places staff below official in the forward-auth hierarchy', async () => {
-    const denied = await client.get('/api/forward-auth?role=official', {
-      cookie: staffCookie,
-      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(denied.status, 403);
-
-    const allowed = await client.get('/api/forward-auth?role=staff', {
-      cookie: officialCookie,
-      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(allowed.status, 200);
-  });
-
-  it('places master between chief and admin in the forward-auth hierarchy', async () => {
-    db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('chief@test.com', 'Chief', 'chief', 1)").run();
-    const denied = await client.get('/api/forward-auth?role=master', {
-      cookie: makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' }),
-      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(denied.status, 403);
-
-    const allowed = await client.get('/api/forward-auth?role=master', {
-      cookie: masterCookie,
-      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(allowed.status, 200);
-  });
-
-  it('returns 200 with X-Forwarded-User when authorized', async () => {
-    const res = await client.get('/api/forward-auth?role=chief', {
-      cookie: adminCookie,
-      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
-    });
-    assert.equal(res.status, 200);
-    assert.equal(res.headers.get('x-forwarded-user'), 'admin@test.com');
-  });
-
-  it('defaults to official role when role query is omitted', async () => {
-    const res = await client.get('/api/forward-auth', {
+  it('authorizes an official through an explicit direct permission', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE email = 'official@test.com'").get();
+    db.prepare("INSERT OR IGNORE INTO user_permission (user_id, permission_key) VALUES (?, 'files.access')").run(user.id);
+    const res = await client.get('/api/forward-auth?permission=files.access', {
       cookie: officialCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
@@ -1451,8 +1448,25 @@ describe('GET /api/forward-auth', () => {
     assert.equal(res.headers.get('x-forwarded-user'), 'official@test.com');
   });
 
-  it('allows higher role (admin) for lower requirement (chief)', async () => {
-    const res = await client.get('/api/forward-auth?role=chief', {
+  it('expands management grants but keeps Queue and Inspection independent', async () => {
+    const user = db.prepare("SELECT id FROM users WHERE email = 'official@test.com'").get();
+    db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(user.id);
+    db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, 'queue.manage')").run(user.id);
+    const queue = await client.get('/api/forward-auth?permission=queue.operate', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(queue.status, 200);
+
+    const inspection = await client.get('/api/forward-auth?permission=inspection.operate', {
+      cookie: officialCookie,
+      headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(inspection.status, 403);
+  });
+
+  it('lets an admin satisfy any known human permission', async () => {
+    const res = await client.get('/api/forward-auth?permission=inspection.manage', {
       cookie: adminCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
     });
@@ -1463,13 +1477,16 @@ describe('GET /api/forward-auth', () => {
 
 // ─── Edge Cases & Auth Middleware Integration ─────────────────────────────
 describe('Auth middleware integration', () => {
-  it('X-Internal-Service header grants admin access', async () => {
-    const res = await client.get('/api/users', {
+  it('X-Internal-Service header is restricted to internal endpoints', async () => {
+    const internal = await client.get('/api/users/access/admin@test.com', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(Array.isArray(data));
+    assert.equal(internal.status, 200);
+
+    const admin = await client.get('/api/users', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(admin.status, 403);
   });
 
   it('wrong X-Internal-Service header is explicitly rejected', async () => {

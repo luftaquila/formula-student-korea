@@ -4,11 +4,7 @@ import { ref, computed, onMounted, onUnmounted } from "vue";
 const ROLE_OPTIONS = [
   { value: "public", label: "public" },
   { value: "student", label: "student" },
-  { value: "staff", label: "staff" },
   { value: "official", label: "official" },
-  { value: "chief", label: "chief" },
-  { value: "master", label: "master" },
-  { value: "admin", label: "admin" },
 ];
 
 const props = defineProps({

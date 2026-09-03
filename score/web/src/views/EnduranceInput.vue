@@ -8,8 +8,10 @@ import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import ConfirmableInput from "../components/ConfirmableInput.vue";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { useSSE } from "../composables/useSSE";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const { error } = useNotification();
+const canManage = permissionComputed("score.manage");
 const { lastEnduranceUpdate, lastPenaltyUpdate, lastSettingUpdate, reconnected } = useSSE();
 
 const tableRef = ref(null);
@@ -383,7 +385,7 @@ function energyResultLabel(num) {
 }
 
 async function saveEnergySetting(key, rawValue) {
-  if (isReadOnly.value) return false;
+  if (isReadOnly.value || !canManage.value) return false;
   const value = rawValue === "" ? null : Number(rawValue);
   if (value !== null && (!Number.isFinite(value) || value <= 0)) {
     error("설정 값은 0보다 커야 합니다.");
@@ -692,7 +694,7 @@ function exportData() {
             <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
           </select>
         </div>
-        <div class="filter-group energy-config-group">
+        <div v-if="canManage" class="filter-group energy-config-group">
           <label class="filter-label">내구 거리 (<span class="unit-symbol">km</span>)</label>
           <ConfirmableInput
             variant="filter"
@@ -711,7 +713,7 @@ function exportData() {
             @confirm="confirmEnergySetting"
           />
         </div>
-        <div class="filter-group energy-config-group">
+        <div v-if="canManage" class="filter-group energy-config-group">
           <label class="filter-label">휘발유 기준</label>
           <select class="filter-input" :value="getEnergySetting('fuel_factor') ?? ''" :disabled="isReadOnly" @change="saveEnergySetting('fuel_factor', $event.target.value)">
             <option value="" disabled>선택</option>

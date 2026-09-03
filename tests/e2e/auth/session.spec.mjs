@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { TEST_USERS } from "../helpers/auth.mjs";
 import { storageStatePath } from "../helpers/utils.mjs";
 
 test.describe("Auth session API", () => {
@@ -27,16 +28,17 @@ test.describe("Auth session API", () => {
     await context.close();
   });
 
-  test("GET /auth/api/session works for each role", async ({ browser }) => {
-    for (const role of ["admin", "master", "chief", "official", "staff", "student"]) {
-      const context = await browser.newContext({ storageState: storageStatePath(role) });
+  test("GET /auth/api/session works for each access profile", async ({ browser }) => {
+    for (const [profile, expectedUser] of Object.entries(TEST_USERS)) {
+      const context = await browser.newContext({ storageState: storageStatePath(profile) });
       const page = await context.newPage();
 
       const response = await page.request.get("/auth/api/session");
       expect(response.status()).toBe(200);
 
       const data = await response.json();
-      expect(data.role).toBe(role);
+      expect(data.role).toBe(expectedUser.role);
+      expect(data.permissions).toEqual(expectedUser.permissions);
 
       await context.close();
     }

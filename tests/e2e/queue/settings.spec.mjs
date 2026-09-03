@@ -4,7 +4,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 async function apiGetCancelPenalty() {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
-    headers: { Cookie: getAuthCookie("chief") },
+    headers: { Cookie: getAuthCookie("operationsManager") },
   });
   return res.json();
 }
@@ -12,14 +12,14 @@ async function apiGetCancelPenalty() {
 async function apiSetCancelPenalty(value) {
   await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ value }),
   });
 }
 
 async function apiGetSmsRank() {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms-rank`, {
-    headers: { Cookie: getAuthCookie("chief") },
+    headers: { Cookie: getAuthCookie("operationsManager") },
   });
   if (!res.ok) throw new Error(`get SMS rank: ${res.status}`);
   return (await res.json()).value;
@@ -28,7 +28,7 @@ async function apiGetSmsRank() {
 async function apiSetSmsRank(value) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms-rank`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ value }),
   });
   if (res.status !== 200) throw new Error(`set SMS rank: ${res.status} ${await res.text()}`);
@@ -36,7 +36,7 @@ async function apiSetSmsRank(value) {
 
 async function apiGetInspections() {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/all`, {
-    headers: { Cookie: getAuthCookie("chief") },
+    headers: { Cookie: getAuthCookie("operationsManager") },
   });
   return res.json();
 }
@@ -44,13 +44,13 @@ async function apiGetInspections() {
 async function apiSetInspectionActive(type, active) {
   await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ active }),
   });
 }
 
 test.describe("Queue settings management", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   let originalPenalty;
   let originalSmsRank;
@@ -78,11 +78,11 @@ test.describe("Queue settings management", () => {
     }
   });
 
-  test("admin page shows settings panel for chief role", async ({ page }) => {
+  test("admin page shows settings panel with queue.manage", async ({ page }) => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Chief should see the settings panel
+    // A queue manager should see the settings panel.
     await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
 
     // Should show cancel penalty setting
@@ -167,7 +167,7 @@ test.describe("Queue settings management", () => {
   });
 
   test("settings panel not visible for official role", async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
 
     await page.goto("/queue/admin");
@@ -244,7 +244,7 @@ test.describe("Queue settings management", () => {
     // SMS enable requires SMS config from email service (not configured in CI)
     const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ value: true }),
     });
     expect(res.status).toBe(400);
@@ -254,7 +254,7 @@ test.describe("Queue settings management", () => {
     // Disabling should always work
     const res2 = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ value: false }),
     });
     expect(res2.status).toBe(200);

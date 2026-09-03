@@ -2,16 +2,14 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  admins,
-  chiefs,
   getIcon,
-  masters,
-  officials,
+  operations,
   resources,
   services,
-  staff,
 } from "../../shared/nav-config.js";
-import { ROLE_LEVELS } from "../../shared/constants.js";
+import { ROLE_SORT_ORDER } from "../../shared/constants.js";
+import { BUNDLE_DEFINITIONS, PERMISSION_KEYS } from "../../shared/access-control.js";
+import { RESOURCES_DISCLOSURE_STORAGE_KEY } from "../../shared/persistent-disclosure.js";
 
 const registrationRoot = new URL("../../registration/web/", import.meta.url);
 
@@ -27,14 +25,14 @@ function templateOf(source) {
 
 test("registration navigation uses distinct queue-style icons and concise labels", () => {
   const registration = services.find((item) => item.href === "/registration");
-  const registrationAdmin = staff.find((item) => item.href === "/registration/manage");
+  const registrationAdmin = operations.find((item) => item.href === "/registration/manage");
 
   assert.equal(registration?.name, "등록 대기열");
   assert.equal(registrationAdmin?.name, "등록 대기 관리");
   assert.equal(getIcon(registration?.icon), "🎫");
   assert.equal(getIcon(registrationAdmin?.icon), "🎛️");
 
-  const menuItems = [...services, ...resources, ...staff, ...officials, ...chiefs, ...masters, ...admins];
+  const menuItems = [...services, ...resources, ...operations];
   const otherIcons = menuItems
     .filter((item) => item !== registration && item !== registrationAdmin)
     .map((item) => getIcon(item.icon));
@@ -42,46 +40,33 @@ test("registration navigation uses distinct queue-style icons and concise labels
   assert.equal(otherIcons.includes(getIcon(registrationAdmin.icon)), false);
 });
 
-test("staff sits below official and only owns registration management", () => {
-  assert.deepEqual(ROLE_LEVELS, {
+test("human roles stay simple and operation links use explicit permissions", () => {
+  const registrationAdmin = operations.find((item) => item.href === "/registration/manage");
+  assert.deepEqual(ROLE_SORT_ORDER, {
     student: 1,
-    staff: 2,
-    official: 3,
-    chief: 4,
-    master: 5,
-    admin: 6,
+    official: 2,
+    admin: 3,
   });
-  assert.deepEqual(staff.map(({ href, auth }) => ({ href, auth })), [
-    { href: "/registration/manage", auth: "staff" },
-  ]);
-  assert.deepEqual(officials.map(({ href, auth }) => ({ href, auth })), [
-    { href: "/queue/admin", auth: "official" },
-    { href: "/inspection", auth: "official" },
-  ]);
-  assert.deepEqual(chiefs.map(({ href, auth }) => ({ href, auth })), [
-    { href: "/documents/admin", auth: "chief" },
-    { href: "/files/", auth: "chief" },
-  ]);
-  assert.deepEqual(masters.map(({ href, auth }) => ({ href, auth })), [
-    { href: "/course", auth: "master" },
-    { href: "/traffic", auth: "master" },
-    { href: "/score", auth: "master" },
-  ]);
+  assert.equal(registrationAdmin.permission, "registration.operate");
+  assert.equal(operations.find((item) => item.href === "/queue/admin")?.permission, "queue.operate");
+  assert.equal(operations.find((item) => item.href === "/inspection")?.permission, "inspection.operate");
+  assert.ok(operations.filter((item) => item.permission).every((item) => PERMISSION_KEYS.includes(item.permission)));
+  assert.ok(BUNDLE_DEFINITIONS.some((bundle) => bundle.key === "registration_operator"));
 });
 
-test("landing groups role menus and makes resources collapsible", async () => {
+test("landing renders one permission-filtered operation group and persists resource disclosure", async () => {
   const landing = await readFile(new URL("../../landing/src/App.vue", import.meta.url), "utf8");
   const navMenu = await readFile(new URL("../../shared/NavMenu.vue", import.meta.url), "utf8");
 
   assert.match(landing, /<details :open="resourcesOpen" class="section resources-section" @toggle="persistResourcesState">/);
   assert.match(landing, /<summary class="section-title collapsible-title">\s*Resources/);
-  assert.match(landing, /fsk\.resources\.home\.open/);
-  assert.match(landing, /<h2 class="section-title">Staff<\/h2>/);
-  assert.match(landing, /<h2 class="section-title">Officials<\/h2>/);
-  assert.match(landing, /<h2 class="section-title">Chief<\/h2>/);
-  assert.match(landing, /<h2 class="section-title">Master<\/h2>/);
+  assert.match(landing, /<h2 class="section-title">Operations<\/h2>/);
+  assert.match(landing, /operations\.filter/);
+  assert.equal(RESOURCES_DISCLOSURE_STORAGE_KEY, "fsk.resources.open");
+  assert.match(landing, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
   assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);
-  assert.match(navMenu, /fsk\.resources\.menu\.open/);
+  assert.match(navMenu, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
+  assert.match(navMenu, /visibleOperations/);
 });
 
 test("registration pages do not expose service tabs or internal role names", async () => {

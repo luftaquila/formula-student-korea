@@ -1,7 +1,5 @@
 import { ref, computed } from "vue";
-import { ROLE_LEVELS } from "./constants.js";
-
-function roleLevel(role) { return ROLE_LEVELS[role] || 0; }
+import { PERMISSION_KEYS } from "./access-control.js";
 
 function getUserFromCookie() {
   const match = document.cookie.match(/fsk_user=([^;]+)/);
@@ -11,20 +9,33 @@ function getUserFromCookie() {
 }
 
 export const user = ref(getUserFromCookie());
-export const isAuthenticated = computed(() => roleLevel(user.value?.role) >= 1);
-// Exact-match (not hierarchical): student-facing items hidden from staff.
+export const isAuthenticated = computed(() => ["student", "official", "admin"].includes(user.value?.role));
 export const isStudent = computed(() => user.value?.role === "student");
-export const isStaff = computed(() => user.value?.role === "staff");
-export const showStaff = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.staff);
-export const showOfficials = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.official);
-export const isChief = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.chief);
-export const isMaster = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.master);
-export const isAdmin = computed(() => roleLevel(user.value?.role) >= ROLE_LEVELS.admin);
+export const isOfficial = computed(() => user.value?.role === "official" || user.value?.role === "admin");
+export const isAdmin = computed(() => user.value?.role === "admin");
+
+export function hasPermission(permission) {
+  if (!PERMISSION_KEYS.includes(permission)) return false;
+  return user.value?.role === "admin"
+    || (user.value?.role === "official" && user.value?.permissions?.includes(permission));
+}
+
+export function permissionComputed(permission) {
+  return computed(() => hasPermission(permission));
+}
+
+export async function refreshUser() {
+  try {
+    const response = await fetch("/auth/api/session");
+    user.value = response.ok ? await response.json() : null;
+  } catch { /* retain the last display snapshot during a transient outage */ }
+}
 
 if (typeof document !== "undefined") {
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       user.value = getUserFromCookie();
+      if (user.value) refreshUser();
     }
   });
 }

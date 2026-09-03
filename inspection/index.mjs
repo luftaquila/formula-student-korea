@@ -12,6 +12,7 @@ import {
   validateCalculationGraph,
 } from "./lib/calculations.mjs";
 import { getInspectionItemState } from "./lib/item-status.mjs";
+import { access } from "../shared/access-control.js";
 
 export function createInspectionApp(options = {}) {
 
@@ -19,11 +20,11 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "inspection", express, Database, options, dbFile: "sheet.db",
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path.startsWith("/api/internal/")) return "admin";
-    if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return "chief";
-    if (req.path === "/api/logs") return "admin";
-    if (req.path.startsWith("/api/")) return "official";
-    return "official"; // SPA
+    if (req.path.startsWith("/api/internal/")) return access.internal;
+    if (req.path.startsWith("/api/sheet/template") && req.method !== "GET") return access.permission("inspection.manage");
+    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path.startsWith("/api/")) return access.permission("inspection.operate");
+    return access.permission("inspection.operate"); // SPA
   },
 });
 ensureInactiveTeamView(db);

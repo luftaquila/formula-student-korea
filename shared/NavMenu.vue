@@ -1,15 +1,20 @@
 <script setup>
-import { ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import ThemeToggle from "./ThemeToggle.vue";
-import { readDisclosureState, writeDisclosureState } from "./persistent-disclosure.js";
-import { services, resources, staff, officials, chiefs, masters, admins, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
-import { user, isAuthenticated, isStudent, isStaff, showStaff, showOfficials, isChief, isMaster, isAdmin } from "./officialsStore.js";
+import {
+  RESOURCES_DISCLOSURE_STORAGE_KEY,
+  readDisclosureState,
+  writeDisclosureState,
+} from "./persistent-disclosure.js";
+import { services, resources, operations, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
+import { user, isStudent, isOfficial, isAdmin, hasPermission } from "./officialsStore.js";
 
-const roleCheck = { student: isAuthenticated, staff: showStaff, official: showOfficials, chief: isChief, master: isMaster, admin: isAdmin };
 function canShow(item) {
-  if (item.studentOnly) return isStudent.value; // exact student, hidden from staff
-  return !item.auth || roleCheck[item.auth]?.value;
+  if (item.studentOnly) return isStudent.value;
+  if (item.adminOnly) return isAdmin.value;
+  return !item.permission || hasPermission(item.permission);
 }
+const visibleOperations = computed(() => operations.filter(canShow));
 
 const props = defineProps({
   currentPath: {
@@ -20,16 +25,15 @@ const props = defineProps({
 
 const isOpen = ref(false);
 const opsContacts = ref(null);
-const resourcesStorageKey = "fsk.resources.menu.open";
 const browserStorage = (() => {
   try { return window.localStorage; }
   catch { return null; }
 })();
-const resourcesOpen = ref(readDisclosureState(browserStorage, resourcesStorageKey));
+const resourcesOpen = ref(readDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY));
 
 function persistResourcesState(event) {
   resourcesOpen.value = event.currentTarget.open;
-  writeDisclosureState(browserStorage, resourcesStorageKey, resourcesOpen.value);
+  writeDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY, resourcesOpen.value);
 }
 
 async function fetchOpsContacts() {
@@ -43,7 +47,7 @@ async function fetchOpsContacts() {
 }
 
 watch(isOpen, (open) => {
-  if (open && showOfficials.value) fetchOpsContacts();
+  if (open && isOfficial.value) fetchOpsContacts();
 });
 
 function isActive(href) {
@@ -82,7 +86,7 @@ function isActive(href) {
   }
   if (href !== "/" && props.currentPath.startsWith(href + "/")) {
     // Only match prefix if no other item is a more specific match
-    const allItems = [...services, ...staff, ...officials, ...chiefs, ...masters, ...admins];
+    const allItems = [...services, ...operations];
     const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
     if (!hasMoreSpecific) return true;
   }
@@ -141,7 +145,7 @@ async function logout() {
           </div>
 
           <nav class="drawer-nav">
-            <div v-if="showOfficials && opsContacts" class="nav-section ops-contacts-section">
+            <div v-if="isOfficial && opsContacts" class="nav-section ops-contacts-section">
               <span class="nav-section-title">Contacts</span>
               <div v-for="c in opsContacts" :key="c.id" class="ops-contact">
                 <span class="ops-contact-identity">
@@ -214,84 +218,10 @@ async function logout() {
               </template>
             </details>
 
-            <div v-if="isStaff || isAdmin" class="nav-section">
-              <span class="nav-section-title">Staff</span>
-              <template v-for="item in staff" :key="item.href">
-                <a
-                  v-if="canShow(item)"
-                  :href="item.href"
-                  class="nav-item"
-                  :class="{ active: isActive(item.href) }"
-                >
-                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
-                  <span>{{ item.name }}</span>
-                </a>
-              </template>
-            </div>
-
-            <div v-if="showOfficials" class="nav-section">
-              <span class="nav-section-title">Officials</span>
-              <template v-for="item in officials" :key="item.href">
-                <a
-                  v-if="canShow(item)"
-                  :href="item.href"
-                  class="nav-item"
-                  :class="{ active: isActive(item.href) }"
-                >
-                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
-                  <span>{{ item.name }}</span>
-                </a>
-              </template>
-            </div>
-
-            <div v-if="isChief" class="nav-section">
-              <span class="nav-section-title">Chief</span>
-              <template v-for="item in chiefs" :key="item.href">
-                <a
-                  v-if="canShow(item)"
-                  :href="item.href"
-                  :target="item.external ? '_blank' : undefined"
-                  :rel="item.external ? 'noopener noreferrer' : undefined"
-                  class="nav-item"
-                  :class="{ active: isActive(item.href) }"
-                >
-                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
-                  <span>{{ item.name }}</span>
-                  <svg
-                    v-if="item.external"
-                    class="external-icon"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                  >
-                    <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-                    <polyline points="15 3 21 3 21 9" />
-                    <line x1="10" y1="14" x2="21" y2="3" />
-                  </svg>
-                </a>
-              </template>
-            </div>
-
-            <div v-if="isMaster" class="nav-section">
-              <span class="nav-section-title">Master</span>
-              <template v-for="item in masters" :key="item.href">
-                <a
-                  v-if="canShow(item)"
-                  :href="item.href"
-                  class="nav-item"
-                  :class="{ active: isActive(item.href) }"
-                >
-                  <span class="nav-icon">{{ getIcon(item.icon) }}</span>
-                  <span>{{ item.name }}</span>
-                </a>
-              </template>
-            </div>
-
-            <div v-if="isAdmin" class="nav-section">
-              <span class="nav-section-title">Admin</span>
+            <div v-if="visibleOperations.length" class="nav-section">
+              <span class="nav-section-title">Operations</span>
               <a
-                v-for="item in admins"
+                v-for="item in visibleOperations"
                 :key="item.href"
                 :href="item.href"
                 :target="item.external ? '_blank' : undefined"

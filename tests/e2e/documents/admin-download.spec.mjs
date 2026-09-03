@@ -7,15 +7,15 @@ const CP949_FILENAME = "한글-CP949.txt";
 const CP949_CONTENT = Buffer.from([0xc7, 0xd1, 0xb1, 0xdb]);
 
 test.describe("Documents admin submission and download", () => {
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   let sessionId;
 
   test.beforeAll(async ({ browser }) => {
-    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const manager = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const student = await browser.newContext({ storageState: storageStatePath("student") });
     try {
-      sessionId = await createDocumentSession(chief.request, SESSION_NAME, {
+      sessionId = await createDocumentSession(manager.request, SESSION_NAME, {
         allowedExtensions: "txt",
         teams: [1, 2, 3],
       });
@@ -25,16 +25,16 @@ test.describe("Documents admin submission and download", () => {
       });
     } finally {
       await student.close();
-      await chief.close();
+      await manager.close();
     }
   });
 
   test.afterAll(async ({ browser }) => {
-    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const manager = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
-      await deleteDocumentSession(chief.request, sessionId);
+      await deleteDocumentSession(manager.request, sessionId);
     } finally {
-      await chief.close();
+      await manager.close();
     }
   });
 

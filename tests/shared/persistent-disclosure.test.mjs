@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  RESOURCES_DISCLOSURE_STORAGE_KEY,
   readDisclosureState,
   writeDisclosureState,
 } from "../../shared/persistent-disclosure.js";
@@ -32,10 +33,11 @@ test("disclosures default open and restore both persisted states", () => {
 test("disclosures persist explicit open and closed states", () => {
   const storage = memoryStorage();
 
-  writeDisclosureState(storage, "resources", false);
-  assert.equal(readDisclosureState(storage, "resources"), false);
-  writeDisclosureState(storage, "resources", true);
-  assert.equal(readDisclosureState(storage, "resources"), true);
+  assert.equal(RESOURCES_DISCLOSURE_STORAGE_KEY, "fsk.resources.open");
+  writeDisclosureState(storage, RESOURCES_DISCLOSURE_STORAGE_KEY, false);
+  assert.equal(readDisclosureState(storage, RESOURCES_DISCLOSURE_STORAGE_KEY), false);
+  writeDisclosureState(storage, RESOURCES_DISCLOSURE_STORAGE_KEY, true);
+  assert.equal(readDisclosureState(storage, RESOURCES_DISCLOSURE_STORAGE_KEY), true);
 });
 
 test("disclosures fail safely when storage is unavailable or corrupted", () => {

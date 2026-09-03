@@ -29,8 +29,8 @@ export async function setCustomEventName(page, name) {
   await input.fill(name);
 }
 
-export function storageStatePath(role) {
-  return `tests/e2e/.auth/${role}.json`;
+export function storageStatePath(profile) {
+  return `tests/e2e/.auth/${profile}.json`;
 }
 
 // score 화면들은 고정 헤더용 사본 테이블을 하나 더 렌더한다(useTableHeadBand).

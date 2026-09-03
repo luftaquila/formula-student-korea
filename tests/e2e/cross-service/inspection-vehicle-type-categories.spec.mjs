@@ -28,8 +28,8 @@ const CV_TEAM = { num: 3, univ: "성균관대학교" };
 test.describe("Per-vehicle-type inspection category visibility", () => {
   test.use({ storageState: storageStatePath("admin") });
 
-  const chiefHeaders = { "Content-Type": "application/json", Cookie: getAuthCookie("chief") };
-  const officialHeaders = { Cookie: getAuthCookie("official") };
+  const managerHeaders = { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") };
+  const officialHeaders = { Cookie: getAuthCookie("operationsOperator") };
 
   let categoryId;
 
@@ -42,7 +42,7 @@ test.describe("Per-vehicle-type inspection category visibility", () => {
   async function putExcludedTypes(types) {
     const res = await fetch(`${BASE_URL}/competition/api/v1/inspection/sheet/template/${categoryId}`, {
       method: "PUT",
-      headers: chiefHeaders, // template writes require chief+
+      headers: managerHeaders, // template writes require inspection.manage
       body: JSON.stringify({ excluded_types: types }),
     });
     expect(res.status).toBe(200);

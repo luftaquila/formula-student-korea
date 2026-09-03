@@ -7,7 +7,7 @@ const INSPECTION_TYPE = "electric";
 async function apiRegister(num) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${INSPECTION_TYPE}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
 }
@@ -15,7 +15,7 @@ async function apiRegister(num) {
 async function apiEnterBooth(num, boothNum = 1) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/enter`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
     body: JSON.stringify({ num }),
   });
 }
@@ -23,13 +23,13 @@ async function apiEnterBooth(num, boothNum = 1) {
 async function apiExitBooth(boothNum = 1) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/${boothNum}/exit`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
   });
 }
 
 async function apiGetQueue() {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${INSPECTION_TYPE}`, {
-    headers: { Cookie: getAuthCookie("official") },
+    headers: { Cookie: getAuthCookie("operationsOperator") },
   });
   return res.json();
 }
@@ -48,12 +48,12 @@ test.describe("Queue rank real-time updates via SSE", () => {
 
   test.beforeAll(async () => {
     const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
     originalPenalty = (await res.json()).value;
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ value: 0 }),
     });
     await cleanupQueue();
@@ -67,7 +67,7 @@ test.describe("Queue rank real-time updates via SSE", () => {
     if (originalPenalty !== undefined) {
       await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
@@ -81,7 +81,7 @@ test.describe("Queue rank real-time updates via SSE", () => {
     }
 
     // Open admin view
-    const context = await browser.newContext({ storageState: storageStatePath("official") });
+    const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
     const ssePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/queue/events"));
     await page.goto("/queue/admin");

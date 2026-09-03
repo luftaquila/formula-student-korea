@@ -846,7 +846,7 @@ describe("Competition modular monolith", () => {
     }
   });
 
-  it("preserves each module UI role gate while serving every SPA from one process", async () => {
+  it("enforces each module UI grant while serving every SPA from one process", async () => {
     const fixture = fixtureRoot();
     fixtures.push(fixture);
     const created = createCompetitionApp({
@@ -855,10 +855,41 @@ describe("Competition modular monolith", () => {
     });
     const { server, baseUrl } = await startServer(created.app);
     const student = makeAuthCookie({ email: "student@test.invalid", name: "Student", role: "student" });
-    const staff = makeAuthCookie({ email: "staff@test.invalid", name: "Staff", role: "staff" });
-    const official = makeAuthCookie({ email: "official@test.invalid", name: "Official", role: "official" });
-    const chief = makeAuthCookie({ email: "chief@test.invalid", name: "Chief", role: "chief" });
-    const master = makeAuthCookie({ email: "master@test.invalid", name: "Master", role: "master" });
+    const official = makeAuthCookie({
+      email: "official@test.invalid", name: "Official", role: "official", permissions: [],
+    });
+    const registrationOperator = makeAuthCookie({
+      email: "registration-operator@test.invalid", name: "Registration Operator", role: "official",
+      permissions: ["registration.operate"],
+    });
+    const registrationManager = makeAuthCookie({
+      email: "registration-manager@test.invalid", name: "Registration Manager", role: "official",
+      permissions: ["registration.manage"],
+    });
+    const queueOperator = makeAuthCookie({
+      email: "queue-operator@test.invalid", name: "Queue Operator", role: "official",
+      permissions: ["queue.operate"],
+    });
+    const inspectionOperator = makeAuthCookie({
+      email: "inspection-operator@test.invalid", name: "Inspection Operator", role: "official",
+      permissions: ["inspection.operate"],
+    });
+    const trafficOperator = makeAuthCookie({
+      email: "traffic-operator@test.invalid", name: "Traffic Operator", role: "official",
+      permissions: ["traffic.operate"],
+    });
+    const scoreOperator = makeAuthCookie({
+      email: "score-operator@test.invalid", name: "Score Operator", role: "official",
+      permissions: ["score.operate"],
+    });
+    const entryManager = makeAuthCookie({
+      email: "entry-manager@test.invalid", name: "Entry Manager", role: "official",
+      permissions: ["entry.manage"],
+    });
+    const documentsOperator = makeAuthCookie({
+      email: "documents-operator@test.invalid", name: "Documents Operator", role: "official",
+      permissions: ["documents.operate"],
+    });
     const admin = makeAuthCookie({ email: "admin@test.invalid", name: "Admin", role: "admin" });
     const get = (pathname, cookie) => fetch(`${baseUrl}${pathname}`, {
       redirect: "manual",
@@ -867,27 +898,30 @@ describe("Competition modular monolith", () => {
     try {
       assert.equal((await get("/entry/")).status, 302);
       assert.equal((await get("/entry/", official)).status, 302);
+      assert.equal((await get("/entry/", entryManager)).status, 200);
       assert.equal((await get("/entry/", admin)).status, 200);
-      assert.equal((await get("/inspection/", official)).status, 200);
+      assert.equal((await get("/inspection/", official)).status, 302);
+      assert.equal((await get("/inspection/", inspectionOperator)).status, 200);
       assert.equal((await get("/traffic/", official)).status, 302);
-      assert.equal((await get("/traffic/", chief)).status, 302);
-      assert.equal((await get("/traffic/", master)).status, 200);
+      assert.equal((await get("/traffic/", trafficOperator)).status, 200);
       assert.equal((await get("/score/", official)).status, 302);
-      assert.equal((await get("/score/", chief)).status, 302);
-      assert.equal((await get("/score/", master)).status, 200);
+      assert.equal((await get("/score/", scoreOperator)).status, 200);
       assert.equal((await get("/score/", admin)).status, 200);
       assert.equal((await get("/documents/", student)).status, 200);
+      assert.equal((await get("/documents/", documentsOperator)).status, 302);
+      assert.equal((await get("/documents/admin", documentsOperator)).status, 200);
       assert.equal((await get("/queue/")).status, 200);
       assert.equal((await get("/registration/")).status, 200);
       assert.equal((await get("/registration/manage", student)).status, 302);
-      assert.equal((await get("/registration/manage", staff)).status, 200);
-      assert.equal((await get("/registration/register", staff)).status, 302);
-      assert.equal((await get("/queue/admin", staff)).status, 302);
-      assert.equal((await get("/inspection/", staff)).status, 302);
-      assert.equal((await get("/registration/manage", official)).status, 200);
-      assert.equal((await get("/registration/manage", chief)).status, 200);
+      assert.equal((await get("/registration/manage", official)).status, 302);
+      assert.equal((await get("/registration/manage", registrationOperator)).status, 200);
+      assert.equal((await get("/registration/manage", registrationManager)).status, 200);
       assert.equal((await get("/registration/register", official)).status, 302);
-      assert.equal((await get("/registration/register", chief)).status, 200);
+      assert.equal((await get("/registration/register", registrationOperator)).status, 302);
+      assert.equal((await get("/registration/register", registrationManager)).status, 200);
+      assert.equal((await get("/queue/admin", official)).status, 302);
+      assert.equal((await get("/queue/admin", queueOperator)).status, 200);
+      assert.equal((await get("/inspection/", registrationManager)).status, 302);
     } finally {
       await stopServer(server);
       created.close();

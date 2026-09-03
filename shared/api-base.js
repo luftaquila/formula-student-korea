@@ -16,7 +16,10 @@ export function createApiClient(basePath) {
     const res = await fetch(`${BASE_URL}${serviceEndpoint(endpoint)}`, config);
 
     if (res.status === 401) {
-      window.location.href = `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
+      const kioskPath = /^\/(?:queue|registration)\/register(?:\/|$)/.test(window.location.pathname);
+      window.location.href = kioskPath
+        ? "/auth/device"
+        : `/auth/api/login?redirect=${encodeURIComponent(window.location.pathname)}`;
       throw new Error("인증이 필요합니다.");
     }
 

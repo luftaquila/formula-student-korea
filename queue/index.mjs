@@ -7,6 +7,7 @@ import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { competitionYearBounds, currentCompetitionYear } from "../shared/competition-year.mjs";
 import { ensureInactiveTeamView } from "../shared/team-status.mjs";
 import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
+import { access } from "../shared/access-control.js";
 
 // 키 순서가 곧 모든 화면의 검차 표시 순서다(withInspectionLengths 에서 이 순서로 정렬).
 export const INSPECTIONS = {
@@ -78,30 +79,49 @@ function rateLimit(req, res, next) {
   next();
 }
 
+function kioskRegisterRateLimit(req, res, next) {
+  if (req.user?.kind !== "device") return next();
+  const ip = req.headers["x-real-ip"]?.trim() || req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip;
+  const key = `device:${req.user.id}:${ip}`;
+  const now = Date.now();
+  const entry = rateLimitMap.get(key) || { count: 0, resetAt: now + 60000 };
+  if (now > entry.resetAt) { entry.count = 0; entry.resetAt = now + 60000; }
+  entry.count++;
+  rateLimitMap.set(key, entry);
+  if (entry.count > 30) return res.status(429).json({ code: "DEVICE_RATE_LIMITED" });
+  next();
+}
+
 const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "queue", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path.startsWith("/api/internal/")) return "admin";
-    // Chief-only: 대기 등록, 우선순위, 이력 초기화, 설정 변경, 검차 활성화/표시/무시, 부스 수 설정
-    if (/^\/api\/admin\/register\/[^/]+$/.test(req.path)) return "chief";
-    if (req.path.startsWith("/api/admin/priority")) return "chief";
-    if (req.path.startsWith("/api/admin/history")) return "chief";
-    if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return "chief";
-    if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return "chief";
-    if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return "chief";
-    if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return "chief";
-    // Official: 나머지 admin (대기열 조회, 취소, 개별 부스 토글, 입/출차 등)
-    if (req.path.startsWith("/api/admin")) return "official";
+    if (req.path.startsWith("/api/internal/")) return access.internal;
+    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.method === "POST" && /^\/api\/admin\/register\/[^/]+$/.test(req.path)) {
+      return access.anyOf(access.permission("queue.manage"), access.device("kiosk.queue.register"));
+    }
+    // Queue management: registration, priority, reset, visibility and settings.
+    if (req.path.startsWith("/api/admin/priority")) return access.permission("queue.manage");
+    if (req.path.startsWith("/api/admin/history") && req.method !== "GET") return access.permission("queue.manage");
+    if (req.path.startsWith("/api/admin/settings") && req.method !== "GET") return access.permission("queue.manage");
+    if (/^\/api\/admin\/inspection\/[^/]+\/(visibility|ignore)/.test(req.path)) return access.permission("queue.manage");
+    if (req.method === "PATCH" && /^\/api\/admin\/inspection\/[^/]+$/.test(req.path)) return access.permission("queue.manage");
+    if (/^\/api\/admin\/booths\/[^/]+\/config$/.test(req.path)) return access.permission("queue.manage");
+    // Queue operation: read/cancel/walk-in/out and individual booth operation.
+    if (req.path.startsWith("/api/admin")) return access.permission("queue.operate");
     // SPA routes
-    if (/^\/(priority|register)(\/|$)/.test(req.path)) return "chief";
-    if (/^\/(admin|stats)/.test(req.path)) return "official";
-    if (req.path === "/api/logs") return "admin";
+    if (/^\/register(?:\/|$)/.test(req.path)) return {
+      ...access.anyOf(access.permission("queue.manage"), access.device("kiosk.queue.register")),
+      unauthenticatedRedirect: "/auth/device",
+    };
+    if (/^\/priority(?:\/|$)/.test(req.path)) return access.permission("queue.manage");
+    if (/^\/(admin|stats)/.test(req.path)) return access.permission("queue.operate");
     if (req.path === "/api/events") return null;
     if (req.path === "/api/active") return null;
     if (req.path.startsWith("/api/booths/")) return null;
     if (req.path.startsWith("/api/state/")) return null;
-    if (req.path.startsWith("/api/")) return "official"; // API 기본값: default-close
+    if (req.path.startsWith("/api/")) return access.permission("queue.operate"); // API 기본값: default-close
     return null; // SPA (public display)
   },
 });
@@ -889,7 +909,7 @@ app.patch("/api/admin/inspection/:type/visibility", (req, res) => {
    ============================================ */
 
 // POST /api/admin/register/:type - 대기열에 엔트리 등록
-app.post("/api/admin/register/:type", async (req, res) => {
+app.post("/api/admin/register/:type", kioskRegisterRateLimit, async (req, res) => {
   const typeValidation = validateInspection(req.params.type);
   if (!typeValidation.valid) {
     return res.status(400).send(typeValidation.error);
@@ -928,8 +948,12 @@ app.post("/api/admin/register/:type", async (req, res) => {
   let denyReason = null;
   const result = dbRun(() => {
     db.transaction(() => {
-      if (!db.prepare("SELECT active FROM inspection WHERE type = ?").get(type).active) {
+      const inspection = db.prepare("SELECT active, hidden_from_register FROM inspection WHERE type = ?").get(type);
+      if (!inspection.active) {
         throw { status: 400, message: "대기열이 비활성화 상태입니다." };
+      }
+      if (req.user?.kind === "device" && inspection.hidden_from_register) {
+        throw { status: 403, message: "접수할 수 없는 검차 종류입니다." };
       }
 
       if (!activity.active) {

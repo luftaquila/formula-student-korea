@@ -15,6 +15,7 @@ import {
   measurementWithinLimits,
 } from "./lib/event-timing.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
+import { access } from "../shared/access-control.js";
 
 const CONTROLLER_MAX_ROWS = 100000;
 const RETAIN_EVENTS = 500000;
@@ -35,8 +36,14 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "traffic", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health" || req.path === "/api/time") return null;
-    if (req.path === "/api/logs") return "admin";
-    return "master";
+    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.method === "PUT" && /^\/api\/records\/[^/]+\/visibility$/.test(req.path)) return access.permission("traffic.manage");
+    if (req.method === "DELETE" && /^\/api\/records\/[^/]+$/.test(req.path)) return access.permission("traffic.manage");
+    if (req.method === "DELETE" && req.path === "/api/controllers") return access.permission("traffic.manage");
+    if (req.method === "PUT" && req.path.startsWith("/api/event-modes/")) return access.permission("traffic.manage");
+    if (["PUT", "DELETE"].includes(req.method) && req.path.startsWith("/api/wireless/mapping/")) return access.permission("traffic.manage");
+    if (req.method === "PUT" && req.path === "/api/wireless/debounce") return access.permission("traffic.manage");
+    return access.permission("traffic.operate");
   },
 });
 ensureInactiveTeamView(db);

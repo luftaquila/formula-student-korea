@@ -32,38 +32,10 @@
         </div>
       </details>
 
-      <section v-if="isStaff || isAdmin" class="section">
-        <h2 class="section-title">Staff</h2>
+      <section v-if="operationItems.length" class="section">
+        <h2 class="section-title">Operations</h2>
         <div class="services">
-          <ServiceCard v-for="item in staff" :key="item.href" v-bind="cardProps(item)" />
-        </div>
-      </section>
-
-      <section v-if="showOfficials" class="section">
-        <h2 class="section-title">Officials</h2>
-        <div class="services">
-          <ServiceCard v-for="item in officials" :key="item.href" v-bind="cardProps(item)" />
-        </div>
-      </section>
-
-      <section v-if="isChief" class="section">
-        <h2 class="section-title">Chief</h2>
-        <div class="services">
-          <ServiceCard v-for="item in chiefs" :key="item.href" v-bind="cardProps(item)" />
-        </div>
-      </section>
-
-      <section v-if="isMaster" class="section">
-        <h2 class="section-title">Master</h2>
-        <div class="services">
-          <ServiceCard v-for="item in masters" :key="item.href" v-bind="cardProps(item)" />
-        </div>
-      </section>
-
-      <section v-if="isAdmin" class="section">
-        <h2 class="section-title">Admin</h2>
-        <div class="services">
-          <ServiceCard v-for="item in admins" :key="item.href" v-bind="cardProps(item)" />
+          <ServiceCard v-for="item in operationItems" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
     </main>
@@ -76,25 +48,31 @@ import ServiceCard from "./components/ServiceCard.vue";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useNotification } from "@shared/useNotification.js";
-import { readDisclosureState, writeDisclosureState } from "@shared/persistent-disclosure.js";
-import { user, isStudent, isStaff, showOfficials, isChief, isMaster, isAdmin } from "@shared/officialsStore.js";
-import { services, resources, staff, officials, chiefs, masters, admins, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
+import {
+  RESOURCES_DISCLOSURE_STORAGE_KEY,
+  readDisclosureState,
+  writeDisclosureState,
+} from "@shared/persistent-disclosure.js";
+import { user, isStudent, isAdmin, hasPermission, refreshUser } from "@shared/officialsStore.js";
+import { services, resources, operations, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
 
 // 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
 // "홈"은 landing 자신이므로 카드에서 제외하고, 학생 전용 항목은 exact role로 제한한다.
 const serviceItems = computed(() =>
   services.filter((item) => item.href !== "/" && (!item.studentOnly || isStudent.value)),
 );
-const resourcesStorageKey = "fsk.resources.home.open";
+const operationItems = computed(() => operations.filter((item) =>
+  item.adminOnly ? isAdmin.value : hasPermission(item.permission)),
+);
 const browserStorage = (() => {
   try { return window.localStorage; }
   catch { return null; }
 })();
-const resourcesOpen = ref(readDisclosureState(browserStorage, resourcesStorageKey));
+const resourcesOpen = ref(readDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY));
 
 function persistResourcesState(event) {
   resourcesOpen.value = event.currentTarget.open;
-  writeDisclosureState(browserStorage, resourcesStorageKey, resourcesOpen.value);
+  writeDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY, resourcesOpen.value);
 }
 
 function cardProps(item) {
@@ -126,10 +104,7 @@ onMounted(() => {
   }
 
   if (user.value) {
-    fetch("/auth/api/session").then(res => {
-      if (res.ok) return res.json().then(data => { user.value = data; });
-      user.value = null;
-    }).catch(() => {});
+    refreshUser();
   }
 });
 </script>

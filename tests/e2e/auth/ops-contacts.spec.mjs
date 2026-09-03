@@ -134,7 +134,7 @@ test.describe("Ops contacts management", () => {
     const usersResponse = await page.request.get("/auth/api/users");
     expect(usersResponse.status()).toBe(200);
     const contacts = (await usersResponse.json())
-      .filter((user) => user.active && ["official", "chief", "master", "admin"].includes(user.role))
+      .filter((user) => user.active && ["official", "admin"].includes(user.role))
       .slice(0, 2);
     expect(contacts).toHaveLength(2);
 
@@ -188,7 +188,7 @@ test.describe("Ops contacts management", () => {
   test("refreshes contact order after a displayed user is deactivated", async ({ page }) => {
     const ownedUsers = [
       { email: "e2e-ops-order-first@test.com", role: "official" },
-      { email: "e2e-ops-order-deactivated@test.com", role: "chief" },
+      { email: "e2e-ops-order-deactivated@test.com", role: "official" },
       { email: "e2e-ops-order-last@test.com", role: "official" },
     ];
     let contacts = [];

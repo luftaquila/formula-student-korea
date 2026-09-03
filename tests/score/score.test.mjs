@@ -112,8 +112,15 @@ setupTestEnv();
 let server, baseUrl, client, db, dbPath;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
-const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
-const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+const scoreOperatorCookie = makeAuthCookie({
+  email: 'score-operator@test.com', name: 'Score Operator', role: 'official', permissions: ['score.operate'],
+});
+const scoreManagerCookie = makeAuthCookie({
+  email: 'score-manager@test.com', name: 'Score Manager', role: 'official', permissions: ['score.manage'],
+});
+const unrelatedOfficialCookie = makeAuthCookie({
+  email: 'traffic-manager@test.com', name: 'Traffic Manager', role: 'official', permissions: ['traffic.manage'],
+});
 
 before(async () => {
   dbPath = tmpDbPath();
@@ -969,10 +976,13 @@ describe('Energy score integration', () => {
 // ─── Auth ───────────────────────────────────────────────────────────────
 
 describe('Auth', () => {
-  it('allows master and rejects chief on protected score APIs', async () => {
-    assert.equal((await client.get('/api/score?year=2026', { cookie: masterCookie })).status, 200);
-    assert.equal((await client.get('/api/score?year=2026', { cookie: chiefCookie })).status, 403);
-    assert.equal((await client.get('/api/logs', { cookie: masterCookie })).status, 403);
+  it('separates Score operation, management, unrelated grants, and audit access', async () => {
+    assert.equal((await client.get('/api/score?year=2026', { cookie: scoreOperatorCookie })).status, 200);
+    assert.equal((await client.get('/api/score?year=2026', { cookie: scoreManagerCookie })).status, 200);
+    assert.equal((await client.get('/api/score?year=2026', { cookie: unrelatedOfficialCookie })).status, 403);
+    assert.equal((await client.put('/api/score/penalty', { cookie: scoreOperatorCookie, body: {} })).status, 403);
+    assert.equal((await client.put('/api/score/penalty', { cookie: scoreManagerCookie, body: {} })).status, 400);
+    assert.equal((await client.get('/api/logs', { cookie: scoreOperatorCookie })).status, 403);
   });
 
   it('PUT /api/score/manual without auth returns 401', async () => {

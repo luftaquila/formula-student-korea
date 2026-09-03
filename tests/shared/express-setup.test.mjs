@@ -31,6 +31,7 @@ import {
   VALID_ROLES,
   isEnvEnabled,
 } from '../../shared/express-setup.mjs';
+import { access } from '../../shared/access-control.js';
 
 // ─── isEnvEnabled ─────────────────────────────────────────────────────────
 describe('isEnvEnabled', () => {
@@ -224,6 +225,7 @@ describe('createApp auth middleware', () => {
       },
     }, (req) => {
       if (req.path === '/public') return null;
+      if (req.path === '/internal') return access.internal;
       if (req.path === '/admin' || req.path === '/api/admin') return 'admin';
       if (req.path === '/official' || req.path === '/api/official') return 'official';
       if (req.path.startsWith('/api/')) return 'student';
@@ -231,6 +233,7 @@ describe('createApp auth middleware', () => {
     });
     app.get('/public', (req, res) => res.json({ user: req.user?.email || null }));
     app.get('/admin', (req, res) => res.json({ user: req.user.email }));
+    app.get('/internal', (req, res) => res.json({ user: req.user.email }));
     app.get('/official', (req, res) => res.json({ user: req.user.email }));
     app.get('/student', (req, res) => res.json({ user: req.user.email }));
     app.get('/api/admin', (req, res) => res.json({ user: req.user.email }));
@@ -326,22 +329,27 @@ describe('createApp auth middleware', () => {
     assert.equal(res.headers.get('location'), '/');
   });
 
-  // Auth: invalid role not in VALID_ROLES
-  it('invalid role not in VALID_ROLES returns 403 on API endpoint', async () => {
+  // Auth: a token with an unknown role does not establish a human principal.
+  it('invalid role not in VALID_ROLES returns 401 on API endpoint', async () => {
     validateUserResult = { valid: true, role: null };
     const cookie = makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'superuser' });
     const res = await client.get('/api/student', { cookie });
-    assert.equal(res.status, 403);
+    assert.equal(res.status, 401);
   });
 
   // Auth: X-Internal-Service header
-  it('X-Internal-Service header authenticates as admin', async () => {
-    const res = await client.get('/admin', {
+  it('X-Internal-Service header authenticates only for internal routes', async () => {
+    const res = await client.get('/internal', {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
     });
     assert.equal(res.status, 200);
     const data = await res.json();
     assert.equal(data.user, 'internal');
+
+    const adminRes = await client.get('/api/admin', {
+      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
+    });
+    assert.equal(adminRes.status, 403);
   });
 
   it('wrong X-Internal-Service header is explicitly rejected with 403', async () => {
@@ -381,10 +389,10 @@ describe('createApp auth middleware', () => {
 
   // Auth: validateUser returning changed role
   it('validateUser returning changed role updates cookie', async () => {
-    validateUserResult = { valid: true, role: 'chief' };
+    validateUserResult = { valid: true, role: 'official' };
     const cookie = makeAuthCookie({ email: 'user@test.com', name: 'User', role: 'student' });
-    // Access an endpoint that student can access but chief can too
-    const res = await client.get('/student', { cookie });
+    // Access an endpoint that both human roles can access.
+    const res = await client.get('/official', { cookie });
     assert.equal(res.status, 200);
     // Should have a Set-Cookie with updated role
     const setCookie = res.headers.get('set-cookie');

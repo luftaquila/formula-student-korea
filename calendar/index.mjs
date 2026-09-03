@@ -3,10 +3,15 @@ import express from "express";
 import Database from "better-sqlite3";
 import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
-import { ROLE_LEVELS } from "../shared/constants.js";
+import { access } from "../shared/access-control.js";
 
-const EVENT_ROLE_LEVELS = { public: 0, ...ROLE_LEVELS };
-const ALLOWED_EVENT_ROLES = Object.keys(EVENT_ROLE_LEVELS);
+const ALLOWED_EVENT_ROLES = Object.freeze(["public", "student", "official"]);
+const LEGACY_EVENT_ROLES = Object.freeze(["public", "student", "staff", "official", "chief", "master", "admin"]);
+
+function canonicalAudience(role) {
+  if (role === "public" || role === "student") return role;
+  return "official";
+}
 
 /* ============================================
    App
@@ -17,11 +22,11 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "calendar", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path === "/api/logs") return "admin";
+    if (req.path === "/api/logs") return access.permission("audit.view");
     if (req.method === "GET" && req.path === "/api/events") return null;
     if (req.path === "/api/events/ical") return null;
-    if (req.path === "/api/events/subscribe") return "student";
-    if (req.path.startsWith("/api/")) return "chief";
+    if (req.path === "/api/events/subscribe") return access.authenticated;
+    if (req.path.startsWith("/api/")) return access.permission("calendar.manage");
     return null;
   },
 });
@@ -128,6 +133,18 @@ runMigrationOnce(db, "calendar.event_timestamp_normalization.v1", () => {
   }
 });
 
+runMigrationOnce(db, "calendar.event_audience.v2", () => {
+  db.prepare("UPDATE events SET role = 'official' WHERE role NOT IN ('public', 'student', 'official')").run();
+});
+
+function canSeeAudience(principal, audience) {
+  const role = canonicalAudience(audience);
+  if (role === "public") return true;
+  if (principal?.kind !== "human") return false;
+  if (role === "student") return ["student", "official", "admin"].includes(principal.role);
+  return ["official", "admin"].includes(principal.role);
+}
+
 // List events (public access, filtered by user role)
 app.get("/api/events", (req, res) => {
   const { timeMin, timeMax } = req.query;
@@ -161,12 +178,8 @@ app.get("/api/events", (req, res) => {
     return res.status(result.status).json({ error: result.error });
   }
 
-  const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
   const events = result.result
-    .filter(e => {
-      const eventLevel = ALLOWED_EVENT_ROLES.includes(e.role) ? EVENT_ROLE_LEVELS[e.role] : EVENT_ROLE_LEVELS.official;
-      return userLevel >= eventLevel;
-    })
+    .filter((event) => canSeeAudience(req.user, event.role))
     .map(toEventResponse);
   res.json(events);
 });
@@ -196,12 +209,6 @@ function validateEventInput(req, res, action, target) {
   if (!ALLOWED_EVENT_ROLES.includes(role)) {
     logger.warn(req, action, { error: "Invalid role value", role }, target);
     res.status(400).send("올바르지 않은 공개 범위입니다.");
-    return null;
-  }
-  const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
-  if (EVENT_ROLE_LEVELS[role] > userLevel) {
-    logger.warn(req, action, { error: "role exceeds own level", requested: role, actual: req.user?.role }, target);
-    res.status(403).send("자신의 권한보다 높은 공개 범위는 설정할 수 없습니다.");
     return null;
   }
   return { role, start: normalizedStart, end: normalizedEnd, allDay };
@@ -242,17 +249,6 @@ app.put("/api/events/:id", (req, res) => {
 
   const existing = db.prepare("SELECT id, role FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).send("일정을 찾을 수 없습니다.");
-  // 기존 이벤트의 공개 범위(role)가 요청자 레벨보다 높으면 수정 불가 — 목록에서 숨겨진
-  // 상위(admin) 일정을 하위(chief)가 role을 낮춰 열람·변조하는 것을 막는다(생성/입력 검사는
-  // 새 role만 본다).
-  {
-    const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
-    const existingLevel = ALLOWED_EVENT_ROLES.includes(existing.role) ? EVENT_ROLE_LEVELS[existing.role] : EVENT_ROLE_LEVELS.official;
-    if (existingLevel > userLevel) {
-      logger.warn(req, "event.update", { error: "insufficient_role", event_role: existing.role }, id);
-      return res.status(403).send("이 일정을 수정할 권한이 없습니다.");
-    }
-  }
 
   const description = req.body.description || "";
   const location = req.body.location || "";
@@ -278,15 +274,6 @@ app.delete("/api/events/:id", (req, res) => {
 
   const existing = db.prepare("SELECT title, role FROM events WHERE id = ?").get(id);
   if (!existing) return res.status(404).send("일정을 찾을 수 없습니다.");
-  // PUT과 동일: 요청자 레벨보다 높은 공개 범위의 일정은 삭제 불가.
-  {
-    const userLevel = EVENT_ROLE_LEVELS[req.user?.role] ?? 0;
-    const existingLevel = ALLOWED_EVENT_ROLES.includes(existing.role) ? EVENT_ROLE_LEVELS[existing.role] : EVENT_ROLE_LEVELS.official;
-    if (existingLevel > userLevel) {
-      logger.warn(req, "event.delete", { error: "insufficient_role", event_role: existing.role }, id);
-      return res.status(403).send("이 일정을 삭제할 권한이 없습니다.");
-    }
-  }
 
   const result = dbRun(() => db.prepare("DELETE FROM events WHERE id = ?").run(id));
 
@@ -306,7 +293,7 @@ function generateICalSig(role) {
 
 // Get signed subscription URL for current user's role
 app.get("/api/events/subscribe", (req, res) => {
-  const role = req.user.role;
+  const role = req.user.role === "student" ? "student" : "official";
   const sig = generateICalSig(role);
   res.json({ role, path: `/calendar/api/events/ical?role=${role}&sig=${sig}` });
 });
@@ -314,7 +301,7 @@ app.get("/api/events/subscribe", (req, res) => {
 // iCal feed (signature-verified, no cookie auth)
 app.get("/api/events/ical", (req, res) => {
   const { role, sig } = req.query;
-  if (!role || !sig || !ALLOWED_EVENT_ROLES.includes(role)) {
+  if (!role || !sig || !LEGACY_EVENT_ROLES.includes(role)) {
     logger.warn(req, "event.ical", { error: "invalid parameters", role }, role ?? null);
     return res.status(400).send("올바르지 않은 요청입니다.");
   }
@@ -325,8 +312,10 @@ app.get("/api/events/ical", (req, res) => {
     return res.status(403).send("서명이 올바르지 않습니다.");
   }
 
-  const roleLevel = EVENT_ROLE_LEVELS[role];
-  const visibleRoles = ALLOWED_EVENT_ROLES.filter(r => EVENT_ROLE_LEVELS[r] <= roleLevel);
+  const audience = canonicalAudience(role);
+  const visibleRoles = audience === "official"
+    ? ["public", "student", "official"]
+    : audience === "student" ? ["public", "student"] : ["public"];
   const placeholders = visibleRoles.map(() => "?").join(",");
 
   const result = dbRun(() =>

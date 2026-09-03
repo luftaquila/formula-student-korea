@@ -27,10 +27,11 @@ import { useSSE } from "../composables/useSSE";
 import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { displayPhone } from "@shared/format-phone.js";
-import { isChief } from "@shared/officialsStore.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
+const canManage = permissionComputed("queue.manage");
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, lastEntriesUpdate, reconnected } = useSSE();
 
@@ -131,7 +132,7 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
-    if (isChief.value) {
+    if (canManage.value) {
       const sms = await fetchSmsSettings();
       smsEnabled.value = sms.value;
       const smsRankData = await fetchSmsRankSettings();
@@ -458,13 +459,13 @@ function goToInspection(num) {
   <div class="admin-panel">
     <!-- Top Actions -->
     <div class="top-actions">
-      <button v-if="isChief" class="btn btn-primary" @click="goToRegister">
+      <button v-if="canManage" class="btn btn-primary" @click="goToRegister">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
           <path d="M12 5v14M5 12h14" />
         </svg>
         검차 등록
       </button>
-      <button v-if="isChief" class="btn btn-ghost" @click="goToPriority">
+      <button v-if="canManage" class="btn btn-ghost" @click="goToPriority">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
           <polygon
             points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
@@ -497,7 +498,7 @@ function goToInspection(num) {
       </button>
     </div>
 
-    <div class="admin-grid" :class="{ 'no-settings': !isChief }">
+    <div class="admin-grid" :class="{ 'no-settings': !canManage }">
       <!-- Queue Panel -->
       <div class="card queue-panel">
         <div class="card-header">
@@ -631,7 +632,7 @@ function goToInspection(num) {
       </div>
 
       <!-- Settings Panel -->
-      <div v-if="isChief" class="card settings-panel">
+      <div v-if="canManage" class="card settings-panel">
         <div class="card-header">
           <h3>⚙️ 설정</h3>
         </div>

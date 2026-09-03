@@ -11,42 +11,42 @@ async function withPage(browser, storageState, callback) {
 }
 
 test.describe("Cross-application RBAC", () => {
-  test("home groups operational cards by their actual minimum role", async ({ browser }) => {
+  test("home shows operational cards from explicit service permissions", async ({ browser }) => {
     const cases = [
       {
-        role: "staff",
-        headings: ["Services", "Staff"],
+        profile: "registrationOperator",
+        headings: ["Services", "Operations"],
         paths: ["/registration/manage"],
         absentPaths: ["/queue/admin", "/inspection", "/documents/admin"],
       },
       {
-        role: "official",
-        headings: ["Services", "Officials"],
-        paths: ["/queue/admin", "/inspection"],
-        absentPaths: ["/registration/manage", "/documents/admin"],
+        profile: "operationsOperator",
+        headings: ["Services", "Operations"],
+        paths: ["/registration/manage", "/queue/admin", "/inspection"],
+        absentPaths: ["/documents/admin", "/course", "/traffic", "/score"],
       },
       {
-        role: "chief",
-        headings: ["Services", "Officials", "Chief"],
-        paths: ["/queue/admin", "/inspection", "/documents/admin", "/files/"],
-        absentPaths: ["/registration/manage", "/course", "/traffic", "/score"],
+        profile: "operationsManager",
+        headings: ["Services", "Operations"],
+        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/", "/calendar"],
+        absentPaths: ["/course", "/traffic", "/score", "/entry", "/auth"],
       },
       {
-        role: "master",
-        headings: ["Services", "Officials", "Chief", "Master"],
-        paths: ["/queue/admin", "/inspection", "/documents/admin", "/files/", "/course", "/traffic", "/score"],
-        absentPaths: ["/registration/manage", "/entry", "/auth"],
+        profile: "technicalOperator",
+        headings: ["Services", "Operations"],
+        paths: ["/course", "/traffic", "/score"],
+        absentPaths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/", "/entry", "/auth"],
       },
       {
-        role: "admin",
-        headings: ["Services", "Staff", "Officials", "Chief", "Master", "Admin"],
+        profile: "admin",
+        headings: ["Services", "Operations"],
         paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/course", "/traffic", "/score"],
         absentPaths: [],
       },
     ];
 
     for (const expectation of cases) {
-      await withPage(browser, storageStatePath(expectation.role), async (page) => {
+      await withPage(browser, storageStatePath(expectation.profile), async (page) => {
         await page.goto("/");
         await expect(page.locator("main h2")).toHaveText(expectation.headings);
         for (const path of expectation.paths) {
@@ -106,8 +106,8 @@ test.describe("Cross-application RBAC", () => {
     });
   });
 
-  test("staff can only enter registration management among protected operational apps", async ({ browser }) => {
-    await withPage(browser, storageStatePath("staff"), async (page) => {
+  test("registration operator can only enter registration operation among protected apps", async ({ browser }) => {
+    await withPage(browser, storageStatePath("registrationOperator"), async (page) => {
       await page.goto("/registration/manage");
       await expect(page).toHaveURL(/\/registration\/manage/);
       await expect(page.getByRole("heading", { name: "설정" })).toHaveCount(0);
@@ -119,8 +119,8 @@ test.describe("Cross-application RBAC", () => {
     });
   });
 
-  test("officials can use inspection and queue admin but not admin-only applications", async ({ browser }) => {
-    await withPage(browser, storageStatePath("official"), async (page) => {
+  test("multi-service operator can use only the explicitly granted operation apps", async ({ browser }) => {
+    await withPage(browser, storageStatePath("operationsOperator"), async (page) => {
       for (const path of ["/entry", "/traffic", "/score"]) {
         await test.step(`redirect ${path}`, async () => {
           await page.goto(path);
@@ -132,12 +132,14 @@ test.describe("Cross-application RBAC", () => {
       await expect(page).toHaveURL(/\/inspection/);
       await page.goto("/queue/admin");
       await expect(page).toHaveURL(/\/queue\/admin/);
+      await page.goto("/registration/manage");
+      await expect(page).toHaveURL(/\/registration\/manage/);
       expect((await page.request.get("/competition/api/v1/traffic/records")).status()).toBe(403);
     });
   });
 
-  test("masters can use course, traffic, and score but not admin applications", async ({ browser }) => {
-    await withPage(browser, storageStatePath("master"), async (page) => {
+  test("technical operator can use course, traffic, and score only", async ({ browser }) => {
+    await withPage(browser, storageStatePath("technicalOperator"), async (page) => {
       for (const path of ["/course", "/traffic", "/score"]) {
         await page.goto(path);
         await expect(page).toHaveURL(new RegExp(path));

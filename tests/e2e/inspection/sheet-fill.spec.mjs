@@ -36,7 +36,7 @@ async function replaceMemo(page, itemId, memo) {
 }
 
 test.describe("Inspection sheet filling", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test.beforeEach(async ({ page }) => {
     // Navigate to inspection sheet for team 1

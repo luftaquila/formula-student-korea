@@ -54,7 +54,7 @@ async function replaceMemo(page, itemId, memo) {
 }
 
 test.describe("Inspection answer and memo save reliability", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   test("coalesces rapid PASS/FAIL changes to the final visible value", async ({ page }) => {
     const item = await findItem(page, "전압 확인");

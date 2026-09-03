@@ -1,6 +1,6 @@
 export const services = [
   { name: "홈", href: "/", icon: "home" },
-  // studentOnly (exact role, not hierarchical): staff use 서류 제출 관리 instead.
+  // Student self-service is exact-role only. Officials use the review route.
   // Shown to any student — including those without an assigned team; the
   // documents page itself explains "팀이 배정되지 않았습니다" on entry.
   { name: "서류 제출", href: "/documents", icon: "documents", studentOnly: true },
@@ -17,32 +17,23 @@ export const resources = [
   { name: "자작자동차포럼", href: "https://dnf.luftaquila.io", icon: "forum", external: true },
 ];
 
-export const staff = [
-  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin", auth: "staff" },
-];
-
-export const officials = [
-  { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin", auth: "official" },
-  { name: "인스펙션 시트", href: "/inspection", icon: "sheet", auth: "official" },
-];
-
-export const chiefs = [
-  { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", auth: "chief" },
-  // FileBrowser는 독립 SPA라 새 탭으로 연다 (landing 카드와 동일 동작)
-  { name: "파일 클라우드", href: "/files/", icon: "files", auth: "chief", external: true },
-];
-
-export const masters = [
-  { name: "코스 관리", href: "/course", icon: "course", auth: "master" },
-  { name: "계측 시스템", href: "/traffic", icon: "traffic", auth: "master" },
-  { name: "성적 관리", href: "/score", icon: "score", auth: "master" },
-];
-
-export const admins = [
-  { name: "엔트리 관리", href: "/entry", icon: "entry" },
-  { name: "계정 관리", href: "/auth", icon: "auth" },
-  { name: "이메일/SMS", href: "/email", icon: "email" },
-  { name: "시스템 로그", href: "/auth/logs", icon: "logs" },
+export const operations = [
+  { name: "등록 대기 관리", href: "/registration/manage", icon: "registration-admin", permission: "registration.operate" },
+  { name: "검차 대기 관리", href: "/queue/admin", icon: "queue-admin", permission: "queue.operate" },
+  { name: "인스펙션 시트", href: "/inspection", icon: "sheet", permission: "inspection.operate" },
+  { name: "서류 제출 관리", href: "/documents/admin", icon: "documents-admin", permission: "documents.operate" },
+  { name: "파일 클라우드", href: "/files/", icon: "files", permission: "files.access", external: true },
+  { name: "일정 관리", href: "/calendar", icon: "calendar", permission: "calendar.manage" },
+  { name: "코스 관리", href: "/course", icon: "course", permission: "course.operate" },
+  { name: "계측 시스템", href: "/traffic", icon: "traffic", permission: "traffic.operate" },
+  { name: "성적 관리", href: "/score", icon: "score", permission: "score.operate" },
+  { name: "엔트리 관리", href: "/entry", icon: "entry", permission: "entry.manage" },
+  { name: "계정 신청 관리", href: "/auth/applications", icon: "applications", permission: "applications.manage" },
+  { name: "운영 연락처 관리", href: "/auth/contacts", icon: "contacts", permission: "contacts.manage" },
+  { name: "이메일/SMS", href: "/email", icon: "email", permission: "messaging.operate" },
+  { name: "시스템 로그", href: "/auth/logs", icon: "logs", permission: "audit.view" },
+  { name: "계정 및 권한", href: "/auth", icon: "auth", adminOnly: true },
+  { name: "태블릿 장비", href: "/auth/devices", icon: "device", adminOnly: true },
 ];
 
 const icons = {
@@ -68,6 +59,9 @@ const icons = {
   "documents-admin": "📑",
   files: "📁",
   calendar: "📅",
+  applications: "📝",
+  contacts: "☎️",
+  device: "📱",
 };
 
 export const forumSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 201.49 201.56"><path d="M101 201.56h-.62c-3.14-3.17-6.27-6.36-9.43-9.52q-27.89-27.89-55.78-55.76c-.56-.55-.51-.81 0-1.32 2.12-2.06 4.22-4.14 6.26-6.28.66-.69 1-.55 1.57 0q13.06 13.11 26.16 26.18 15.38 15.38 30.72 30.76c.64.64.94.59 1.56 0q26.17-26.22 52.4-52.4 19.63-19.63 39.26-39.31c.7-.7 1-.66 1.7 0 1.92 2 3.93 4 5.91 5.93.23.23.4.54.76.62v.61c-1.71 1.41-3.19 3.06-4.75 4.63q-47.6 47.56-95.15 95.14c-.19.25-.37.49-.57.72z" fill="#458cca"/><path d="M166.78 66c-.18.21-.33.39-.49.55-2.18 2.19-4.39 4.36-6.55 6.57-.49.5-.78.4-1.22 0l-6-6-50.37-50.39c-1.49-1.49-1.49-1.49-3 0L8.51 107.38c-1.12 1.12-1.12 1.12-2.25 0-1.92-1.93-3.81-3.89-5.79-5.76-.67-.64-.59-1 0-1.58q13.75-13.69 27.41-27.4L99.63.9c1.2-1.21.91-1.19 2.11 0l43.93 43.93q10.25 10.23 20.47 20.47c.21.21.4.43.64.7z" fill="#f5c059"/><path d="M19.61 120.38a1 1 0 0 1-.75-.43c-2.21-2.21-4.41-4.44-6.64-6.63-.46-.44-.41-.69 0-1.11q6.1-6.09 12.19-12.2L44.9 79.55 65 59.45l20.39-20.39c4.89-4.9 9.81-9.78 14.68-14.71.64-.65.91-.28 1.32.14l31.74 31.75q10.49 10.48 21 21c.58.57.65.9 0 1.5q-3.22 3.12-6.35 6.34c-.52.53-.78.46-1.26 0Q124 62.46 101.48 39.91c-.66-.66-1-.61-1.59 0Q60 79.86 20.08 119.76a5.33 5.33 0 0 0-.47.62z" fill="#f37f56"/><path d="M100.68 177.76c-.2-.18-.38-.33-.54-.49q-7.35-7.34-14.69-14.68L67.83 145Q57.39 134.56 47 124.12c-.43-.44-.27-.62 0-1 2.17-2.15 4.35-4.3 6.48-6.5.53-.54.82-.6 1.4 0q9.48 9.55 19 19.06l26 26c.63.64.92.61 1.54 0q39.81-39.86 79.63-79.69c.73-.74 1.11-.76 1.82 0 2 2.1 4.05 4.13 6.13 6.14.56.54.5.8 0 1.32q-43.46 43.41-86.88 86.85c-.35.36-.71.72-1.07 1.07-.05.17-.23.27-.37.39z" fill="#458cca"/><path d="M100.69 153.89l-.75-.69-15.4-15.4-25.1-25.1c-1.18-1.18-1.11-.84 0-2 2-2.06 4.1-4.08 6.12-6.15.46-.47.72-.48 1.18 0 5.55 5.58 11.12 11.12 16.68 16.69s11.13 11.11 16.66 16.7c.56.57.83.34 1.26-.09l39.15-39.17q14.47-14.48 28.94-29c.48-.48.73-.45 1.18 0 2.17 2.21 4.35 4.4 6.57 6.56.52.5.38.75-.05 1.18l-74.47 74.44-1.49 1.5z" fill="#97c73c"/><path d="M100.67 63.15c-.26.24-.49.43-.7.64L81.85 81.91 32 131.78c-.57.58-.86.53-1.4 0-2.06-2.12-4.14-4.23-6.28-6.27-.68-.65-.55-1 0-1.55q37.47-37.43 74.9-74.88c1.41-1.4 1.41-1.41 2.82 0q20 20 40.09 40.06c.64.63.65.94 0 1.56-2.14 2-4.22 4.15-6.28 6.27-.55.57-.85.57-1.41 0Q118 80.39 101.41 63.85c-.23-.23-.47-.45-.74-.7z" fill="#f37f56"/></svg>`;

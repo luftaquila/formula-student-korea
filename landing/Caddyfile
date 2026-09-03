@@ -125,7 +125,7 @@
 		# mediamtx is permit-all + ClusterIP-only, so these gates ARE the access
 		# control (without a signaling exchange the SRTP keys can't be set up, so
 		# the media UDP port alone is useless): WHIP (rover publish) requires the
-		# internal secret; WHEP (browser play) requires an admin session.
+		# internal secret; WHEP (browser play) requires rover operation access.
 		@rtcwhip path /api/rtc/*/whip
 		handle @rtcwhip {
 			route {
@@ -155,9 +155,9 @@
 				request_header -X-Forwarded-For
 				request_header -X-Internal-Service
 				request_header -X-Rover-Secret
-				# Browser play: require an admin session (JWT cookie validated by auth).
+				# Browser play: require rover operation (JWT cookie validated by auth).
 				forward_auth auth:9100 {
-					uri /api/forward-auth?role=admin
+					uri /api/forward-auth?permission=rover.operate
 					header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}
 				}
 				uri strip_prefix /api/rtc
@@ -209,7 +209,7 @@
 		# FileBrowser 인증이 깨진다. 위조 인바운드 값은 forward_auth의 copy_headers가
 		# 200 응답에서 Set(덮어쓰기)하고 비200은 리다이렉트되므로 이미 무력화된다.
 		forward_auth auth:9100 {
-			uri /api/forward-auth?role=chief
+			uri /api/forward-auth?permission=files.access
 			header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}
 			copy_headers X-Forwarded-User
 			@unauthenticated status 401

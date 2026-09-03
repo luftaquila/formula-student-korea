@@ -73,7 +73,7 @@
     </div>
 
     <!-- Config Cards -->
-    <div class="config-row">
+    <div v-if="isAdmin" class="config-row">
       <div class="card">
         <div class="card-header">
           <h3>이메일 설정</h3>
@@ -218,10 +218,7 @@
                   <select v-model="roleFilter" class="form-select">
                     <option value="">전체 역할</option>
                     <option value="admin">Admin</option>
-                    <option value="master">Master</option>
-                    <option value="chief">Chief</option>
                     <option value="official">Official</option>
-                    <option value="staff">Staff</option>
                     <option value="student">Student</option>
                   </select>
                   <select v-model="activeFilter" class="form-select">
@@ -270,6 +267,7 @@
 import { ref, reactive, computed, onMounted, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { fetchStats as apiFetchStats, fetchQuota as apiFetchQuota, fetchEmails, fetchEmail, sendEmail, fetchRecipients, fetchConfig as apiFetchConfig, updateConfig, testEmail as apiTestEmail, testSms as apiTestSms, resetConfig as apiResetConfig } from "../api.js";
+import { isAdmin } from "@shared/officialsStore.js";
 
 const { success, error: showError } = useNotification();
 
@@ -541,7 +539,7 @@ watch(showCompose, async (open) => {
 });
 
 // ── Util ──
-const ROLE_BADGE = { admin: "badge-danger", master: "badge-warning", chief: "badge-warning", official: "badge-primary", staff: "badge-default", student: "badge-success" };
+const ROLE_BADGE = { admin: "badge-danger", official: "badge-primary", student: "badge-success" };
 function roleBadgeClass(role) { return ROLE_BADGE[role] || "badge-primary"; }
 
 function formatTime(ts) {
@@ -561,7 +559,7 @@ onMounted(async () => {
   loadStats();
   fetchEmailLog(false);
   try { recipients.value = await fetchRecipients(); } catch { /* non-critical */ }
-  loadConfig();
+  if (isAdmin.value) loadConfig();
 });
 </script>
 

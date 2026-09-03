@@ -25,10 +25,10 @@ test.describe("User management", () => {
 
     // Verify seeded users appear in the table
     await expect(table.getByRole("cell", { name: "e2e-admin@test.com", exact: true })).toBeVisible();
-    await expect(table.getByRole("cell", { name: "e2e-master@test.com", exact: true })).toBeVisible();
-    await expect(table.getByRole("cell", { name: "e2e-chief@test.com", exact: true })).toBeVisible();
-    await expect(table.getByRole("cell", { name: "e2e-official@test.com", exact: true })).toBeVisible();
-    await expect(table.getByRole("cell", { name: "e2e-staff@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-technical-operator@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-operations-manager@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-operations-operator@test.com", exact: true })).toBeVisible();
+    await expect(table.getByRole("cell", { name: "e2e-registration-operator@test.com", exact: true })).toBeVisible();
     await expect(table.getByRole("cell", { name: "e2e-student@test.com", exact: true })).toBeVisible();
   });
 

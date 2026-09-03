@@ -1,11 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Score gate (score/index.mjs authRoleFn ~lines 104-107):
-//   /api/health -> public; EVERYTHING else -> "admin".
-// chief sits one level below admin -> expect 403 on every protected route,
-// including the GET /api/score read (it is admin-gated, not public).
-// Unauthenticated -> 401.
+// Score endpoints require score.operate or score.manage. This profile has
+// neither permission, so every representative protected route must return 403.
+// Unauthenticated callers receive 401.
 
 const adminGated = [
   { method: "get", path: "/competition/api/v1/score/score", body: undefined },
@@ -17,8 +15,8 @@ const adminGated = [
 ];
 
 test.describe("score RBAC", () => {
-  test("chief is rejected on every representative score endpoint", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("official without score permissions is rejected on every representative endpoint", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
       for (const { method, path, body } of adminGated) {
         await test.step(`${method.toUpperCase()} ${path}`, async () => {

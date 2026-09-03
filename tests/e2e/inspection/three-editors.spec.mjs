@@ -72,8 +72,8 @@ test.describe("Three concurrent inspection editors", () => {
     // Use three different authenticated accounts so the automatic inspector list
     // proves that every editor is retained by real name.
     const context1 = await browser.newContext({ storageState: storageStatePath("admin") });
-    const context2 = await browser.newContext({ storageState: storageStatePath("chief") });
-    const context3 = await browser.newContext({ storageState: storageStatePath("official") });
+    const context2 = await browser.newContext({ storageState: storageStatePath("operationsManager") });
+    const context3 = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();

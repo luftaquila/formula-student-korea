@@ -6,10 +6,12 @@ import { request, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
 import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
 import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import { formatDate, formatDateLines, formatSize } from "@shared/format-date.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const route = useRoute();
 const router = useRouter();
 const { notyf } = useNotification();
+const canManage = permissionComputed("documents.manage");
 
 const tableRef = ref(null);
 const tableScrollerRef = ref(null);
@@ -158,6 +160,7 @@ function toggleExpand(teamNum) {
 }
 
 async function deleteSession() {
+  if (!canManage.value) return;
   if (!confirm("이 세션을 삭제하시겠습니까? 모든 제출 파일도 삭제됩니다.")) return;
   try {
     await request(`/api/admin/sessions/${route.params.id}`, { method: "DELETE" });
@@ -186,8 +189,8 @@ onMounted(loadStatus);
           <h3>{{ session.name }}</h3>
           <div class="header-actions">
             <button class="btn btn-sm btn-ghost" @click="downloadSessionArchive">다운로드</button>
-            <router-link :to="'/admin/session/' + session.id + '/edit'" class="btn btn-sm btn-ghost">수정</router-link>
-            <button class="btn btn-sm btn-danger" @click="deleteSession">삭제</button>
+            <router-link v-if="canManage" :to="'/admin/session/' + session.id + '/edit'" class="btn btn-sm btn-ghost">수정</router-link>
+            <button v-if="canManage" class="btn btn-sm btn-danger" @click="deleteSession">삭제</button>
           </div>
         </div>
         <div class="card-body">

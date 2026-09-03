@@ -306,9 +306,12 @@ export function createLogger(db, serviceName, maxRows = 50000, { teamSource } = 
 
   // Query handler (used as Express route handler for GET /api/logs)
   function queryHandler(req, res) {
-    // Auth check: admin or internal service
+    // The route gate normally enforces this. Keep the handler safe when mounted
+    // directly by a service test or future caller.
     const isInternal = isInternalSecret(req.headers["x-internal-service"]);
-    if (!isInternal && req.user?.role !== "admin") {
+    const canAudit = req.user?.kind === "human"
+      && (req.user.role === "admin" || req.user.permissions?.includes("audit.view"));
+    if (!isInternal && !canAudit) {
       return res.status(403).send("권한이 없습니다.");
     }
 

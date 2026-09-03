@@ -5,7 +5,7 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // Competition Teams gate: public active-team reads, admin mutations.
 // GET /api/vehicle-types and /api/health are public; every other route is "admin".
 // NOTE: auth/rbac.spec.mjs already covers student->POST /competition/api/v1/teams 403 and
-// unauth->POST 401. Here we cover official + chief (still below admin), the PATCH/DELETE
+// unauth->POST 401. Here we cover officials without entry.manage, the PATCH/DELETE
 // write surface, vehicle-types writes, and the genuinely public reads.
 
 const YEAR = currentCompetitionYear();
@@ -27,12 +27,12 @@ const publicReads = [
 ];
 
 test.describe("entry RBAC", () => {
-  test("official and chief are rejected on every representative write", async ({ browser }) => {
-    for (const role of ["official", "chief"]) {
-      const ctx = await browser.newContext({ storageState: storageStatePath(role) });
+  test("officials without entry.manage are rejected on every representative write", async ({ browser }) => {
+    for (const profile of ["operationsOperator", "operationsManager"]) {
+      const ctx = await browser.newContext({ storageState: storageStatePath(profile) });
       try {
         for (const { method, path, body } of protectedWrites) {
-          await test.step(`${role}: ${method.toUpperCase()} ${path.split("?")[0]}`, async () => {
+          await test.step(`${profile}: ${method.toUpperCase()} ${path.split("?")[0]}`, async () => {
             const res = await ctx.request[method](path, { data: body });
             expect(res.status()).toBe(403);
           });

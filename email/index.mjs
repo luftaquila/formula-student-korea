@@ -6,6 +6,7 @@ import { runMigrationOnce, setupRowCapRetention, parseLegacyTimestamp } from "..
 import { requireInternalRequest, createSecretChecker } from "../shared/express-setup.mjs";
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { serviceUrl } from "../shared/services.mjs";
+import { access } from "../shared/access-control.js";
 
 const BREVO_API_BASE = "https://api.brevo.com/v3";
 
@@ -37,9 +38,11 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   name: "email", express, Database, options,
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
-    if (req.path === "/api/logs") return "admin";
-    if (req.path.startsWith("/api/")) return "admin";
-    return "admin"; // SPA — admin only (redirect non-admins instead of serving a dead shell)
+    if (req.path.startsWith("/api/internal/")) return access.internal;
+    if (req.path === "/api/logs") return access.permission("audit.view");
+    if (req.path.startsWith("/api/config")) return access.admin;
+    if (req.path.startsWith("/api/")) return access.permission("messaging.operate");
+    return access.permission("messaging.operate");
   },
 });
 

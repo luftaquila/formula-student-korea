@@ -4,6 +4,7 @@ import { createLogger } from "../../shared/logger.mjs";
 import { addSpaFallback } from "../../shared/service-bootstrap.mjs";
 import { parseCompetitionYear } from "../../shared/competition-year.mjs";
 import { TeamStore } from "../lib/team-store.mjs";
+import { access } from "../../shared/access-control.js";
 
 function auditTeam(team) {
   return team && {
@@ -46,7 +47,8 @@ export function createTeamsModule({
     if (req.path === "/health") return null;
     if (req.method === "GET" && req.path === "/teams" && req.query.includeInactive !== "true") return null;
     if (req.method === "GET" && req.path === "/vehicle-types") return null;
-    return "admin";
+    if (req.path === "/logs") return access.permission("audit.view");
+    return access.permission("entry.manage");
   });
   app.locals.staticRoot = staticRoot;
   const notifyChange = (req, data, target) => {

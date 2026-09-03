@@ -7,7 +7,7 @@ const INSPECTION_TYPE = "battery";
 async function apiRegister(num, type = INSPECTION_TYPE) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${type}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
     body: JSON.stringify({ num, phone: "01000000000" }),
   });
   return res;
@@ -16,7 +16,7 @@ async function apiRegister(num, type = INSPECTION_TYPE) {
 async function apiCancel(num, type = INSPECTION_TYPE) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/cancel/${type}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
     body: JSON.stringify({ num }),
   });
   return res;
@@ -24,7 +24,7 @@ async function apiCancel(num, type = INSPECTION_TYPE) {
 
 async function apiGetQueue(type = INSPECTION_TYPE) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/inspection/${type}`, {
-    headers: { Cookie: getAuthCookie("official") },
+    headers: { Cookie: getAuthCookie("operationsOperator") },
   });
   return res.json();
 }
@@ -32,14 +32,14 @@ async function apiGetQueue(type = INSPECTION_TYPE) {
 async function apiExitBooth(type, boothNum) {
   await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/exit`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
   });
 }
 
 async function apiEnterBooth(type, boothNum, num) {
   return fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}/${boothNum}/enter`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
     body: JSON.stringify({ num }),
   });
 }
@@ -56,18 +56,18 @@ async function cleanupQueue(type = INSPECTION_TYPE) {
 }
 
 test.describe("Queue booth management", () => {
-  test.use({ storageState: storageStatePath("official") });
+  test.use({ storageState: storageStatePath("operationsOperator") });
 
   let originalPenalty;
 
   test.beforeAll(async () => {
     const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
-      headers: { Cookie: getAuthCookie("chief") },
+      headers: { Cookie: getAuthCookie("operationsManager") },
     });
     originalPenalty = (await res.json()).value;
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
       method: "PATCH",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
       body: JSON.stringify({ value: 0 }),
     });
   });
@@ -76,7 +76,7 @@ test.describe("Queue booth management", () => {
     if (originalPenalty !== undefined) {
       await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("chief") },
+        headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
         body: JSON.stringify({ value: originalPenalty }),
       });
     }
@@ -176,7 +176,7 @@ test.describe("Queue booth management", () => {
     await apiRegister(3);
     await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${INSPECTION_TYPE}/1/enter`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("official") },
+      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsOperator") },
       body: JSON.stringify({ num: 3 }),
     });
 
@@ -236,8 +236,8 @@ test.describe("Queue booth management", () => {
     await expect(page.getByRole("button", { name: "페널티", exact: true })).toBeVisible();
   });
 
-  test("chief can open the registration page from admin", async ({ browser }) => {
-    const context = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("queue manager can open the registration page from admin", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const page = await context.newPage();
     await page.goto("/queue/admin");
     await waitForPageReady(page);

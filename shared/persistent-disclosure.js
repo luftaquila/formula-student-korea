@@ -1,3 +1,5 @@
+export const RESOURCES_DISCLOSURE_STORAGE_KEY = "fsk.resources.open";
+
 export function readDisclosureState(storage, key, defaultOpen = true) {
   try {
     const value = storage?.getItem(key);

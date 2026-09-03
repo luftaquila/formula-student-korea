@@ -6,8 +6,10 @@ import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
 import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 import { formatDateLines } from "@shared/format-date.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const { notyf } = useNotification();
+const canManage = permissionComputed("documents.manage");
 
 const tableRef = ref(null);
 const tableScrollerRef = ref(null);
@@ -301,7 +303,7 @@ onUnmounted(() => {
           <label class="filter-label">&nbsp;</label>
           <div class="action-buttons">
             <button class="btn btn-ghost btn-sm" :disabled="!selectedYear" @click="downloadYearArchive">전체 다운로드</button>
-            <router-link to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
+            <router-link v-if="canManage" to="/admin/create" class="btn btn-primary btn-sm">세션 생성</router-link>
           </div>
         </div>
       </div>
@@ -353,7 +355,7 @@ onUnmounted(() => {
                     <span v-if="e.type" class="badge" :class="'badge-type-' + getTypeColor(e.type)">{{ e.type }}</span>
                   </td>
                   <td v-if="showAccount" class="col-account">
-                    <div class="student-select">
+                    <div v-if="canManage" class="student-select">
                       <div class="select-display" @click.stop="openDropdown(e.num, $event)">
                         <span v-if="teamStudentMap[e.num]" class="selected-email">{{ studentDisplayName(teamStudentMap[e.num]) }}</span>
                         <span v-else class="select-placeholder">-</span>
@@ -381,6 +383,7 @@ onUnmounted(() => {
                         </div>
                       </div>
                     </div>
+                    <span v-else>{{ teamStudentMap[e.num] ? studentDisplayName(teamStudentMap[e.num]) : "-" }}</span>
                   </td>
                   <td
                     v-for="s in sessions"
@@ -415,7 +418,7 @@ onUnmounted(() => {
       </div>
 
       <!-- 파일 관리 -->
-      <div class="card danger-card">
+      <div v-if="canManage" class="card danger-card">
         <div class="card-header">
           <h3>파일 관리</h3>
         </div>

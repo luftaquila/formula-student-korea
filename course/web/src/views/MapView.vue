@@ -58,7 +58,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
 import { resolveCourseRoute, ROUTE_MODE } from "@lib/route-mode.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
-import { isAdmin } from "@shared/officialsStore.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 import { useWhepStream } from "../composables/useWhepStream.js";
 import { useMeasureTools } from "../composables/useMeasureTools.js";
 import { useCourseImportExport } from "../composables/useCourseImportExport.js";
@@ -74,6 +74,8 @@ import {
 } from "../lib/cone-render.mjs";
 
 const { success: notifySuccess, error: notifyError, warning: notifyWarn } = useNotification();
+const canOperateRover = permissionComputed("rover.operate");
+const canManageCourse = permissionComputed("course.manage");
 const stopping = inject("stopping", ref(false));
 const sseReconnecting = inject("sseReconnecting", ref(false));
 const appRoverConnected = inject("roverConnected", null);
@@ -610,16 +612,14 @@ const remainingDistanceM = computed(() => {
   return pathTotalDist * Math.max(0, (100 - pathProgress.value) / 100);
 });
 
-// Inspector (desktop right panel). Rover control and mission history are
-// admin-only; master sees only the 코스 (cone-editing) tab. The backend enforces
-// the same split — /api/rover/* and /api/missions/* require admin.
+// Rover control/history/GPS are independent from course editing.
 const INSPECTOR_TABS = [
-  { key: "rover", label: "로버", icon: "🚗", adminOnly: true },
-  { key: "gps", label: "GPS", icon: "🛰️", adminOnly: true },
+  { key: "rover", label: "로버", icon: "🚗", roverOnly: true },
+  { key: "gps", label: "GPS", icon: "🛰️", roverOnly: true },
   { key: "courses", label: "코스", icon: "📋" },
-  { key: "history", label: "기록", icon: "📊", adminOnly: true },
+  { key: "history", label: "기록", icon: "📊", roverOnly: true },
 ];
-const visibleTabs = computed(() => INSPECTOR_TABS.filter((t) => isAdmin.value || !t.adminOnly));
+const visibleTabs = computed(() => INSPECTOR_TABS.filter((t) => canOperateRover.value || !t.roverOnly));
 
 // Mission history state (integrated into this view so the same map + rail +
 // inspector structure serves both the live operation and replay).
@@ -811,9 +811,7 @@ const activeTab = ref((() => {
   // Migrate stale tab keys from the pre-merge layout.
   if (v === "cones") v = "courses";
   if (v === "logs" || v === "missions") v = "history";
-  // Rover/history are admin-only — a non-admin (master) only ever lands on 코스,
-  // even if a stale localStorage pref from a prior admin session says otherwise.
-  if (!isAdmin.value && v !== "courses") v = "courses";
+  if (!canOperateRover.value && v !== "courses") v = "courses";
   return v;
 })());
 const historyView = ref(loadPref("historyView", "missions"));
@@ -979,7 +977,7 @@ const baseNoReceiver = computed(() =>
 watch(baseNoReceiver, (now, prev) => {
   // Admin-only feature: only the operator who can set/fix the base source should
   // get this toast (the persistent banner lives in the admin GPS tab anyway).
-  if (now && !prev && isAdmin.value) {
+  if (now && !prev && canOperateRover.value) {
     notifyWarn("GPS 수신기가 연결되지 않았습니다. 로버에 RTK 보정이 전달되지 않습니다.");
   }
 });
@@ -1074,12 +1072,12 @@ async function cancelSurvey(p) {
 watch(baseState, (now, prev) => {
   // Admin-only: base.state rides rover:status to every operator, but loadGps()
   // hits admin-only /api/gps/* (a non-admin would just get 403 + an error toast).
-  if (prev === "surveying" && now !== "surveying" && isAdmin.value) loadGps();
+  if (prev === "surveying" && now !== "surveying" && canOperateRover.value) loadGps();
 });
 watch(receiverConnected, (now, prev) => {
-  if (now && !prev && activeTab.value === "gps" && isAdmin.value) loadGps();
+  if (now && !prev && activeTab.value === "gps" && canOperateRover.value) loadGps();
 });
-watch(activeTab, (v) => { if (v === "gps" && isAdmin.value) loadGps(); });
+watch(activeTab, (v) => { if (v === "gps" && canOperateRover.value) loadGps(); });
 
 // Tab-swap: hide live layers when entering the missions sub-view of the
 // history tab, tear down replay state and restore the live view when leaving.
@@ -2887,7 +2885,7 @@ async function startGroundCalibration() {
   }
 }
 
-// Proximity (obstacle) detection master on/off — operator toggle in the ground
+// Proximity (obstacle) detection operator on/off — toggle in the ground
 // tab. Server-stored (roverState.obstacle_detection_enabled), so it rides the
 // rover:status broadcast; the ref below is synced from it and flipped
 // optimistically like toggleDepth, reverting if the server call fails. Default
@@ -5408,7 +5406,7 @@ function connectSSE() {
     const data = parseSSE(e);
     if (!data) return;
     // Survey is an admin-only workflow; don't toast its outcome to other operators.
-    if (!isAdmin.value) return;
+    if (!canOperateRover.value) return;
     if (data.ok) {
       notifySuccess(`측량 완료: ${data.name}${data.samples != null ? ` (${data.samples} 샘플)` : ""}`);
     } else {
@@ -5768,10 +5766,9 @@ onMounted(async () => {
   }
   recomputeCenterline(); // draw the restored course's centerline on first paint
   connectSSE();
-  // /api/rover/status is admin-only; master never opens the rover tab, so skip it.
-  if (isAdmin.value) fetchRoverStatus();
+  if (canOperateRover.value) fetchRoverStatus();
   // Prime the GPS-management tab if it's the persisted active tab on load.
-  if (isAdmin.value && activeTab.value === "gps") loadGps();
+  if (canOperateRover.value && activeTab.value === "gps") loadGps();
 });
 
 onUnmounted(() => {
@@ -6551,7 +6548,7 @@ onUnmounted(() => {
                   </button>
                   <input ref="importInput" type="file" accept=".json" hidden @change="importCourse" />
                 </div>
-                <div class="course-toolbar" v-if="isAdmin">
+                <div class="course-toolbar" v-if="canManageCourse">
                   <button
                     class="btn btn-ghost btn-lg-touch"
                     :disabled="!activeCourseId"
@@ -6581,7 +6578,7 @@ onUnmounted(() => {
                     <button class="dl-btn" @click.stop="exportCourse(c.id)" :disabled="exportingId === c.id" :title="exportingId === c.id ? '내보내는 중…' : 'ZIP 내보내기 (AC 트랙 + JSON + 미리보기)'">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     </button>
-                    <button v-if="isAdmin" class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
+                    <button v-if="canManageCourse" class="del-btn" @click.stop="deleteCourse(c.id)" title="삭제">×</button>
                   </div>
                   <div v-if="courses.length === 0" class="empty-msg">코스를 추가하세요.</div>
                 </div>

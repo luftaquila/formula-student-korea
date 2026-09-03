@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Traffic gate (traffic/index.mjs authRoleFn ~lines 178-181):
-//   /api/health and /api/time -> public; EVERYTHING else -> "admin".
-// chief sits one level below admin -> expect 403 on every protected route.
-// Unauthenticated -> 401.
+// Traffic endpoints require traffic.operate or traffic.manage, except the
+// public health/time surface. This profile has neither permission, so every
+// representative protected route must return 403. Unauthenticated callers
+// receive 401.
 
 // Representative admin-gated endpoints across read + write surfaces.
 const adminGated = [
@@ -15,8 +15,8 @@ const adminGated = [
 ];
 
 test.describe("traffic RBAC", () => {
-  test("chief is rejected on every representative protected endpoint", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("chief") });
+  test("official without traffic permissions is rejected on every protected endpoint", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
       for (const { method, path, body } of adminGated) {
         await test.step(`${method.toUpperCase()} ${path}`, async () => {

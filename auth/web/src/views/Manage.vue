@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed } from "vue";
 import { useNotification } from "@shared/useNotification.js";
 import { formatPhone } from "@shared/format-phone.js";
-import { ROLE_LEVELS } from "@shared/constants.js";
+import { ROLE_SORT_ORDER } from "@shared/constants.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
@@ -21,6 +21,7 @@ async function copyApplyUrl() {
 }
 
 const users = ref([]);
+const accessCatalog = ref({ permissions: [], bundles: [] });
 const loading = ref(true);
 const newEmail = ref("");
 const newRole = ref("official");
@@ -97,7 +98,55 @@ async function addUser() {
 }
 
 function roleBadgeClass(role) {
-  return { student: "badge-success", staff: "badge-default", official: "badge-primary", chief: "badge-warning", master: "badge-warning", admin: "badge-danger" }[role] || "badge-primary";
+  return { student: "badge-success", official: "badge-primary", admin: "badge-danger" }[role] || "badge-primary";
+}
+
+const editingAccessUser = ref(null);
+const selectedBundles = ref(new Set());
+const selectedDirectPermissions = ref(new Set());
+const accessSaving = ref(false);
+
+function toggleSet(target, key, checked) {
+  const next = new Set(target.value);
+  if (checked) next.add(key);
+  else next.delete(key);
+  target.value = next;
+}
+
+function editAccess(user) {
+  editingAccessUser.value = user;
+  selectedBundles.value = new Set(user.bundles || []);
+  selectedDirectPermissions.value = new Set(user.directPermissions || []);
+}
+
+async function saveAccess() {
+  const target = editingAccessUser.value;
+  if (!target || accessSaving.value) return;
+  accessSaving.value = true;
+  try {
+    const res = await fetch(`${BASE_URL}/api/users/${target.id}/access`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        expectedRevision: target.accessRevision,
+        bundles: [...selectedBundles.value],
+        directPermissions: [...selectedDirectPermissions.value],
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body?.code === "ACCESS_STALE_WRITE") throw new Error("다른 관리자가 먼저 권한을 변경했습니다. 다시 확인하세요.");
+      throw new Error(body?.message || "권한을 저장하지 못했습니다.");
+    }
+    notyf.success("서비스 권한을 변경했습니다.");
+    editingAccessUser.value = null;
+    await fetchUsers();
+  } catch (e) {
+    notyf.error(e.message);
+    await fetchUsers();
+  } finally {
+    accessSaving.value = false;
+  }
 }
 
 async function changeRole(user, newRole) {
@@ -311,8 +360,11 @@ function csvCell(v) {
 
 // CSV export
 function exportCSV() {
-  const header = "email,name,role,realname,phone,affiliation";
-  const rows = users.value.map((u) => [u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || ""].map(csvCell).join(","));
+  const header = "email,name,role,realname,phone,affiliation,bundles,directPermissions";
+  const rows = users.value.map((u) => [
+    u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || "",
+    (u.bundles || []).join(";"), (u.directPermissions || []).join(";"),
+  ].map(csvCell).join(","));
   const csv = "\uFEFF" + [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -343,9 +395,14 @@ function uploadCSV() {
     const users = [];
     for (let i = start; i < rows.length; i++) {
       // CSV format: email, name (ignored — set via Google OAuth), role, realname, phone, affiliation
-      const [email, , role, realname, phone, affiliation] = [rows[i][0], rows[i][1], rows[i][2], rows[i][3], rows[i][4], rows[i][5]];
+      const [email, , role, realname, phone, affiliation, bundles = "", directPermissions = ""] = rows[i];
       if (!email || !email.trim()) continue;
-      users.push({ email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "", phone: phone?.trim() || "", affiliation: affiliation?.trim() || "" });
+      users.push({
+        email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "",
+        phone: phone?.trim() || "", affiliation: affiliation?.trim() || "",
+        bundles: bundles.split(";").map((v) => v.trim()).filter(Boolean),
+        directPermissions: directPermissions.split(";").map((v) => v.trim()).filter(Boolean),
+      });
     }
 
     if (users.length === 0) { notyf.error("추가할 사용자가 없습니다."); return; }
@@ -425,7 +482,7 @@ const sortedUsers = computed(() => {
   const dir = sortOrder.value === "asc" ? 1 : -1;
   return [...filteredUsers.value].sort((a, b) => {
     if (k === "role") {
-      return ((ROLE_LEVELS[a.role] || 0) - (ROLE_LEVELS[b.role] || 0)) * dir;
+      return ((ROLE_SORT_ORDER[a.role] || 0) - (ROLE_SORT_ORDER[b.role] || 0)) * dir;
     }
     const va = (a[k] || "").toString().toLowerCase();
     const vb = (b[k] || "").toString().toLowerCase();
@@ -433,9 +490,9 @@ const sortedUsers = computed(() => {
   });
 });
 
-// official 이상 활성 사용자 목록 (연락처 선택용)
+// 운영 연락처 후보는 사람 운영 계정으로 제한한다.
 const officialUsers = computed(() =>
-  users.value.filter((u) => u.active && (ROLE_LEVELS[u.role] || 0) >= ROLE_LEVELS.official),
+  users.value.filter((u) => u.active && ["official", "admin"].includes(u.role)),
 );
 
 async function fetchOpsDisplay() {
@@ -450,7 +507,7 @@ async function fetchOpsDisplay() {
   } catch {}
 }
 
-// 추가 가능한 official 이상 사용자 (이미 표시 중인 사용자 제외)
+// 추가 가능한 운영 사용자 (이미 표시 중인 사용자 제외)
 const opsFilteredUsers = computed(() => {
   const q = opsDropdownSearch.value.toLowerCase();
   return officialUsers.value.filter((u) => {
@@ -676,7 +733,9 @@ async function removeOpsDisplay(user) {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
+  const response = await fetch(`${BASE_URL}/api/access/catalog`);
+  if (response.ok) accessCatalog.value = await response.json();
   fetchUsers(true);
 });
 
@@ -707,10 +766,7 @@ onUnmounted(() => {
           />
           <select v-model="newRole" class="form-select">
             <option value="student">Student</option>
-            <option value="staff">Staff</option>
             <option value="official">Official</option>
-            <option value="chief">Chief</option>
-            <option value="master">Master</option>
             <option value="admin">Admin</option>
           </select>
           <button type="submit" class="btn btn-primary">추가</button>
@@ -726,10 +782,7 @@ onUnmounted(() => {
             <select v-model="filterRole" class="filter-select">
               <option value="all">전체 역할</option>
               <option value="admin">Admin</option>
-              <option value="master">Master</option>
-              <option value="chief">Chief</option>
               <option value="official">Official</option>
-              <option value="staff">Staff</option>
               <option value="student">Student</option>
             </select>
             <select v-model="filterActive" class="filter-select">
@@ -823,12 +876,12 @@ onUnmounted(() => {
                       :title="user.protected ? '기본 관리자의 역할은 변경할 수 없습니다' : user.role === 'admin' && adminCount <= 1 ? '마지막 관리자는 강등할 수 없습니다' : ''"
                     >
                       <option value="student">Student</option>
-                      <option value="staff">Staff</option>
                       <option value="official">Official</option>
-                      <option value="chief">Chief</option>
-                      <option value="master">Master</option>
                       <option value="admin">Admin</option>
                     </select>
+                    <button v-if="user.role === 'official'" class="btn btn-sm btn-primary" @click="editAccess(user)">
+                      권한 {{ user.permissions?.length || 0 }}
+                    </button>
                     <button
                       class="btn btn-sm"
                       :class="user.active ? 'btn-ghost' : 'btn-primary'"
@@ -861,7 +914,7 @@ onUnmounted(() => {
     <div class="card ops-card" @click="closeOpsDropdown">
       <div class="card-header">
         <h3>운영 오피셜 연락처</h3>
-        <span class="ops-desc">official 이상 권한 사용자의 사이드바에 표시</span>
+        <span class="ops-desc">Official과 Admin의 사이드바에 표시</span>
       </div>
       <div class="ops-body">
         <div class="ops-select">
@@ -964,6 +1017,46 @@ onUnmounted(() => {
         </div>
       </div>
     </div>
+
+    <div v-if="editingAccessUser" class="access-overlay" @click.self="editingAccessUser = null">
+      <section class="access-dialog card" role="dialog" aria-modal="true" aria-label="서비스 권한 편집">
+        <div class="card-header">
+          <div>
+            <h3>서비스 권한</h3>
+            <span class="ops-desc">{{ editingAccessUser.email }}</span>
+          </div>
+          <button class="btn btn-sm btn-ghost" @click="editingAccessUser = null">닫기</button>
+        </div>
+        <div class="access-columns">
+          <div>
+            <h4>고정 권한 묶음</h4>
+            <label v-for="bundle in accessCatalog.bundles" :key="bundle.key" class="access-option">
+              <input
+                type="checkbox"
+                :checked="selectedBundles.has(bundle.key)"
+                @change="toggleSet(selectedBundles, bundle.key, $event.target.checked)"
+              />
+              <span><strong>{{ bundle.label }}</strong><small>{{ bundle.permissions.join(', ') }}</small></span>
+            </label>
+          </div>
+          <div>
+            <h4>개별 추가 권한</h4>
+            <label v-for="permission in accessCatalog.permissions" :key="permission.key" class="access-option">
+              <input
+                type="checkbox"
+                :checked="selectedDirectPermissions.has(permission.key)"
+                @change="toggleSet(selectedDirectPermissions, permission.key, $event.target.checked)"
+              />
+              <span><strong>{{ permission.label }}</strong><small>{{ permission.description }}</small></span>
+            </label>
+          </div>
+        </div>
+        <div class="access-actions">
+          <button class="btn btn-ghost" @click="editingAccessUser = null">취소</button>
+          <button class="btn btn-primary" :disabled="accessSaving" @click="saveAccess">저장</button>
+        </div>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -976,6 +1069,46 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
+}
+
+.access-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.65);
+}
+
+.access-dialog {
+  width: min(1000px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.access-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  padding: 1rem;
+}
+
+.access-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.access-option span,
+.access-option small { display: block; }
+.access-option small { margin-top: 0.2rem; color: var(--text-tertiary); }
+.access-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem; }
+
+@media (max-width: 720px) {
+  .access-columns { grid-template-columns: 1fr; }
 }
 
 .form-row {

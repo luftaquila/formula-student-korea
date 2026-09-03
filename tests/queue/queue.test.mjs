@@ -50,10 +50,29 @@ const studentCookie = makeAuthCookie({ email: 'student@test.com', name: 'Student
 const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const queueOperatorCookie = makeAuthCookie({
+  email: 'queue-operator@test.com', name: 'Queue Operator', role: 'official', permissions: ['queue.operate'],
+});
+const queueManagerCookie = makeAuthCookie({
+  email: 'queue-manager@test.com', name: 'Queue Manager', role: 'official', permissions: ['queue.manage'],
+});
+const inspectionManagerCookie = makeAuthCookie({
+  email: 'inspection-manager@test.com', name: 'Inspection Manager', role: 'official', permissions: ['inspection.manage'],
+});
+
+const validateDevice = async (token) => {
+  if (token === 'queue-device-token') {
+    return { valid: true, id: 'queue-tablet', name: 'Queue Tablet', scope: 'kiosk.queue.register' };
+  }
+  if (token === 'registration-device-token') {
+    return { valid: true, id: 'registration-tablet', name: 'Registration Tablet', scope: 'kiosk.registration.register' };
+  }
+  return { valid: false };
+};
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createQueueApp({ dbPath, validateUser: TRUST_JWT, teamStore });
+  const result = createQueueApp({ dbPath, validateUser: TRUST_JWT, validateDevice, teamStore });
   db = result.db;
   loadSmsConfig = result.loadSmsConfig;
   const started = await startServer(result.app);
@@ -96,6 +115,55 @@ describe('GET /api/health', () => {
     const res = await client.get('/api/health');
     assert.equal(res.status, 200);
     assert.equal(await res.text(), 'ok');
+  });
+});
+
+describe('Explicit Queue permissions and kiosk scope', () => {
+  it('separates operation, management, Inspection, and device registration access', async () => {
+    const operate = await client.get('/api/admin/all', { cookie: queueOperatorCookie });
+    assert.equal(operate.status, 200);
+    const historyRead = await client.get('/api/admin/history/status', { cookie: queueOperatorCookie });
+    assert.equal(historyRead.status, 200);
+
+    const manageDenied = await client.get('/api/admin/priority/battery', { cookie: queueOperatorCookie });
+    assert.equal(manageDenied.status, 403);
+    const manageAllowed = await client.get('/api/admin/priority/battery', { cookie: queueManagerCookie });
+    assert.equal(manageAllowed.status, 200);
+    const historyResetDenied = await client.delete('/api/admin/history/not-a-type', { cookie: queueOperatorCookie });
+    assert.equal(historyResetDenied.status, 403);
+
+    const inspectionDenied = await client.get('/api/admin/all', { cookie: inspectionManagerCookie });
+    assert.equal(inspectionDenied.status, 403);
+
+    const humanRegisterDenied = await client.post('/api/admin/register/not-a-type', {
+      cookie: queueOperatorCookie,
+      body: { num: 1, phone: '01012345678' },
+    });
+    assert.equal(humanRegisterDenied.status, 403);
+    const humanRegisterAllowed = await client.post('/api/admin/register/not-a-type', {
+      cookie: queueManagerCookie,
+      body: { num: 1, phone: '01012345678' },
+    });
+    assert.equal(humanRegisterAllowed.status, 400);
+
+    const kioskRegister = await client.post('/api/admin/register/not-a-type', {
+      cookie: 'fsk_device=queue-device-token',
+      body: { num: 1, phone: '01012345678' },
+    });
+    assert.equal(kioskRegister.status, 400);
+    const kioskCannotUseAnotherMethod = await client.get('/api/admin/register/not-a-type', {
+      cookie: 'fsk_device=queue-device-token',
+    });
+    assert.equal(kioskCannotUseAnotherMethod.status, 403);
+    const otherKioskDenied = await client.post('/api/admin/register/not-a-type', {
+      cookie: 'fsk_device=registration-device-token',
+      body: { num: 1, phone: '01012345678' },
+    });
+    assert.equal(otherKioskDenied.status, 403);
+    const kioskCannotOperate = await client.get('/api/admin/all', {
+      cookie: 'fsk_device=queue-device-token',
+    });
+    assert.equal(kioskCannotOperate.status, 403);
   });
 });
 

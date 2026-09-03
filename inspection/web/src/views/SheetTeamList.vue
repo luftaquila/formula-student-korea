@@ -5,11 +5,12 @@ import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } f
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
-import { isChief } from "@shared/officialsStore.js";
+import { permissionComputed } from "@shared/officialsStore.js";
 
 const tableRef = ref(null);
 const { error } = useNotification();
 const router = useRouter();
+const canManage = permissionComputed("inspection.manage");
 const { lastUpdate, lastInspectorUpdate, lastEntriesUpdate } = useSSE();
 
 const entries = ref({});
@@ -326,7 +327,7 @@ watch(lastEntriesUpdate, (update) => {
           </label>
         </div>
       </div>
-      <div v-if="isChief" class="filter-group template-action">
+      <div v-if="canManage" class="filter-group template-action">
         <label class="filter-label">&nbsp;</label>
         <button class="btn btn-ghost" @click="router.push('/template')">템플릿 관리</button>
       </div>

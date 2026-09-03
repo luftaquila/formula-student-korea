@@ -1,4 +1,5 @@
 import { createJWT } from '../../shared/express-setup.mjs';
+import { expandPermissions } from '../../shared/access-control.js';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
@@ -68,4 +69,26 @@ export function setupTestEnv() {
 // 런타임 스위치(env) 대신 주입인 이유: 프로덕션에 재검증을 끌 수단 자체를 만들지 않기
 // 위해서다. mock auth를 세우는 테스트는 이걸 넘기지 말고 AUTH_SERVER만 지정하면
 // 실제 HTTP 재검증 경로를 그대로 탄다.
-export const TRUST_JWT = async () => ({ valid: true, role: null });
+const LEGACY_TEST_PERMISSIONS = Object.freeze({
+  student: [],
+  staff: ["registration.operate"],
+  official: ["registration.operate", "queue.operate", "inspection.operate"],
+  chief: ["registration.manage", "queue.manage", "inspection.manage", "documents.manage", "calendar.manage"],
+  master: [
+    "registration.manage", "queue.manage", "inspection.manage", "documents.manage", "calendar.manage",
+    "course.operate", "traffic.manage", "score.manage",
+  ],
+  admin: [],
+});
+
+// Legacy role-shaped fixtures remain useful to keep the service behavior suites
+// focused on their domain. Normalize them at the injected auth boundary; new
+// authorization tests pass an explicit Official permission list.
+export const TRUST_JWT = async (email, tokenUser = {}) => ({
+  valid: true,
+  role: ["staff", "chief", "master"].includes(tokenUser.role) ? "official" : tokenUser.role,
+  permissions: expandPermissions({ directPermissions: Array.isArray(tokenUser.permissions)
+    ? tokenUser.permissions
+    : LEGACY_TEST_PERMISSIONS[tokenUser.role] || [] }),
+  accessRevision: Number(tokenUser.accessRevision) || 0,
+});

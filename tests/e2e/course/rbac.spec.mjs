@@ -1,10 +1,12 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Course service RBAC backstop. The frontend hides tabs/buttons by role, but
-// these gates (course/index.mjs authRoleFn) are the enforcing layer:
-//   master → course/cone management
-//   admin  → rover, missions, logs, snapshot create/restore/delete, course DELETE
+// Course service RBAC backstop. The frontend hides tabs/buttons by permission,
+// while these gates (course/index.mjs authRoleFn) remain the enforcing layer:
+//   course.operate → course/cone editing
+//   course.manage  → snapshots and course deletion
+//   rover.operate  → rover and missions
+//   audit.view     → logs
 //   internal-strict (deny even an admin browser) → /api/rover/stream, /camera,
 //     /camera/control, /obstacle, /calibration-progress
 //
@@ -13,10 +15,10 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // short 200 header for /stream) immediately and is closed by .close().
 
 test.describe("Course RBAC gates", () => {
-  test("master can create a course and a cone (201)", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("master") });
+  test("course editor can create a course and a cone (201)", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("technicalOperator") });
     try {
-      const name = `e2e-rbac-master-${Date.now()}-${test.info().parallelIndex}`;
+      const name = `e2e-rbac-course-editor-${Date.now()}-${test.info().parallelIndex}`;
       const created = await ctx.request.post("/course/api/courses", { data: { name } });
       expect(created.status()).toBe(201);
       const course = await created.json();
@@ -27,7 +29,7 @@ test.describe("Course RBAC gates", () => {
       });
       expect(cone.status()).toBe(201);
 
-      // Cleanup the seeded course (DELETE is admin-only, so use an admin ctx).
+      // Cleanup the seeded course (requires course.manage, so use an admin ctx).
       const admin = await browser.newContext({ storageState: storageStatePath("admin") });
       await admin.request.delete(`/course/api/courses/${course.id}`);
       await admin.close();
@@ -36,13 +38,13 @@ test.describe("Course RBAC gates", () => {
     }
   });
 
-  test("master is denied (403) on admin-only operations", async ({ browser }) => {
-    const ctx = await browser.newContext({ storageState: storageStatePath("master") });
+  test("course editor is denied operations requiring other permissions", async ({ browser }) => {
+    const ctx = await browser.newContext({ storageState: storageStatePath("technicalOperator") });
     try {
       // Seed a course (+1 cone so a snapshot create would be valid
-      // were it not for the role gate) to exercise the snapshot/delete gates on a
+      // were it not for the permission gate) to exercise the snapshot/delete gates on a
       // real id rather than a 404 path.
-      const name = `e2e-rbac-master-deny-${Date.now()}-${test.info().parallelIndex}`;
+      const name = `e2e-rbac-course-editor-deny-${Date.now()}-${test.info().parallelIndex}`;
       const admin = await browser.newContext({ storageState: storageStatePath("admin") });
       const created = await admin.request.post("/course/api/courses", { data: { name } });
       expect(created.status()).toBe(201);
@@ -51,7 +53,7 @@ test.describe("Course RBAC gates", () => {
         data: { lat: 37.5, lng: 127.0, side: "left" },
       });
 
-      // rover control + mission history + logs → admin-only
+      // rover control + mission history + logs require independent grants.
       const roverExec = await ctx.request.post("/course/api/rover/execute", { data: { waypoints: [] } });
       expect(roverExec.status()).toBe(403);
       const missions = await ctx.request.get("/course/api/missions");
@@ -59,7 +61,7 @@ test.describe("Course RBAC gates", () => {
       const logs = await ctx.request.get("/course/api/logs");
       expect(logs.status()).toBe(403);
 
-      // snapshot create / restore / delete → admin-only (whole-course destructive)
+      // Snapshot create / restore / delete require course.manage.
       const snapCreate = await ctx.request.post(`/course/api/courses/${courseId}/snapshots`, { data: {} });
       expect(snapCreate.status()).toBe(403);
       const snapRestore = await ctx.request.post(`/course/api/courses/${courseId}/snapshots/1/restore`);
@@ -67,7 +69,7 @@ test.describe("Course RBAC gates", () => {
       const snapDelete = await ctx.request.delete(`/course/api/courses/${courseId}/snapshots/1`);
       expect(snapDelete.status()).toBe(403);
 
-      // DELETE course → admin-only (cascade-wipes cones + snapshots)
+      // DELETE course requires course.manage (cascade-wipes cones + snapshots).
       const courseDelete = await ctx.request.delete(`/course/api/courses/${courseId}`);
       expect(courseDelete.status()).toBe(403);
 
@@ -78,14 +80,14 @@ test.describe("Course RBAC gates", () => {
     }
   });
 
-  test("chief, official, and student are denied (403) on course create", async ({ browser }) => {
-    for (const role of ["chief", "official", "student"]) {
-      const ctx = await browser.newContext({ storageState: storageStatePath(role) });
+  test("officials without course.operate and students are denied course create", async ({ browser }) => {
+    for (const profile of ["operationsManager", "operationsOperator", "student"]) {
+      const ctx = await browser.newContext({ storageState: storageStatePath(profile) });
       try {
         const res = await ctx.request.post("/course/api/courses", {
-          data: { name: `e2e-rbac-${role}-${Date.now()}-${test.info().parallelIndex}` },
+          data: { name: `e2e-rbac-${profile}-${Date.now()}-${test.info().parallelIndex}` },
         });
-        expect(res.status(), `${role} course create`).toBe(403);
+        expect(res.status(), `${profile} course create`).toBe(403);
       } finally {
         await ctx.close();
       }

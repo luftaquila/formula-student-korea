@@ -23,8 +23,15 @@ const Database = requireFromTraffic('better-sqlite3');
 const CURRENT_YEAR = currentCompetitionYear();
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
-const masterCookie = makeAuthCookie({ email: 'master@test.com', name: 'Master', role: 'master' });
-const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
+const trafficOperatorCookie = makeAuthCookie({
+  email: 'traffic-operator@test.com', name: 'Traffic Operator', role: 'official', permissions: ['traffic.operate'],
+});
+const trafficManagerCookie = makeAuthCookie({
+  email: 'traffic-manager@test.com', name: 'Traffic Manager', role: 'official', permissions: ['traffic.manage'],
+});
+const unrelatedOfficialCookie = makeAuthCookie({
+  email: 'inspection-manager@test.com', name: 'Inspection Manager', role: 'official', permissions: ['inspection.manage'],
+});
 
 let server, baseUrl, client, db, dbPath;
 
@@ -628,10 +635,13 @@ describe('PUT /api/event-modes/:type', () => {
 
 // ─── Auth ────────────────────────────────────────────────────────────────
 describe('Auth enforcement', () => {
-  it('allows master and rejects chief on protected traffic APIs', async () => {
-    assert.equal((await client.get('/api/records', { cookie: masterCookie })).status, 200);
-    assert.equal((await client.get('/api/records', { cookie: chiefCookie })).status, 403);
-    assert.equal((await client.get('/api/logs', { cookie: masterCookie })).status, 403);
+  it('separates Traffic operation, management, unrelated grants, and audit access', async () => {
+    assert.equal((await client.get('/api/records', { cookie: trafficOperatorCookie })).status, 200);
+    assert.equal((await client.get('/api/records', { cookie: trafficManagerCookie })).status, 200);
+    assert.equal((await client.get('/api/records', { cookie: unrelatedOfficialCookie })).status, 403);
+    assert.equal((await client.put('/api/event-modes/not-found', { cookie: trafficOperatorCookie })).status, 403);
+    assert.equal((await client.put('/api/event-modes/not-found', { cookie: trafficManagerCookie })).status, 404);
+    assert.equal((await client.get('/api/logs', { cookie: trafficOperatorCookie })).status, 403);
   });
 
   it('POST /api/records without auth returns 401', async () => {

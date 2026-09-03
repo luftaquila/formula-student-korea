@@ -13,32 +13,32 @@ const SESSION_NAME = "E2E 연도별 다운로드 격리 세션";
 
 test.describe("Documents admin year-level actions", () => {
   test.describe.configure({ mode: "serial" });
-  test.use({ storageState: storageStatePath("chief") });
+  test.use({ storageState: storageStatePath("operationsManager") });
 
   let sessionId;
 
   test.beforeAll(async ({ browser }) => {
-    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const manager = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     const student = await browser.newContext({ storageState: storageStatePath("student") });
     try {
-      sessionId = await createDocumentSession(chief.request, SESSION_NAME, {
+      sessionId = await createDocumentSession(manager.request, SESSION_NAME, {
         year: YEAR,
         teams: [1],
         allowedExtensions: "pdf",
       });
       await submitDocument(student.request, sessionId, "year-archive.pdf", { buffer: PDF_CONTENT });
     } finally {
-      await chief.close();
+      await manager.close();
       await student.close();
     }
   });
 
   test.afterAll(async ({ browser }) => {
-    const chief = await browser.newContext({ storageState: storageStatePath("chief") });
+    const manager = await browser.newContext({ storageState: storageStatePath("operationsManager") });
     try {
-      await deleteDocumentSession(chief.request, sessionId);
+      await deleteDocumentSession(manager.request, sessionId);
     } finally {
-      await chief.close();
+      await manager.close();
     }
   });
 

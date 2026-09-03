@@ -6,6 +6,7 @@ import "leaflet/dist/leaflet.css";
 import "vue-sonner/style.css";
 import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
+import { hasPermission } from "@shared/officialsStore.js";
 
 import MapView from "./views/MapView.vue";
 
@@ -16,12 +17,16 @@ const routes = [
   { path: "/", component: MapView },
   { path: "/missions", redirect: "/" },
   // VR teleop (Meta Quest 3S, WebXR). Lazy so three.js stays out of the main bundle.
-  { path: "/vr", component: () => import("./views/VrView.vue") },
+  { path: "/vr", component: () => import("./views/VrView.vue"), meta: { permission: "rover.operate" } },
 ];
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.PROD ? "/course" : ""),
   routes,
+});
+
+router.beforeEach((to) => {
+  if (to.meta.permission && !hasPermission(to.meta.permission)) return "/";
 });
 
 initTheme();

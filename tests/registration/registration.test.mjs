@@ -28,6 +28,16 @@ const cookies = Object.fromEntries(["student", "staff", "official", "chief", "ma
 
 const activeFixtures = [];
 
+const validateDevice = async (token) => {
+  if (token === "registration-device-token") {
+    return { valid: true, id: "registration-tablet", name: "Registration Tablet", scope: "kiosk.registration.register" };
+  }
+  if (token === "queue-device-token") {
+    return { valid: true, id: "queue-tablet", name: "Queue Tablet", scope: "kiosk.queue.register" };
+  }
+  return { valid: false };
+};
+
 async function assertStatus(response, expected) {
   if (response.status !== expected) {
     assert.fail(`expected HTTP ${expected}, received ${response.status}: ${await response.text()}`);
@@ -86,6 +96,7 @@ async function fixture() {
     teamStore,
     smsClient,
     validateUser: TRUST_JWT,
+    validateDevice,
     validateUserCacheTtl: 0,
     skipSpaFallback: true,
     mutationGuard: guard,
@@ -174,6 +185,60 @@ afterEach(async () => {
 });
 
 describe("Registration queue", () => {
+  it("separates explicit operation, management, and exact kiosk registration access", async () => {
+    const f = await fixture();
+    const managerCookie = makeAuthCookie({
+      email: "registration-manager@test.invalid", name: "Registration Manager", role: "official",
+      permissions: ["registration.manage"],
+    });
+    const operatorCookie = makeAuthCookie({
+      email: "registration-operator@test.invalid", name: "Registration Operator", role: "official",
+      permissions: ["registration.operate"],
+    });
+    const humanTeam = f.team(7);
+    const deviceTeam = f.team(8);
+    const otherDeviceTeam = f.team(9);
+
+    let response = await f.client.patch("/api/settings", {
+      cookie: operatorCookie,
+      body: { year: YEAR, open: true },
+    });
+    assert.equal(response.status, 403);
+    response = await f.client.patch("/api/settings", {
+      cookie: managerCookie,
+      body: { year: YEAR, open: true },
+    });
+    assert.equal(response.status, 200);
+
+    response = await f.client.get(`/api/queue?year=${YEAR}`, { cookie: operatorCookie });
+    assert.equal(response.status, 200);
+    response = await f.client.post("/api/queue", {
+      cookie: operatorCookie,
+      body: { teamId: humanTeam.id, phone: "01011112222" },
+    });
+    assert.equal(response.status, 403);
+    response = await f.client.post("/api/queue", {
+      cookie: managerCookie,
+      body: { teamId: humanTeam.id, phone: "01011112222" },
+    });
+    assert.equal(response.status, 201);
+
+    response = await f.client.post("/api/queue", {
+      cookie: "fsk_device=registration-device-token",
+      body: { teamId: deviceTeam.id, phone: "01033334444" },
+    });
+    assert.equal(response.status, 201);
+    response = await f.client.post("/api/queue", {
+      cookie: "fsk_device=queue-device-token",
+      body: { teamId: otherDeviceTeam.id, phone: "01055556666" },
+    });
+    assert.equal(response.status, 403);
+    response = await f.client.get(`/api/queue?year=${YEAR}`, {
+      cookie: "fsk_device=registration-device-token",
+    });
+    assert.equal(response.status, 403);
+  });
+
   it("enforces the public, staff, official, chief, and admin flows", async () => {
     const f = await fixture();
     const team = f.team(11);
