@@ -6,7 +6,7 @@ import {
   readDisclosureState,
   writeDisclosureState,
 } from "./persistent-disclosure.js";
-import { services, resources, operations, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
+import { services, resources, operations, administration, getIcon, isSvgIcon, forumSvg } from "./nav-config.js";
 import { user, isStudent, isOfficial, isAdmin, hasPermission } from "./officialsStore.js";
 
 function canShow(item) {
@@ -15,6 +15,7 @@ function canShow(item) {
   return !item.permission || hasPermission(item.permission);
 }
 const visibleOperations = computed(() => operations.filter(canShow));
+const visibleAdministration = computed(() => administration.filter(canShow));
 
 const props = defineProps({
   currentPath: {
@@ -86,7 +87,7 @@ function isActive(href) {
   }
   if (href !== "/" && props.currentPath.startsWith(href + "/")) {
     // Only match prefix if no other item is a more specific match
-    const allItems = [...services, ...operations];
+    const allItems = [...services, ...operations, ...administration];
     const hasMoreSpecific = allItems.some(item => item.href !== href && item.href.startsWith(href) && props.currentPath.startsWith(item.href));
     if (!hasMoreSpecific) return true;
   }
@@ -243,6 +244,20 @@ async function logout() {
                   <polyline points="15 3 21 3 21 9" />
                   <line x1="10" y1="14" x2="21" y2="3" />
                 </svg>
+              </a>
+            </div>
+
+            <div v-if="visibleAdministration.length" class="nav-section">
+              <span class="nav-section-title">Admin</span>
+              <a
+                v-for="item in visibleAdministration"
+                :key="item.href"
+                :href="item.href"
+                class="nav-item"
+                :class="{ active: isActive(item.href) }"
+              >
+                <span class="nav-icon">{{ getIcon(item.icon) }}</span>
+                <span>{{ item.name }}</span>
               </a>
             </div>
 

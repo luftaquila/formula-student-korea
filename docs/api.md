@@ -50,8 +50,11 @@ The permission keys are:
 `registration.operate`, `registration.manage`, `queue.operate`, `queue.manage`,
 `inspection.operate`, `inspection.manage`, `documents.operate`, `documents.manage`,
 `files.access`, `calendar.manage`, `course.operate`, `course.manage`, `rover.operate`,
-`traffic.operate`, `traffic.manage`, `score.operate`, `score.manage`, `entry.manage`,
-`messaging.operate`, and `audit.view`.
+`traffic.operate`, `traffic.manage`, `score.operate`, and `score.manage`.
+
+Entry, Email/SMS, the system logs, and Account & Access are Admin tools. They have no
+grant key, so no Official can be given them; the home page and sidebar list them in a
+separate Admin group.
 
 Queue and Inspection are deliberately separate. `queue.manage` implies only
 `queue.operate`; `inspection.manage` implies only `inspection.operate`.
@@ -69,7 +72,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Description |
 |--------|------|------|-------------|
 | GET | `/health` | public | Module health check, returns `"ok"` |
-| GET | `/logs` | `audit.view` or internal | Module-scoped structured logs from the shared Competition DB |
+| GET | `/logs` | admin or internal | Module-scoped structured logs from the shared Competition DB |
 
 ---
 
@@ -99,6 +102,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | PATCH | `/api/users/:id` | admin | `{ role?, realname?, phone?, active? }` | 200 | Update user role/realname/phone/active status |
 | DELETE | `/api/users/:id` | admin | — | 200 | Delete single user (protects last admin, ADMIN_EMAIL) |
 | PUT | `/api/users/:id/access` | admin | `{ expectedRevision, grants }` | `{ grants, permissions, accessRevision }` | Replace an Official's grants; stale revision returns `409 ACCESS_STALE_WRITE` |
+| PUT | `/api/users/bulk/access` | admin | `{ users: [{ id, expectedRevision }], grants }` | `{ updated, users: [{ id, email, grants, permissions, accessRevision }] }` | Replace several Officials' grants with one list in a single transaction; any stale target returns `409 ACCESS_STALE_WRITE` with `stale`, a non-Official target `409 OFFICIAL_ACCESS_ONLY`, and nothing is written |
 
 ### Internal User Lookup
 
@@ -148,7 +152,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/admin/logs` | `audit.view` | `?service=&limit=&offset=&level=&action=&actor=&from=&to=&search=` | `{ logs, total, services }` | Aggregated logs from all services (local auth + remote via the shared service registry) |
+| GET | `/api/admin/logs` | admin | `?service=&limit=&offset=&level=&action=&actor=&from=&to=&search=` | `{ logs, total, services }` | Aggregated logs from all services (local auth + remote via the shared service registry) |
 
 ---
 
@@ -159,12 +163,12 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/meta` | public | — | `{ currentYear, years }` | KST current year and readable stored years |
-| GET | `/teams` | public / `entry.manage` | `?year=&includeInactive=true` | `[{ id, year, number, university, name, vehicleTypeId, vehicleType, active }]` | Public reads active teams; `entry.manage` may include inactive teams |
-| GET | `/teams/:id` | `entry.manage` | — | Team | Read one team by stable ID |
-| GET | `/teams/export` | `entry.manage` | `?year=` | `{ year, teams }` download | Export a readable year; vehicle types are represented by name on each team |
-| POST | `/teams/import` | `entry.manage` | `{ teams }?year=` | `201 [Team]` | Initial import; current year only and only while it has no teams; referenced type names must already exist |
-| POST | `/teams` | `entry.manage` | `{ number, university, name, vehicleTypeId? }?year=` | `201 Team` | Create a current-year team with a stable ID |
-| PATCH | `/teams/:id` | `entry.manage` | `{ number?, university?, name?, vehicleTypeId?, active? }` | Team | Update projections or deactivate without changing the stable ID |
+| GET | `/teams` | public / admin | `?year=&includeInactive=true` | `[{ id, year, number, university, name, vehicleTypeId, vehicleType, active }]` | Public reads active teams; admin may include inactive teams |
+| GET | `/teams/:id` | admin | — | Team | Read one team by stable ID |
+| GET | `/teams/export` | admin | `?year=` | `{ year, teams }` download | Export a readable year; vehicle types are represented by name on each team |
+| POST | `/teams/import` | admin | `{ teams }?year=` | `201 [Team]` | Initial import; current year only and only while it has no teams; referenced type names must already exist |
+| POST | `/teams` | admin | `{ number, university, name, vehicleTypeId? }?year=` | `201 Team` | Create a current-year team with a stable ID |
+| PATCH | `/teams/:id` | admin | `{ number?, university?, name?, vehicleTypeId?, active? }` | Team | Update projections or deactivate without changing the stable ID |
 
 There is no team delete or roster replacement endpoint. Deactivation preserves historical rows and clears only transient operational state.
 
@@ -173,9 +177,9 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/vehicle-types` | public | `?year=` | `[{ id, year, name, sortOrder, color }]` | List yearly vehicle types |
-| POST | `/vehicle-types` | `entry.manage` | `{ name, color?, sortOrder? }?year=` | Vehicle type | Create a current-year vehicle type |
-| PATCH | `/vehicle-types/:id` | `entry.manage` | `{ name?, color?, sortOrder? }` | Vehicle type | Update type and affected team projections transactionally |
-| DELETE | `/vehicle-types/:id` | `entry.manage` | — | 204 | Delete an unused current-year vehicle type |
+| POST | `/vehicle-types` | admin | `{ name, color?, sortOrder? }?year=` | Vehicle type | Create a current-year vehicle type |
+| PATCH | `/vehicle-types/:id` | admin | `{ name?, color?, sortOrder? }` | Vehicle type | Update type and affected team projections transactionally |
+| DELETE | `/vehicle-types/:id` | admin | — | 204 | Delete an unused current-year vehicle type |
 
 ---
 
@@ -469,7 +473,7 @@ A successful answer or memo change automatically adds the authenticated account'
 
 ## Email Service (port 9900)
 
-이메일/SMS 관리 서비스. Brevo API 기반 이메일 전송과 대시보드는 `messaging.operate`, 감사 로그는 `audit.view`, 자격 증명 설정은 admin 전용이다 (health, internal API 제외).
+이메일/SMS 관리 서비스. health와 internal API를 제외한 모든 화면·API는 admin 전용이다.
 
 ### Config
 
@@ -485,22 +489,22 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/stats` | `messaging.operate` | — | `{ sent: 12, errors: 0, totalSent: 100, totalErrors: 3 }` | 오늘·누적 전송/오류 건수 |
-| GET | `/api/quota` | `messaging.operate` | — | `{ remaining: 288 }` or `{ remaining: null, error: "..." }` | Brevo 남은 일일 전송 가능 수 (GET /v3/account) |
+| GET | `/api/stats` | admin | — | `{ sent: 12, errors: 0, totalSent: 100, totalErrors: 3 }` | 오늘·누적 전송/오류 건수 |
+| GET | `/api/quota` | admin | — | `{ remaining: 288 }` or `{ remaining: null, error: "..." }` | Brevo 남은 일일 전송 가능 수 (GET /v3/account) |
 
 ### Email Log
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/emails` | `messaging.operate` | `?limit=50&offset=0&status=sent\|error` | `{ rows: [{ id, subject, recipient, status, error, message_id, source, sent_at, sent_by }], total }` | 전송 기록 (수신자별 1행, 페이지네이션, 상태 필터. 본문은 미포함) |
-| GET | `/api/emails/:id` | `messaging.operate` | — | `{ id, subject, recipient, ..., html_content }` | 전송 기록 상세 (본문 포함) |
+| GET | `/api/emails` | admin | `?limit=50&offset=0&status=sent\|error` | `{ rows: [{ id, subject, recipient, status, error, message_id, source, sent_at, sent_by }], total }` | 전송 기록 (수신자별 1행, 페이지네이션, 상태 필터. 본문은 미포함) |
+| GET | `/api/emails/:id` | admin | — | `{ id, subject, recipient, ..., html_content }` | 전송 기록 상세 (본문 포함) |
 
 ### Email Sending
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/api/send` | `messaging.operate` | `{ subject, htmlContent, recipients: ["email@..."] }` | `{ success: true, messageId }` | 이메일 전송 (Brevo POST /v3/smtp/email). 전송 전 quota 확인 — 부족 시 400 |
-| GET | `/api/recipients` | `messaging.operate` | — | `[{ email, name, role, realname, active }]` | 수신자 목록 (auth 서비스에서 사용자 프록시) |
+| POST | `/api/send` | admin | `{ subject, htmlContent, recipients: ["email@..."] }` | `{ success: true, messageId }` | 이메일 전송 (Brevo POST /v3/smtp/email). 전송 전 quota 확인 — 부족 시 400 |
+| GET | `/api/recipients` | admin | — | `[{ email, name, role, realname, active }]` | 수신자 목록 (auth 서비스에서 사용자 프록시) |
 
 - `email_enabled`가 `FALSE`이면 전송 거부 (503)
 - Quota 부족 시 응답: `400 "전송 가능한 메일 수(N건)가 수신자 수(M명)보다 적습니다."`
@@ -510,8 +514,8 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| POST | `/api/test-email` | `messaging.operate` | `{ recipient: "email@..." }` | `{ success: true }` | Brevo 설정 검증용 테스트 이메일 전송 |
-| POST | `/api/test-sms` | `messaging.operate` | `{ recipient: "01012345678" }` | `{ success: true }` | Naver Cloud SMS 설정 검증용 테스트 SMS 전송 |
+| POST | `/api/test-email` | admin | `{ recipient: "email@..." }` | `{ success: true }` | Brevo 설정 검증용 테스트 이메일 전송 |
+| POST | `/api/test-sms` | admin | `{ recipient: "01012345678" }` | `{ success: true }` | Naver Cloud SMS 설정 검증용 테스트 SMS 전송 |
 
 ### Internal API
 

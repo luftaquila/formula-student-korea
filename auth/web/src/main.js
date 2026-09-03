@@ -29,7 +29,7 @@ const router = createRouter({
         }
       },
     },
-    { path: "/logs", component: () => import("./views/Logs.vue"), meta: { permission: "audit.view" } },
+    { path: "/logs", component: () => import("./views/Logs.vue"), meta: { adminOnly: true } },
   ],
 });
 

@@ -208,9 +208,9 @@ describe('Email API', () => {
       assert.equal(res.status, 403);
     });
 
-    it('allows officials with messaging.operate', async () => {
+    it('rejects officials even with a legacy messaging grant', async () => {
       const res = await client.get('/api/stats', { cookie: messagingCookie });
-      assert.equal(res.status, 200);
+      assert.equal(res.status, 403);
     });
 
     it('allows admin users', async () => {
@@ -220,9 +220,8 @@ describe('Email API', () => {
   });
 
   describe('SPA gating (non-API paths)', () => {
-    // The email SPA requires messaging.operate, so ungranted users are redirected
-    // instead of being served a shell
-    // whose every API call then 401/403s.
+    // The email SPA is Admin-only, so everyone else is redirected instead of being
+    // served a shell whose every API call then 401/403s.
     it('redirects unauthenticated users away from the SPA', async () => {
       const res = await fetch(`${baseUrl}/`, { redirect: 'manual' });
       assert.equal(res.status, 302);

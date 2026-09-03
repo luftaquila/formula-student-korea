@@ -25,7 +25,8 @@ test.describe("Access and kiosk device management", () => {
       await waitForPageReady(page);
       const row = page.locator("table.users-table tbody tr").filter({ hasText: email });
       await expect(row).toBeVisible();
-      await row.getByRole("button", { name: "권한 0" }).click();
+      await expect(row.locator(".col-access")).toHaveText("없음");
+      await row.getByRole("button", { name: "권한 편집" }).click();
 
       const dialog = page.getByRole("dialog", { name: "서비스 권한 편집" });
       await expect(dialog).toBeVisible();
@@ -45,7 +46,7 @@ test.describe("Access and kiosk device management", () => {
       expect((await refreshed).status()).toBe(200);
       await expectNotification(page, "success", "서비스 권한을 변경했습니다");
 
-      await expect(row.getByRole("button", { name: "권한 7" })).toBeVisible();
+      await expect(row.locator(".col-access .badge")).toHaveText(["코스 관리", "인스펙션 운영", "검차 대기 관리", "성적 관리"]);
       const usersResponse = await request.get("/auth/api/users");
       const user = (await usersResponse.json()).find((candidate) => candidate.id === userId);
       expect(user.grants).toEqual(["course.manage", "inspection.operate", "queue.manage", "score.manage"]);
@@ -85,7 +86,7 @@ test.describe("Access and kiosk device management", () => {
       await page.reload();
       await waitForPageReady(page);
       const reloadedRow = page.locator("table.users-table tbody tr").filter({ hasText: email });
-      await reloadedRow.getByRole("button", { name: "권한 7" }).click();
+      await reloadedRow.getByRole("button", { name: "권한 편집" }).click();
       const reloadedDialog = page.getByRole("dialog", { name: "서비스 권한 편집" });
       await expect(reloadedDialog.getByLabel("검차 대기 권한")).toHaveValue("manage");
       await expect(reloadedDialog.getByLabel("인스펙션 권한")).toHaveValue("operate");
@@ -94,6 +95,67 @@ test.describe("Access and kiosk device management", () => {
     } finally {
       await officialContext?.close();
       if (userId) await request.delete(`/auth/api/users/${userId}`);
+    }
+  });
+
+  test("admin assigns the same grants to several selected officials at once", async ({ page, request }) => {
+    const stamp = `${Date.now()}-${test.info().parallelIndex}`;
+    const emails = [`e2e-bulk-access-a-${stamp}@test.com`, `e2e-bulk-access-b-${stamp}@test.com`];
+    const studentEmail = `e2e-bulk-access-student-${stamp}@test.com`;
+    const ids = [];
+
+    try {
+      for (const email of emails) {
+        const created = await request.post("/auth/api/users", { data: { email, role: "official" } });
+        expect(created.status()).toBe(201);
+        ids.push((await created.json()).id);
+      }
+      const student = await request.post("/auth/api/users", { data: { email: studentEmail, role: "student" } });
+      expect(student.status()).toBe(201);
+      ids.push((await student.json()).id);
+      // One target already holds a grant, so the dialog must open on the common set only.
+      expect((await request.put(`/auth/api/users/${ids[0]}/access`, {
+        data: { expectedRevision: 0, grants: ["files.access"] },
+      })).status()).toBe(200);
+
+      await page.goto("/auth");
+      await waitForPageReady(page);
+      const rows = [...emails, studentEmail].map((email) =>
+        page.locator("table.users-table tbody tr").filter({ hasText: email }));
+      for (const row of rows) await row.locator('input[type="checkbox"]').check();
+
+      await page.getByRole("button", { name: "선택 권한 설정 (2)" }).click();
+      const dialog = page.getByRole("dialog", { name: "서비스 권한 편집" });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.locator(".access-dialog-target")).toHaveText("Official 2명 일괄 설정");
+      await expect(dialog.locator(".access-target-list li")).toHaveText(emails);
+      await expect(dialog.locator(".access-note")).toHaveText([
+        "Official이 아닌 1명은 제외되었습니다.",
+        /공통 권한만 표시되며/,
+      ]);
+      await expect(dialog.getByLabel("파일 클라우드 허용")).not.toBeChecked();
+
+      await dialog.getByLabel("검차 대기 권한").selectOption("operate");
+      await dialog.getByLabel("일정 관리 허용").check();
+      const saved = page.waitForResponse((response) =>
+        response.url().endsWith("/auth/api/users/bulk/access") && response.request().method() === "PUT");
+      await dialog.getByRole("button", { name: "저장", exact: true }).click();
+      expect((await saved).status()).toBe(200);
+      await expectNotification(page, "success", "2명의 서비스 권한을 변경했습니다");
+
+      for (const row of rows.slice(0, 2)) {
+        await expect(row.locator(".col-access .badge")).toHaveText(["일정 관리", "검차 대기 운영"]);
+      }
+      await expect(rows[2].locator(".col-access")).toHaveText("-");
+      const users = await (await request.get("/auth/api/users")).json();
+      for (const id of ids.slice(0, 2)) {
+        const user = users.find((candidate) => candidate.id === id);
+        expect(user.grants).toEqual(["calendar.manage", "queue.operate"]);
+      }
+      expect(users.find((candidate) => candidate.id === ids[0]).accessRevision).toBe(2);
+      expect(users.find((candidate) => candidate.id === ids[1]).accessRevision).toBe(1);
+    } finally {
+      for (const id of ids) await request.delete(`/auth/api/users/${id}`);
     }
   });
 

@@ -27,9 +27,13 @@ export const operations = [
   { name: "코스 관리", href: "/course", icon: "course", permission: "course.operate" },
   { name: "계측 시스템", href: "/traffic", icon: "traffic", permission: "traffic.operate" },
   { name: "성적 관리", href: "/score", icon: "score", permission: "score.operate" },
-  { name: "엔트리 관리", href: "/entry", icon: "entry", permission: "entry.manage" },
-  { name: "이메일/SMS", href: "/email", icon: "email", permission: "messaging.operate" },
-  { name: "시스템 로그", href: "/auth/logs", icon: "logs", permission: "audit.view" },
+];
+
+// Admin-only tools. These are not service grants: no Official can be given them.
+export const administration = [
+  { name: "엔트리 관리", href: "/entry", icon: "entry", adminOnly: true },
+  { name: "이메일/SMS", href: "/email", icon: "email", adminOnly: true },
+  { name: "시스템 로그", href: "/auth/logs", icon: "logs", adminOnly: true },
   { name: "계정 및 권한", href: "/auth", icon: "auth", adminOnly: true },
 ];
 

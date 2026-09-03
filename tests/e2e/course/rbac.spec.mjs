@@ -5,7 +5,7 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // while these gates (course/index.mjs authRoleFn) remain the enforcing layer:
 //   Course checkbox → course.manage, which includes course.operate
 //   rover.operate  → rover and missions
-//   audit.view     → logs
+//   admin          → logs
 //   internal-strict (deny even an admin browser) → /api/rover/stream, /camera,
 //     /camera/control, /obstacle, /calibration-progress
 //

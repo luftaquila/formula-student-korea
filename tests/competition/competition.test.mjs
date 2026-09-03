@@ -882,6 +882,7 @@ describe("Competition modular monolith", () => {
       email: "score-operator@test.invalid", name: "Score Operator", role: "official",
       permissions: ["score.operate"],
     });
+    // Entry is an Admin tool; a forged legacy grant must not open it.
     const entryManager = makeAuthCookie({
       email: "entry-manager@test.invalid", name: "Entry Manager", role: "official",
       permissions: ["entry.manage"],
@@ -898,7 +899,7 @@ describe("Competition modular monolith", () => {
     try {
       assert.equal((await get("/entry/")).status, 302);
       assert.equal((await get("/entry/", official)).status, 302);
-      assert.equal((await get("/entry/", entryManager)).status, 200);
+      assert.equal((await get("/entry/", entryManager)).status, 302);
       assert.equal((await get("/entry/", admin)).status, 200);
       assert.equal((await get("/inspection/", official)).status, 302);
       assert.equal((await get("/inspection/", inspectionOperator)).status, 200);

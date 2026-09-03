@@ -104,6 +104,19 @@ function roleBadgeClass(role) {
 const editingAccessUser = ref(null);
 const selectedGrants = ref(new Set());
 const accessSaving = ref(false);
+// 일괄 권한 설정 대상(Official만). 비어 있으면 단건 편집 모드다.
+const bulkAccessTargets = ref([]);
+const bulkAccessSkipped = ref(0);
+const bulkGrantsDiffer = ref(false);
+const accessDialogOpen = computed(() => Boolean(editingAccessUser.value) || bulkAccessTargets.value.length > 0);
+const permissionLabels = computed(() =>
+  new Map(accessCatalog.value.permissions.map((permission) => [permission.key, permission.label])),
+);
+
+// 목록에 표시하는 권한 이름. grants는 정규화된 목록이라 "관리"가 "운영"을 대신한다.
+function grantLabels(user) {
+  return (user.grants || []).map((key) => permissionLabels.value.get(key) || key);
+}
 
 function accessLevel(control) {
   if (selectedGrants.value.has(control.manage.key)) return "manage";
@@ -128,36 +141,67 @@ function toggleAccess(control, checked) {
 }
 
 function editAccess(user) {
+  bulkAccessTargets.value = [];
   editingAccessUser.value = user;
   selectedGrants.value = new Set(user.grants || []);
 }
 
+// 선택한 Official 전원에게 같은 권한 목록을 적용한다. 권한이 서로 다르면 공통
+// 권한만 미리 체크해 두고, 저장 시 모든 대상의 권한이 이 목록으로 교체된다.
+function editBulkAccess() {
+  const targets = selectedOfficials.value;
+  if (targets.length === 0) return;
+  const grantSets = targets.map((u) => new Set(u.grants || []));
+  const common = [...grantSets[0]].filter((key) => grantSets.every((set) => set.has(key)));
+  editingAccessUser.value = null;
+  bulkAccessTargets.value = targets;
+  bulkAccessSkipped.value = selectedIds.value.size - targets.length;
+  bulkGrantsDiffer.value = grantSets.some((set) => set.size !== common.length);
+  selectedGrants.value = new Set(common);
+}
+
+function closeAccessDialog() {
+  editingAccessUser.value = null;
+  bulkAccessTargets.value = [];
+  bulkAccessSkipped.value = 0;
+  bulkGrantsDiffer.value = false;
+}
+
 async function saveAccess() {
-  const target = editingAccessUser.value;
-  if (!target || accessSaving.value) return;
+  if (accessSaving.value || !accessDialogOpen.value) return;
+  const single = editingAccessUser.value;
+  const targets = single ? [single] : bulkAccessTargets.value;
+  const headers = { "Content-Type": "application/json" };
   accessSaving.value = true;
   try {
-    const res = await fetch(`${BASE_URL}/api/users/${target.id}/access`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        expectedRevision: target.accessRevision,
-        grants: [...selectedGrants.value],
-      }),
-    });
+    const res = single
+      ? await fetch(`${BASE_URL}/api/users/${single.id}/access`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({ expectedRevision: single.accessRevision, grants: [...selectedGrants.value] }),
+      })
+      : await fetch(`${BASE_URL}/api/users/bulk/access`, {
+        method: "PUT",
+        headers,
+        body: JSON.stringify({
+          users: targets.map((u) => ({ id: u.id, expectedRevision: u.accessRevision })),
+          grants: [...selectedGrants.value],
+        }),
+      });
     if (!res.ok) {
       const body = await res.json().catch(() => null);
       if (body?.code === "ACCESS_STALE_WRITE") throw new Error("다른 관리자가 먼저 권한을 변경했습니다. 다시 확인하세요.");
+      if (body?.code === "OFFICIAL_ACCESS_ONLY") throw new Error("Official 계정에만 서비스 권한을 부여할 수 있습니다.");
       throw new Error(body?.message || "권한을 저장하지 못했습니다.");
     }
-    notyf.success("서비스 권한을 변경했습니다.");
-    editingAccessUser.value = null;
-    await fetchUsers();
+    notyf.success(single ? "서비스 권한을 변경했습니다." : `${targets.length}명의 서비스 권한을 변경했습니다.`);
   } catch (e) {
     notyf.error(e.message);
-    await fetchUsers();
   } finally {
     accessSaving.value = false;
+    // 성공·실패 모두 대화상자의 기준 revision이 더 이상 유효하지 않으므로 닫고 다시 불러온다.
+    closeAccessDialog();
+    await fetchUsers();
   }
 }
 
@@ -319,6 +363,10 @@ function toggleOne(id) {
   else s.add(id);
   selectedIds.value = s;
 }
+// 서비스 권한은 Official에게만 있으므로 일괄 설정 대상도 Official로 제한한다.
+const selectedOfficials = computed(() =>
+  users.value.filter((u) => selectedIds.value.has(u.id) && u.role === "official"),
+);
 
 // Bulk deactivate
 async function bulkDeactivate() {
@@ -804,6 +852,15 @@ onUnmounted(() => {
             </select>
           </div>
           <div class="header-btns">
+            <button
+              v-if="selectedIds.size > 0"
+              class="btn btn-sm btn-primary"
+              :disabled="selectedOfficials.length === 0"
+              :title="selectedOfficials.length === 0 ? '선택한 계정 중 Official이 없습니다' : ''"
+              @click="editBulkAccess"
+            >
+              선택 권한 설정 ({{ selectedOfficials.length }})
+            </button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-ghost" @click="bulkDeactivate">선택 비활성화 ({{ selectedIds.size }})</button>
             <button v-if="selectedIds.size > 0" class="btn btn-sm btn-danger" @click="bulkDelete">선택 삭제 ({{ selectedIds.size }})</button>
             <button class="btn btn-sm btn-ghost" @click="exportCSV">CSV 다운로드</button>
@@ -825,6 +882,7 @@ onUnmounted(() => {
                 <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
                 <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
+                <th class="col-access">권한</th>
                 <th class="col-realname sortable" @click="handleSort('realname')">실명 <span class="sort-icon">{{ getSortIcon('realname') }}</span></th>
                 <th class="col-phone">전화번호</th>
                 <th class="col-affiliation">학교/팀</th>
@@ -839,6 +897,14 @@ onUnmounted(() => {
                 <td class="col-name">{{ user.name || "-" }}</td>
                 <td class="col-role">
                   <span class="badge" :class="roleBadgeClass(user.role)">{{ user.role }}</span>
+                </td>
+                <td class="col-access">
+                  <span v-if="user.role === 'admin'" class="badge badge-danger access-badge">전체</span>
+                  <div v-else-if="user.role === 'official'" class="access-badges">
+                    <span v-for="label in grantLabels(user)" :key="label" class="badge badge-primary access-badge">{{ label }}</span>
+                    <span v-if="!user.grants?.length" class="access-empty">없음</span>
+                  </div>
+                  <span v-else class="access-empty">-</span>
                 </td>
                 <td class="col-realname inline-edit-cell" @click="startRealnameEdit(user.id)">
                   <input
@@ -891,9 +957,7 @@ onUnmounted(() => {
                       <option value="official">Official</option>
                       <option value="admin">Admin</option>
                     </select>
-                    <button v-if="user.role === 'official'" class="btn btn-sm btn-primary" @click="editAccess(user)">
-                      권한 {{ user.permissions?.length || 0 }}
-                    </button>
+                    <button v-if="user.role === 'official'" class="btn btn-sm btn-primary" @click="editAccess(user)">권한 편집</button>
                     <button
                       class="btn btn-sm"
                       :class="user.active ? 'btn-ghost' : 'btn-primary'"
@@ -915,7 +979,7 @@ onUnmounted(() => {
                 </td>
               </tr>
               <tr v-if="users.length === 0">
-                <td colspan="9" class="empty-state">사용자가 없습니다.</td>
+                <td colspan="10" class="empty-state">사용자가 없습니다.</td>
               </tr>
             </tbody>
           </table>
@@ -1030,14 +1094,24 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div v-if="editingAccessUser" class="access-overlay" @click.self="editingAccessUser = null">
+    <div v-if="accessDialogOpen" class="access-overlay" @click.self="closeAccessDialog">
       <section class="access-dialog card" role="dialog" aria-modal="true" aria-label="서비스 권한 편집">
-        <div class="card-header">
-          <div>
+        <div class="card-header access-dialog-header">
+          <div class="access-dialog-title">
             <h3>서비스 권한</h3>
-            <span class="ops-desc">{{ editingAccessUser.email }}</span>
+            <span v-if="editingAccessUser" class="access-dialog-target">{{ editingAccessUser.email }}</span>
+            <span v-else class="access-dialog-target">Official {{ bulkAccessTargets.length }}명 일괄 설정</span>
           </div>
-          <button class="btn btn-sm btn-ghost" @click="editingAccessUser = null">닫기</button>
+          <button class="btn btn-sm btn-ghost" @click="closeAccessDialog">닫기</button>
+        </div>
+        <div v-if="!editingAccessUser" class="access-bulk-summary">
+          <ul class="access-target-list">
+            <li v-for="target in bulkAccessTargets" :key="target.id">{{ target.email }}</li>
+          </ul>
+          <p v-if="bulkAccessSkipped > 0" class="access-note">Official이 아닌 {{ bulkAccessSkipped }}명은 제외되었습니다.</p>
+          <p v-if="bulkGrantsDiffer" class="access-note access-note-warning">
+            선택한 계정의 권한이 서로 다릅니다. 공통 권한만 표시되며, 저장하면 모든 계정의 권한이 이 설정으로 바뀝니다.
+          </p>
         </div>
         <div class="access-list">
           <div
@@ -1077,7 +1151,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="access-actions">
-          <button class="btn btn-ghost" @click="editingAccessUser = null">취소</button>
+          <button class="btn btn-ghost" @click="closeAccessDialog">취소</button>
           <button class="btn btn-primary" :disabled="accessSaving" @click="saveAccess">저장</button>
         </div>
       </section>
@@ -1110,6 +1184,61 @@ onUnmounted(() => {
   width: min(1000px, 96vw);
   max-height: 90vh;
   overflow: auto;
+}
+
+/* Header: title + target on the left, close button pinned right. The base h3 is a
+   flex row, so the target must sit beside it explicitly instead of wrapping under. */
+.access-dialog-header {
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.access-dialog-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.25rem 0.75rem;
+  min-width: 0;
+}
+
+.access-dialog-target {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.access-bulk-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem 0;
+}
+
+.access-target-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.access-target-list li {
+  padding: 0.125rem 0.5rem;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.access-note {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.access-note-warning {
+  color: var(--accent-warning);
 }
 
 .access-list {
@@ -1266,6 +1395,28 @@ onUnmounted(() => {
 
 .col-role {
   text-align: center !important;
+}
+
+/* The only column allowed to wrap; it absorbs the width the 1% columns give up. */
+.col-access {
+  min-width: 14rem;
+}
+
+.access-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.access-badge {
+  padding: 0.125rem 0.4rem;
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+
+.access-empty {
+  font-size: 0.8125rem;
+  color: var(--text-tertiary);
 }
 
 /* Sortable headers */

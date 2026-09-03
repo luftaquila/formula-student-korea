@@ -649,6 +649,14 @@ describe('Role schema migration', () => {
         INSERT INTO user_permission
           SELECT id, 'contacts.manage' FROM users WHERE email = 'preserved@test.com';
         INSERT INTO user_permission
+          SELECT id, 'entry.manage' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'messaging.operate' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'audit.view' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission_bundle
+          SELECT id, 'auditor' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
           SELECT id, 'queue.manage' FROM users WHERE email = 'legacy-chief@test.com';
         CREATE TABLE ops_display (
           user_id INTEGER PRIMARY KEY REFERENCES users(id),

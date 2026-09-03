@@ -42,6 +42,86 @@ after(async () => {
   cleanup(dbPath);
 });
 
+describe("bulk access grants", () => {
+  it("replaces every selected official's grants at once and refuses stale or non-official targets", async () => {
+    const created = [];
+    for (const email of ["bulk-a@test.com", "bulk-b@test.com"]) {
+      const response = await client.post("/api/users", { cookie: adminCookie, body: { email, role: "official" } });
+      assert.equal(response.status, 201);
+      created.push(await response.json());
+    }
+    const studentResponse = await client.post("/api/users", {
+      cookie: adminCookie, body: { email: "bulk-student@test.com", role: "student" },
+    });
+    const student = await studentResponse.json();
+
+    const seeded = await client.put(`/api/users/${created[0].id}/access`, {
+      cookie: adminCookie,
+      body: { expectedRevision: 0, grants: ["files.access"] },
+    });
+    assert.equal(seeded.status, 200);
+
+    const stale = await client.put("/api/users/bulk/access", {
+      cookie: adminCookie,
+      body: {
+        users: [{ id: created[0].id, expectedRevision: 0 }, { id: created[1].id, expectedRevision: 0 }],
+        grants: ["queue.operate"],
+      },
+    });
+    assert.equal(stale.status, 409);
+    const staleBody = await stale.json();
+    assert.equal(staleBody.code, "ACCESS_STALE_WRITE");
+    assert.deepEqual(staleBody.stale.map(({ id }) => id), [created[0].id]);
+    // All-or-nothing: the fresh target keeps its empty grant list.
+    const untouched = (await (await client.get("/api/users", { cookie: adminCookie })).json())
+      .find((user) => user.id === created[1].id);
+    assert.deepEqual(untouched.grants, []);
+    assert.equal(untouched.accessRevision, 0);
+
+    const mixed = await client.put("/api/users/bulk/access", {
+      cookie: adminCookie,
+      body: {
+        users: [{ id: created[1].id, expectedRevision: 0 }, { id: student.id, expectedRevision: 0 }],
+        grants: ["queue.operate"],
+      },
+    });
+    assert.equal(mixed.status, 409);
+    assert.equal((await mixed.json()).code, "OFFICIAL_ACCESS_ONLY");
+
+    const invalid = await client.put("/api/users/bulk/access", {
+      cookie: adminCookie,
+      body: { users: [{ id: created[1].id, expectedRevision: 0 }], grants: ["entry.manage"] },
+    });
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).code, "INVALID_ACCESS_KEY");
+
+    const updated = await client.put("/api/users/bulk/access", {
+      cookie: adminCookie,
+      body: {
+        users: [{ id: created[0].id, expectedRevision: 1 }, { id: created[1].id, expectedRevision: 0 }],
+        grants: ["queue.operate", "queue.manage", "inspection.operate"],
+      },
+    });
+    assert.equal(updated.status, 200);
+    const body = await updated.json();
+    assert.equal(body.updated, 2);
+    for (const user of body.users) {
+      assert.deepEqual(user.grants, ["inspection.operate", "queue.manage"]);
+      assert.deepEqual(user.permissions, ["inspection.operate", "queue.manage", "queue.operate"]);
+    }
+    assert.deepEqual(body.users.map(({ accessRevision }) => accessRevision), [2, 1]);
+
+    const listed = await (await client.get("/api/users", { cookie: adminCookie })).json();
+    for (const { id } of created) {
+      assert.deepEqual(listed.find((user) => user.id === id).grants, ["inspection.operate", "queue.manage"]);
+    }
+    assert.equal((await client.put("/api/users/bulk/access", {
+      cookie: makeAuthCookie({ email: "bulk-a@test.com", name: "Official", role: "official" }),
+      body: { users: [{ id: created[1].id, expectedRevision: 1 }], grants: [] },
+    })).status, 403);
+  });
+});
+
 describe("official access grants", () => {
   it("uses one revisioned grant list and clears it when the role changes", async () => {
     const created = await client.post("/api/users", {
@@ -95,6 +175,8 @@ describe("official access grants", () => {
     });
     assert.equal((await client.get("/api/admin/logs?service=auth", { cookie: operatorCookie })).status, 403);
 
+    // System logs are an Admin tool: the old audit grant is no longer grantable and
+    // even a forged permission list does not open the aggregated logs.
     const auditorCreated = await client.post("/api/users", {
       cookie: adminCookie,
       body: { email: "auditor@test.com", role: "official" },
@@ -104,11 +186,13 @@ describe("official access grants", () => {
       cookie: adminCookie,
       body: { expectedRevision: 0, grants: ["audit.view"] },
     });
-    assert.equal(auditorAccess.status, 200);
+    assert.equal(auditorAccess.status, 400);
+    assert.equal((await auditorAccess.json()).code, "INVALID_ACCESS_KEY");
     const auditorCookie = makeAuthCookie({
-      email: "auditor@test.com", name: "Auditor", role: "official",
+      email: "auditor@test.com", name: "Auditor", role: "official", permissions: ["audit.view"],
     });
-    assert.equal((await client.get("/api/admin/logs?service=auth", { cookie: auditorCookie })).status, 200);
+    assert.equal((await client.get("/api/admin/logs?service=auth", { cookie: auditorCookie })).status, 403);
+    assert.equal((await client.get("/api/admin/logs?service=auth", { cookie: adminCookie })).status, 200);
 
     const stale = await client.put(`/api/users/${user.id}/access`, {
       cookie: adminCookie,

@@ -36,11 +36,11 @@ const LEGACY_PERMISSION_BUNDLES = Object.freeze({
   timing_manager: ["traffic.manage"],
   score_operator: ["score.operate"],
   score_manager: ["score.manage"],
-  entry_manager: ["entry.manage"],
+  entry_manager: [],
   application_manager: [],
   contacts_manager: [],
-  messaging_operator: ["messaging.operate"],
-  auditor: ["audit.view"],
+  messaging_operator: [],
+  auditor: [],
 });
 
 export function createAuthApp(options = {}) {
@@ -143,10 +143,11 @@ CREATE TABLE IF NOT EXISTS kiosk_device (
 CREATE INDEX IF NOT EXISTS idx_kiosk_device_token_hash ON kiosk_device(token_hash);
 CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pairing_code_hash);`);
 
-// These Auth administration features were briefly exposed as Official service
-// grants in the preview. They belong to Account & Access and remain Admin-only.
+// These administration features were briefly exposed as Official service grants
+// in the preview. Account & Access, Entry, Email/SMS, and the system logs are
+// Admin-only tools, so any stored grant for them is retired here.
 db.prepare(`DELETE FROM user_permission
-  WHERE permission_key IN ('applications.manage', 'contacts.manage')`).run();
+  WHERE permission_key IN ('applications.manage', 'contacts.manage', 'entry.manage', 'messaging.operate', 'audit.view')`).run();
 
 const legacyBundleTableExists = Boolean(db.prepare(
   "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'user_permission_bundle'",
@@ -394,13 +395,12 @@ const app = createApp({
   if (req.path.startsWith("/api/devices")) return access.admin;
   if (req.path === "/api/access/catalog") return access.admin;
   if (req.path === "/api/internal/users") return access.internal;
-  if (req.path === "/api/admin/logs") return access.permission("audit.view");
   if (req.path.startsWith("/api/admin")) return access.admin;
   if (req.path.startsWith("/api/users")) return access.admin;
   if (req.path === "/api/contact-candidates") return access.admin;
   if (req.path.startsWith("/api/ops-contacts") && req.method !== "GET") return access.admin;
   if (req.path.startsWith("/api/ops-contacts")) return access.official;
-  if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
+  if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
   if (req.path.startsWith("/api/applications")) return access.admin;
   if (req.path === "/api/apply/config") return null;            // 신청 가능 여부: 공개
   if (req.path.startsWith("/api/apply")) return null;           // 신청자 API: 공개(핸들러가 fsk_applicant 검증)
@@ -1171,6 +1171,81 @@ app.get("/api/users", (req, res) => {
     ...userAccess(u),
     protected: u.email === ADMIN_EMAIL,
   })));
+});
+
+// PUT /api/users/bulk/access - 선택한 Official 여러 명의 권한을 같은 목록으로 교체
+// Declared before /api/users/:id/access so "bulk" is never read as a user id.
+app.put("/api/users/bulk/access", (req, res) => {
+  const { users: targets, grants } = req.body || {};
+  const validTargets = Array.isArray(targets) && targets.length > 0
+    && targets.every((target) => Number.isInteger(target?.id) && Number.isInteger(target?.expectedRevision))
+    && new Set(targets.map((target) => target.id)).size === targets.length;
+  if (!validTargets || !Array.isArray(grants)) {
+    logger.warn(req, "user.bulk_access_update", { reason: "invalid_request" });
+    return res.status(400).json({ code: "INVALID_ACCESS_REQUEST" });
+  }
+  if (new Set(grants).size !== grants.length || grants.some((key) => !PERMISSION_KEYS.includes(key))) {
+    logger.warn(req, "user.bulk_access_update", { reason: "invalid_access_key", grants });
+    return res.status(400).json({ code: "INVALID_ACCESS_KEY" });
+  }
+  const normalizedGrants = normalizeAccessGrants(grants);
+  const ids = targets.map((target) => target.id);
+  const expectedRevisions = new Map(targets.map((target) => [target.id, target.expectedRevision]));
+  const placeholders = ids.map(() => "?").join(",");
+  const selectTargets = db.prepare(
+    `SELECT id, email, role, access_revision FROM users WHERE id IN (${placeholders}) ORDER BY id`,
+  );
+
+  const result = dbRun(() => db.transaction(() => {
+    const rows = selectTargets.all(...ids);
+    const found = new Set(rows.map((row) => row.id));
+    const missing = ids.filter((id) => !found.has(id));
+    if (missing.length > 0) return { missing };
+    const nonOfficial = rows.filter((row) => row.role !== "official").map((row) => row.email);
+    if (nonOfficial.length > 0) return { nonOfficial };
+    const stale = rows
+      .filter((row) => row.access_revision !== expectedRevisions.get(row.id))
+      .map((row) => ({ id: row.id, email: row.email, current: userAccess(row) }));
+    if (stale.length > 0) return { stale };
+
+    const before = rows.map((row) => ({ email: row.email, ...userAccess(row) }));
+    const deletePermissions = db.prepare("DELETE FROM user_permission WHERE user_id = ?");
+    const insertPermission = db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)");
+    const bumpRevision = db.prepare("UPDATE users SET access_revision = access_revision + 1 WHERE id = ?");
+    for (const row of rows) {
+      deletePermissions.run(row.id);
+      for (const key of normalizedGrants) insertPermission.run(row.id, key);
+      bumpRevision.run(row.id);
+    }
+    const after = selectTargets.all(...ids).map((row) => ({ id: row.id, email: row.email, ...userAccess(row) }));
+    return { before, after };
+  })());
+
+  if (!result.success) {
+    logger.warn(req, "user.bulk_access_update", { error: result.internalError || result.error, ids });
+    return res.status(result.status).send(result.error);
+  }
+  if (result.result.missing) {
+    logger.warn(req, "user.bulk_access_update", { reason: "not_found", ids: result.result.missing });
+    return res.status(404).json({ code: "USER_NOT_FOUND", ids: result.result.missing });
+  }
+  if (result.result.nonOfficial) {
+    logger.warn(req, "user.bulk_access_update", { reason: "official_only", emails: result.result.nonOfficial });
+    return res.status(409).json({ code: "OFFICIAL_ACCESS_ONLY", emails: result.result.nonOfficial });
+  }
+  if (result.result.stale) {
+    logger.warn(req, "user.bulk_access_update", {
+      reason: "stale_write",
+      stale: result.result.stale.map(({ id, email, current }) => ({ id, email, actual_revision: current.accessRevision })),
+    });
+    return res.status(409).json({ code: "ACCESS_STALE_WRITE", stale: result.result.stale });
+  }
+  logger.log(req, "user.bulk_access_update", {
+    grants: normalizedGrants,
+    before: result.result.before,
+    after: result.result.after,
+  });
+  res.json({ updated: result.result.after.length, users: result.result.after });
 });
 
 app.put("/api/users/:id/access", (req, res) => {

@@ -4,9 +4,10 @@ import { storageStatePath } from "../helpers/utils.mjs";
 
 // Competition Teams gate: public active-team reads, admin mutations.
 // GET /api/vehicle-types and /api/health are public; every other route is "admin".
+// Entry is an Admin tool with no service grant, so no Official profile may write.
 // NOTE: auth/rbac.spec.mjs already covers student->POST /competition/api/v1/teams 403 and
-// unauth->POST 401. Here we cover officials without entry.manage, the PATCH/DELETE
-// write surface, vehicle-types writes, and the genuinely public reads.
+// unauth->POST 401. Here we cover officials (including fully granted managers), the
+// PATCH/DELETE write surface, vehicle-types writes, and the genuinely public reads.
 
 const YEAR = currentCompetitionYear();
 
@@ -27,7 +28,7 @@ const publicReads = [
 ];
 
 test.describe("entry RBAC", () => {
-  test("officials without entry.manage are rejected on every representative write", async ({ browser }) => {
+  test("officials are rejected on every representative write regardless of their grants", async ({ browser }) => {
     for (const profile of ["operationsOperator", "operationsManager"]) {
       const ctx = await browser.newContext({ storageState: storageStatePath(profile) });
       try {

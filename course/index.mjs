@@ -419,7 +419,7 @@ function roleFn(req) {
   if (p.startsWith("/api/missions")) return access.permission("rover.operate");
   // GPS receiver source selection and base-station survey share rover operation.
   if (p.startsWith("/api/gps")) return access.permission("rover.operate");
-  if (p === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
+  if (p === "/api/logs") return access.anyOf(access.admin, access.internal);
   if (/^\/vr(?:\/|$)/.test(p)) return access.permission("rover.operate");
   // Snapshots overwrite the whole course on restore and can be deleted, so they
   // require course management above plain course operation.

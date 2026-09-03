@@ -39,10 +39,10 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
   authRoleFn: (req) => {
     if (req.path === "/api/health") return null;
     if (req.path.startsWith("/api/internal/")) return access.internal;
-    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
+    if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
     if (req.path.startsWith("/api/config")) return access.admin;
-    if (req.path.startsWith("/api/")) return access.permission("messaging.operate");
-    return access.permission("messaging.operate");
+    if (req.path.startsWith("/api/")) return access.admin;
+    return access.admin;
   },
 });
 

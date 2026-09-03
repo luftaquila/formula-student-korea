@@ -309,8 +309,7 @@ export function createLogger(db, serviceName, maxRows = 50000, { teamSource } = 
     // The route gate normally enforces this. Keep the handler safe when mounted
     // directly by a service test or future caller.
     const isInternal = isInternalSecret(req.headers["x-internal-service"]);
-    const canAudit = req.user?.kind === "human"
-      && (req.user.role === "admin" || req.user.permissions?.includes("audit.view"));
+    const canAudit = req.user?.kind === "human" && req.user.role === "admin";
     if (!isInternal && !canAudit) {
       return res.status(403).send("권한이 없습니다.");
     }

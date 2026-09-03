@@ -38,6 +38,13 @@
           <ServiceCard v-for="item in operationItems" :key="item.href" v-bind="cardProps(item)" />
         </div>
       </section>
+
+      <section v-if="adminItems.length" class="section">
+        <h2 class="section-title">Admin</h2>
+        <div class="services">
+          <ServiceCard v-for="item in adminItems" :key="item.href" v-bind="cardProps(item)" />
+        </div>
+      </section>
     </main>
   </div>
 </template>
@@ -54,16 +61,18 @@ import {
   writeDisclosureState,
 } from "@shared/persistent-disclosure.js";
 import { user, isStudent, isAdmin, hasPermission, refreshUser } from "@shared/officialsStore.js";
-import { services, resources, operations, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
+import { services, resources, operations, administration, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
 
 // 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
 // "홈"은 landing 자신이므로 카드에서 제외하고, 학생 전용 항목은 exact role로 제한한다.
 const serviceItems = computed(() =>
   services.filter((item) => item.href !== "/" && (!item.studentOnly || isStudent.value)),
 );
-const operationItems = computed(() => operations.filter((item) =>
-  item.adminOnly ? isAdmin.value : hasPermission(item.permission)),
-);
+function canOpen(item) {
+  return item.adminOnly ? isAdmin.value : hasPermission(item.permission);
+}
+const operationItems = computed(() => operations.filter(canOpen));
+const adminItems = computed(() => administration.filter(canOpen));
 const browserStorage = (() => {
   try { return window.localStorage; }
   catch { return null; }

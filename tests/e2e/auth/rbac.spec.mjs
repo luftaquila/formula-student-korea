@@ -11,7 +11,8 @@ async function withPage(browser, storageState, callback) {
 }
 
 test.describe("Cross-application RBAC", () => {
-  test("home shows operational cards from explicit service permissions", async ({ browser }) => {
+  test("home shows operational cards from explicit service permissions and admin tools only to admins", async ({ browser }) => {
+    const ADMIN_TOOLS = ["/entry", "/email", "/auth/logs", "/auth"];
     const cases = [
       {
         profile: "registrationOperator",
@@ -29,18 +30,18 @@ test.describe("Cross-application RBAC", () => {
         profile: "operationsManager",
         headings: ["Services", "Operations"],
         paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/", "/calendar"],
-        absentPaths: ["/course", "/traffic", "/score", "/entry", "/auth"],
+        absentPaths: ["/course", "/traffic", "/score"],
       },
       {
         profile: "technicalOperator",
         headings: ["Services", "Operations"],
         paths: ["/course", "/traffic", "/score"],
-        absentPaths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/", "/entry", "/auth"],
+        absentPaths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/files/"],
       },
       {
         profile: "admin",
-        headings: ["Services", "Operations"],
-        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/course", "/traffic", "/score", "/auth"],
+        headings: ["Services", "Operations", "Admin"],
+        paths: ["/registration/manage", "/queue/admin", "/inspection", "/documents/admin", "/course", "/traffic", "/score"],
         absentPaths: ["/auth/applications", "/auth/contacts", "/auth/devices"],
       },
     ];
@@ -56,7 +57,17 @@ test.describe("Cross-application RBAC", () => {
           await expect(operations.locator('.service-card[href="' + path + '"]')).toHaveCount(1);
         }
         for (const path of expectation.absentPaths) {
+          await expect(page.locator('main .service-card[href="' + path + '"]')).toHaveCount(0);
+        }
+
+        // Admin tools live in their own group. They are never inside Operations, and
+        // non-admins do not get the group at all — no grant can unlock it.
+        const admin = page.locator("main section").filter({
+          has: page.getByRole("heading", { name: "Admin", exact: true }),
+        });
+        for (const path of ADMIN_TOOLS) {
           await expect(operations.locator('.service-card[href="' + path + '"]')).toHaveCount(0);
+          await expect(admin.locator('.service-card[href="' + path + '"]')).toHaveCount(expectation.profile === "admin" ? 1 : 0);
         }
       });
     }

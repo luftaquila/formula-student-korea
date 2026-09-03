@@ -18,7 +18,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     if (/^\/public\/\d{4}$/.test(req.path)) return null;
     // 공개 페이지가 인증 없이 부트스트랩될 수 있도록 Vite 정적 자산도 공개한다.
     if (req.path.startsWith("/assets/") || req.path === "/env-config.js") return null;
-    if (req.path === "/api/logs") return access.anyOf(access.permission("audit.view"), access.internal);
+    if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
     if (req.method !== "GET" && [
       "/api/score/publication",
       "/api/score/penalty",
