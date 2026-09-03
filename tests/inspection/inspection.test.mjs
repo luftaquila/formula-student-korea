@@ -542,6 +542,7 @@ describe('Template Copy', () => {
       to_year: TARGET_YEAR,
       statuses: { verified: 0, needs_review: 0, no_direct_rule: 0 },
       reasons: {},
+      catalog_required: false,
       catalog_available: false,
     });
 

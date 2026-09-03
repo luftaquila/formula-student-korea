@@ -256,11 +256,14 @@ function removeRegistrationSchema(dbPath) {
   writer.close();
 }
 
+// Every predecessor that lacked endurance driver names also predates
+// sheet_template.rule_refs, so simulate both together.
 function removeEnduranceDriverNames(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
     ALTER TABLE score_endurance DROP COLUMN driver2_name;
     ALTER TABLE score_endurance DROP COLUMN driver1_name;
+    ALTER TABLE sheet_template DROP COLUMN rule_refs;
   `);
   writer.close();
 }
@@ -996,7 +999,7 @@ describe("Competition backup/restore artifact validation", () => {
     const unchanged = new Database(dbPath, { readonly: true });
     assert.equal(
       competitionSchemaContractDigest(captureCompetitionSchemaContract(unchanged)),
-      "a442bea1ab762b97bc4238ca16d5d4e1dafc93f42bcb6f1455d2a0c90d4914e8",
+      "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
     );
     assert.equal(
       unchanged.pragma("table_info('score_endurance')").some(({ name }) => name === "driver1_name" || name === "driver2_name"),
@@ -1130,7 +1133,7 @@ describe("Competition backup/restore artifact validation", () => {
     const intermediate = new Database(dbPath, { readonly: true });
     assert.equal(
       competitionSchemaContractDigest(captureCompetitionSchemaContract(intermediate)),
-      "2a998ecd02b336cc525ecf03341ecead2ea97899ae83c3913710ade9136d1f45",
+      "bbfed20876a4642ecc6759441ac84d6c1c28e9b21689a8fafb2cfe4b44f400b4",
     );
     intermediate.close();
     const intermediateResult = validateDatabase(dbPath);

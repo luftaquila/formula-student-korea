@@ -35,10 +35,10 @@ function print() {
   window.print();
 }
 
+// 인쇄물은 팀에게 전달되는 공식 검차표라서 검증된 인용만 찍는다. 검토 중/대응 없음은 표시하지 않는다.
 function ruleCitation(item) {
   const refs = item.rule_refs;
-  if (!refs || refs.status === "needs_review") return "규정 연결 검토 필요";
-  if (refs.status !== "verified") return "";
+  if (!refs || refs.status !== "verified") return "";
   return refs.references
     .map(ref => `${ref.document === "formula-technical" ? "기술" : "경기"} ${ref.citation}`)
     .join(" · ");

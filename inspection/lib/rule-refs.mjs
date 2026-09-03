@@ -305,7 +305,7 @@ export function createRulesCatalog({
     if (!Number.isInteger(edition) || edition < 2000) throw new RuleCatalogError("올바르지 않은 규정 연도입니다.");
     const cached = cache.get(edition);
     if (!force && cached && cached.expires > now()) return cached.value;
-    if (inflight.has(edition)) return inflight.get(edition);
+    if (!force && inflight.has(edition)) return inflight.get(edition);
     const pending = (async () => {
       try {
         const manifestValue = await readJson(fetchImpl, resolveCatalogPath(base, "rules-manifest.json", "매니페스트"), { timeoutMs, maxBytes });
@@ -338,7 +338,7 @@ export function createRulesCatalog({
         if (error instanceof RuleCatalogError) throw error;
         throw new RuleCatalogError(error?.message || "규정 카탈로그 검증에 실패했습니다.", "RULE_CATALOG_INVALID", error);
       }
-    })().finally(() => inflight.delete(edition));
+    })().finally(() => { if (inflight.get(edition) === pending) inflight.delete(edition); });
     inflight.set(edition, pending);
     return pending;
   }

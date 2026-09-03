@@ -260,6 +260,60 @@ describe("inspection rule reference API", () => {
     assert.equal((await again.json()).counts.skipped_verified >= 1, true);
   });
 
+  it("renders a readable page when a browser opens a link that is not verified", async () => {
+    const db = created.db;
+    const before = db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.second).rule_refs;
+    db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?")
+      .run(JSON.stringify({ status: "needs_review", references: [] }), ids.second);
+    try {
+      const response = await client.get(`/api/sheet/rule-link/${ids.second}/0`, {
+        cookie: officialCookie, headers: { accept: "text/html,application/xhtml+xml" },
+      });
+      assert.equal(response.status, 409);
+      assert.match(response.headers.get("content-type"), /text\/html/);
+      assert.match(await response.text(), /검토 중/);
+
+      const api = await client.get(`/api/sheet/rule-link/${ids.second}/0`, { cookie: officialCookie });
+      assert.equal(api.status, 409);
+      assert.deepEqual(await api.json(), {
+        code: "RULE_REFERENCE_NOT_VERIFIED", message: "이 문항의 규정 연결은 아직 검토 중입니다.",
+      });
+    } finally {
+      db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?").run(before, ids.second);
+    }
+  });
+
+  it("accepts large bodies only on the import routes", async () => {
+    const filler = "x".repeat(300 * 1024);
+    const rejected = await client.post("/api/sheet/template/reorder", {
+      cookie: chiefCookie, body: { items: [], filler },
+    });
+    assert.equal(rejected.status, 413);
+
+    const parsed = await client.post("/api/sheet/template/rule-refs/import", {
+      cookie: chiefCookie, body: { year: YEAR, template: [], filler },
+    });
+    assert.equal(parsed.status, 400, "the body was parsed and rejected by validation, not by size");
+  });
+
+  it("keeps stored data readable when one item's rule_refs is corrupt", async () => {
+    const db = created.db;
+    const before = db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.second).rule_refs;
+    db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?")
+      .run(JSON.stringify({ status: "verified", references: [] }), ids.second);
+    try {
+      const response = await client.get(`/api/sheet/template?year=${YEAR}`, { cookie: officialCookie });
+      assert.equal(response.status, 200);
+      const items = (await response.json()).flatMap((category) => category.subcategories.flatMap((sub) => sub.groups.flatMap((group) => group.items)));
+      assert.deepEqual(items.find((item) => item.id === ids.second).rule_refs, { status: "needs_review", references: [] });
+      const warning = db.prepare(`SELECT detail FROM logs
+        WHERE action = 'template.read' AND level = 'warn' ORDER BY id DESC LIMIT 1`).get();
+      assert.equal(JSON.parse(warning.detail).item_id, ids.second);
+    } finally {
+      db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?").run(before, ids.second);
+    }
+  });
+
   it("fails closed and audits an unavailable catalog without affecting readiness", async () => {
     catalogUnavailable = true;
     try {
@@ -276,5 +330,41 @@ describe("inspection rule reference API", () => {
     } finally {
       catalogUnavailable = false;
     }
+  });
+
+  it("follows stable keys when a template exported from another year is imported", async () => {
+    // Pin the catalog the import will see: brake-light now lives at 제12조 1항 with HASH_B.
+    payload = catalogPayload(HASH_B, "formula-technical-12-1");
+    assert.equal((await client.post("/api/sheet/template/rule-refs/revalidate", { cookie: chiefCookie, body: { year: YEAR } })).status, 200);
+    const reference = (source_hash) => ({
+      edition: YEAR - 1, document: "formula-technical", rule_key: "formula-technical.brake-light",
+      clause_id: "formula-technical-9-9", citation: "제9조 9항", source_hash,
+    });
+    const template = [{
+      name: "기술검차", subcategories: [{ name: "전기", groups: [{ name: "등화", items: [
+        { name: "제동등", answer_type: "passfail", field_key: "brake-light",
+          rule_refs: { status: "verified", references: [reference(HASH_B)] } },
+        { name: "제동등 면적", answer_type: "passfail", field_key: "brake-light-area",
+          rule_refs: { status: "verified", references: [reference(HASH_A)] } },
+        { name: "운영 확인", answer_type: "text", field_key: "operations-check",
+          rule_refs: { status: "needs_review", references: [] } },
+      ] }] }],
+    }];
+    const response = await client.post("/api/sheet/template/import", { cookie: chiefCookie, body: { year: YEAR, template } });
+    assert.equal(response.status, 201);
+    const stored = Object.fromEntries(created.db.prepare(
+      "SELECT field_key, rule_refs FROM sheet_template WHERE year = ? AND level = 'item'",
+    ).all(YEAR).map((row) => [row.field_key, JSON.parse(row.rule_refs)]));
+    assert.equal(stored["brake-light"].status, "verified");
+    assert.deepEqual(stored["brake-light"].references[0], {
+      edition: YEAR, document: "formula-technical", rule_key: "formula-technical.brake-light",
+      clause_id: "formula-technical-12-1", citation: "제12조 1항", source_hash: HASH_B,
+      release_tag: `formula-technical-${YEAR}-r2`,
+    }, "the renumbered clause is followed because its content hash is unchanged");
+    // Changed content keeps the clause as a review candidate but never as verified.
+    assert.equal(stored["brake-light-area"].status, "needs_review");
+    assert.equal(stored["brake-light-area"].references[0].clause_id, "formula-technical-12-1");
+    assert.equal(stored["brake-light-area"].references[0].source_hash, HASH_B);
+    assert.deepEqual(stored["operations-check"], { status: "needs_review", references: [] });
   });
 });

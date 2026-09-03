@@ -34,6 +34,8 @@ export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
 // endurance table with its 0/1 constraint before serving. Any other schema
 // still fails closed, and the next validation must match the current contract.
 const MISSING_ENDURANCE_DRIVER_NAMES = Object.freeze(["driver1_name", "driver2_name"]);
+// Every schema before the rule-reference release also lacks sheet_template.rule_refs.
+const MISSING_RULE_REFS = Object.freeze(["rule_refs"]);
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
   Object.freeze({
     // Previous release: inspection items did not store deterministic rule references.
@@ -43,49 +45,11 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({ sheet_template: Object.freeze(["rule_refs"]) }),
   }),
   Object.freeze({
-    // Current rule-reference schema combined with the retired registration
-    // called status and the pre-driver-name score schema.
-    objectCount: 131,
-    sha256: "d40378c37fdc159ab070fcf82eafef36c62fa5fd7cdbdd48cd79a8dd25634c90",
-    allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
-  }),
-  Object.freeze({
-    // Current rule-reference schema before endurance driver names.
-    objectCount: 131,
-    sha256: "a442bea1ab762b97bc4238ca16d5d4e1dafc93f42bcb6f1455d2a0c90d4914e8",
-    allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
-  }),
-  Object.freeze({
-    // Current rule-reference schema before Registration and driver names.
-    objectCount: 125,
-    sha256: "b43645cbccf07cfce4e1a7f92e848c9efc44ae6db90c1bacf5ad1de597da3401",
-    allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
-  }),
-  Object.freeze({
-    // Current rule-reference schema before Registration, qualification, and driver names.
-    objectCount: 125,
-    sha256: "e977a972af1b1bc9f6bc6affaaa2e5f7f5432d3fd6009e85a6201134874bf6b4",
-    allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({
-      score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
-    }),
-  }),
-  Object.freeze({
-    // Current rule-reference schema with the previous unconstrained qualification column.
-    objectCount: 125,
-    sha256: "2a998ecd02b336cc525ecf03341ecead2ea97899ae83c3913710ade9136d1f45",
-    allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
-  }),
-  Object.freeze({
     // Previous release: endurance records did not store driver names.
     objectCount: 131,
     sha256: "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES, sheet_template: MISSING_RULE_REFS }),
   }),
   Object.freeze({
     // Previous release: Traffic used invalidated/result=-1 instead of status.
@@ -95,6 +59,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+      sheet_template: MISSING_RULE_REFS,
     }),
   }),
   Object.freeze({
@@ -103,7 +68,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 131,
     sha256: "14bcbdd8cd48d0d126f61d8e9a3aaa280326221e6692a989c00ddec8e9ffc216",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES, sheet_template: MISSING_RULE_REFS }),
   }),
   Object.freeze({
     // Same registration predecessor combined with the previous Traffic schema.
@@ -113,13 +78,14 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+      sheet_template: MISSING_RULE_REFS,
     }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "06bac65306e9aed00a94e9a96bfb4a6f3e0c9fe49cdf2b013f34e3fac6b8d394",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES, sheet_template: MISSING_RULE_REFS }),
   }),
   Object.freeze({
     objectCount: 125,
@@ -127,13 +93,14 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
     allowedMissingColumns: Object.freeze({
       score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
+      sheet_template: MISSING_RULE_REFS,
     }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "bbfed20876a4642ecc6759441ac84d6c1c28e9b21689a8fafb2cfe4b44f400b4",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES, sheet_template: MISSING_RULE_REFS }),
   }),
   Object.freeze({
     objectCount: 125,
@@ -142,6 +109,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+      sheet_template: MISSING_RULE_REFS,
     }),
   }),
   Object.freeze({
@@ -151,6 +119,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({
       record: Object.freeze(["status"]),
       score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
+      sheet_template: MISSING_RULE_REFS,
     }),
   }),
   Object.freeze({
@@ -160,6 +129,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     allowedMissingColumns: Object.freeze({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
+      sheet_template: MISSING_RULE_REFS,
     }),
   }),
 ]);

@@ -1568,6 +1568,11 @@ watch(reconnected, async () => {
   gap: 0.4rem;
 }
 
+.item-name-row .item-name {
+  flex: 1;
+  min-width: 0;
+}
+
 .rule-help-button {
   display: inline-flex;
   align-items: center;

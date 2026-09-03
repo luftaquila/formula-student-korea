@@ -27,6 +27,7 @@ export function createServiceSkeleton({
     validateDevice: options.validateDevice,
     staticRoot: options.staticRoot,
     jsonLimit: options.jsonLimit,
+    jsonLimitPaths: options.jsonLimitPaths,
   };
   const requestedCacheTtl = options.validateUserCacheTtl ?? validateUserCacheTtl;
   if (requestedCacheTtl !== undefined) deps.validateUserCacheTtl = requestedCacheTtl;

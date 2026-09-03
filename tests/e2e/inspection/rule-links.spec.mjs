@@ -91,7 +91,7 @@ test.describe("Inspection rule reference UI", () => {
 
     await page.goto(`/inspection/template/print?year=${YEAR}`);
     await expect(page.locator("body")).toContainText("기술 제10조 9항 · 기술 제48조");
-    await expect(page.locator("body")).toContainText("규정 연결 검토 필요");
+    await expect(page.locator("body")).not.toContainText("규정 연결 검토 필요");
     await context.close();
   });
 });

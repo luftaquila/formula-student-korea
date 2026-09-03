@@ -209,6 +209,11 @@ describe("inspection rule references", () => {
     assert.equal(calls.length, 2);
     await catalog.load(2026, { force: true });
     assert.equal(calls.length, 4);
+
+    // A forced refresh must fetch again even while an unforced load is still in flight.
+    const [plain, forced] = await Promise.all([catalog.load(2026), catalog.load(2026, { force: true })]);
+    assert.equal(calls.length, 6);
+    assert.equal(plain.rules.length, forced.rules.length);
   });
 
   it("times out an unresponsive catalog request", async () => {
