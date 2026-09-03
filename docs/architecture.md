@@ -52,6 +52,8 @@ Inspection items store deterministic rule references in `sheet_template.rule_ref
 
 Only `verified` references expose links. The redirect endpoint resolves the stored key against the item's edition and requires an unchanged clause content hash, so a pure renumber follows the new anchor while a substantive change fails closed until a chief revalidates it. `needs_review` is visible but disabled; `no_direct_rule` is intentionally hidden. Year copying and explicit synchronization match items by `field_key`; no runtime LLM participates in lookup or approval.
 
+Rollout, revalidation after a rulebook release, and year rollover steps are in the [rule links runbook](runbooks/inspection-rule-links.md).
+
 ## Documents files
 
 The database and Documents upload tree are one consistency unit. Documents rejects symbolic links in every existing component of the configured upload-root path before creating or cleaning directories, then synchronously removes `_tmp` contents, unreferenced files and symlinks, and empty directories before the process becomes ready. Cleanup errors fail startup. Missing database-referenced files and metadata that does not match the runtime path-shape rules are audited and rejected by migration, backup, and restore validation.
