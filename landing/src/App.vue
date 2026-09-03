@@ -212,15 +212,11 @@ onMounted(() => {
 
 .services {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  /* auto-fit keeps short rows stretched edge to edge. The 170px minimum caps a
+     1200px .section at six cards per row (seven would need 7*170 + 6*24 > 1200px). */
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
   gap: 1.5rem;
   width: 100%;
-}
-
-@media (max-width: 1024px) {
-  .services {
-    grid-template-columns: repeat(3, 1fr);
-  }
 }
 
 @media (max-width: 768px) {

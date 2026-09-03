@@ -68,7 +68,7 @@ test("landing renders one permission-filtered operation group and persists resou
   assert.match(landing, /<summary class="section-title collapsible-title">\s*Resources/);
   assert.match(landing, /<h2 class="section-title">Operations<\/h2>/);
   assert.match(landing, /operations\.filter/);
-  assert.match(landing, /grid-template-columns: repeat\(6, minmax\(0, 1fr\)\)/);
+  assert.match(landing, /grid-template-columns: repeat\(auto-fit, minmax\(170px, 1fr\)\)/);
   assert.equal(RESOURCES_DISCLOSURE_STORAGE_KEY, "fsk.resources.open");
   assert.match(landing, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
   assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);
