@@ -43,7 +43,7 @@ after(async () => {
 });
 
 describe("official access grants", () => {
-  it("uses revisioned bundle/direct grants and clears them when the role changes", async () => {
+  it("uses one revisioned grant list and clears it when the role changes", async () => {
     const created = await client.post("/api/users", {
       cookie: adminCookie,
       body: { email: "operator@test.com", role: "official" },
@@ -57,24 +57,32 @@ describe("official access grants", () => {
     assert.deepEqual(catalog.roles, ["student", "official", "admin"]);
     assert.ok(catalog.permissions.some(({ key }) => key === "queue.manage"));
     assert.ok(catalog.permissions.some(({ key }) => key === "inspection.manage"));
+    assert.deepEqual(
+      catalog.accessControls.filter(({ type }) => type === "tiered").map(({ key }) => key),
+      ["registration", "queue", "inspection", "documents", "traffic"],
+    );
+    assert.equal(catalog.accessControls.find(({ key }) => key === "course").permission, "course.manage");
+    assert.equal(catalog.accessControls.find(({ key }) => key === "score").permission, "score.manage");
 
     const updated = await client.put(`/api/users/${user.id}/access`, {
       cookie: adminCookie,
       body: {
         expectedRevision: 0,
-        bundles: ["queue_manager"],
-        directPermissions: ["inspection.operate"],
+        grants: ["queue.manage", "inspection.operate", "course.operate", "score.operate"],
       },
     });
     assert.equal(updated.status, 200);
     const access = await updated.json();
     assert.equal(access.accessRevision, 1);
-    assert.deepEqual(access.bundles, ["queue_manager"]);
-    assert.deepEqual(access.directPermissions, ["inspection.operate"]);
+    assert.deepEqual(access.grants, ["course.manage", "inspection.operate", "queue.manage", "score.manage"]);
     assert.ok(access.permissions.includes("queue.manage"));
     assert.ok(access.permissions.includes("queue.operate"));
     assert.ok(access.permissions.includes("inspection.operate"));
     assert.equal(access.permissions.includes("inspection.manage"), false);
+    assert.ok(access.permissions.includes("course.operate"));
+    assert.ok(access.permissions.includes("course.manage"));
+    assert.ok(access.permissions.includes("score.operate"));
+    assert.ok(access.permissions.includes("score.manage"));
 
     const authoritative = await client.get("/api/users/access/operator@test.com", {
       headers: { "X-Internal-Service": TEST_INTERNAL_SECRET },
@@ -94,7 +102,7 @@ describe("official access grants", () => {
     const auditor = await auditorCreated.json();
     const auditorAccess = await client.put(`/api/users/${auditor.id}/access`, {
       cookie: adminCookie,
-      body: { expectedRevision: 0, bundles: ["auditor"], directPermissions: [] },
+      body: { expectedRevision: 0, grants: ["audit.view"] },
     });
     assert.equal(auditorAccess.status, 200);
     const auditorCookie = makeAuthCookie({
@@ -104,7 +112,7 @@ describe("official access grants", () => {
 
     const stale = await client.put(`/api/users/${user.id}/access`, {
       cookie: adminCookie,
-      body: { expectedRevision: 0, bundles: [], directPermissions: [] },
+      body: { expectedRevision: 0, grants: [] },
     });
     assert.equal(stale.status, 409);
     const staleBody = await stale.json();
@@ -113,7 +121,7 @@ describe("official access grants", () => {
 
     const invalid = await client.put(`/api/users/${user.id}/access`, {
       cookie: adminCookie,
-      body: { expectedRevision: 1, bundles: ["unknown_bundle"], directPermissions: [] },
+      body: { expectedRevision: 1, grants: ["unknown.permission"] },
     });
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).code, "INVALID_ACCESS_KEY");
@@ -123,12 +131,11 @@ describe("official access grants", () => {
       body: { role: "student" },
     });
     assert.equal(roleChange.status, 200);
-    assert.equal(db.prepare("SELECT COUNT(*) AS count FROM user_permission_bundle WHERE user_id = ?").get(user.id).count, 0);
     assert.equal(db.prepare("SELECT COUNT(*) AS count FROM user_permission WHERE user_id = ?").get(user.id).count, 0);
 
     const noLongerOfficial = await client.put(`/api/users/${user.id}/access`, {
       cookie: adminCookie,
-      body: { expectedRevision: 2, bundles: [], directPermissions: [] },
+      body: { expectedRevision: 2, grants: [] },
     });
     assert.equal(noLongerOfficial.status, 409);
     assert.equal((await noLongerOfficial.json()).code, "OFFICIAL_ACCESS_ONLY");

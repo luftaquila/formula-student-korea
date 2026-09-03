@@ -21,7 +21,7 @@ async function copyApplyUrl() {
 }
 
 const users = ref([]);
-const accessCatalog = ref({ permissions: [], bundles: [] });
+const accessCatalog = ref({ permissions: [], accessControls: [] });
 const loading = ref(true);
 const newEmail = ref("");
 const newRole = ref("official");
@@ -102,29 +102,34 @@ function roleBadgeClass(role) {
 }
 
 const editingAccessUser = ref(null);
-const selectedBundles = ref(new Set());
-const selectedDirectPermissions = ref(new Set());
+const selectedGrants = ref(new Set());
 const accessSaving = ref(false);
 
-function updateSelection(target, key, checked) {
-  const next = new Set(target.value);
-  if (checked) next.add(key);
-  else next.delete(key);
-  target.value = next;
+function accessLevel(control) {
+  if (selectedGrants.value.has(control.manage.key)) return "manage";
+  if (selectedGrants.value.has(control.operate.key)) return "operate";
+  return "none";
 }
 
-function toggleBundle(key, checked) {
-  updateSelection(selectedBundles, key, checked);
+function setAccessLevel(control, level) {
+  const next = new Set(selectedGrants.value);
+  next.delete(control.operate.key);
+  next.delete(control.manage.key);
+  if (level === "operate") next.add(control.operate.key);
+  if (level === "manage") next.add(control.manage.key);
+  selectedGrants.value = next;
 }
 
-function toggleDirectPermission(key, checked) {
-  updateSelection(selectedDirectPermissions, key, checked);
+function toggleAccess(control, checked) {
+  const next = new Set(selectedGrants.value);
+  if (checked) next.add(control.permission);
+  else next.delete(control.permission);
+  selectedGrants.value = next;
 }
 
 function editAccess(user) {
   editingAccessUser.value = user;
-  selectedBundles.value = new Set(user.bundles || []);
-  selectedDirectPermissions.value = new Set(user.directPermissions || []);
+  selectedGrants.value = new Set(user.grants || []);
 }
 
 async function saveAccess() {
@@ -137,8 +142,7 @@ async function saveAccess() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         expectedRevision: target.accessRevision,
-        bundles: [...selectedBundles.value],
-        directPermissions: [...selectedDirectPermissions.value],
+        grants: [...selectedGrants.value],
       }),
     });
     if (!res.ok) {
@@ -368,10 +372,10 @@ function csvCell(v) {
 
 // CSV export
 function exportCSV() {
-  const header = "email,name,role,realname,phone,affiliation,bundles,directPermissions";
+  const header = "email,name,role,realname,phone,affiliation,grants";
   const rows = users.value.map((u) => [
     u.email, u.name || "", u.role, u.realname || "", u.phone || "", u.affiliation || "",
-    (u.bundles || []).join(";"), (u.directPermissions || []).join(";"),
+    (u.grants || []).join(";"),
   ].map(csvCell).join(","));
   const csv = "\uFEFF" + [header, ...rows].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
@@ -403,13 +407,12 @@ function uploadCSV() {
     const users = [];
     for (let i = start; i < rows.length; i++) {
       // CSV format: email, name (ignored — set via Google OAuth), role, realname, phone, affiliation
-      const [email, , role, realname, phone, affiliation, bundles = "", directPermissions = ""] = rows[i];
+      const [email, , role, realname, phone, affiliation, grants = ""] = rows[i];
       if (!email || !email.trim()) continue;
       users.push({
         email: email.trim(), role: role?.trim() || "official", realname: realname?.trim() || "",
         phone: phone?.trim() || "", affiliation: affiliation?.trim() || "",
-        bundles: bundles.split(";").map((v) => v.trim()).filter(Boolean),
-        directPermissions: directPermissions.split(";").map((v) => v.trim()).filter(Boolean),
+        grants: grants.split(";").map((v) => v.trim()).filter(Boolean),
       });
     }
 
@@ -1035,27 +1038,40 @@ onUnmounted(() => {
           </div>
           <button class="btn btn-sm btn-ghost" @click="editingAccessUser = null">닫기</button>
         </div>
-        <div class="access-columns">
-          <div>
-            <h4>고정 권한 묶음</h4>
-            <label v-for="bundle in accessCatalog.bundles" :key="bundle.key" class="access-option">
+        <div class="access-list">
+          <div
+            v-for="control in accessCatalog.accessControls"
+            :key="control.key"
+            class="access-option"
+            :data-access-key="control.key"
+          >
+            <div class="access-option-copy">
+              <strong>{{ control.label }}</strong>
+              <template v-if="control.type === 'tiered'">
+                <small><b>운영</b> {{ control.operate.description }}</small>
+                <small><b>관리</b> {{ control.manage.description }}</small>
+              </template>
+              <small v-else>{{ control.description }}</small>
+            </div>
+            <select
+              v-if="control.type === 'tiered'"
+              class="access-level-select"
+              :aria-label="`${control.label} 권한`"
+              :value="accessLevel(control)"
+              @change="setAccessLevel(control, $event.target.value)"
+            >
+              <option value="none">없음</option>
+              <option value="operate">운영</option>
+              <option value="manage">관리</option>
+            </select>
+            <label v-else class="access-toggle">
               <input
                 type="checkbox"
-                :checked="selectedBundles.has(bundle.key)"
-                @change="toggleBundle(bundle.key, $event.target.checked)"
+                :aria-label="`${control.label} 허용`"
+                :checked="selectedGrants.has(control.permission)"
+                @change="toggleAccess(control, $event.target.checked)"
               />
-              <span><strong>{{ bundle.label }}</strong><small>{{ bundle.permissions.join(', ') }}</small></span>
-            </label>
-          </div>
-          <div>
-            <h4>개별 추가 권한</h4>
-            <label v-for="permission in accessCatalog.permissions" :key="permission.key" class="access-option">
-              <input
-                type="checkbox"
-                :checked="selectedDirectPermissions.has(permission.key)"
-                @change="toggleDirectPermission(permission.key, $event.target.checked)"
-              />
-              <span><strong>{{ permission.label }}</strong><small>{{ permission.description }}</small></span>
+              <span>허용</span>
             </label>
           </div>
         </div>
@@ -1095,35 +1111,52 @@ onUnmounted(() => {
   overflow: auto;
 }
 
-.access-columns {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 1.5rem;
+.access-list {
   padding: 1rem;
 }
 
 .access-option {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.6rem;
-  padding: 0.55rem 0;
+  gap: 1rem;
+  padding: 0.75rem 0;
   border-bottom: 1px solid var(--border-color);
 }
 
-.access-option input[type="checkbox"] {
+.access-option-copy strong,
+.access-option-copy small { display: block; }
+.access-option-copy small { margin-top: 0.25rem; color: var(--text-tertiary); }
+.access-option-copy small b { color: var(--text-secondary); }
+
+.access-level-select {
+  min-width: 7rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.access-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+}
+
+.access-toggle input[type="checkbox"] {
   flex: 0 0 auto;
   width: 1rem;
   height: 1rem;
   margin: 0;
 }
 
-.access-option span,
-.access-option small { display: block; }
-.access-option small { margin-top: 0.2rem; color: var(--text-tertiary); }
 .access-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 1rem; }
 
 @media (max-width: 720px) {
-  .access-columns { grid-template-columns: 1fr; }
+  .access-option { grid-template-columns: 1fr; gap: 0.6rem; }
+  .access-level-select { width: 100%; }
 }
 
 .form-row {

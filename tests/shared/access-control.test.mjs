@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  BUNDLE_DEFINITIONS,
+  ACCESS_CONTROL_DEFINITIONS,
   DEVICE_SCOPES,
   HUMAN_ROLES,
   PERMISSION_KEYS,
   access,
   authorizePrincipal,
   expandPermissions,
+  normalizeAccessGrants,
 } from "../../shared/access-control.js";
 
 test("uses only student, official, and admin as human roles", () => {
@@ -15,25 +16,40 @@ test("uses only student, official, and admin as human roles", () => {
 });
 
 test("keeps Queue and Inspection operation and management grants independent", () => {
-  const queue = expandPermissions({ bundles: ["queue_manager"] });
+  const queue = expandPermissions(["queue.manage"]);
   assert.ok(queue.includes("queue.manage"));
   assert.ok(queue.includes("queue.operate"));
   assert.equal(queue.some((permission) => permission.startsWith("inspection.")), false);
 
-  const inspection = expandPermissions({ bundles: ["inspection_manager"] });
+  const inspection = expandPermissions(["inspection.manage"]);
   assert.ok(inspection.includes("inspection.manage"));
   assert.ok(inspection.includes("inspection.operate"));
   assert.equal(inspection.some((permission) => permission.startsWith("queue.")), false);
 });
 
-test("every bundle references a known permission and management implies operation", () => {
-  for (const bundle of BUNDLE_DEFINITIONS) {
-    assert.ok(bundle.permissions.every((permission) => PERMISSION_KEYS.includes(permission)));
+test("five services use three levels while Course and Score are full-access toggles", () => {
+  assert.deepEqual(
+    ACCESS_CONTROL_DEFINITIONS.filter(({ type }) => type === "tiered").map(({ key }) => key),
+    ["registration", "queue", "inspection", "documents", "traffic"],
+  );
+  for (const key of ["course", "score"]) {
+    const control = ACCESS_CONTROL_DEFINITIONS.find((candidate) => candidate.key === key);
+    assert.equal(control.type, "toggle");
+    assert.equal(control.permission, `${key}.manage`);
   }
+});
+
+test("management implies operation and stored grants have one canonical source", () => {
   for (const service of ["registration", "queue", "inspection", "documents", "course", "traffic", "score"]) {
-    const effective = expandPermissions({ directPermissions: [`${service}.manage`] });
+    const effective = expandPermissions([`${service}.manage`]);
     assert.ok(effective.includes(`${service}.operate`));
   }
+  assert.deepEqual(
+    normalizeAccessGrants(["queue.operate", "queue.manage", "course.operate", "score.operate"]),
+    ["course.manage", "queue.manage", "score.manage"],
+  );
+  assert.deepEqual(normalizeAccessGrants(["rover.operate"]), ["rover.operate"]);
+  assert.deepEqual(expandPermissions(["rover.operate"]), ["course.operate", "rover.operate"]);
 });
 
 test("admin bypass applies only to human permissions and kiosk scopes remain exact", () => {

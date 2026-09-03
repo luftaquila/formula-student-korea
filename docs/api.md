@@ -39,9 +39,11 @@ All mutating endpoints are logged via `shared/logger.mjs`.
 ### Human roles and permissions
 
 Human roles are `student`, `official`, and `admin`. Officials have no service access
-until an Admin assigns code-defined bundles and/or direct permissions. Admin satisfies
-all human permissions. A `*.manage` permission implies the matching `*.operate`
-permission, but permissions from different services never imply one another.
+until an Admin assigns one explicit list of service grants. Registration, Queue,
+Inspection, Documents, and Traffic use none/operate/manage access levels. Course and
+Score use a single full-access grant; other single-action services use one grant.
+Admin satisfies all human permissions. A `*.manage` permission implies the matching
+`*.operate` permission, but permissions from different services never imply one another.
 
 The permission keys are:
 
@@ -88,15 +90,15 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/access/catalog` | admin | — | `{ roles, permissions, bundles }` | List the code-defined access catalog |
-| GET | `/api/users` | admin | — | `[{ ..., bundles, directPermissions, permissions, accessRevision, protected }]` | List all users and access grants |
+| GET | `/api/access/catalog` | admin | — | `{ roles, permissions, accessControls }` | List permissions and their tiered or single-toggle controls |
+| GET | `/api/users` | admin | — | `[{ ..., grants, permissions, accessRevision, protected }]` | List users, configured grants, and effective permissions |
 | POST | `/api/users` | admin | `{ email, role }` | `{ id, email, role }` | Create user |
-| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone, affiliation, bundles?, directPermissions? }] }` | `{ added, skipped, errors }` | Bulk create users; grants apply only to newly created Officials |
+| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone, affiliation, grants? }] }` | `{ added, skipped, errors }` | Bulk create users; grants apply only to newly created Officials |
 | PATCH | `/api/users/bulk` | admin | `{ ids: [int], active: bool }` | `{ updated }` | Bulk activate/deactivate users |
 | DELETE | `/api/users/bulk` | admin | `{ ids: [int] }` | `{ deleted }` | Bulk delete users (protects last admin) |
 | PATCH | `/api/users/:id` | admin | `{ role?, realname?, phone?, active? }` | 200 | Update user role/realname/phone/active status |
 | DELETE | `/api/users/:id` | admin | — | 200 | Delete single user (protects last admin, ADMIN_EMAIL) |
-| PUT | `/api/users/:id/access` | admin | `{ expectedRevision, bundles, directPermissions }` | `{ bundles, directPermissions, permissions, accessRevision }` | Replace an Official's grants; stale revision returns `409 ACCESS_STALE_WRITE` |
+| PUT | `/api/users/:id/access` | admin | `{ expectedRevision, grants }` | `{ grants, permissions, accessRevision }` | Replace an Official's grants; stale revision returns `409 ACCESS_STALE_WRITE` |
 
 ### Internal User Lookup
 

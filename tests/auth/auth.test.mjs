@@ -601,7 +601,7 @@ describe('GET /api/users/role/:email', () => {
 });
 
 describe('Role schema migration', () => {
-  it('maps retired operational roles to grant-free officials and preserves references', () => {
+  it('maps retired roles to grant-free officials and flattens preview bundles', () => {
     const legacyPath = tmpDbPath();
     let legacyDb;
     let migratedDb;
@@ -637,7 +637,13 @@ describe('Role schema migration', () => {
           PRIMARY KEY (user_id, permission_key)
         );
         INSERT INTO user_permission_bundle
+          SELECT id, 'documents_manager' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission_bundle
           SELECT id, 'queue_manager' FROM users WHERE email = 'legacy-staff@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'course.operate' FROM users WHERE email = 'preserved@test.com';
+        INSERT INTO user_permission
+          SELECT id, 'score.operate' FROM users WHERE email = 'preserved@test.com';
         INSERT INTO user_permission
           SELECT id, 'queue.manage' FROM users WHERE email = 'legacy-chief@test.com';
         CREATE TABLE ops_display (
@@ -669,8 +675,26 @@ describe('Role schema migration', () => {
           { email: 'legacy-staff@test.com', role: 'official' },
         ],
       );
-      assert.equal(migratedDb.prepare('SELECT COUNT(*) AS count FROM user_permission_bundle').get().count, 0);
-      assert.equal(migratedDb.prepare('SELECT COUNT(*) AS count FROM user_permission').get().count, 0);
+      assert.equal(migratedDb.prepare(
+        "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'user_permission_bundle'",
+      ).get().count, 0);
+      assert.deepEqual(
+        migratedDb.prepare(`
+          SELECT permission_key FROM user_permission
+          WHERE user_id = (SELECT id FROM users WHERE email = 'preserved@test.com')
+          ORDER BY permission_key
+        `).all(),
+        [
+          { permission_key: 'course.manage' },
+          { permission_key: 'documents.manage' },
+          { permission_key: 'files.access' },
+          { permission_key: 'score.manage' },
+        ],
+      );
+      assert.equal(migratedDb.prepare(`
+        SELECT COUNT(*) AS count FROM user_permission
+        WHERE user_id IN (SELECT id FROM users WHERE email LIKE 'legacy-%')
+      `).get().count, 0);
       assert.throws(
         () => migratedDb.prepare("INSERT INTO users (email, role) VALUES ('retired@test.com', 'master')").run(),
         /CHECK constraint failed/,
@@ -1429,7 +1453,6 @@ describe('GET /api/forward-auth', () => {
   it('returns 403 when an official lacks the requested permission', async () => {
     db.prepare("INSERT OR IGNORE INTO users (email, name, role, active) VALUES ('official@test.com', 'Official', 'official', 1)").run();
     db.prepare("DELETE FROM user_permission WHERE user_id = (SELECT id FROM users WHERE email = 'official@test.com')").run();
-    db.prepare("DELETE FROM user_permission_bundle WHERE user_id = (SELECT id FROM users WHERE email = 'official@test.com')").run();
     const res = await client.get('/api/forward-auth?permission=files.access', {
       cookie: officialCookie,
       headers: { 'X-Forward-Auth-Key': TEST_INTERNAL_SECRET },
@@ -1437,7 +1460,7 @@ describe('GET /api/forward-auth', () => {
     assert.equal(res.status, 403);
   });
 
-  it('authorizes an official through an explicit direct permission', async () => {
+  it('authorizes an official through an explicit permission grant', async () => {
     const user = db.prepare("SELECT id FROM users WHERE email = 'official@test.com'").get();
     db.prepare("INSERT OR IGNORE INTO user_permission (user_id, permission_key) VALUES (?, 'files.access')").run(user.id);
     const res = await client.get('/api/forward-auth?permission=files.access', {

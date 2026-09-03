@@ -6,7 +6,7 @@ const definitions = [
   ["queue.operate", "검차 대기 운영", "대기열, 페널티, 부스와 통계 운영"],
   ["queue.manage", "검차 대기 관리", "수동 접수, 우선순위, 초기화와 설정 변경", ["queue.operate"]],
   ["inspection.operate", "인스펙션 운영", "검차표 조회와 답변, 메모, 판정 입력"],
-  ["inspection.manage", "인스펙션 설정", "검차표 템플릿 생성, 변경, 삭제와 가져오기", ["inspection.operate"]],
+  ["inspection.manage", "인스펙션 관리", "검차표 템플릿 생성, 변경, 삭제와 가져오기", ["inspection.operate"]],
   ["documents.operate", "서류 검토", "서류 제출 현황과 제출 파일 검토"],
   ["documents.manage", "서류 관리", "제출 세션, 학생 매핑과 파일 변경·삭제", ["documents.operate"]],
   ["files.access", "파일 클라우드", "운영 파일 브라우저 접근"],
@@ -31,45 +31,49 @@ export const PERMISSION_DEFINITIONS = Object.freeze(definitions.map(([key, label
 export const PERMISSION_KEYS = Object.freeze(PERMISSION_DEFINITIONS.map(({ key }) => key));
 const permissionKeySet = new Set(PERMISSION_KEYS);
 
-const bundles = [
-  ["registration_operator", "등록 대기 운영자", ["registration.operate"]],
-  ["registration_manager", "등록 대기 관리자", ["registration.manage"]],
-  ["queue_operator", "검차 대기 운영자", ["queue.operate"]],
-  ["queue_manager", "검차 대기 관리자", ["queue.manage"]],
-  ["inspection_operator", "인스펙션 운영자", ["inspection.operate"]],
-  ["inspection_manager", "인스펙션 관리자", ["inspection.manage"]],
-  ["documents_reviewer", "서류 검토자", ["documents.operate"]],
-  ["documents_manager", "서류 관리자", ["documents.manage", "files.access"]],
-  ["calendar_manager", "일정 관리자", ["calendar.manage"]],
-  ["course_editor", "코스 편집자", ["course.operate"]],
-  ["course_manager", "코스 관리자", ["course.manage"]],
-  ["rover_operator", "Rover 운영자", ["rover.operate"]],
-  ["timing_operator", "계측 운영자", ["traffic.operate"]],
-  ["timing_manager", "계측 관리자", ["traffic.manage"]],
-  ["score_operator", "성적 운영자", ["score.operate"]],
-  ["score_manager", "성적 관리자", ["score.manage"]],
-  ["entry_manager", "엔트리 관리자", ["entry.manage"]],
-  ["application_manager", "계정 신청 관리자", ["applications.manage"]],
-  ["contacts_manager", "운영 연락처 관리자", ["contacts.manage"]],
-  ["messaging_operator", "메시지 운영자", ["messaging.operate"]],
-  ["auditor", "감사자", ["audit.view"]],
-];
-
-export const BUNDLE_DEFINITIONS = Object.freeze(bundles.map(([key, label, permissions]) =>
-  Object.freeze({ key, label, permissions: Object.freeze(permissions) })));
-export const BUNDLE_KEYS = Object.freeze(BUNDLE_DEFINITIONS.map(({ key }) => key));
-const bundleMap = new Map(BUNDLE_DEFINITIONS.map((bundle) => [bundle.key, bundle]));
-
 for (const permission of PERMISSION_DEFINITIONS) {
   for (const implied of permission.implies) {
     if (!permissionKeySet.has(implied)) throw new Error(`Unknown implied permission: ${implied}`);
   }
 }
-for (const bundle of BUNDLE_DEFINITIONS) {
-  for (const permission of bundle.permissions) {
-    if (!permissionKeySet.has(permission)) throw new Error(`Unknown bundled permission: ${permission}`);
-  }
-}
+
+const permissionByKey = new Map(PERMISSION_DEFINITIONS.map((permission) => [permission.key, permission]));
+const tieredControls = [
+  ["registration", "등록 대기", "registration.operate", "registration.manage"],
+  ["queue", "검차 대기", "queue.operate", "queue.manage"],
+  ["inspection", "인스펙션", "inspection.operate", "inspection.manage"],
+  ["documents", "서류", "documents.operate", "documents.manage"],
+  ["traffic", "계측", "traffic.operate", "traffic.manage"],
+];
+const toggleControls = [
+  ["course", "코스 관리", "course.manage", "코스 편집, 스냅샷 복원과 코스 삭제"],
+  ["score", "성적 관리", "score.manage", "성적 입력, 페널티·배점 설정과 공개 관리"],
+  ["files", "파일 클라우드", "files.access"],
+  ["calendar", "일정 관리", "calendar.manage"],
+  ["rover", "Rover 운영", "rover.operate", "Rover, 카메라, GPS와 미션 운영 (코스 운영 포함)"],
+  ["entry", "엔트리 관리", "entry.manage"],
+  ["applications", "계정 신청 관리", "applications.manage"],
+  ["contacts", "운영 연락처 관리", "contacts.manage"],
+  ["messaging", "이메일/SMS 운영", "messaging.operate"],
+  ["audit", "감사 로그 조회", "audit.view"],
+];
+
+export const ACCESS_CONTROL_DEFINITIONS = Object.freeze([
+  ...tieredControls.map(([key, label, operatePermission, managePermission]) => Object.freeze({
+    key,
+    label,
+    type: "tiered",
+    operate: permissionByKey.get(operatePermission),
+    manage: permissionByKey.get(managePermission),
+  })),
+  ...toggleControls.map(([key, label, permission, description]) => Object.freeze({
+    key,
+    label,
+    type: "toggle",
+    permission,
+    description: description || permissionByKey.get(permission).description,
+  })),
+]);
 
 export function isHumanRole(role) {
   return HUMAN_ROLES.includes(role);
@@ -80,14 +84,20 @@ export function assertPermissionKey(key) {
   return key;
 }
 
-export function expandPermissions({ bundles: bundleKeys = [], directPermissions = [] } = {}) {
-  const effective = new Set();
-  for (const key of bundleKeys) {
-    const bundle = bundleMap.get(key);
-    if (!bundle) throw new Error(`Unknown permission bundle: ${key}`);
-    for (const permission of bundle.permissions) effective.add(permission);
+export function normalizeAccessGrants(grants = []) {
+  if (!Array.isArray(grants)) throw new Error("Permission grants must be an array");
+  const normalized = new Set(grants.map(assertPermissionKey));
+  for (const [, , operatePermission, managePermission] of tieredControls) {
+    if (normalized.has(managePermission)) normalized.delete(operatePermission);
   }
-  for (const permission of directPermissions) effective.add(assertPermissionKey(permission));
+  for (const service of ["course", "score"]) {
+    if (normalized.delete(`${service}.operate`)) normalized.add(`${service}.manage`);
+  }
+  return [...normalized].sort();
+}
+
+export function expandPermissions(grants = []) {
+  const effective = new Set(grants.map(assertPermissionKey));
 
   let changed = true;
   while (changed) {
@@ -109,7 +119,7 @@ export function accessCatalog() {
   return {
     roles: HUMAN_ROLES,
     permissions: PERMISSION_DEFINITIONS,
-    bundles: BUNDLE_DEFINITIONS,
+    accessControls: ACCESS_CONTROL_DEFINITIONS,
   };
 }
 

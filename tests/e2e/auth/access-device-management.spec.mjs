@@ -29,10 +29,10 @@ test.describe("Access and kiosk device management", () => {
 
       const dialog = page.getByRole("dialog", { name: "서비스 권한 편집" });
       await expect(dialog).toBeVisible();
-      const bundleColumn = dialog.locator(".access-columns > div").first();
-      const directPermissionColumn = dialog.locator(".access-columns > div").nth(1);
-      await bundleColumn.locator("label.access-option").filter({ hasText: "검차 대기 관리자" }).locator("input").check();
-      await directPermissionColumn.locator("label.access-option").filter({ hasText: "인스펙션 운영" }).locator("input").check();
+      await dialog.getByLabel("검차 대기 권한").selectOption("manage");
+      await dialog.getByLabel("인스펙션 권한").selectOption("operate");
+      await dialog.getByLabel("코스 관리 허용").check();
+      await dialog.getByLabel("성적 관리 허용").check();
 
       const saved = page.waitForResponse((response) =>
         response.url().endsWith(`/auth/api/users/${userId}/access`)
@@ -45,12 +45,19 @@ test.describe("Access and kiosk device management", () => {
       expect((await refreshed).status()).toBe(200);
       await expectNotification(page, "success", "서비스 권한을 변경했습니다");
 
-      await expect(row.getByRole("button", { name: "권한 3" })).toBeVisible();
+      await expect(row.getByRole("button", { name: "권한 7" })).toBeVisible();
       const usersResponse = await request.get("/auth/api/users");
       const user = (await usersResponse.json()).find((candidate) => candidate.id === userId);
-      expect(user.bundles).toEqual(["queue_manager"]);
-      expect(user.directPermissions).toEqual(["inspection.operate"]);
-      expect(user.permissions).toEqual(["inspection.operate", "queue.manage", "queue.operate"]);
+      expect(user.grants).toEqual(["course.manage", "inspection.operate", "queue.manage", "score.manage"]);
+      expect(user.permissions).toEqual([
+        "course.manage",
+        "course.operate",
+        "inspection.operate",
+        "queue.manage",
+        "queue.operate",
+        "score.manage",
+        "score.operate",
+      ]);
       expect(user.accessRevision).toBe(1);
 
       officialContext = await browser.newContext();
@@ -78,10 +85,12 @@ test.describe("Access and kiosk device management", () => {
       await page.reload();
       await waitForPageReady(page);
       const reloadedRow = page.locator("table.users-table tbody tr").filter({ hasText: email });
-      await reloadedRow.getByRole("button", { name: "권한 3" }).click();
+      await reloadedRow.getByRole("button", { name: "권한 7" }).click();
       const reloadedDialog = page.getByRole("dialog", { name: "서비스 권한 편집" });
-      await expect(reloadedDialog.locator(".access-columns > div").first().locator("label.access-option").filter({ hasText: "검차 대기 관리자" }).locator("input")).toBeChecked();
-      await expect(reloadedDialog.locator(".access-columns > div").nth(1).locator("label.access-option").filter({ hasText: "인스펙션 운영" }).locator("input")).toBeChecked();
+      await expect(reloadedDialog.getByLabel("검차 대기 권한")).toHaveValue("manage");
+      await expect(reloadedDialog.getByLabel("인스펙션 권한")).toHaveValue("operate");
+      await expect(reloadedDialog.getByLabel("코스 관리 허용")).toBeChecked();
+      await expect(reloadedDialog.getByLabel("성적 관리 허용")).toBeChecked();
     } finally {
       await officialContext?.close();
       if (userId) await request.delete(`/auth/api/users/${userId}`);

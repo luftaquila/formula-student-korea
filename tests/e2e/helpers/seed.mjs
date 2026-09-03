@@ -24,11 +24,10 @@ export async function seedUsers() {
     if (profile === "admin") continue;
     const created = await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);
     const { id } = await created.json();
-    if (user.role === "official" && (user.bundles.length > 0 || user.directPermissions.length > 0)) {
+    if (user.role === "official" && user.grants.length > 0) {
       await api("PUT", `/auth/api/users/${id}/access`, {
         expectedRevision: 0,
-        bundles: user.bundles,
-        directPermissions: user.directPermissions,
+        grants: user.grants,
       });
     }
   }

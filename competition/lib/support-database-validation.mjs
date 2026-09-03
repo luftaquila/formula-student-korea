@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { BUNDLE_KEYS, DEVICE_SCOPES, PERMISSION_KEYS } from "../../shared/access-control.js";
+import { DEVICE_SCOPES, PERMISSION_KEYS } from "../../shared/access-control.js";
 
 const column = (name, type, notnull = 0, pk = 0, defaultValue = null) =>
   Object.freeze({ name, type, notnull, pk, defaultValue });
@@ -111,10 +111,6 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
         column("description", "TEXT", 1, 0, "''"),
         column("sort_order", "INTEGER", 1, 0, "0"),
       ]),
-      user_permission_bundle: Object.freeze([
-        column("user_id", "INTEGER", 1, 1),
-        column("bundle_key", "TEXT", 1, 2),
-      ]),
       user_permission: Object.freeze([
         column("user_id", "INTEGER", 1, 1),
         column("permission_key", "TEXT", 1, 2),
@@ -143,13 +139,11 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
     uniqueIndexes: Object.freeze([
       ["users", ["email"]],
       ["applications", ["email"]],
-      ["user_permission_bundle", ["user_id", "bundle_key"]],
       ["user_permission", ["user_id", "permission_key"]],
       ["kiosk_device", ["token_hash"]],
     ]),
     foreignKeys: Object.freeze({
       ops_display: Object.freeze([fk("users", "user_id", "id", "NO ACTION")]),
-      user_permission_bundle: Object.freeze([fk("users", "user_id", "id", "CASCADE")]),
       user_permission: Object.freeze([fk("users", "user_id", "id", "CASCADE")]),
       kiosk_device: Object.freeze([fk("users", "created_by", "id", "SET NULL")]),
     }),
@@ -614,16 +608,13 @@ export function validateSupportDatabase(db, service) {
   if (service === "auth") {
     const invalidRoles = db.prepare(`SELECT DISTINCT role FROM users
       WHERE role NOT IN ('student','official','admin') ORDER BY role`).all();
-    const invalidBundles = db.prepare(`SELECT DISTINCT bundle_key FROM user_permission_bundle
-      WHERE bundle_key NOT IN (${BUNDLE_KEYS.map(() => "?").join(",")}) ORDER BY bundle_key`).all(...BUNDLE_KEYS);
     const invalidPermissions = db.prepare(`SELECT DISTINCT permission_key FROM user_permission
       WHERE permission_key NOT IN (${PERMISSION_KEYS.map(() => "?").join(",")}) ORDER BY permission_key`).all(...PERMISSION_KEYS);
     const invalidScopes = db.prepare(`SELECT DISTINCT scope FROM kiosk_device
       WHERE scope NOT IN (${DEVICE_SCOPES.map(() => "?").join(",")}) ORDER BY scope`).all(...DEVICE_SCOPES);
-    if (invalidRoles.length || invalidBundles.length || invalidPermissions.length || invalidScopes.length) {
+    if (invalidRoles.length || invalidPermissions.length || invalidScopes.length) {
       throw new Error(`invalid auth access-control values: ${JSON.stringify({
         roles: invalidRoles.map(({ role }) => role),
-        bundles: invalidBundles.map(({ bundle_key: key }) => key),
         permissions: invalidPermissions.map(({ permission_key: key }) => key),
         deviceScopes: invalidScopes.map(({ scope }) => scope),
       })}`);

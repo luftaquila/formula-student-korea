@@ -10,52 +10,52 @@ const BASE_URL = process.env.BASE_URL || "http://localhost:9000";
 // and by tests that legitimately drive rover-side endpoints through Caddy.
 const INTERNAL_SECRET = process.env.INTERNAL_SECRET || "e2e-internal-secret";
 
-function account({ bundles = [], directPermissions = [], ...user }) {
+function account({ grants = [], ...user }) {
   const permissions = user.role === "admin"
     ? [...PERMISSION_KEYS]
-    : expandPermissions({ bundles, directPermissions });
+    : expandPermissions(grants);
   return Object.freeze({
     ...user,
-    bundles: Object.freeze(bundles),
-    directPermissions: Object.freeze(directPermissions),
+    grants: Object.freeze(grants),
     permissions: Object.freeze(permissions),
-    accessRevision: user.role === "official" && (bundles.length > 0 || directPermissions.length > 0) ? 1 : 0,
+    accessRevision: user.role === "official" && grants.length > 0 ? 1 : 0,
   });
 }
 
 // The keys name capability profiles, not application roles. Every operational
-// profile is an official account with explicit permission bundles.
+// profile is an Official account with one explicit grant list.
 export const TEST_USERS = Object.freeze({
   admin: account({ email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" }),
   technicalOperator: account({
     email: "e2e-technical-operator@test.com",
     name: "E2E Technical Operator",
     role: "official",
-    bundles: ["course_editor", "timing_operator", "score_operator"],
+    grants: ["course.manage", "traffic.operate", "score.manage"],
   }),
   operationsManager: account({
     email: "e2e-operations-manager@test.com",
     name: "E2E Operations Manager",
     role: "official",
-    bundles: [
-      "registration_manager",
-      "queue_manager",
-      "inspection_manager",
-      "documents_manager",
-      "calendar_manager",
+    grants: [
+      "registration.manage",
+      "queue.manage",
+      "inspection.manage",
+      "documents.manage",
+      "files.access",
+      "calendar.manage",
     ],
   }),
   operationsOperator: account({
     email: "e2e-operations-operator@test.com",
     name: "E2E Multi-service Operator",
     role: "official",
-    bundles: ["registration_operator", "queue_operator", "inspection_operator"],
+    grants: ["registration.operate", "queue.operate", "inspection.operate"],
   }),
   registrationOperator: account({
     email: "e2e-registration-operator@test.com",
     name: "E2E Registration Operator",
     role: "official",
-    bundles: ["registration_operator"],
+    grants: ["registration.operate"],
   }),
   student: account({ email: "e2e-student@test.com", name: "E2E Student", role: "student" }),
 });

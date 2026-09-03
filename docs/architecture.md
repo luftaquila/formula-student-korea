@@ -72,8 +72,10 @@ application revision compatible with that state.
 ## Authentication and audit
 
 Human accounts use only `student`, `official`, and `admin`. An Official starts with
-no operational access and receives code-defined permission bundles and/or direct
-permissions. Management permissions imply the matching operation permission; Admin
+no operational access and receives one explicit list of service grants. Registration,
+Queue, Inspection, Documents, and Traffic use none/operate/manage access levels.
+Course and Score use a single full-access grant; other single-action services use a
+single grant. Management permissions imply the matching operation permission; Admin
 satisfies every human permission. Queue (`queue.*`) and Inspection (`inspection.*`)
 are independent domains, so a grant in one never authorizes the other. Auth exposes
 the authoritative effective-permission snapshot and an access revision; services

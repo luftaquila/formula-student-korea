@@ -87,8 +87,8 @@ const LEGACY_TEST_PERMISSIONS = Object.freeze({
 export const TRUST_JWT = async (email, tokenUser = {}) => ({
   valid: true,
   role: ["staff", "chief", "master"].includes(tokenUser.role) ? "official" : tokenUser.role,
-  permissions: expandPermissions({ directPermissions: Array.isArray(tokenUser.permissions)
+  permissions: expandPermissions(Array.isArray(tokenUser.permissions)
     ? tokenUser.permissions
-    : LEGACY_TEST_PERMISSIONS[tokenUser.role] || [] }),
+    : LEGACY_TEST_PERMISSIONS[tokenUser.role] || []),
   accessRevision: Number(tokenUser.accessRevision) || 0,
 });

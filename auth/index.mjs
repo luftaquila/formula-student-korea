@@ -4,17 +4,44 @@ import Database from "better-sqlite3";
 import { createDatabase, addColumn, runMigrationOnce, normalizeTimestampColumn } from "../shared/db-setup.mjs";
 import { createApp, createDbRun, createJWT, verifyJWT, VALID_ROLES, isSecureConnection, formatCookieOpts, createSecretChecker, isEnvEnabled } from "../shared/express-setup.mjs";
 import {
-  BUNDLE_KEYS,
   DEVICE_SCOPES,
   PERMISSION_KEYS,
   access,
   accessCatalog,
   expandPermissions,
+  normalizeAccessGrants,
   principalHasPermission,
 } from "../shared/access-control.js";
 import { createLogger, buildLogFilter, parseLogCursor } from "../shared/logger.mjs";
 import { serviceUrl, logAggregationTargets } from "../shared/services.mjs";
 import { runIfDirect } from "../shared/service-bootstrap.mjs";
+
+// One-time compatibility map for databases written by the unmerged bundle-based
+// preview. Bundles are flattened into explicit grants and the legacy table is
+// removed during startup; runtime authorization never reads this map.
+const LEGACY_PERMISSION_BUNDLES = Object.freeze({
+  registration_operator: ["registration.operate"],
+  registration_manager: ["registration.manage"],
+  queue_operator: ["queue.operate"],
+  queue_manager: ["queue.manage"],
+  inspection_operator: ["inspection.operate"],
+  inspection_manager: ["inspection.manage"],
+  documents_reviewer: ["documents.operate"],
+  documents_manager: ["documents.manage", "files.access"],
+  calendar_manager: ["calendar.manage"],
+  course_editor: ["course.operate"],
+  course_manager: ["course.manage"],
+  rover_operator: ["rover.operate"],
+  timing_operator: ["traffic.operate"],
+  timing_manager: ["traffic.manage"],
+  score_operator: ["score.operate"],
+  score_manager: ["score.manage"],
+  entry_manager: ["entry.manage"],
+  application_manager: ["applications.manage"],
+  contacts_manager: ["contacts.manage"],
+  messaging_operator: ["messaging.operate"],
+  auditor: ["audit.view"],
+});
 
 export function createAuthApp(options = {}) {
 
@@ -95,12 +122,7 @@ if (hasRetiredRoleSchema) {
   }
 }
 
-db.exec(`CREATE TABLE IF NOT EXISTS user_permission_bundle (
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  bundle_key TEXT NOT NULL,
-  PRIMARY KEY (user_id, bundle_key)
-);
-CREATE TABLE IF NOT EXISTS user_permission (
+db.exec(`CREATE TABLE IF NOT EXISTS user_permission (
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   permission_key TEXT NOT NULL,
   PRIMARY KEY (user_id, permission_key)
@@ -121,23 +143,73 @@ CREATE TABLE IF NOT EXISTS kiosk_device (
 CREATE INDEX IF NOT EXISTS idx_kiosk_device_token_hash ON kiosk_device(token_hash);
 CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pairing_code_hash);`);
 
+const legacyBundleTableExists = Boolean(db.prepare(
+  "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'user_permission_bundle'",
+).get());
+
 // A normal legacy database has no grant tables. Clear rows as well when this
 // migration sees a partially upgraded database, so retired ranks always become
 // grant-free Officials instead of inheriting grants from an interrupted rollout.
 if (retiredRoleUserIds.length > 0) {
   const placeholders = retiredRoleUserIds.map(() => "?").join(",");
   db.transaction(() => {
-    db.prepare(`DELETE FROM user_permission_bundle WHERE user_id IN (${placeholders})`).run(...retiredRoleUserIds);
+    if (legacyBundleTableExists) {
+      db.prepare(`DELETE FROM user_permission_bundle WHERE user_id IN (${placeholders})`).run(...retiredRoleUserIds);
+    }
     db.prepare(`DELETE FROM user_permission WHERE user_id IN (${placeholders})`).run(...retiredRoleUserIds);
   })();
 }
 
-for (const { bundle_key: key } of db.prepare("SELECT DISTINCT bundle_key FROM user_permission_bundle").all()) {
-  if (!BUNDLE_KEYS.includes(key)) throw new Error(`Unknown stored permission bundle: ${key}`);
+if (legacyBundleTableExists) {
+  const rows = db.prepare(`
+    SELECT b.user_id, b.bundle_key
+    FROM user_permission_bundle b
+    JOIN users u ON u.id = b.user_id
+    WHERE u.role = 'official'
+    ORDER BY b.user_id, b.bundle_key
+  `).all();
+  for (const { bundle_key: key } of rows) {
+    if (!Object.hasOwn(LEGACY_PERMISSION_BUNDLES, key)) {
+      throw new Error(`Unknown stored permission bundle: ${key}`);
+    }
+  }
+  const insertPermission = db.prepare(
+    "INSERT OR IGNORE INTO user_permission (user_id, permission_key) VALUES (?, ?)",
+  );
+  db.transaction(() => {
+    for (const row of rows) {
+      for (const permission of LEGACY_PERMISSION_BUNDLES[row.bundle_key]) {
+        insertPermission.run(row.user_id, permission);
+      }
+    }
+    db.exec("DROP TABLE user_permission_bundle");
+  })();
 }
 for (const { permission_key: key } of db.prepare("SELECT DISTINCT permission_key FROM user_permission").all()) {
   if (!PERMISSION_KEYS.includes(key)) throw new Error(`Unknown stored permission: ${key}`);
 }
+
+// Store one canonical source of grants. The UI deliberately exposes Course and
+// Score as all-or-nothing toggles, while tiered management supersedes the
+// matching operation grant. Rover's implied Course operation is not stored, so
+// a Rover-only account never gains Course deletion during this normalization.
+db.transaction(() => {
+  const officialIds = db.prepare("SELECT id FROM users WHERE role = 'official' ORDER BY id").all();
+  const selectPermissions = db.prepare(
+    "SELECT permission_key FROM user_permission WHERE user_id = ? ORDER BY permission_key",
+  );
+  const deletePermissions = db.prepare("DELETE FROM user_permission WHERE user_id = ?");
+  const insertPermission = db.prepare(
+    "INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)",
+  );
+  for (const { id } of officialIds) {
+    const grants = selectPermissions.all(id).map(({ permission_key: key }) => key);
+    const normalized = normalizeAccessGrants(grants);
+    if (grants.length === normalized.length && grants.every((key, index) => key === normalized[index])) continue;
+    deletePermissions.run(id);
+    for (const permission of normalized) insertPermission.run(id, permission);
+  }
+})();
 
 // 관리자 토글 등 key/value 설정 저장소
 db.exec(`CREATE TABLE IF NOT EXISTS settings (
@@ -212,22 +284,18 @@ if (isEnvEnabled(process.env.TEST_SERVER)) {
    Express 앱 설정
    ============================================ */
 function accessRows(userId) {
-  const bundles = db.prepare(
-    "SELECT bundle_key FROM user_permission_bundle WHERE user_id = ? ORDER BY bundle_key",
-  ).all(userId).map((row) => row.bundle_key);
-  const directPermissions = db.prepare(
+  return db.prepare(
     "SELECT permission_key FROM user_permission WHERE user_id = ? ORDER BY permission_key",
   ).all(userId).map((row) => row.permission_key);
-  return { bundles, directPermissions };
 }
 
 function userAccess(user) {
-  const stored = user.role === "official" ? accessRows(user.id) : { bundles: [], directPermissions: [] };
+  const grants = user.role === "official" ? accessRows(user.id) : [];
   const permissions = user.role === "admin"
     ? [...PERMISSION_KEYS]
-    : user.role === "official" ? expandPermissions(stored) : [];
+    : user.role === "official" ? expandPermissions(grants) : [];
   return {
-    ...stored,
+    grants,
     permissions,
     accessRevision: Number(user.access_revision) || 0,
   };
@@ -1106,19 +1174,18 @@ app.get("/api/users", (req, res) => {
 
 app.put("/api/users/:id/access", (req, res) => {
   const id = Number(req.params.id);
-  const { expectedRevision, bundles = [], directPermissions = [] } = req.body || {};
-  if (!Number.isInteger(expectedRevision) || !Array.isArray(bundles) || !Array.isArray(directPermissions)) {
+  const { expectedRevision, grants } = req.body || {};
+  if (!Number.isInteger(expectedRevision) || !Array.isArray(grants)) {
     logger.warn(req, "user.access_update", { reason: "invalid_request", id }, String(req.params.id));
     return res.status(400).json({ code: "INVALID_ACCESS_REQUEST" });
   }
-  if (new Set(bundles).size !== bundles.length || new Set(directPermissions).size !== directPermissions.length
-      || bundles.some((key) => !BUNDLE_KEYS.includes(key))
-      || directPermissions.some((key) => !PERMISSION_KEYS.includes(key))) {
+  if (new Set(grants).size !== grants.length || grants.some((key) => !PERMISSION_KEYS.includes(key))) {
     logger.warn(req, "user.access_update", {
-      reason: "invalid_access_key", id, bundles, directPermissions,
+      reason: "invalid_access_key", id, grants,
     }, String(req.params.id));
     return res.status(400).json({ code: "INVALID_ACCESS_KEY" });
   }
+  const normalizedGrants = normalizeAccessGrants(grants);
 
   const beforeUser = db.prepare("SELECT id, email, role, access_revision FROM users WHERE id = ?").get(id);
   if (!beforeUser) {
@@ -1135,12 +1202,9 @@ app.put("/api/users/:id/access", (req, res) => {
     const current = db.prepare("SELECT id, role, access_revision FROM users WHERE id = ?").get(id);
     if (!current || current.role !== "official") return { roleChanged: true };
     if (current.access_revision !== expectedRevision) return { stale: true, current: userAccess(current) };
-    db.prepare("DELETE FROM user_permission_bundle WHERE user_id = ?").run(id);
     db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(id);
-    const insertBundle = db.prepare("INSERT INTO user_permission_bundle (user_id, bundle_key) VALUES (?, ?)");
     const insertPermission = db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)");
-    for (const key of bundles) insertBundle.run(id, key);
-    for (const key of directPermissions) insertPermission.run(id, key);
+    for (const key of normalizedGrants) insertPermission.run(id, key);
     db.prepare("UPDATE users SET access_revision = access_revision + 1 WHERE id = ?").run(id);
     return { current: userAccess(db.prepare("SELECT id, role, access_revision FROM users WHERE id = ?").get(id)) };
   })());
@@ -1196,7 +1260,6 @@ app.post("/api/users/bulk", (req, res) => {
   if (!Array.isArray(rows) || rows.length === 0) return res.status(400).send("추가할 사용자 목록이 비어있습니다.");
 
   const insert = db.prepare("INSERT OR IGNORE INTO users (email, role, realname, phone, affiliation) VALUES (?, ?, ?, ?, ?)");
-  const insertBundle = db.prepare("INSERT INTO user_permission_bundle (user_id, bundle_key) VALUES (?, ?)");
   const insertPermission = db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)");
   const added = [];
   const addedAccess = [];
@@ -1218,25 +1281,23 @@ app.post("/api/users/bulk", (req, res) => {
       const realname = (row.realname || "").trim();
       const phone = (row.phone || "").trim();
       const affiliation = (row.affiliation || "").trim();
-      const bundles = Array.isArray(row.bundles) ? row.bundles : [];
-      const directPermissions = Array.isArray(row.directPermissions) ? row.directPermissions : [];
-      if (bundles.some((key) => !BUNDLE_KEYS.includes(key)) || directPermissions.some((key) => !PERMISSION_KEYS.includes(key))) {
+      const grants = Array.isArray(row.grants) ? row.grants : [];
+      if (grants.some((key) => !PERMISSION_KEYS.includes(key))) {
         errors.push({ row, reason: "알 수 없는 서비스 권한" });
         continue;
       }
+      const normalizedGrants = normalizeAccessGrants([...new Set(grants)]);
 
       const result = insert.run(email, role, realname, phone, affiliation);
       if (result.changes > 0) {
         if (role === "official") {
-          for (const key of new Set(bundles)) insertBundle.run(result.lastInsertRowid, key);
-          for (const key of new Set(directPermissions)) insertPermission.run(result.lastInsertRowid, key);
+          for (const key of normalizedGrants) insertPermission.run(result.lastInsertRowid, key);
         }
         added.push(email);
         addedAccess.push({
           email,
           role,
-          bundles: role === "official" ? [...new Set(bundles)].sort() : [],
-          directPermissions: role === "official" ? [...new Set(directPermissions)].sort() : [],
+          grants: role === "official" ? normalizedGrants : [],
         });
       }
       else skipped.push(email);
@@ -1398,7 +1459,6 @@ app.patch("/api/users/:id", (req, res) => {
       const roleChanged = role !== undefined && role !== user.role;
       const activeChanged = active !== undefined && Number(!!active) !== Number(user.active);
       if (roleChanged) {
-        db.prepare("DELETE FROM user_permission_bundle WHERE user_id = ?").run(id);
         db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(id);
         db.prepare("UPDATE users SET role = ? WHERE id = ?").run(role, id);
       }

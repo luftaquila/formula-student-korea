@@ -57,9 +57,11 @@ failed run with `gh run view <run-id> --log-failed`.
 
 ## Authentication and service calls
 
-- Human roles are `student`, `official`, and `admin`. Officials receive explicit
-  permission bundles and/or direct service permissions; management permissions imply
-  the matching operation permission. Admin satisfies every human permission.
+- Human roles are `student`, `official`, and `admin`. Officials receive one explicit
+  list of service grants. Registration, Queue, Inspection, Documents, and Traffic
+  use none/operate/manage access levels; Course and Score use a single full-access
+  grant. Management permissions imply the matching operation permission. Admin
+  satisfies every human permission.
 - Non-auth services revalidate through Auth and fail closed; only HTTP `200` confirms
   a user. Tests may inject `TRUST_JWT` through an application factory. Production
   has no authentication bypass.

@@ -8,7 +8,7 @@ import {
   services,
 } from "../../shared/nav-config.js";
 import { ROLE_SORT_ORDER } from "../../shared/constants.js";
-import { BUNDLE_DEFINITIONS, PERMISSION_KEYS } from "../../shared/access-control.js";
+import { ACCESS_CONTROL_DEFINITIONS, PERMISSION_KEYS } from "../../shared/access-control.js";
 import { RESOURCES_DISCLOSURE_STORAGE_KEY } from "../../shared/persistent-disclosure.js";
 
 const registrationRoot = new URL("../../registration/web/", import.meta.url);
@@ -51,7 +51,10 @@ test("human roles stay simple and operation links use explicit permissions", () 
   assert.equal(operations.find((item) => item.href === "/queue/admin")?.permission, "queue.operate");
   assert.equal(operations.find((item) => item.href === "/inspection")?.permission, "inspection.operate");
   assert.ok(operations.filter((item) => item.permission).every((item) => PERMISSION_KEYS.includes(item.permission)));
-  assert.ok(BUNDLE_DEFINITIONS.some((bundle) => bundle.key === "registration_operator"));
+  const registrationAccess = ACCESS_CONTROL_DEFINITIONS.find(({ key }) => key === "registration");
+  assert.equal(registrationAccess?.type, "tiered");
+  assert.equal(registrationAccess?.operate.key, "registration.operate");
+  assert.equal(registrationAccess?.manage.key, "registration.manage");
 });
 
 test("landing renders one permission-filtered operation group and persists resource disclosure", async () => {
