@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { createJWT } from "../../../shared/express-setup.mjs";
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 
 const JWT_SECRET = process.env.JWT_SECRET || "e2e-test-secret";
+const YEAR = currentCompetitionYear();
 
 test.describe("Access and kiosk device management", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -67,7 +69,7 @@ test.describe("Access and kiosk device management", () => {
       expect(session.status()).toBe(200);
       expect((await session.json()).permissions).toEqual(user.permissions);
       expect((await officialContext.request.get("/competition/api/v1/queue/admin/priority/noise")).status()).toBe(200);
-      expect((await officialContext.request.get("/competition/api/v1/inspection/sheet/template")).status()).toBe(200);
+      expect((await officialContext.request.get(`/competition/api/v1/inspection/sheet/template?year=${YEAR}`)).status()).toBe(200);
       expect((await officialContext.request.post("/competition/api/v1/inspection/sheet/template", {
         data: { name: "must not be created" },
       })).status()).toBe(403);
