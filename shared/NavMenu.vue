@@ -440,7 +440,9 @@ async function logout() {
 .drawer-nav {
   flex: 1;
   overflow-y: auto;
-  padding: 0.5rem 0 0;
+  /* No top padding: the account row is the first child and sits flush under the
+     header border. Sections below keep their own 0.5rem vertical padding. */
+  padding: 0;
   display: flex;
   flex-direction: column;
 }
