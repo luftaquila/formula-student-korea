@@ -156,10 +156,11 @@ test.describe("Entry team management", () => {
     // Default sort is by num ascending (from computed)
     const firstRowNum = table.locator("tbody tr").first().locator(".entry-number");
     await expect(firstRowNum).toHaveText("1");
-    await expect(universityHeader).toHaveAttribute("aria-sort", "none");
+    await expect(table.locator("th[aria-sort]")).toHaveCount(0);
 
     await universityHeader.evaluate((element) => element.click());
     await expect(universityHeader).toHaveAttribute("aria-sort", "ascending");
+    await expect(table.locator("th[aria-sort]")).toHaveCount(1);
     await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("KAIST");
 
     await universityHeader.evaluate((element) => element.click());
@@ -168,6 +169,8 @@ test.describe("Entry team management", () => {
 
     await numberHeader.evaluate((element) => element.click());
     await expect(numberHeader).toHaveAttribute("aria-sort", "ascending");
+    await expect(universityHeader).not.toHaveAttribute("aria-sort", /.+/);
+    await expect(table.locator("th[aria-sort]")).toHaveCount(1);
     await expect(table.locator("tbody tr").first().locator(".entry-number")).toHaveText("1");
 
     await numberHeader.evaluate((element) => element.click());

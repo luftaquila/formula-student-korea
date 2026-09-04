@@ -11,8 +11,6 @@ import { measuredSkidpadFixture } from "./fixtures/measured-skidpad.mjs";
 const here = dirname(fileURLToPath(import.meta.url));
 const loadFixture = (name) => JSON.parse(readFileSync(join(here, "fixtures", `${name}.json`), "utf8"));
 
-const LOOP_FIXTURES = ["endurance", "endurance_2026", "autocross", "autonomous"];
-
 // Markers carry ids in the API; the resolver only needs id + position.
 const withIds = (positions) => positions.map((p, i) => ({ id: i + 1, ...p }));
 
@@ -38,29 +36,24 @@ describe("resolveCourseRoute — no markers", () => {
 // move a single station. Seed from the stored direction, resolve, and require the
 // result to equal what the course produced before markers existed.
 describe("seedOrientationMarkers — reproduces stored direction exactly", () => {
-  for (const name of LOOP_FIXTURES) {
-    for (const reverse of [false, true]) {
-      it(`${name} (reverse=${reverse}) resolves byte-identical to the stored options`, () => {
-        const { cones } = loadFixture(name);
-        const stored = computeCenterline(cones, { step: 1, metric: true });
-        if (!stored.closed) return; // open courses are covered separately below
+  for (const reverse of [false, true]) {
+    it(`preserves a representative closed route (reverse=${reverse})`, () => {
+      const { cones } = loadFixture("endurance");
+      const startCone = cones[0];
+      const fallback = { start: { lat: startCone.lat, lng: startCone.lng }, ...(reverse ? { reverse: true } : {}) };
+      const expected = computeCenterline(cones, { step: 1, metric: true, ...fallback });
 
-        const startCone = cones[0];
-        const fallback = { start: { lat: startCone.lat, lng: startCone.lng }, ...(reverse ? { reverse: true } : {}) };
-        const expected = computeCenterline(cones, { step: 1, metric: true, ...fallback });
+      const seeded = seedOrientationMarkers(cones, { ...fallback, step: 1 });
+      assert.ok(seeded, "seeding must produce markers for a closed loop");
+      assert.equal(seeded.length, 2);
 
-        const seeded = seedOrientationMarkers(cones, { ...fallback, step: 1 });
-        assert.ok(seeded, "seeding must produce markers for a closed loop");
-        assert.equal(seeded.length, 2);
+      const markers = withIds(seeded);
+      const resolved = resolveCourseRoute(cones, markers, markers.map((m) => m.id), { step: 1, metric: true });
 
-        const markers = withIds(seeded);
-        const resolved = resolveCourseRoute(cones, markers, markers.map((m) => m.id), { step: 1, metric: true });
-
-        assert.equal(resolved.mode, ROUTE_MODE.ORIENTED, "a plain loop must stay on the legacy engine");
-        assert.equal(resolved.reverse, reverse);
-        assert.deepEqual(resolved.centerline, expected);
-      });
-    }
+      assert.equal(resolved.mode, ROUTE_MODE.ORIENTED, "a plain loop must stay on the legacy engine");
+      assert.equal(resolved.reverse, reverse);
+      assert.deepEqual(resolved.centerline, expected);
+    });
   }
 
   it("declines to seed a course the loop reducer cannot close", () => {

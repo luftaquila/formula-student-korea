@@ -25,6 +25,10 @@ function e2eShards(workflow) {
     .map(([, shard, body]) => ({ shard, body }));
 }
 
+function trafficSpecs(body) {
+  return [...body.matchAll(/tests\/e2e\/traffic\/[^\s]+\.spec\.mjs/g)].map(([spec]) => spec);
+}
+
 describe("CI workflow operational contracts", () => {
   it("runs unit tests in Seoul time and preserves the UTC/KST year boundary", () => {
     assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n    env:\n      TZ: Asia\/Seoul\n/);
@@ -86,5 +90,18 @@ describe("CI workflow operational contracts", () => {
         `${shard} seeds Auth users, whose creation sends an Email notification`,
       );
     }
+  });
+
+  it("lists every Traffic E2E spec exactly once across its isolated shards", () => {
+    const actual = fs.readdirSync("tests/e2e/traffic")
+      .filter((name) => name.endsWith(".spec.mjs"))
+      .map((name) => `tests/e2e/traffic/${name}`)
+      .sort();
+    const listed = e2eShards(testWorkflow)
+      .filter(({ shard }) => shard.startsWith("traffic-"))
+      .flatMap(({ body }) => trafficSpecs(body));
+
+    assert.equal(new Set(listed).size, listed.length, "Traffic specs must not be listed more than once");
+    assert.deepEqual(listed.toSorted(), actual);
   });
 });

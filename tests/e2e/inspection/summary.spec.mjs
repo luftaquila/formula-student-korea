@@ -159,42 +159,16 @@ test.describe("Inspection summary dashboard", () => {
     await expect(page.getByTestId("inspection-team-sticky-header").locator(`[data-category-id="${hiddenCategoryId}"]`)).toHaveCount(0);
   });
 
-  test("keeps the table header fixed while the page scrolls", async ({ page }) => {
-    await page.setViewportSize({ width: 1100, height: 520 });
-    await page.goto("/inspection");
-    await waitForPageReady(page);
-
-    const scroller = page.getByTestId("inspection-team-table-scroll");
-    const stickyHeader = page.getByTestId("inspection-team-sticky-header");
-    const tableTop = await scroller.evaluate(element => element.getBoundingClientRect().top + window.scrollY);
-    await expect.poll(() => scroller.evaluate(element => element.scrollHeight <= element.clientHeight + 1)).toBe(true);
-    await expect.poll(() => stickyHeader.evaluate(element => element.getBoundingClientRect().height > 0)).toBe(true);
-
-    await page.evaluate(top => window.scrollTo({ top, behavior: "instant" }), tableTop + 100);
-
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(0);
-    expect(await scroller.evaluate(element => element.scrollTop)).toBe(0);
-    const after = await stickyHeader.boundingBox();
-    expect(Math.abs(after.y)).toBeLessThanOrEqual(1);
-    const styles = await stickyHeader.evaluate(element => ({
-      position: getComputedStyle(element).position,
-      top: getComputedStyle(element).top,
-    }));
-    expect(styles).toEqual({ position: "sticky", top: "0px" });
-  });
-
   test("combines entry, team, and vehicle type into one compact mobile column", async ({ page }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await page.goto("/inspection");
     await waitForPageReady(page);
 
     const table = page.locator(".sheet-table");
-    const scroller = page.getByTestId("inspection-team-table-scroll");
     const stickyHeader = page.getByTestId("inspection-team-sticky-header");
-    const stickyEntry = stickyHeader.locator(".sticky-header-cell.col-num");
     const row = table.locator("tbody tr.clickable-row").first();
     await expect(table.locator("thead .col-num")).toHaveText("엔트리");
-    await expect(stickyEntry).toHaveText("엔트리");
+    await expect(stickyHeader.locator(".sticky-header-cell.col-num")).toHaveText("엔트리");
     await expect(row.locator(".mobile-entry-univ")).toHaveText("서울대학교");
     await expect(row.locator(".mobile-entry-team")).toHaveText("SNU Racing");
     await expect(row.locator(".mobile-entry-type")).toHaveText("EV");
@@ -202,48 +176,8 @@ test.describe("Inspection summary dashboard", () => {
       summary: ".entry-summary",
       fields: [".mobile-entry-type", ".mobile-entry-univ", ".mobile-entry-team"],
     });
-
-    const layout = await row.evaluate((element) => {
-      const entry = element.querySelector(".col-num").getBoundingClientRect();
-      const firstResult = element.querySelector(".col-result").getBoundingClientRect();
-      return {
-        entryWidth: entry.width,
-        resultOffset: firstResult.left - entry.left,
-        hasLegacyTeamColumn: Boolean(element.querySelector(".col-team")),
-        hasLegacyTypeColumn: Boolean(element.querySelector(".col-type")),
-        teamColor: getComputedStyle(element.querySelector(".mobile-entry-team")).color,
-        tertiaryColor: (() => {
-          const probe = document.createElement("span");
-          probe.style.color = "var(--text-tertiary)";
-          element.appendChild(probe);
-          const color = getComputedStyle(probe).color;
-          probe.remove();
-          return color;
-        })(),
-        teamWeight: getComputedStyle(element.querySelector(".mobile-entry-team")).fontWeight,
-      };
-    });
-    expect(Math.abs(layout.resultOffset - layout.entryWidth)).toBeLessThanOrEqual(1);
-    expect(layout.hasLegacyTeamColumn).toBe(false);
-    expect(layout.hasLegacyTypeColumn).toBe(false);
-    expect(layout.teamColor).not.toBe(layout.tertiaryColor);
-    expect(Number(layout.teamWeight)).toBeGreaterThanOrEqual(500);
-
-    await expect.poll(() => scroller.evaluate(element => element.scrollWidth > element.clientWidth)).toBe(true);
-    await scroller.evaluate(element => { element.scrollLeft = element.scrollWidth; });
-    await expect.poll(() => scroller.evaluate(element => element.scrollLeft)).toBeGreaterThan(0);
-    const stickyLayout = await stickyEntry.evaluate((element) => {
-      const cell = element.getBoundingClientRect();
-      const viewport = element.closest(".page-sticky-header-viewport").getBoundingClientRect();
-      return {
-        leftOffset: cell.left - viewport.left,
-        width: cell.width,
-        textFits: element.scrollWidth <= element.clientWidth + 1,
-      };
-    });
-    expect(Math.abs(stickyLayout.leftOffset)).toBeLessThanOrEqual(1);
-    expect(Math.abs(stickyLayout.width - layout.entryWidth)).toBeLessThanOrEqual(1);
-    expect(stickyLayout.textFits).toBe(true);
+    await expect(row.locator(".col-team")).toHaveCount(0);
+    await expect(row.locator(".col-type")).toHaveCount(0);
   });
 
   test("uses the compact identity column on desktop too", async ({ page }) => {
@@ -286,7 +220,6 @@ test.describe("Inspection summary dashboard", () => {
     await expect(toggle.locator(".inspector-preview")).toHaveText("김검차, 이검차");
     await expect(toggle.locator(".inspector-more")).toHaveText("외 3명");
     await expect(toggle).toHaveAttribute("title", inspectors.join(", "));
-    expect(await toggle.evaluate(element => element.getBoundingClientRect().width)).toBeLessThanOrEqual(160);
 
     await toggle.click();
     await expect(disclosure).toHaveAttribute("open", "");

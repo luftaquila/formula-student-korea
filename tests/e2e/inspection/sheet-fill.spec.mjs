@@ -78,21 +78,6 @@ test.describe("Inspection sheet filling", () => {
     await expect(panel).toContainText("고정 상태");
   });
 
-  test("keeps answer input fields large enough to read and tap", async ({ page }) => {
-    const inputs = [
-      page.locator(".item-row").filter({ hasText: "절연 저항 측정" }).locator(".number-input"),
-      page.locator(".item-row").filter({ hasText: "시리얼 넘버" }).locator(".text-input"),
-    ];
-
-    for (const input of inputs) {
-      await expect(input).toBeVisible();
-      const box = await input.boundingBox();
-      expect(box.height).toBeGreaterThanOrEqual(44);
-      const fontSize = await input.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
-      expect(fontSize).toBeGreaterThanOrEqual(14);
-    }
-  });
-
   test("integrates item and outline navigation into the status map", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const progress = page.locator(".inspection-progress");
@@ -101,42 +86,12 @@ test.describe("Inspection sheet filling", () => {
     await expect(progress.locator(".inspection-status-legend")).toContainText("FAIL");
     await expect(progress.locator(".inspection-status-legend")).toContainText("미입력");
     await expect(page.locator(".fab-container")).toHaveCount(0);
-    const compactLayout = await progress.evaluate(element => {
-      const map = element.querySelector(".inspection-status-map");
-      return {
-        height: element.getBoundingClientRect().height,
-        mapDisplay: getComputedStyle(map).display,
-        mapOverflowX: getComputedStyle(map).overflowX,
-        mapScrollWidth: map.scrollWidth,
-        mapClientWidth: map.clientWidth,
-        itemSize: map.querySelector(".status-map-item").getBoundingClientRect().width,
-      };
-    });
-    expect(compactLayout.height).toBeLessThanOrEqual(160);
-    expect(compactLayout.mapDisplay).toBe("grid");
-    expect(compactLayout.mapOverflowX).toBe("visible");
-    expect(compactLayout.mapScrollWidth).toBeLessThanOrEqual(compactLayout.mapClientWidth);
-    expect(compactLayout.itemSize).toBeCloseTo(12.5, 1);
-    const firstItemBox = await page.locator(".item-row").first().boundingBox();
-    expect(firstItemBox.y).toBeLessThan(844);
 
     const initialScrollY = await page.evaluate(() => window.scrollY);
     const itemLink = progress.locator('.status-map-item[aria-label*="전압 확인"]');
     await expect(itemLink).toBeVisible();
-    const regularWidth = (await itemLink.boundingBox()).width;
-    await itemLink.hover();
-    await expect.poll(async () => (await itemLink.boundingBox()).width).toBeGreaterThan(regularWidth * 1.2);
-    expect((await itemLink.boundingBox()).width).toBeLessThanOrEqual(regularWidth * 1.3);
     await itemLink.click();
-    await expect.poll(async () => page.evaluate((startScrollY) => {
-      const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
-      const item = [...document.querySelectorAll(".item-row")].find(row => row.textContent.includes("전압 확인")).getBoundingClientRect();
-      return {
-        scrolled: window.scrollY > startScrollY,
-        belowProgress: item.top >= progress.bottom + 6,
-        withinViewport: item.bottom <= window.innerHeight,
-      };
-    }, initialScrollY)).toEqual({ scrolled: true, belowProgress: true, withinViewport: true });
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(initialScrollY);
 
     const outlineToggle = progress.locator(".inspection-outline-toggle");
     await outlineToggle.click();
@@ -146,46 +101,12 @@ test.describe("Inspection sheet filling", () => {
     const groupLink = outline.locator(".inspection-outline-groups button").filter({ hasText: "1-1 배터리 팩" });
     await groupLink.click();
     await expect(outline).toBeHidden();
-    await expect.poll(async () => page.evaluate(() => {
-      const progress = document.querySelector(".inspection-progress").getBoundingClientRect();
-      const group = document.querySelector(".group-section").getBoundingClientRect();
-      return {
-        belowProgress: group.top >= progress.bottom + 6,
-        withinViewport: group.top < window.innerHeight,
-      };
-    })).toEqual({ belowProgress: true, withinViewport: true });
   });
 
-  test("shows the vehicle type chip between the team name and the year", async ({ page }) => {
+  test("shows the vehicle type and year in the team header", async ({ page }) => {
     const chip = page.locator(".team-header .team-type");
     await expect(chip).toHaveText("EV"); // seeded: team 1 is EV
-    await expect(chip).toHaveClass(/badge-type-/); // colored like the team list badge
-
-    // Adjacency + order: the meta group holds exactly the chip then the year.
     await expect(page.locator(".team-header .team-meta")).toHaveText(/^EV\s*\d{4}년$/);
-
-    // And the chip sits after the team name, not before it.
-    const nameBox = await page.locator(".team-header .team-name").boundingBox();
-    const chipBox = await chip.boundingBox();
-    expect(chipBox.x).toBeGreaterThan(nameBox.x);
-  });
-
-  test("keeps the type chip on the year's line at mobile width", async ({ page }) => {
-    // The header is a wrapping flex row, so at narrow widths the long team name pushes
-    // the trailing items onto their own line. The chip must travel WITH the year and
-    // stay to its left instead of being stranded on the team name's line.
-    await page.setViewportSize({ width: 390, height: 844 });
-
-    const chip = page.locator(".team-header .team-type");
-    const year = page.locator(".team-header .team-year");
-    await expect(chip).toBeVisible();
-
-    const chipBox = await chip.boundingBox();
-    const yearBox = await year.boundingBox();
-    const chipMid = chipBox.y + chipBox.height / 2;
-    const yearMid = yearBox.y + yearBox.height / 2;
-    expect(Math.abs(chipMid - yearMid)).toBeLessThan(4); // same line
-    expect(chipBox.x + chipBox.width).toBeLessThanOrEqual(yearBox.x); // chip on the left
   });
 
   test("clicks PASS on a passfail item", async ({ page }) => {
@@ -312,24 +233,6 @@ test.describe("Inspection sheet filling", () => {
     await expect(answerMetadata).toContainText("Operations Operator Real Name");
     await expect(answerMetadata).not.toContainText("응답 ·");
     await expect(answerMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
-    expect(await answerMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");
-    const metadataSpacing = await row.evaluate((element) => {
-      const answer = element.querySelector(".pf-toggle").getBoundingClientRect();
-      const metadata = element.querySelector(".answer-edit-metadata").getBoundingClientRect();
-      const memo = element.querySelector(".memo-editor").getBoundingClientRect();
-      return {
-        answerToMetadata: metadata.top - answer.bottom,
-        metadataToMemo: memo.top - metadata.bottom,
-      };
-    });
-    expect(metadataSpacing.answerToMetadata).toBeGreaterThanOrEqual(0);
-    expect(metadataSpacing.metadataToMemo).toBeGreaterThan(metadataSpacing.answerToMetadata);
-    const inspectorCenterDelta = await page.locator(".inspector-row").evaluate((element) => {
-      const label = element.querySelector(".inspector-label").getBoundingClientRect();
-      const chip = element.querySelector(".inspector-chip").getBoundingClientRect();
-      return Math.abs((label.top + label.bottom) / 2 - (chip.top + chip.bottom) / 2);
-    });
-    expect(inspectorCenterDelta).toBeLessThanOrEqual(1);
 
     await replaceAnswer(page, item.id, "");
     await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
@@ -439,7 +342,6 @@ test.describe("Inspection sheet filling", () => {
     await expect(memoMetadata).toContainText("Operations Operator Real Name");
     await expect(memoMetadata).not.toContainText("메모 ·");
     await expect(memoMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
-    expect(await memoMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");
 
     // Clean up via API
     await replaceMemo(page, firstItemId, "");

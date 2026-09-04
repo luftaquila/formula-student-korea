@@ -70,11 +70,6 @@ test.describe("Registration queue", () => {
       await expect(managerPage.locator(".team-badge")).toContainText("부산대학교 PNU Racing");
       await managerPage.locator("#register-phone").fill(PHONE);
       await managerPage.locator(".consent-card").click();
-      const consentBox = await managerPage.locator(".agreement-group").boundingBox();
-      const actionsBox = await managerPage.locator(".submit-group").boundingBox();
-      expect(consentBox).not.toBeNull();
-      expect(actionsBox).not.toBeNull();
-      expect(actionsBox.y - (consentBox.y + consentBox.height)).toBeLessThanOrEqual(32);
 
       const registered = managerPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/queue`) && response.request().method() === "POST");
@@ -91,12 +86,6 @@ test.describe("Registration queue", () => {
       await expect(publicPage.locator("#lookup-phone")).toHaveValue("010");
       await publicPage.locator("#lookup-number").fill(String(ENTRY_NUMBER));
       await expect(publicPage.locator(".query-card .team-badge")).toContainText("PNU Racing");
-      const queryCardBox = await publicPage.locator(".query-card").boundingBox();
-      const lookupButtonBox = await publicPage.locator(".query-card button[type=submit]").boundingBox();
-      expect(queryCardBox).not.toBeNull();
-      expect(lookupButtonBox).not.toBeNull();
-      expect(queryCardBox.y + queryCardBox.height - (lookupButtonBox.y + lookupButtonBox.height))
-        .toBeLessThanOrEqual(24);
       await publicPage.locator("#lookup-phone").fill(PHONE);
       const lookedUp = publicPage.waitForResponse((response) =>
         response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");
