@@ -14,8 +14,8 @@ describe("Competition deployment contract", () => {
     const modules = competitionModules();
     const workflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
     const dockerfile = fs.readFileSync("competition/Dockerfile", "utf8");
-    const buildLoops = [...dockerfile.matchAll(/for service in ([^;]+); do/g)]
-      .map((match) => match[1].trim().split(/\s+/));
+    const webStages = [...dockerfile.matchAll(/^FROM web-base AS ([a-z]+)-web$/gm)]
+      .map((match) => match[1]);
 
     assert.deepEqual(modules, [
       "entry", "queue", "registration", "inspection", "traffic", "score", "documents",
@@ -28,11 +28,11 @@ describe("Competition deployment contract", () => {
       assert.ok(workflow.includes(filter), `Build Images path filter is missing ${module}`);
       assert.ok(workflow.includes(`F_${module.toUpperCase()}`),
         `Build Images competition mapping is missing ${module}`);
-      assert.ok(buildLoops.length > 0 && buildLoops.every((loop) => loop.includes(module)),
-        `Competition Dockerfile build loop is missing ${module}`);
+      assert.ok(webStages.includes(module),
+        `Competition Dockerfile independent build stage is missing ${module}`);
       assert.ok(dockerfile.includes(`COPY ${module}/web/package.json ${module}/web/package.json`),
         `Competition image dependency copy is missing ${module}`);
-      assert.ok(dockerfile.includes(`COPY --from=builder /workspace/${module}/web/dist ${module}/web/dist/`),
+      assert.ok(dockerfile.includes(`COPY --from=${module}-web /workspace/${module}/web/dist ${module}/web/dist/`),
         `Competition runtime image is missing ${module}`);
     }
   });

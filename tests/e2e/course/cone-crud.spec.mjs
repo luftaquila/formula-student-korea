@@ -3,8 +3,8 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 // Cone + course CRUD through the MapView SPA UI on a mobile viewport (the bottom
 // -sheet layout). Each mutation is awaited via waitForResponse on its API call so
-// the test is deterministic (no fixed sleeps). Counts are asserted relative to a
-// captured baseline / our own unique data, never as absolute values.
+// the test is deterministic (no fixed sleeps). Shared lists are asserted through
+// our own unique data, while cone counts remain scoped to the active course.
 
 test.use({
   storageState: storageStatePath("admin"),
@@ -83,7 +83,6 @@ test.describe("Course + cone CRUD (UI)", () => {
   });
 
   test("creating a course via the new-course input + add button", async ({ page }) => {
-    const baseline = await page.locator(".course-item").count();
     const newName = `e2e-crud-new-${Date.now()}-${test.info().parallelIndex}`;
     // .course-add also holds a hidden file input (inline JSON import), so target
     // the named text input specifically.
@@ -97,8 +96,8 @@ test.describe("Course + cone CRUD (UI)", () => {
     const created = await createResp;
     const newCourseId = (await created.json()).id;
 
-    // List grows and our named course appears (SSE-driven).
-    await expect(page.locator(".course-item")).toHaveCount(baseline + 1);
+    // Our named course appears through the SSE-driven list update. Do not assert
+    // the global count: another Course worker may create its own isolated row.
     await expect(page.locator(".course-item").filter({ hasText: newName })).toBeVisible();
 
     // Cleanup the extra course this test created.
