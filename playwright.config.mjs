@@ -10,6 +10,7 @@ export default defineConfig({
   globalTeardown: "./tests/e2e/global-teardown.mjs",
   timeout: 30000,
   retries: 1,
+  failOnFlakyTests: Boolean(process.env.CI),
   workers: 2,
   use: {
     baseURL: "http://localhost:9000",

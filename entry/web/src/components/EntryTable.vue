@@ -72,6 +72,11 @@ function getSortIcon(key) {
   return sortOrder.value === "asc" ? "↑" : "↓";
 }
 
+function getAriaSort(key) {
+  if (sortKey.value !== key) return "none";
+  return sortOrder.value === "asc" ? "ascending" : "descending";
+}
+
 function startEdit(num, field) {
   if (props.readonly) return;
   editingCell.value = { num, field };
@@ -129,16 +134,16 @@ function toggleActive(entry) {
     <table ref="tableRef" class="entry-table team-table team-table-desktop-split" :class="{ readonly }">
       <thead>
         <tr>
-          <th class="col-num sortable" @click="handleSort('num')">
+          <th class="col-num sortable" :aria-sort="getAriaSort('num')" @click="handleSort('num')">
             엔트리 <span class="sort-icon">{{ getSortIcon("num") }}</span>
           </th>
-          <th class="col-univ sortable" @click="handleSort('univ')">
+          <th class="col-univ sortable" :aria-sort="getAriaSort('univ')" @click="handleSort('univ')">
             학교 <span class="sort-icon">{{ getSortIcon("univ") }}</span>
           </th>
-          <th class="col-team sortable" @click="handleSort('team')">
+          <th class="col-team sortable" :aria-sort="getAriaSort('team')" @click="handleSort('team')">
             팀명 <span class="sort-icon">{{ getSortIcon("team") }}</span>
           </th>
-          <th class="col-type sortable" @click="handleSort('type')">
+          <th class="col-type sortable" :aria-sort="getAriaSort('type')" @click="handleSort('type')">
             유형 <span class="sort-icon">{{ getSortIcon("type") }}</span>
           </th>
           <th class="col-active">상태</th>

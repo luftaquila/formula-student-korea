@@ -149,26 +149,29 @@ test.describe("Entry team management", () => {
 
   test("sorts entries by the desktop column headers", async ({ page }) => {
     const table = page.locator(".entry-table:not([data-table-head-copy])");
-    const pinnedHeader = page.getByTestId("entry-team-sticky-header");
-    const clickActiveHeader = async (selector) => {
-      const isPinned = await pinnedHeader.evaluate((element) => getComputedStyle(element).pointerEvents !== "none");
-      await (isPinned ? pinnedHeader : table).locator(selector).click();
-    };
+    const universityHeader = table.locator("th.col-univ");
+    const numberHeader = table.locator("th.col-num");
+    await page.evaluate(() => window.scrollTo({ top: 0, behavior: "instant" }));
 
     // Default sort is by num ascending (from computed)
     const firstRowNum = table.locator("tbody tr").first().locator(".entry-number");
     await expect(firstRowNum).toHaveText("1");
+    await expect(universityHeader).toHaveAttribute("aria-sort", "none");
 
-    await clickActiveHeader("th.col-univ");
+    await universityHeader.click();
+    await expect(universityHeader).toHaveAttribute("aria-sort", "ascending");
     await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("KAIST");
 
-    await clickActiveHeader("th.col-univ");
+    await universityHeader.click();
+    await expect(universityHeader).toHaveAttribute("aria-sort", "descending");
     await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("한양대학교");
 
-    await clickActiveHeader("th.col-num");
+    await numberHeader.click();
+    await expect(numberHeader).toHaveAttribute("aria-sort", "ascending");
     await expect(table.locator("tbody tr").first().locator(".entry-number")).toHaveText("1");
 
-    await clickActiveHeader("th.col-num");
+    await numberHeader.click();
+    await expect(numberHeader).toHaveAttribute("aria-sort", "descending");
     const numbers = await table.locator("tbody tr .entry-number").allTextContents();
     const numeric = numbers.map(Number);
     expect(numeric).toEqual([...numeric].sort((a, b) => b - a));
