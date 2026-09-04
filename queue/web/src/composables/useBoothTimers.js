@@ -1,15 +1,9 @@
 import { ref, onUnmounted } from "vue";
+import { formatBoothElapsed } from "../booth-timer.js";
 
 export function useBoothTimers() {
   const elapsedTimes = ref({});
   let elapsedTimers = {};
-
-  function formatElapsed(enteredAt) {
-    const diff = Math.max(0, Math.floor((Date.now() - enteredAt) / 1000));
-    const min = Math.floor(diff / 60).toString().padStart(2, "0");
-    const sec = (diff % 60).toString().padStart(2, "0");
-    return `${min}:${sec}`;
-  }
 
   /**
    * Sync timers for a single booth type prefix.
@@ -27,10 +21,12 @@ export function useBoothTimers() {
     for (const booth of booths) {
       if (booth.occupied_by && booth.entered_at) {
         const key = `${keyPrefix}-${booth.booth_num}`;
-        elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-        elapsedTimers[key] = setInterval(() => {
-          elapsedTimes.value[key] = formatElapsed(booth.entered_at);
-        }, 1000);
+        elapsedTimes.value[key] = formatBoothElapsed(booth);
+        if (booth.timer_paused_at == null) {
+          elapsedTimers[key] = setInterval(() => {
+            elapsedTimes.value[key] = formatBoothElapsed(booth);
+          }, 1000);
+        }
       }
     }
   }

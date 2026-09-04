@@ -40,27 +40,13 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            auth/package-lock.json
-            queue/package-lock.json
-            registration/package-lock.json
-            inspection/package-lock.json
-            traffic/package-lock.json
-            score/package-lock.json
-            score/web/package-lock.json
-            documents/package-lock.json
-            competition/package-lock.json
-            course/package-lock.json
-            calendar/package-lock.json
-            email/package-lock.json
+
+      - uses: pnpm/setup@v2
+        with:
+          install: false
 
       - name: Install dependencies
-        run: |
-          for dir in auth queue registration inspection traffic score documents competition course calendar email; do
-            cd $dir && npm ci && cd ..
-          done
-          npm --prefix score/web ci
+        run: pnpm install --frozen-lockfile
 
       - name: Run tests
         run: |
@@ -81,8 +67,8 @@ jobs:
   # Decide which service images each e2e shard must build vs pull. main's CI
   # (build.yml) publishes ghcr.io/<repo>/<svc>:latest for every service, so a
   # shard only needs to build services whose code differs from main; the rest
-  # are pulled. A change to shared/, Dockerfile.service or entrypoint.sh rebuilds
-  # everything (all service images depend on them); landing/ rebuilds caddy.
+  # are pulled. A change to shared/, Dockerfile.service, entrypoint.sh, or the
+  # root package-manager files rebuilds everything; landing/ rebuilds caddy.
   changes:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
@@ -104,6 +90,9 @@ jobs:
               - 'entrypoint.sh'
             docker-context:
               - '.dockerignore'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
             landing:
               - 'landing/**'
             auth:
@@ -500,7 +489,7 @@ jobs:
           # themselves build in ~30s), and at 13 shards x ~8 images per run it
           # pushed the repository's Actions cache to 11.5GB against a 10GB limit
           # across 10,811 entries, so the resulting eviction also churned the
-          # npm and Playwright caches that do pay off.
+          # pnpm and Playwright caches that do pay off.
           #
           # No `set: <target>.tags=...` either. bake takes each target's tag from
           # that service's `image:` in compose.yml, which is the name `docker
@@ -526,32 +515,36 @@ jobs:
         with:
           node-version: 22
 
+      - uses: pnpm/setup@v2
+        with:
+          install: false
+
       - name: Restore Playwright cache
         id: playwright-cache
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile --filter formula-student-korea
 
       - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+        run: pnpm exec playwright install --with-deps chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
 
       - name: Run E2E tests
         env:
           E2E_SERVICES: ${{ matrix.services }}
           E2E_SEEDS: ${{ matrix.seeds }}
-        run: npx playwright test --no-deps --workers=${{ matrix.workers }} ${{ matrix.projects }}
+        run: pnpm exec playwright test --no-deps --workers=${{ matrix.workers }} ${{ matrix.projects }}
 
       - name: Save Playwright cache
         uses: actions/cache/save@v5
         if: always() && steps.playwright-cache.outputs.cache-hit != 'true'
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
 
       - uses: actions/upload-artifact@v7
         if: failure()

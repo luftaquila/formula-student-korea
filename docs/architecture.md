@@ -88,8 +88,10 @@ Course and Score use a single full-access grant; other single-action services us
 single grant. Management permissions imply the matching operation permission; Admin
 satisfies every human permission. Queue (`queue.*`) and Inspection (`inspection.*`)
 are independent domains, so a grant in one never authorizes the other. Auth exposes
-the authoritative effective-permission snapshot and an access revision; services
-revalidate it and fail closed, and stale access edits are rejected by revision.
+the authoritative effective-permission snapshot, account real name, and an access
+revision; services revalidate it and fail closed, and stale access edits are rejected
+by revision. Inspection records that authoritative real name for inspector history
+and answer/memo editor labels instead of the Google account name carried by the JWT.
 During the schema cutover, retired `staff`, `chief`, and `master` accounts become
 Officials with no grants; access must be assigned explicitly after migration.
 

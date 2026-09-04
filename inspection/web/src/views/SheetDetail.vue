@@ -313,6 +313,9 @@ async function onCategoryResultToggle(catId, val) {
     error("모든 문항을 입력한 뒤 PASS할 수 있습니다.");
     return;
   }
+  const categoryName = template.value.find(cat => Number(cat.id) === Number(catId))?.name || "카테고리";
+  const action = newVal ? `${newVal} 상태로 변경` : `${current} 상태 해제`;
+  if (!confirm(`"${categoryName}" 카테고리를 ${action}하시겠습니까?`)) return;
   if (newVal === "PASS") await answerQueue.flushAll();
   sheetData.value.results[catId] = newVal;
   try {

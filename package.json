@@ -1,9 +1,11 @@
 {
+  "name": "formula-student-korea",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.25.0",
   "scripts": {
     "test": "TZ=Asia/Seoul node --test tests/**/*.test.mjs",
-    "test:e2e": "npx playwright test",
+    "test:e2e": "playwright test",
     "test:shared": "node --test tests/shared/*.test.mjs",
     "test:auth": "node --test tests/auth/*.test.mjs",
     "test:queue": "TZ=Asia/Seoul node --test tests/queue/*.test.mjs",

@@ -44,6 +44,13 @@ async function apiEnterBooth(type, boothNum, num) {
   });
 }
 
+async function apiGetBooths(type = INSPECTION_TYPE) {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}`, {
+    headers: { Cookie: getAuthCookie("operationsOperator") },
+  });
+  return res.json();
+}
+
 async function cleanupQueue(type = INSPECTION_TYPE) {
   // Exit booth first
   await apiExitBooth(type, 1);
@@ -53,6 +60,20 @@ async function cleanupQueue(type = INSPECTION_TYPE) {
     await apiEnterBooth(type, 1, item.num).catch(() => {});
     await apiExitBooth(type, 1);
   }
+}
+
+async function clickAndAcceptConfirm(page, button, expectedMessage) {
+  const handled = new Promise((resolve) => {
+    page.once("dialog", async (dialog) => {
+      const details = { type: dialog.type(), message: dialog.message() };
+      await dialog.accept();
+      resolve(details);
+    });
+  });
+  await button.click();
+  const dialog = await handled;
+  expect(dialog.type).toBe("confirm");
+  expect(dialog.message).toContain(expectedMessage);
 }
 
 test.describe("Queue booth management", () => {
@@ -165,7 +186,7 @@ test.describe("Queue booth management", () => {
 
     // Click enter booth button
     const enterBtn = page.getByRole("button", { name: "입차" }).first();
-    await enterBtn.click();
+    await clickAndAcceptConfirm(page, enterBtn, "입차 확인\n#2");
 
     // Should show success notification
     await expectNotification(page, "success", "입차");
@@ -192,13 +213,53 @@ test.describe("Queue booth management", () => {
     // The booth should show the team and an exit button
     await expect(page.locator(".booth-team-num", { hasText: "3" })).toBeVisible({ timeout: 10000 });
 
-    // Click exit booth button (exit is guarded by a confirm() dialog)
-    page.on("dialog", (dialog) => dialog.accept());
+    // Click exit booth button
     const exitBtn = page.getByRole("button", { name: "출차" }).first();
-    await exitBtn.click();
+    await clickAndAcceptConfirm(page, exitBtn, "출차 확인\n#3");
 
     // Should show success notification
     await expectNotification(page, "success", "출차");
+  });
+
+  test("pause and resume an occupied booth timer via admin UI", async ({ page }) => {
+    await apiRegister(10);
+    const entered = await apiEnterBooth(INSPECTION_TYPE, 1, 10);
+    expect(entered.status).toBe(200);
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    const batteryTab = page.locator(".tab", { hasText: "축전지" });
+    await expect(batteryTab).toBeVisible({ timeout: 10000 });
+    await batteryTab.click();
+
+    const boothCard = page.locator(".booth-card").filter({ has: page.locator(".booth-team-num", { hasText: "10" }) });
+    await expect(boothCard).toBeVisible({ timeout: 10000 });
+    await boothCard.getByRole("button", { name: "중단", exact: true }).click();
+    await expect(boothCard.getByRole("button", { name: "재개", exact: true })).toBeVisible();
+    await expect(boothCard).toHaveClass(/booth-paused/);
+    await expect(boothCard.getByText("일시중단", { exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const booths = await apiGetBooths();
+      return booths.find((booth) => booth.booth_num === 1)?.timer_paused_at ?? null;
+    }).not.toBeNull();
+
+    const frozenElapsed = await boothCard.locator(".booth-elapsed").textContent();
+    const publicPage = await page.context().newPage();
+    await publicPage.goto("/queue/");
+    await waitForPageReady(publicPage);
+    const publicSection = publicPage.locator(".booth-type-section").filter({ hasText: "축전지" });
+    const publicBooth = publicSection.locator(".booth-item").first();
+    await expect(publicBooth).toHaveClass(/booth-paused/);
+    await expect(publicBooth.getByText("일시중단", { exact: true })).toBeVisible();
+    await publicPage.close();
+
+    await boothCard.getByRole("button", { name: "재개", exact: true }).click();
+    await expect(boothCard.getByRole("button", { name: "중단", exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const booths = await apiGetBooths();
+      return booths.find((booth) => booth.booth_num === 1)?.timer_paused_at ?? null;
+    }).toBeNull();
+    await expect.poll(() => boothCard.locator(".booth-elapsed").textContent()).not.toBe(frozenElapsed);
   });
 
   test("cancel queued team via admin UI", async ({ page }) => {

@@ -88,6 +88,8 @@ watch(lastBoothUpdate, (update) => {
   }
 });
 
+watch(allBooths, syncElapsedTimers);
+
 watch(lastEntriesUpdate, async () => {
   try { entries.value = await fetchEntries(); }
   catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
@@ -196,7 +198,11 @@ function resetForm() {
               v-for="booth in currentBooths"
               :key="booth.booth_num"
               class="booth-card"
-              :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.active && booth.occupied_by }"
+              :class="{
+                'booth-inactive': !booth.active,
+                'booth-occupied': booth.active && booth.occupied_by,
+                'booth-paused': booth.active && booth.timer_paused_at,
+              }"
             >
               <div class="booth-card-num">{{ inspectionName }}{{ booth.booth_num }}</div>
               <div class="booth-card-body-content">
@@ -204,8 +210,11 @@ function resetForm() {
                   <div class="booth-card-status inactive">비활성</div>
                 </template>
                 <template v-else-if="booth.occupied_by">
-                  <div class="booth-card-status occupied">검차중</div>
-                  <div class="booth-card-elapsed">{{ elapsedTimes[`${inspection}-${booth.booth_num}`] || '00:00' }}</div>
+                  <div v-if="booth.timer_paused_at" class="booth-card-status paused">일시중단</div>
+                  <div v-else class="booth-card-status occupied">검차중</div>
+                  <div class="booth-card-elapsed" :class="{ 'booth-card-elapsed-paused': booth.timer_paused_at }">
+                    {{ elapsedTimes[`${inspection}-${booth.booth_num}`] || '00:00' }}
+                  </div>
                 </template>
                 <template v-else>
                   <div class="booth-card-status empty">입차 가능</div>
@@ -710,6 +719,12 @@ function resetForm() {
   border-color: var(--accent-warning, #f59e0b);
 }
 
+.booth-card.booth-paused {
+  border-color: var(--accent-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.06);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.18);
+}
+
 .booth-card-num {
   font-size: 1.25rem;
   font-weight: 700;
@@ -733,6 +748,11 @@ function resetForm() {
   color: var(--accent-warning, #f59e0b);
 }
 
+.booth-card-status.paused {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-danger, #ef4444);
+}
+
 .booth-card-status.inactive {
   background: var(--bg-secondary);
   color: var(--text-tertiary);
@@ -743,6 +763,10 @@ function resetForm() {
   font-weight: 700;
   font-family: "JetBrains Mono", monospace;
   color: var(--accent-warning, #f59e0b);
+}
+
+.booth-card-elapsed-paused {
+  color: var(--accent-danger, #ef4444);
 }
 
 /* Responsive */

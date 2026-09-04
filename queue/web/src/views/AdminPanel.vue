@@ -14,6 +14,7 @@ import {
   restoreActivePenalty,
   enterBooth,
   exitBooth,
+  setBoothTimerPaused,
   updateBoothConfig,
   toggleBooth,
   fetchSmsSettings,
@@ -49,6 +50,7 @@ const penaltyModalOpen = ref(false);
 const penaltiesLoading = ref(false);
 const pendingPenaltyKey = ref("");
 const pendingPenaltyAction = ref("");
+const pendingBoothTimerKey = ref("");
 const penaltyClock = ref(Date.now());
 const penaltyButton = ref(null);
 const penaltyCloseButton = ref(null);
@@ -85,6 +87,8 @@ watch(lastBoothUpdate, (update) => {
     syncElapsedTimers();
   }
 });
+
+watch(allBooths, syncElapsedTimers);
 
 watch(lastPenaltyUpdate, () => {
   if (penaltyModalOpen.value) refreshPenaltyList();
@@ -200,6 +204,8 @@ async function toggleVisibility(type, currentHidden) {
 async function enterBoothAction(boothNum) {
   const num = boothSelectedTeam.value[boothNum];
   if (!num) return;
+  const entry = entries.value[num];
+  if (!confirm(`${currentTabName.value}${boothNum} 입차 확인\n#${num} ${entry?.univ ?? ""} ${entry?.team ?? ""}`)) return;
   try {
     await enterBooth(currentTab.value, boothNum, num);
     success(`엔트리 ${num}번 ${currentTabName.value}${boothNum} 입차`);
@@ -221,6 +227,23 @@ async function exitBoothAction(boothNum) {
     await refreshQueue(currentTab.value);
   } catch (e) {
     error(e.message);
+  }
+}
+
+async function toggleBoothTimerAction(booth) {
+  const key = `${currentTab.value}-${booth.booth_num}`;
+  if (pendingBoothTimerKey.value === key) return;
+  const paused = booth.timer_paused_at != null;
+  pendingBoothTimerKey.value = key;
+  try {
+    const updated = await setBoothTimerPaused(currentTab.value, booth.booth_num, !paused);
+    Object.assign(booth, updated);
+    syncElapsedTimers();
+    success(`${currentTabName.value}${booth.booth_num} 타이머를 ${paused ? "재개" : "중단"}했습니다.`);
+  } catch (e) {
+    error(e.message);
+  } finally {
+    pendingBoothTimerKey.value = "";
   }
 }
 
@@ -538,11 +561,16 @@ function goToInspection(num) {
                   v-for="booth in currentBooths"
                   :key="booth.booth_num"
                   class="booth-card"
-                  :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.occupied_by }"
+                  :class="{
+                    'booth-inactive': !booth.active,
+                    'booth-occupied': booth.occupied_by,
+                    'booth-paused': booth.timer_paused_at,
+                  }"
                 >
                   <div class="booth-card-header">
                     <span class="booth-num">{{ currentTabName }}{{ booth.booth_num }}</span>
                     <span v-if="!booth.active" class="badge badge-muted">비활성</span>
+                    <span v-else-if="booth.timer_paused_at" class="badge badge-danger">일시중단</span>
                     <span v-else-if="booth.occupied_by" class="badge badge-warning">검차중</span>
                     <span v-else class="badge badge-success">입차 가능</span>
                     <label class="toggle toggle-sm booth-toggle">
@@ -560,13 +588,23 @@ function goToInspection(num) {
                       <span class="booth-team-num">{{ booth.occupied_by }}</span>
                       <span class="booth-team-name">{{ entries[booth.occupied_by]?.univ }} {{ entries[booth.occupied_by]?.team }}</span>
                     </div>
-                    <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
+                    <div class="booth-elapsed" :class="{ 'booth-elapsed-paused': booth.timer_paused_at }">
+                      {{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}
+                    </div>
                     <div class="booth-action-row">
                       <button class="btn btn-danger btn-sm" @click="exitBoothAction(booth.booth_num)">
                         출차
                       </button>
+                      <button
+                        class="btn btn-sm"
+                        :class="booth.timer_paused_at ? 'btn-success' : 'btn-ghost'"
+                        :disabled="pendingBoothTimerKey === `${currentTab}-${booth.booth_num}`"
+                        @click="toggleBoothTimerAction(booth)"
+                      >
+                        {{ booth.timer_paused_at ? "재개" : "중단" }}
+                      </button>
                       <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
-                        인스펙션
+                        검차
                       </button>
                     </div>
                   </div>
@@ -1358,15 +1396,14 @@ function goToInspection(num) {
 }
 
 .booth-cards {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
   padding: 0.875rem 1rem;
-  overflow-x: auto;
 }
 
 .booth-card {
-  flex: 1;
-  min-width: 200px;
+  min-width: 0;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 0.75rem;
@@ -1380,6 +1417,12 @@ function goToInspection(num) {
 
 .booth-card.booth-occupied {
   border-color: var(--accent-warning, #f59e0b);
+}
+
+.booth-card.booth-paused {
+  border-color: var(--accent-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.06);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.18);
 }
 
 .booth-card-header {
@@ -1453,6 +1496,10 @@ function goToInspection(num) {
   text-align: center;
 }
 
+.booth-elapsed-paused {
+  color: var(--accent-danger, #ef4444);
+}
+
 .booth-elapsed-empty {
   color: var(--text-tertiary);
 }
@@ -1484,6 +1531,12 @@ function goToInspection(num) {
 
 .booth-action-row .btn {
   flex: 1;
+}
+
+@media (max-width: 1280px) {
+  .booth-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1024px) {
@@ -1527,11 +1580,7 @@ function goToInspection(num) {
   }
 
   .booth-cards {
-    flex-direction: column;
-  }
-
-  .booth-card {
-    min-width: unset;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .queue-item {

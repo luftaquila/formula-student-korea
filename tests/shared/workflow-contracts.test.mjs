@@ -11,6 +11,9 @@ import {
 
 const testWorkflow = fs.readFileSync(".github/workflows/test.yml", "utf8");
 const buildWorkflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
+const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const workspaceConfig = fs.readFileSync("pnpm-workspace.yaml", "utf8");
+const workspaceLock = fs.readFileSync("pnpm-lock.yaml", "utf8");
 
 function dockerContextFilter(workflow) {
   return workflow.match(/            docker-context:\n((?:              - .+\n)+)/)?.[1] || "";
@@ -42,11 +45,22 @@ describe("CI workflow operational contracts", () => {
     assert.equal(competitionDateStart("2026-02-30"), null);
   });
 
-  it("rebuilds every standard and Caddy image when .dockerignore changes", () => {
+  it("rebuilds every standard and Caddy image when Docker inputs change", () => {
     for (const workflow of [testWorkflow, buildWorkflow]) {
-      assert.match(dockerContextFilter(workflow), /- '\.dockerignore'/);
+      const filter = dockerContextFilter(workflow);
+      for (const path of [".dockerignore", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml"]) {
+        assert.match(filter, new RegExp(`- '${path.replaceAll(".", "\\.")}'`));
+      }
       assert.ok((workflow.match(/\$DOCKER_CONTEXT/g) || []).length >= 2);
     }
+  });
+
+  it("pins pnpm and installs the shared workspace lockfile in CI", () => {
+    assert.equal(packageManifest.packageManager, "pnpm@11.25.0");
+    assert.equal((testWorkflow.match(/uses: pnpm\/setup@v2/g) || []).length, 2);
+    assert.doesNotMatch(testWorkflow, /uses: pnpm\/setup@v2[\s\S]+?cache: true/);
+    assert.match(testWorkflow, /run: pnpm install --frozen-lockfile/);
+    assert.doesNotMatch(testWorkflow, /package-lock\.json|\bnpm ci\b/);
   });
 
   it("treats Registration as Competition code in build, unit, and E2E plans", () => {
@@ -55,8 +69,8 @@ describe("CI workflow operational contracts", () => {
       assert.match(workflow, /F_REGISTRATION: \$\{\{ steps\.filter\.outputs\.registration \}\}/);
       assert.match(workflow, /"\$F_QUEUE" "\$F_REGISTRATION" "\$F_INSPECTION"/);
     }
-    assert.match(testWorkflow, /registration\/package-lock\.json/);
-    assert.match(testWorkflow, /for dir in auth queue registration inspection/);
+    assert.match(workspaceConfig, /^  - registration$/m);
+    assert.match(workspaceLock, /^  registration:$/m);
     assert.match(testWorkflow, /- shard: registration\n            projects: --project=registration/);
   });
 

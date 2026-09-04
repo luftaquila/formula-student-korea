@@ -915,11 +915,14 @@ app.put("/api/sheet/template/:id", (req, res) => {
         WHERE year = ? AND team_num = ? AND item_id = ?
       `);
       const updatedAt = new Date().toISOString();
-      const updatedBy = req.user?.name || req.user?.email || "";
+      const updatedBy = req.user?.realname?.trim() || "";
 
       for (const row of rows) {
         const normalized = nextAnswerType === "stopwatch" ? "" : normalizeStoredCounterAnswer(row.value);
         if (row.value === normalized) continue;
+        if (!updatedBy) {
+          throw { status: 409, message: "계정 실명을 확인할 수 없어 저장할 수 없습니다. 다시 로그인하세요." };
+        }
         normalizedAnswers += normalizeAnswer.run(
           normalized,
           updatedAt,
@@ -1539,7 +1542,7 @@ app.put("/api/sheet/answer", (req, res) => {
   const expectedValueProvided = Object.hasOwn(req.body, "expectedValue") && typeof expectedValue === "string";
 
   const updatedAt = new Date().toISOString();
-  const updatedBy = req.user?.name?.trim() || "";
+  const updatedBy = req.user?.realname?.trim() || "";
 
   const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
@@ -1650,7 +1653,7 @@ app.put("/api/sheet/memo", (req, res) => {
 
   const newMemo = memo ?? "";
   const updatedAt = new Date().toISOString();
-  const updatedBy = req.user?.name?.trim() || "";
+  const updatedBy = req.user?.realname?.trim() || "";
   const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
       `SELECT memo, memo_updated_at, memo_updated_by

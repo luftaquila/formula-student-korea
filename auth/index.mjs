@@ -316,8 +316,12 @@ function userAccess(user) {
 }
 
 const validateUser = (email) => {
-  const user = db.prepare("SELECT id, role, access_revision FROM users WHERE email = ? AND active = 1").get(email);
-  return user ? { valid: true, id: user.id, role: user.role, ...userAccess(user) } : { valid: false, role: null };
+  const user = db.prepare(
+    "SELECT id, role, realname, access_revision FROM users WHERE email = ? AND active = 1",
+  ).get(email);
+  return user
+    ? { valid: true, id: user.id, role: user.role, realname: user.realname || "", ...userAccess(user) }
+    : { valid: false, role: null };
 };
 
 function tokenHash(token) {
@@ -1153,11 +1157,17 @@ app.get("/api/users/exists/:email", (req, res) => {
 // GET /api/users/access/:email - authoritative service authorization snapshot
 app.get("/api/users/access/:email", (req, res) => {
   const user = db.prepare(
-    "SELECT id, role, access_revision FROM users WHERE email = ? AND active = 1",
+    "SELECT id, role, realname, access_revision FROM users WHERE email = ? AND active = 1",
   ).get(req.params.email);
   if (!user) return res.status(404).send();
   const snapshot = userAccess(user);
-  res.json({ id: user.id, role: user.role, permissions: snapshot.permissions, accessRevision: snapshot.accessRevision });
+  res.json({
+    id: user.id,
+    role: user.role,
+    realname: user.realname || "",
+    permissions: snapshot.permissions,
+    accessRevision: snapshot.accessRevision,
+  });
 });
 
 app.get("/api/access/catalog", (req, res) => res.json(accessCatalog()));
