@@ -1,0 +1,63 @@
+name: Set up cached pnpm
+description: Restore the pinned pnpm executable or install it with one retry
+
+outputs:
+  version:
+    description: The pnpm version declared by the root package manifest
+    value: ${{ steps.pnpm-version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve pnpm version
+      id: pnpm-version
+      shell: bash
+      run: |
+        spec=$(node -p "require('./package.json').packageManager")
+        version=${spec#pnpm@}
+        test "$spec" != "$version" && test -n "$version"
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Restore pnpm executable cache
+      id: pnpm-cache
+      continue-on-error: true
+      uses: actions/cache/restore@v5
+      with:
+        path: ~/setup-pnpm
+        key: pnpm-home-v2.1.0-${{ runner.os }}-${{ runner.arch }}-${{ steps.pnpm-version.outputs.version }}
+
+    - name: Install pnpm
+      id: pnpm-setup
+      if: steps.pnpm-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: pnpm/setup@v2.1.0
+      with:
+        version: ${{ steps.pnpm-version.outputs.version }}
+        install: false
+
+    - name: Install pnpm (retry after registry failure)
+      id: pnpm-setup-retry
+      if: steps.pnpm-cache.outputs.cache-hit != 'true' && steps.pnpm-setup.outcome == 'failure'
+      uses: pnpm/setup@v2.1.0
+      with:
+        version: ${{ steps.pnpm-version.outputs.version }}
+        install: false
+
+    - name: Activate pnpm
+      shell: bash
+      env:
+        PNPM_VERSION: ${{ steps.pnpm-version.outputs.version }}
+      run: |
+        echo "PNPM_HOME=$HOME/setup-pnpm" >> "$GITHUB_ENV"
+        echo "$HOME/setup-pnpm" >> "$GITHUB_PATH"
+        echo "$HOME/setup-pnpm/bin" >> "$GITHUB_PATH"
+        test -x "$HOME/setup-pnpm/pnpm"
+        test "$("$HOME/setup-pnpm/pnpm" --version)" = "$PNPM_VERSION"
+
+    - name: Save pnpm executable cache
+      if: steps.pnpm-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      uses: actions/cache/save@v5
+      with:
+        path: ~/setup-pnpm
+        key: pnpm-home-v2.1.0-${{ runner.os }}-${{ runner.arch }}-${{ steps.pnpm-version.outputs.version }}
