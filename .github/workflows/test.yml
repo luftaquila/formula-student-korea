@@ -302,9 +302,37 @@ jobs:
             workers: 2
             services: auth competition email
             seeds: users vehicle-types entries
-          - shard: traffic
-            projects: --project=traffic
+          - shard: traffic-core
+            projects: >-
+              --project=traffic
+              tests/e2e/traffic/accel-manual.spec.mjs
+              tests/e2e/traffic/autocross-manual.spec.mjs
+              tests/e2e/traffic/concurrent-edit.spec.mjs
+              tests/e2e/traffic/endurance-manual.spec.mjs
+              tests/e2e/traffic/event-modes.spec.mjs
+              tests/e2e/traffic/export.spec.mjs
+              tests/e2e/traffic/multi-event-measurement.spec.mjs
+              tests/e2e/traffic/rapid-fire-records.spec.mjs
+              tests/e2e/traffic/rbac.spec.mjs
+              tests/e2e/traffic/record-management.spec.mjs
+              tests/e2e/traffic/scoreboard-live.spec.mjs
+              tests/e2e/traffic/scoreboard.spec.mjs
+              tests/e2e/traffic/skidpad-manual.spec.mjs
             workers: 3
+            services: auth competition email
+            seeds: users vehicle-types entries
+          # Wireless specs share one physical-light owner and session table.
+          # Keep that global resource serial while the independent traffic
+          # paths above retain their three-way parallelism.
+          - shard: traffic-wireless
+            projects: >-
+              --project=traffic
+              tests/e2e/traffic/wireless-accel.spec.mjs
+              tests/e2e/traffic/wireless-bridge.spec.mjs
+              tests/e2e/traffic/wireless-engine.spec.mjs
+              tests/e2e/traffic/wireless-light-lock.spec.mjs
+              tests/e2e/traffic/wireless-mapping.spec.mjs
+            workers: 1
             services: auth competition email
             seeds: users vehicle-types entries
           - shard: inspection
