@@ -11,7 +11,12 @@ function fakeDatabase() {
     prepare(sql) {
       return {
         get(id) {
-          if (sql.includes("sheet_template")) return Number(id) === 12 ? { year: YEAR } : undefined;
+          if (sql.includes("sheet_template")) {
+            if (Number(id) === 12) return { year: YEAR };
+            if (Number(id) === 13) return { year: YEAR + 1 };
+            if (Number(id) === 14) return { year: YEAR - 1 };
+            return undefined;
+          }
           if (sql.includes("session")) return Number(id) === 33 ? { year: YEAR - 1 } : undefined;
           return undefined;
         },
@@ -43,6 +48,11 @@ describe("Competition mutation year guard", () => {
     const inspection = createModuleYearGuard({ module: "inspection", db: fakeDatabase() });
     assert.deepEqual(inspection({ query: {}, body: {}, path: "/API/SHEET/TEMPLATE/12/" }).years, [YEAR]);
     assert.deepEqual(inspection({ query: {}, body: {}, path: "/api/sheet/template/12/rule-refs" }).years, [YEAR]);
+    assert.deepEqual(inspection({ query: {}, body: {}, path: "/api/sheet/template/13" }).years, [YEAR + 1]);
+    assert.throws(
+      () => inspection({ query: {}, body: {}, path: "/api/sheet/template/14" }),
+      (error) => error.status === 409 && error.code === "YEAR_READ_ONLY" && error.year === YEAR - 1,
+    );
     const documents = createModuleYearGuard({ module: "documents", db: fakeDatabase() });
     assert.throws(
       () => documents({ query: {}, body: {}, path: "/api/sessions/33/submit" }),
@@ -63,9 +73,12 @@ describe("Competition mutation year guard", () => {
     assert.deepEqual(guard({
       query: {}, body: { from_year: YEAR - 1, to_year: YEAR }, path: "/api/sheet/template/copy",
     }).years, [YEAR]);
+    assert.deepEqual(guard({
+      query: {}, body: { from_year: YEAR - 1, to_year: YEAR + 1 }, path: "/api/sheet/template/copy",
+    }).years, [YEAR + 1]);
     assert.throws(
       () => guard({
-        query: {}, body: { from_year: YEAR - 1, to_year: YEAR + 1 }, path: "/api/sheet/template/copy",
+        query: {}, body: { from_year: YEAR - 1, to_year: YEAR + 2 }, path: "/api/sheet/template/copy",
       }),
       (error) => error.status === 409 && error.code === "YEAR_READ_ONLY",
     );

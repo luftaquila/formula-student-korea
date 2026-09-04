@@ -438,7 +438,7 @@ describe("Competition modular monolith", () => {
     }
   });
 
-  it("allows operational writes before the event and rejects noncurrent-year mutations", async () => {
+  it("allows next-year Inspection preparation while rejecting historical mutations", async () => {
     const fixture = fixtureRoot();
     fixtures.push(fixture);
     const created = createCompetitionApp({
@@ -453,6 +453,15 @@ describe("Competition modular monolith", () => {
         cookie: admin, body: { year: YEAR, level: "category", name: "Safety" },
       });
       assert.equal(current.status, 200, await current.clone().text());
+
+      const next = await client.post("/competition/api/v1/inspection/sheet/template", {
+        cookie: admin, body: { year: YEAR + 1, level: "category", name: "Next Safety" },
+      });
+      assert.equal(next.status, 200, await next.clone().text());
+      assert.equal(
+        created.db.prepare("SELECT COUNT(*) AS count FROM sheet_template WHERE year = ?").get(YEAR + 1).count,
+        1,
+      );
 
       const old = await client.post("/competition/api/v1/inspection/sheet/template", {
         cookie: admin, body: { year: YEAR - 1, level: "category", name: "Old" },

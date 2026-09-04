@@ -16,7 +16,7 @@ Teams table paths are relative to `/competition/api/v1` because Teams, vehicle t
 
 Former standalone, nested `/{module}/api/*`, lifecycle, finalize, snapshot, and version routes are not compatibility APIs and return `404`.
 
-Competition years use `Asia/Seoul`. Reads may select any valid year. Team and vehicle-type roster mutations may select the current or next KST year; Queue, Registration, Inspection, Traffic, Score, and Documents mutations remain limited to the current KST year. A year outside the applicable write window returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
+Competition years use `Asia/Seoul`. Reads may select any valid year. Team, vehicle-type, and Inspection mutations may select the current or next KST year; Queue, Registration, Traffic, Score, and Documents mutations remain limited to the current KST year. A year outside the applicable write window returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
 
 Competition process health is separate from module compatibility health:
 

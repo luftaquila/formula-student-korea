@@ -4,7 +4,7 @@ import { useRouter } from "vue-router";
 import { fetchEntries, fetchEntryYears, fetchSheetSummary, fetchVehicleTypes } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
-import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { currentCompetitionYear, isCompetitionPreparationYear } from "@shared/competition-year.mjs";
 import { permissionComputed } from "@shared/officialsStore.js";
 
 const tableRef = ref(null);
@@ -47,7 +47,7 @@ let dataLoadSeq = 0;
 let stickyHeaderResizeObserver = null;
 const INSPECTOR_COLLAPSE_THRESHOLD = 5;
 
-const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
+const isReadOnly = computed(() => !isCompetitionPreparationYear(selectedYear.value));
 const stickyHeaderHostStyle = computed(() => {
   const height = stickyHeaderMetrics.value.height;
   return {

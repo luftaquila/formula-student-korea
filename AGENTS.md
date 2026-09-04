@@ -36,9 +36,9 @@ instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
 - `competition_team.id` is the stable team identity, and `competition_team` is the
   only team source of truth.
 - Interpret competition years in `Asia/Seoul`. Reads may target any valid year;
-  team and vehicle-type roster mutations may target the current or next KST year,
-  while all operational mutations are limited to the current year. Do not add
-  draft/finalize, roster snapshots, numeric roster versions, or soft-delete inference.
+  team, vehicle-type, and Inspection mutations may target the current or next KST
+  year, while other operational mutations are limited to the current year. Do not
+  add draft/finalize, roster snapshots, numeric roster versions, or soft-delete inference.
 - Keep Competition domains in one runtime and database, with
   `/competition/api/v1` as their only API namespace. Do not add standalone legacy
   profiles, compatibility APIs, HTTP fan-out, copied rosters, live roster

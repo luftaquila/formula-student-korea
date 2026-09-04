@@ -6,7 +6,11 @@ import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstr
 import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
-import { currentCompetitionYear, parseCompetitionYear } from "../shared/competition-year.mjs";
+import {
+  currentCompetitionYear,
+  isCompetitionPreparationYear,
+  parseCompetitionYear,
+} from "../shared/competition-year.mjs";
 import {
   parseCalculationConfig,
   serializeCalculationConfig,
@@ -1156,9 +1160,9 @@ app.delete("/api/sheet/template/:id", (req, res) => {
     action: "template.delete", id, columns: "year, level, name",
   });
   if (!node) return;
-  if (node.year !== currentCompetitionYear()) {
-    logger.warn(req, "template.delete", { error: "이전 연도 템플릿 삭제 거부", year: node.year }, node.name);
-    return res.status(409).send("현재 연도 템플릿만 수정할 수 있습니다.");
+  if (!isCompetitionPreparationYear(node.year)) {
+    logger.warn(req, "template.delete", { error: "쓰기 허용 범위 밖 템플릿 삭제 거부", year: node.year }, node.name);
+    return res.status(409).send("현재 또는 다음 연도 템플릿만 수정할 수 있습니다.");
   }
 
   const result = dbRun(() => db.transaction(() => {
@@ -1227,9 +1231,9 @@ app.post("/api/sheet/template/reorder", (req, res) => {
         };
         throw { status: 400, message: "같은 연도와 부모의 형제 항목만 함께 정렬할 수 있습니다." };
       }
-      if (first.year !== currentCompetitionYear()) {
-        failureContext = { reason_code: "historical_year", year: first.year };
-        throw { status: 409, message: "현재 연도 템플릿만 수정할 수 있습니다." };
+      if (!isCompetitionPreparationYear(first.year)) {
+        failureContext = { reason_code: "read_only_year", year: first.year };
+        throw { status: 409, message: "현재 또는 다음 연도 템플릿만 수정할 수 있습니다." };
       }
       let count = 0;
       for (const item of items) {
@@ -1726,7 +1730,7 @@ app.put("/api/sheet/answer", (req, res) => {
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (!teamPreflight(req, res, { action: "answer.update", year, teamNum: team_num })) return;
-  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  if (!isCompetitionPreparationYear(year)) return res.status(409).send("현재 또는 다음 연도 데이터만 수정할 수 있습니다.");
   const templateItem = mutationTemplatePreflight(req, res, {
     action: "answer.update", id: item_id, year,
   });
@@ -1849,7 +1853,7 @@ app.put("/api/sheet/memo", (req, res) => {
   }
   if (team_num < 1) return res.status(400).send("올바르지 않은 팀 번호입니다.");
   if (!teamPreflight(req, res, { action: "memo.update", year, teamNum: team_num })) return;
-  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  if (!isCompetitionPreparationYear(year)) return res.status(409).send("현재 또는 다음 연도 데이터만 수정할 수 있습니다.");
   const templateItem = mutationTemplatePreflight(req, res, {
     action: "memo.update", id: item_id, year,
   });
@@ -1962,7 +1966,7 @@ app.put("/api/sheet/category-result", (req, res) => {
   if (catResult !== undefined && catResult !== null && catResult !== "" && !["PASS", "FAIL"].includes(catResult)) {
     return res.status(400).send("결과는 PASS, FAIL 또는 비움이어야 합니다.");
   }
-  if (year !== currentCompetitionYear()) return res.status(409).send("현재 연도 데이터만 수정할 수 있습니다.");
+  if (!isCompetitionPreparationYear(year)) return res.status(409).send("현재 또는 다음 연도 데이터만 수정할 수 있습니다.");
   const templateCat = mutationTemplatePreflight(req, res, {
     action: "category_result.update", id: category_id, year, level: "category",
   });

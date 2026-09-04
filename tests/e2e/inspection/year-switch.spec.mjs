@@ -48,8 +48,40 @@ test.describe("Competition year boundary", () => {
     await expect(page.getByTestId("inspection-team-year-filter")).toHaveValue(String(YEAR));
   });
 
-  test("labels a future year as read-only without calling it historical", async ({ page }) => {
+  test("allows next-year Inspection sheet preparation", async ({ page }, testInfo) => {
     await exposeNextYear(page);
+    const teamNumber = 909000 + testInfo.retry;
+    const team = await page.request.post(`/competition/api/v1/teams?year=${NEXT_YEAR}`, {
+      data: { number: teamNumber, university: "Next University", name: "Next Team" },
+    });
+    expect(team.status()).toBe(201);
+
+    const category = await page.request.post("/competition/api/v1/inspection/sheet/template", {
+      data: { year: NEXT_YEAR, level: "category", name: "Next Inspection" },
+    });
+    expect(category.status()).toBe(200);
+    const categoryId = Number((await category.json()).id);
+    const subcategory = await page.request.post("/competition/api/v1/inspection/sheet/template", {
+      data: { year: NEXT_YEAR, level: "subcategory", parent_id: categoryId, name: "Next Subcategory" },
+    });
+    expect(subcategory.status()).toBe(200);
+    const subcategoryId = Number((await subcategory.json()).id);
+    const group = await page.request.post("/competition/api/v1/inspection/sheet/template", {
+      data: { year: NEXT_YEAR, level: "group", parent_id: subcategoryId, name: "Next Group" },
+    });
+    expect(group.status()).toBe(200);
+    const groupId = Number((await group.json()).id);
+    const item = await page.request.post("/competition/api/v1/inspection/sheet/template", {
+      data: {
+        year: NEXT_YEAR,
+        level: "item",
+        parent_id: groupId,
+        name: "Next Inspection Item",
+        answer_type: "passfail",
+      },
+    });
+    expect(item.status()).toBe(200);
+
     await page.goto("/inspection");
     await waitForPageReady(page);
 
@@ -61,7 +93,21 @@ test.describe("Competition year boundary", () => {
     expect(yearOptions[0]).toBe(NEXT_YEAR);
     expect(yearOptions).toEqual([...yearOptions].sort((a, b) => b - a));
     await yearSelect.selectOption(String(NEXT_YEAR));
+    await expect(page.locator(".readonly-banner")).not.toBeVisible();
+    await expect(page.locator("tr.clickable-row").filter({ hasText: `#${teamNumber}` })).toBeVisible();
 
-    await expect(page.locator(".readonly-banner")).toHaveText("읽기 전용 모드");
+    await page.goto(`/inspection/${NEXT_YEAR}/${teamNumber}`);
+    await waitForPageReady(page);
+    await expect(page.locator(".readonly-banner")).not.toBeVisible();
+    const itemRow = page.locator(".item-row").filter({ hasText: "Next Inspection Item" });
+    const passButton = itemRow.locator(".pf-toggle button").first();
+    await expect(passButton).toBeEnabled();
+    const saved = page.waitForResponse((response) =>
+      response.url().endsWith("/competition/api/v1/inspection/sheet/answer")
+      && response.request().method() === "PUT",
+    );
+    await passButton.click();
+    expect((await saved).status()).toBe(200);
+    await expect(passButton).toHaveClass(/btn-success/);
   });
 });

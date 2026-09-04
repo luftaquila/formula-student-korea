@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from "vue";
 import { createKeyedDebouncer } from "@shared/debounce.js";
-import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { currentCompetitionYear, isCompetitionPreparationYear } from "@shared/competition-year.mjs";
 import { useRouter } from "vue-router";
 import { ruleDocumentLabel } from "../utils/rule-text";
 import {
@@ -79,7 +79,7 @@ watch(activeTab, async (val) => {
   requestAnimationFrame(resizeAllTextareas);
 });
 
-const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
+const isReadOnly = computed(() => !isCompetitionPreparationYear(selectedYear.value));
 
 onMounted(async () => {
   try {
