@@ -247,7 +247,9 @@ describe("Competition modular monolith", () => {
       assert.equal(futureCreate.status, 201, await futureCreate.clone().text());
       assert.equal((await futureCreate.json()).year, YEAR + 1);
       const futureMeta = await client.get("/competition/api/v1/meta");
-      assert.deepEqual((await futureMeta.json()).years.slice(0, 2), [YEAR, YEAR + 1]);
+      const futureYears = (await futureMeta.json()).years;
+      assert.deepEqual(futureYears, [...futureYears].sort((a, b) => b - a));
+      assert.deepEqual(futureYears.slice(0, 2), [YEAR + 1, YEAR]);
 
       const duplicate = await client.post(`/competition/api/v1/teams?year=${YEAR}`, {
         cookie: admin,

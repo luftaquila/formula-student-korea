@@ -7,6 +7,7 @@ import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
 import { formatDateLines } from "@shared/format-date.js";
 import { permissionComputed } from "@shared/officialsStore.js";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
 const { notyf } = useNotification();
 const canManage = permissionComputed("documents.manage");
@@ -59,7 +60,10 @@ function getTypeColor(type) {
 async function loadYears() {
   try {
     years.value = await fetchEntryYears();
-    if (years.value.length > 0) selectedYear.value = years.value[0];
+    const currentYear = currentCompetitionYear();
+    selectedYear.value = years.value.includes(currentYear)
+      ? currentYear
+      : (years.value[0] ?? null);
   } catch (e) { notyf.error(e.message); }
 }
 

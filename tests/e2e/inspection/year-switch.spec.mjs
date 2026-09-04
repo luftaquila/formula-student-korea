@@ -12,7 +12,10 @@ async function exposeNextYear(page) {
     const meta = await response.json();
     await route.fulfill({
       response,
-      json: { ...meta, years: [...new Set([...meta.years, NEXT_YEAR])] },
+      json: {
+        ...meta,
+        years: [...new Set([...meta.years, NEXT_YEAR])].sort((a, b) => b - a),
+      },
     });
   });
 }
@@ -51,6 +54,12 @@ test.describe("Competition year boundary", () => {
     await waitForPageReady(page);
 
     const yearSelect = page.getByTestId("inspection-team-year-filter");
+    await expect(yearSelect).toHaveValue(String(YEAR));
+    const yearOptions = await yearSelect.locator("option").evaluateAll((options) =>
+      options.map((option) => Number(option.value)),
+    );
+    expect(yearOptions[0]).toBe(NEXT_YEAR);
+    expect(yearOptions).toEqual([...yearOptions].sort((a, b) => b - a));
     await yearSelect.selectOption(String(NEXT_YEAR));
 
     await expect(page.locator(".readonly-banner")).toHaveText("읽기 전용 모드");

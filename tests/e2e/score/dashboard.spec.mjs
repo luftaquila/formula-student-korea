@@ -50,7 +50,10 @@ test.describe("Score dashboard", () => {
 
     // Verify the year options are populated
     const options = yearSelect.locator("option");
-    await expect(options.first()).toContainText(String(YEAR));
+    const years = await options.evaluateAll((items) =>
+      items.map((option) => Number(option.value)),
+    );
+    expect(years).toEqual([...years].sort((a, b) => b - a));
   });
 
   test("inspection column toggle hides and shows inspection columns", async ({ page }) => {

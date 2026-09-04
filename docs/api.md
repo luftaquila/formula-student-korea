@@ -160,7 +160,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/meta` | public | — | `{ currentYear, years }` | KST current year and readable stored years, with the current year first |
+| GET | `/meta` | public | — | `{ currentYear, years }` | KST current year and readable stored years in descending order; clients use `currentYear` as their default selection |
 | GET | `/teams` | public / admin | `?year=&includeInactive=true` | `[{ id, year, number, university, name, vehicleTypeId, vehicleType, active }]` | Public reads active teams; admin may include inactive teams |
 | GET | `/teams/:id` | admin | — | Team | Read one team by stable ID |
 | GET | `/teams/export` | admin | `?year=` | `{ year, teams }` download | Export a readable year; vehicle types are represented by name on each team |

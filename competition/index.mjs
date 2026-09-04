@@ -187,7 +187,8 @@ export function createCompetitionApp(options = {}) {
   app.get("/api/health", (req, res) => res.send("ok"));
   app.get("/competition/api/v1/meta", (req, res) => {
     const currentYear = currentCompetitionYear();
-    const years = [currentYear, ...teams.store.listYears().filter((year) => year !== currentYear)];
+    const years = [...new Set([currentYear, ...teams.store.listYears()])]
+      .sort((a, b) => b - a);
     res.json({ currentYear, years });
   });
 
