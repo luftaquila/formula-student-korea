@@ -76,10 +76,24 @@ function catalogPayload(hash = HASH_A, clauseId = "formula-technical-10-9") {
   };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((settle) => { resolve = settle; });
+  return { promise, resolve };
+}
+
 let payload = catalogPayload();
 let catalogUnavailable = false;
+let catalogNow = 0;
+let rulesFetchGate = null;
 const rulesFetch = async (url) => {
   if (catalogUnavailable) throw new Error("injected catalog outage");
+  if (rulesFetchGate && String(url).endsWith("rules-manifest.json")) {
+    const gate = rulesFetchGate;
+    rulesFetchGate = null;
+    gate.started.resolve();
+    await gate.release.promise;
+  }
   return new Response(JSON.stringify(
     String(url).endsWith("rules-manifest.json") ? payload.manifest : payload.index,
   ), { status: 200, headers: { "content-type": "application/json" } });
@@ -99,6 +113,7 @@ before(async () => {
     validateUser: TRUST_JWT,
     rulesBaseUrl: "https://rules.test/fsk-rules/",
     rulesFetch,
+    rulesCatalogOptions: { now: () => catalogNow, ttlMs: 100 },
   });
   const db = created.db;
   const category = db.prepare("INSERT INTO sheet_template (year, level, name) VALUES (?, 'category', '기술검차')").run(YEAR).lastInsertRowid;
@@ -129,6 +144,17 @@ describe("inspection rule reference API", () => {
     assert.equal(body.rules.length, 1);
     assert.equal(body.rules[0].rule_key, "formula-technical.brake-light");
     assert.equal("url" in body.rules[0], false);
+  });
+
+  it("rejects a competition year above the shared valid range before loading the catalog", async () => {
+    catalogUnavailable = true;
+    try {
+      const response = await client.get("/api/sheet/rules/search?year=2100", { cookie: officialCookie });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).code, "INVALID_YEAR");
+    } finally {
+      catalogUnavailable = false;
+    }
   });
 
   it("requires inspection.manage and resolves authoritative metadata when linking an item", async () => {
@@ -225,7 +251,7 @@ describe("inspection rule reference API", () => {
               rule_key: "formula-technical.brake-light",
               clause_id: "formula-technical-wrong",
               citation: "가짜 인용",
-              source_hash: HASH_B,
+              source_hash: HASH_A,
             }],
           },
         },
@@ -249,6 +275,94 @@ describe("inspection rule reference API", () => {
     });
     assert.equal(rejected.status, 400);
     assert.equal(JSON.parse(created.db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.second).rule_refs).status, "no_direct_rule");
+  });
+
+  it("downgrades a same-edition verified import when the clause content hash changed", async () => {
+    const db = created.db;
+    const before = db.prepare(
+      "SELECT id, rule_refs FROM sheet_template WHERE id IN (?, ?) ORDER BY id",
+    ).all(ids.first, ids.second);
+    const template = [{ subcategories: [{ groups: [{ items: [
+      {
+        field_key: "brake-light",
+        rule_refs: {
+          status: "verified",
+          references: [{
+            edition: YEAR,
+            document: "formula-technical",
+            rule_key: "formula-technical.brake-light",
+            clause_id: "formula-technical-10-9",
+            citation: "제10조 9항",
+            source_hash: HASH_B,
+            release_tag: `formula-technical-${YEAR}-r1`,
+          }],
+        },
+      },
+      { field_key: "operations-check", rule_refs: { status: "no_direct_rule", references: [] } },
+    ] }] }] }];
+
+    try {
+      const response = await client.post("/api/sheet/template/rule-refs/import", {
+        cookie: chiefCookie, body: { year: YEAR, template },
+      });
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).counts, { verified: 0, needs_review: 1, no_direct_rule: 1 });
+      const stored = JSON.parse(db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.first).rule_refs);
+      assert.equal(stored.status, "needs_review");
+      assert.equal(stored.references[0].source_hash, HASH_A);
+      assert.equal(stored.references[0].release_tag, `formula-technical-${YEAR}-r2`);
+    } finally {
+      const restore = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?");
+      for (const row of before) restore.run(row.rule_refs, row.id);
+    }
+  });
+
+  it("rejects a reference-only import when the field-key set changes during catalog loading", { timeout: 5000 }, async () => {
+    const db = created.db;
+    const gate = { started: deferred(), release: deferred() };
+    const template = [{ subcategories: [{ groups: [{ items: [
+      {
+        field_key: "brake-light",
+        rule_refs: {
+          status: "verified",
+          references: [{
+            edition: YEAR,
+            document: "formula-technical",
+            rule_key: "formula-technical.brake-light",
+            clause_id: "formula-technical-10-9",
+            citation: "제10조 9항",
+            source_hash: HASH_A,
+          }],
+        },
+      },
+      { field_key: "operations-check", rule_refs: { status: "no_direct_rule", references: [] } },
+    ] }] }] }];
+    let concurrentItemId = null;
+
+    catalogNow += 101;
+    rulesFetchGate = gate;
+    try {
+      const pendingImport = client.post("/api/sheet/template/rule-refs/import", {
+        cookie: chiefCookie, body: { year: YEAR, template },
+      });
+      await gate.started.promise;
+      concurrentItemId = Number(db.prepare(`INSERT INTO sheet_template
+        (year, level, parent_id, name, answer_type, field_key)
+        VALUES (?, 'item', ?, '동시 추가 문항', 'passfail', 'concurrent-item')`
+      ).run(YEAR, ids.group).lastInsertRowid);
+      gate.release.resolve();
+
+      const response = await pendingImport;
+      assert.equal(response.status, 409);
+      assert.deepEqual(
+        JSON.parse(db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(concurrentItemId).rule_refs),
+        { status: "needs_review", references: [] },
+      );
+    } finally {
+      gate.release.resolve();
+      rulesFetchGate = null;
+      if (concurrentItemId !== null) db.prepare("DELETE FROM sheet_template WHERE id = ?").run(concurrentItemId);
+    }
   });
 
   it("downgrades changed content during explicit revalidation and then denies redirect", async () => {
@@ -382,8 +496,8 @@ describe("inspection rule reference API", () => {
     // Pin the catalog the import will see: brake-light now lives at 제12조 1항 with HASH_B.
     payload = catalogPayload(HASH_B, "formula-technical-12-1");
     assert.equal((await client.post("/api/sheet/template/rule-refs/revalidate", { cookie: chiefCookie, body: { year: YEAR } })).status, 200);
-    const reference = (source_hash) => ({
-      edition: YEAR - 1, document: "formula-technical", rule_key: "formula-technical.brake-light",
+    const reference = (source_hash, edition = YEAR - 1) => ({
+      edition, document: "formula-technical", rule_key: "formula-technical.brake-light",
       clause_id: "formula-technical-9-9", citation: "제9조 9항", source_hash,
     });
     const template = [{
@@ -394,6 +508,8 @@ describe("inspection rule reference API", () => {
           rule_refs: { status: "verified", references: [reference(HASH_A)] } },
         { name: "운영 확인", answer_type: "text", field_key: "operations-check",
           rule_refs: { status: "needs_review", references: [] } },
+        { name: "동일 연도 구판", answer_type: "passfail", field_key: "same-edition-changed",
+          rule_refs: { status: "verified", references: [reference(HASH_A, YEAR)] } },
       ] }] }],
     }];
     const response = await client.post("/api/sheet/template/import", { cookie: chiefCookie, body: { year: YEAR, template } });
@@ -411,6 +527,8 @@ describe("inspection rule reference API", () => {
     assert.equal(stored["brake-light-area"].status, "needs_review");
     assert.equal(stored["brake-light-area"].references[0].clause_id, "formula-technical-12-1");
     assert.equal(stored["brake-light-area"].references[0].source_hash, HASH_B);
+    assert.equal(stored["same-edition-changed"].status, "needs_review");
+    assert.equal(stored["same-edition-changed"].references[0].source_hash, HASH_B);
     assert.deepEqual(stored["operations-check"], { status: "needs_review", references: [] });
   });
 });

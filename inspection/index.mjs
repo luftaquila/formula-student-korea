@@ -5,7 +5,7 @@ import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstr
 import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { ensureInactiveTeamView, isTeamActive } from "../shared/team-status.mjs";
-import { currentCompetitionYear } from "../shared/competition-year.mjs";
+import { currentCompetitionYear, parseCompetitionYear } from "../shared/competition-year.mjs";
 import {
   parseCalculationConfig,
   serializeCalculationConfig,
@@ -595,18 +595,18 @@ function catalogRelease(catalog) {
   };
 }
 
-function ruleRefsForInput(value, year, catalog) {
+function ruleRefsForInput(value, catalog) {
   const parsed = validateRuleRefs(value);
   if (parsed.status === "no_direct_rule") return { status: "no_direct_rule", references: [] };
   if (!parsed.references.length) return { status: "needs_review", references: [] };
-  if (parsed.references.some((ref) => ref.edition !== year)) {
-    // A template exported from another year: follow the stable keys into this
-    // year's catalog and keep `verified` only when the clause content is unchanged.
+  if (parsed.status === "verified") {
+    // Follow stable keys across both annual and same-edition revisions. An imported
+    // verification remains valid only when every clause still has the reviewed text.
     const { reason, ...transitioned } = transitionRuleRefs(parsed, catalog);
     return transitioned;
   }
   const rules = resolveRuleKeys(catalog, parsed.references.map((ref) => ref.rule_key));
-  return refsFromRules(parsed.status, rules);
+  return refsFromRules("needs_review", rules);
 }
 
 function flattenTemplateRuleRefs(template, { requireFieldKeys = true, requireRuleRefs = true } = {}) {
@@ -634,10 +634,13 @@ function flattenTemplateRuleRefs(template, { requireFieldKeys = true, requireRul
 }
 
 app.get("/api/sheet/rules/search", async (req, res) => {
-  const year = Number(req.query.year);
+  let year;
+  try { year = parseCompetitionYear(req.query.year, { defaultCurrent: false }); }
+  catch {
+    return res.status(400).json({ code: "INVALID_YEAR", message: "올바른 year가 필요합니다." });
+  }
   const document = req.query.document ? String(req.query.document) : "";
   const query = String(req.query.q || "").trim().toLocaleLowerCase("ko");
-  if (!Number.isInteger(year) || year < 2000) return res.status(400).json({ code: "INVALID_YEAR", message: "올바른 year가 필요합니다." });
   if (document && !["formula-technical", "formula-competition"].includes(document)) {
     return res.status(400).json({ code: "INVALID_DOCUMENT", message: "올바르지 않은 규정 문서입니다." });
   }
@@ -1162,7 +1165,7 @@ app.post("/api/sheet/template/import", async (req, res) => {
     const catalog = needsCatalog ? await rulesCatalog.load(Number(year)) : null;
     importedRuleRefs = new Map(flattened.map(({ fieldKey, value }) => [
       fieldKey,
-      catalog ? ruleRefsForInput(value, Number(year), catalog) : validateRuleRefs(value, { edition: Number(year) }),
+      catalog ? ruleRefsForInput(value, catalog) : validateRuleRefs(value, { edition: Number(year) }),
     ]));
   } catch (error) {
     if (error instanceof RuleCatalogError) return ruleCatalogFailure(req, res, "template.import", error, { year });
@@ -1264,7 +1267,7 @@ app.post("/api/sheet/template/rule-refs/import", async (req, res) => {
     catalog = needsCatalog ? await rulesCatalog.load(year) : null;
     normalized = new Map(flattened.map(({ fieldKey, value }) => [
       fieldKey,
-      catalog ? ruleRefsForInput(value, year, catalog) : validateRuleRefs(value, { edition: year }),
+      catalog ? ruleRefsForInput(value, catalog) : validateRuleRefs(value, { edition: year }),
     ]));
   } catch (error) {
     if (error instanceof RuleCatalogError) return ruleCatalogFailure(req, res, "template.rule_refs.import", error, { year });
@@ -1272,9 +1275,17 @@ app.post("/api/sheet/template/rule-refs/import", async (req, res) => {
   }
 
   const result = dbRun(() => db.transaction(() => {
+    const currentItems = db.prepare(
+      "SELECT id, field_key FROM sheet_template WHERE year = ? AND level = 'item' ORDER BY field_key",
+    ).all(year);
+    const currentKeys = currentItems.map((item) => item.field_key);
+    if (!currentItems.length || currentKeys.length !== importedKeys.length
+      || currentKeys.some((key, index) => key !== importedKeys[index])) {
+      throw { status: 409, message: "템플릿이 동시에 변경되었습니다. 다시 시도하세요." };
+    }
     const update = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ? AND year = ? AND level = 'item'");
     const counts = { verified: 0, needs_review: 0, no_direct_rule: 0 };
-    for (const item of storedItems) {
+    for (const item of currentItems) {
       const value = normalized.get(item.field_key);
       const info = update.run(serializeRuleRefs(value, year), item.id, year);
       if (info.changes !== 1) throw { status: 409, message: "템플릿이 동시에 변경되었습니다. 다시 시도하세요." };
