@@ -16,17 +16,20 @@ boundaries in the [architecture](docs/architecture.md), and HTTP contracts in th
 
 ## Local development
 
-Use Node.js 22 and npm. Run `npm ci` at the root and in each backend or web package
-you touch. Service startup needs `.env` based on `.env.example`; tests inject their
-own dependencies where possible.
+Use Node.js 22 and the repository-pinned pnpm version. Enable Corepack if needed,
+then install the entire workspace once from the repository root. Service startup
+needs `.env` based on `.env.example`; tests inject their own dependencies where
+possible.
 
 ```bash
-npm test                         # all unit and integration tests
-npm run test:competition        # one service or domain
-npm run test:shared
+corepack enable
+pnpm install --frozen-lockfile
+pnpm test                         # all unit and integration tests
+pnpm run test:competition        # one service or domain
+pnpm run test:shared
 
-npm --prefix entry/web run dev  # replace entry with the relevant SPA
-npm --prefix entry/web run build
+pnpm --dir entry/web run dev     # replace entry with the relevant SPA
+pnpm --dir entry/web run build
 node competition/index.mjs      # replace competition for a supporting service
 ```
 

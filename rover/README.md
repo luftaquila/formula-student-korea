@@ -522,6 +522,6 @@ ros2 topic echo /rover/gps/position
 
 ```bash
 cd rover/pilot && python3 -m pytest test/ -q
-npm run test:course
-npm run test:shared
+pnpm run test:course
+pnpm run test:shared
 ```

@@ -48,6 +48,9 @@ jobs:
               - 'entrypoint.sh'
             docker-context:
               - '.dockerignore'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
             auth:
               - 'auth/**'
             entry:

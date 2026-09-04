@@ -41,12 +41,14 @@ boundary.
 
 ## Development
 
-Use Node.js 22 and npm.
+Use Node.js 22 and the repository-pinned pnpm version.
 
 ```bash
-npm test
-npm run test:competition
-npm --prefix entry/web run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm test
+pnpm run test:competition
+pnpm --dir entry/web run build
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for service commands, deterministic test
