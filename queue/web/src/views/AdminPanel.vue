@@ -88,6 +88,8 @@ watch(lastBoothUpdate, (update) => {
   }
 });
 
+watch(allBooths, syncElapsedTimers);
+
 watch(lastPenaltyUpdate, () => {
   if (penaltyModalOpen.value) refreshPenaltyList();
 });

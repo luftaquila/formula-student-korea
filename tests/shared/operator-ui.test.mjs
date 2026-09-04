@@ -57,6 +57,14 @@ test("occupied booth controls can pause and resume the shared inspection timer",
   assert.match(timerFormatSource, /booth\.timer_paused_ms/);
 });
 
+test("queue booth timers resync when SSE init replaces booth state", async () => {
+  const adminSource = await readFile(new URL("../../queue/web/src/views/AdminPanel.vue", import.meta.url), "utf8");
+  const registrationSource = await readFile(new URL("../../queue/web/src/views/Register.vue", import.meta.url), "utf8");
+
+  assert.match(adminSource, /watch\(allBooths, syncElapsedTimers\)/);
+  assert.match(registrationSource, /watch\(allBooths, syncElapsedTimers\)/);
+});
+
 test("inspection booth cards wrap at four columns without horizontal scrolling", async () => {
   const source = await readFile(new URL("../../queue/web/src/views/AdminPanel.vue", import.meta.url), "utf8");
   const boothCardsRule = source.match(/\.booth-cards\s*\{([^}]*)\}/)?.[1] || "";

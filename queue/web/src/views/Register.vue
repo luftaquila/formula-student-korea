@@ -88,6 +88,8 @@ watch(lastBoothUpdate, (update) => {
   }
 });
 
+watch(allBooths, syncElapsedTimers);
+
 watch(lastEntriesUpdate, async () => {
   try { entries.value = await fetchEntries(); }
   catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
