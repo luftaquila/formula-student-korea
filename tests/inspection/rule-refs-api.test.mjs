@@ -138,9 +138,16 @@ describe("inspection rule reference API", () => {
     });
     assert.equal(denied.status, 403);
 
+    const missingExpected = await client.put(`/api/sheet/template/${ids.first}/rule-refs`, {
+      cookie: chiefCookie,
+      body: { status: "verified", rule_keys: ["formula-technical.brake-light"] },
+    });
+    assert.equal(missingExpected.status, 400);
+
     const saved = await client.put(`/api/sheet/template/${ids.first}/rule-refs`, {
       cookie: chiefCookie,
       body: {
+        expected_rule_refs: { status: "needs_review", references: [] },
         status: "verified",
         rule_keys: ["formula-technical.brake-light"],
         references: [{ clause_id: "https://evil.test/" }],
@@ -152,6 +159,45 @@ describe("inspection rule reference API", () => {
 
     const tree = await (await client.get(`/api/sheet/template?year=${YEAR}`, { cookie: officialCookie })).json();
     assert.deepEqual(tree[0].subcategories[0].groups[0].items[0].rule_refs, refs);
+  });
+
+  it("rejects a stale rule-reference edit without overwriting the winner", async () => {
+    const expected = JSON.parse(created.db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.first).rule_refs);
+    const winner = await client.put(`/api/sheet/template/${ids.first}/rule-refs`, {
+      cookie: chiefCookie,
+      body: { expected_rule_refs: expected, status: "no_direct_rule", rule_keys: [] },
+    });
+    assert.equal(winner.status, 200);
+    const current = await winner.json();
+
+    const stale = await client.put(`/api/sheet/template/${ids.first}/rule-refs`, {
+      cookie: chiefCookie,
+      body: {
+        expected_rule_refs: expected,
+        status: "verified",
+        rule_keys: ["formula-technical.brake-light"],
+      },
+    });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await stale.json(), {
+      code: "INSPECTION_STALE_WRITE",
+      message: "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요.",
+      current: { rule_refs: current },
+    });
+    assert.deepEqual(
+      JSON.parse(created.db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.first).rule_refs),
+      current,
+    );
+
+    const restored = await client.put(`/api/sheet/template/${ids.first}/rule-refs`, {
+      cookie: chiefCookie,
+      body: {
+        expected_rule_refs: current,
+        status: "verified",
+        rule_keys: ["formula-technical.brake-light"],
+      },
+    });
+    assert.equal(restored.status, 200);
   });
 
   it("redirects a verified unchanged key to the current Pages anchor", async () => {

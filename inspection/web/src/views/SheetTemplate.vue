@@ -509,10 +509,16 @@ async function saveRuleStatus(status) {
   if (!item) return;
   try {
     const keys = status === "verified" ? selectedRuleKeys.value : [];
-    item.rule_refs = await updateSheetRuleRefs(item.id, status, keys);
+    item.rule_refs = await updateSheetRuleRefs(item.id, item.rule_refs, status, keys);
     success("규정 연결을 저장했습니다.");
     closeRuleDialog();
   } catch (e) {
+    if (e.status === 409 && e.data?.code === "INSPECTION_STALE_WRITE" && e.data.current?.rule_refs) {
+      item.rule_refs = e.data.current.rule_refs;
+      closeRuleDialog();
+      error(e.message);
+      return;
+    }
     error(e.message || "규정 연결을 저장할 수 없습니다.");
   }
 }

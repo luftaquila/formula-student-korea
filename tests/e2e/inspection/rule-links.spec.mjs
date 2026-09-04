@@ -53,9 +53,66 @@ test.describe("Inspection rule reference UI", () => {
     await page.locator(".rule-result input").check();
     await page.getByRole("button", { name: "선택 규정 저장" }).click();
     await expect.poll(() => savedBody).toEqual({
+      expected_rule_refs: { status: "needs_review", references: [] },
       status: "verified",
       rule_keys: ["formula-technical.brake-light"],
     });
+    await expect(page.locator(".rule-status-btn").first()).toContainText("규정 1");
+    await context.close();
+  });
+
+  test("discards a stale rule selection and adopts the winning value", async ({ browser }) => {
+    const context = await browser.newContext({ storageState: storageStatePath("admin") });
+    const page = await context.newPage();
+    await page.route("**/competition/api/v1/inspection/sheet/template?year=*", async route => {
+      const response = await route.fetch();
+      const template = await response.json();
+      const first = template[0].subcategories[0].groups[0].items[0];
+      first.rule_refs = { status: "no_direct_rule", references: [] };
+      await route.fulfill({ response, json: template });
+    });
+    await page.route("**/competition/api/v1/inspection/sheet/rules/search?*", route => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        year: YEAR,
+        rules: [{
+          ...reference("formula-technical.brake-light", "formula-technical-10-9", "제10조 9항"),
+          text: "제동등을 장착해야 한다.",
+          content_hash: HASH,
+        }],
+      }),
+    }));
+    const winningRuleRefs = {
+      status: "verified",
+      references: [reference("formula-technical.grounding", "formula-technical-48", "제48조")],
+    };
+    let savedBody;
+    await page.route(/\/competition\/api\/v1\/inspection\/sheet\/template\/\d+\/rule-refs$/, async route => {
+      savedBody = route.request().postDataJSON();
+      await route.fulfill({
+        status: 409,
+        contentType: "application/json",
+        body: JSON.stringify({
+          code: "INSPECTION_STALE_WRITE",
+          message: "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요.",
+          current: { rule_refs: winningRuleRefs },
+        }),
+      });
+    });
+
+    await page.goto("/inspection/template");
+    await waitForPageReady(page);
+    await page.locator(".rule-status-btn").first().click();
+    await page.locator(".rule-result input").check();
+    await page.getByRole("button", { name: "선택 규정 저장" }).click();
+
+    await expect.poll(() => savedBody).toEqual({
+      expected_rule_refs: { status: "no_direct_rule", references: [] },
+      status: "verified",
+      rule_keys: ["formula-technical.brake-light"],
+    });
+    await expect(page.locator(".rule-dialog")).toBeHidden();
     await expect(page.locator(".rule-status-btn").first()).toContainText("규정 1");
     await context.close();
   });

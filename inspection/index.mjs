@@ -664,16 +664,19 @@ app.put("/api/sheet/template/:id/rule-refs", async (req, res) => {
   });
   if (!node) return;
   if (node.level !== "item") return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("문항에만 규정을 연결할 수 있습니다."), { item_id: id, year: node.year });
+  const expectedRuleRefs = req.body?.expected_rule_refs;
   const status = req.body?.status;
   const ruleKeys = req.body?.rule_keys;
-  if (!["verified", "needs_review", "no_direct_rule"].includes(status) || !Array.isArray(ruleKeys)) {
-    return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("status와 rule_keys 배열이 필요합니다."), { item_id: id, year: node.year });
+  if (expectedRuleRefs === undefined || !["verified", "needs_review", "no_direct_rule"].includes(status) || !Array.isArray(ruleKeys)) {
+    return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("expected_rule_refs, status와 rule_keys 배열이 필요합니다."), { item_id: id, year: node.year });
   }
   if (status !== "verified" && ruleKeys.length) {
     return invalidRuleRefs(req, res, "template.rule_refs.update", new Error("검증 상태에서만 규정을 연결할 수 있습니다."), { item_id: id, year: node.year });
   }
   let value;
+  let expectedSerialized;
   try {
+    expectedSerialized = serializeRuleRefs(expectedRuleRefs, node.year);
     if (status === "verified") {
       const catalog = await rulesCatalog.load(node.year);
       value = refsFromRules("verified", resolveRuleKeys(catalog, ruleKeys));
@@ -684,18 +687,35 @@ app.put("/api/sheet/template/:id/rule-refs", async (req, res) => {
     if (error instanceof RuleCatalogError) return ruleCatalogFailure(req, res, "template.rule_refs.update", error, { item_id: id, year: node.year });
     return invalidRuleRefs(req, res, "template.rule_refs.update", error, { item_id: id, year: node.year });
   }
-  const result = dbRun(() => {
+  const serialized = serializeRuleRefs(value, node.year);
+  const result = dbRun(() => db.transaction(() => {
+    const row = db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ? AND level = 'item'").get(id);
+    if (!row) throw { status: 409, message: "문항이 동시에 변경되었습니다. 다시 시도하세요." };
+    const current = parseStoredRuleRefs(row.rule_refs, node.year);
+    if (serializeRuleRefs(current, node.year) !== expectedSerialized) return { conflict: true, current };
+    if (serialized === expectedSerialized) return { changed: false, current };
     const info = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ? AND level = 'item'")
-      .run(serializeRuleRefs(value, node.year), id);
+      .run(serialized, id);
     if (info.changes !== 1) throw { status: 409, message: "문항이 동시에 변경되었습니다. 다시 시도하세요." };
-    return info;
-  });
+    return { changed: true, current: value };
+  })());
   if (!result.success) {
     logger.warn(req, "template.rule_refs.update", { error: result.internalError || result.error, item_id: id, year: node.year }, node.name);
     return res.status(result.status).send(result.error);
   }
+  if (result.result.conflict) {
+    logger.warn(req, "template.rule_refs.stale_write", {
+      code: "INSPECTION_STALE_WRITE", item_id: id, year: node.year,
+      expected_rule_refs: expectedRuleRefs, requested: value, current: result.result.current,
+    }, node.name);
+    return res.status(409).json({
+      code: "INSPECTION_STALE_WRITE",
+      message: "다른 사용자가 먼저 수정했습니다. 새로고침 후 다시 시도하세요.",
+      current: { rule_refs: result.result.current },
+    });
+  }
   logger.log(req, "template.rule_refs.update", {
-    item_id: id, year: node.year, status: value.status,
+    item_id: id, year: node.year, status: value.status, changed: result.result.changed,
     rule_keys: value.references.map((ref) => ref.rule_key),
     release_tags: [...new Set(value.references.map((ref) => ref.release_tag))],
   }, node.name);

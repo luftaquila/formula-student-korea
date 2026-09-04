@@ -63,10 +63,10 @@ export async function searchSheetRules(year, document, query) {
   return res.json();
 }
 
-export async function updateSheetRuleRefs(itemId, status, ruleKeys = []) {
+export async function updateSheetRuleRefs(itemId, expectedRuleRefs, status, ruleKeys = []) {
   const res = await request(`/api/sheet/template/${itemId}/rule-refs`, {
     method: "PUT",
-    body: JSON.stringify({ status, rule_keys: ruleKeys }),
+    body: JSON.stringify({ expected_rule_refs: expectedRuleRefs, status, rule_keys: ruleKeys }),
   });
   return res.json();
 }

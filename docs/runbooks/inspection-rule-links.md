@@ -22,10 +22,10 @@ metadata copied from the catalog at verification time.
    (`.github/inspection-template-2026.json` for 2026). The import only touches
    `rule_refs`; it fails as a whole unless the file's `field_key` set matches the stored
    template exactly, and it never replaces template rows or answers.
-3. The shipped candidates are all `needs_review`, so no `?` button opens yet. The chief
-   verifies each item: pick the clause(s), save as `verified`, or mark `직접 대응 규정 없음`.
-   Items with no normative clause (weights, contact data, recorded values without a
-   limit) stay without references.
+3. The shipped 2026 mappings have already completed clause-by-clause review: normative
+   items are `verified`, while weights, contact data, and recorded values without a
+   direct normative clause are `no_direct_rule`. Confirm that the import reports no
+   `needs_review` items; resolve any remaining item before rollout.
 4. Export the template afterwards and commit the JSON so the verified state is versioned.
 
 ## When fsk-rules publishes a new release
@@ -56,5 +56,6 @@ Stable keys are never renamed in fsk-rules; a removed key is declared there in
 | Signal | Meaning | Action |
 |--------|---------|--------|
 | `503 RULE_CATALOG_UNAVAILABLE` on rule endpoints, `warn` log `rule_refs.search` / `rule_link.resolve` with `phase: rule_catalog` | Catalog unreachable, too large, slow, or failing schema validation | Check `RULES_BASE_URL`, the Pages deployment, and the manifest schema; the service itself stays healthy |
+| `409 INSPECTION_STALE_WRITE` while editing one item's references | Another manager saved after this editor loaded the item | Reopen the item and retry against the winning value shown by the UI; the stale edit was not persisted |
 | `409 RULE_REFERENCE_CHANGED` / `RULE_REFERENCE_MISSING` on `/sheet/rule-link` | Stored verified reference no longer matches the catalog | Run `재검증`, then re-verify the item |
 | `500 INVALID_STORED_RULE_REFS` | Stored JSON fails validation | Restore the item's `rule_refs` from the last template export; do not hand-edit clause ids or hashes |

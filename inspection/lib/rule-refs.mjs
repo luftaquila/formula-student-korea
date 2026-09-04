@@ -300,12 +300,15 @@ export function createRulesCatalog({
   const base = normalizeBaseUrl(baseUrl);
   const cache = new Map();
   const inflight = new Map();
+  const generations = new Map();
 
   async function load(edition, { force = false } = {}) {
     if (!Number.isInteger(edition) || edition < 2000) throw new RuleCatalogError("올바르지 않은 규정 연도입니다.");
     const cached = cache.get(edition);
     if (!force && cached && cached.expires > now()) return cached.value;
     if (!force && inflight.has(edition)) return inflight.get(edition);
+    const generation = (generations.get(edition) || 0) + 1;
+    generations.set(edition, generation);
     const pending = (async () => {
       try {
         const manifestValue = await readJson(fetchImpl, resolveCatalogPath(base, "rules-manifest.json", "매니페스트"), { timeoutMs, maxBytes });
@@ -332,7 +335,9 @@ export function createRulesCatalog({
             document_digest: doc.document_digest,
           }))),
         });
-        cache.set(edition, { value, expires: now() + ttlMs });
+        if (generations.get(edition) === generation) {
+          cache.set(edition, { value, expires: now() + ttlMs });
+        }
         return value;
       } catch (error) {
         if (error instanceof RuleCatalogError) throw error;
@@ -346,7 +351,17 @@ export function createRulesCatalog({
   return {
     baseUrl: base.href,
     load,
-    clear(edition) { edition == null ? cache.clear() : cache.delete(edition); },
+    clear(edition) {
+      if (edition == null) {
+        cache.clear();
+        for (const pendingEdition of inflight.keys()) {
+          generations.set(pendingEdition, (generations.get(pendingEdition) || 0) + 1);
+        }
+        return;
+      }
+      cache.delete(edition);
+      generations.set(edition, (generations.get(edition) || 0) + 1);
+    },
   };
 }
 

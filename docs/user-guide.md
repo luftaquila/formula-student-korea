@@ -606,7 +606,7 @@ JSON 업로드는 현재 연도에 팀이 하나도 없을 때 한 번만 사용
 | `template.reorder` | info | 검차 항목 순서 변경 |
 | `template.copy` | info | 검차 항목 연도 복사 |
 | `template.import` | info | 검차 항목 가져오기 |
-| `template.rule_refs.update` | info | 단일 문항 규정 연결 변경 |
+| `template.rule_refs.update` / `template.rule_refs.stale_write` | info / warn | 단일 문항 규정 연결 변경 / 다른 관리자의 선행 변경으로 거부 |
 | `template.rule_refs.import` | info | JSON에서 규정 연결만 일괄 가져오기 |
 | `template.rule_refs.sync` | info | 연도 간 규정 연결 동기화 |
 | `template.rule_refs.revalidate` | info | 규정 카탈로그 기준 연결 재검증 |

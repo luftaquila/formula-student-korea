@@ -76,20 +76,39 @@ function fixtureFetch({ manifestValue = manifest(), indexValue = index([rule()])
 }
 
 describe("inspection rule references", () => {
-  it("ships a 2026 template with unique stable field keys and schema-valid references", () => {
+  it("ships a fully reviewed 2026 template with unique stable field keys and schema-valid references", () => {
     const template = JSON.parse(fs.readFileSync(new URL("../../.github/inspection-template-2026.json", import.meta.url)));
     const items = template.flatMap(category => category.subcategories.flatMap(subcategory =>
       subcategory.groups.flatMap(group => group.items)));
-    assert.equal(items.length, 333);
+    assert.equal(items.length, 403);
+    assert.deepEqual(template.map(category => ({
+      name: category.name,
+      items: category.subcategories.flatMap(subcategory => subcategory.groups.flatMap(group => group.items)).length,
+    })), [
+      { name: "코너웨이트", items: 9 },
+      { name: "섀시", items: 137 },
+      { name: "내연", items: 50 },
+      { name: "축전지", items: 85 },
+      { name: "전기", items: 117 },
+      { name: "틸팅", items: 1 },
+      { name: "우천", items: 1 },
+      { name: "소음", items: 2 },
+      { name: "제동", items: 1 },
+    ]);
     assert.equal(new Set(items.map(item => item.field_key)).size, items.length);
     for (const item of items) assert.doesNotThrow(() => validateRuleRefs(item.rule_refs, { edition: 2026 }));
-    const mapped = items.filter(item => item.rule_refs.references.length);
-    assert.ok(mapped.length > 0, "the shipped template carries clause candidates");
-    assert.ok(items.every(item => item.rule_refs.references.length <= 3), "at most three candidates per question");
+    const mapped = items.filter(item => item.rule_refs.status === "verified");
+    const noDirectRule = items.filter(item => item.rule_refs.status === "no_direct_rule");
+    assert.equal(mapped.length, 382);
+    assert.equal(noDirectRule.length, 21);
+    assert.equal(mapped.flatMap(item => item.rule_refs.references).length, 470);
+    assert.ok(items.every(item => item.rule_refs.references.length <= 3), "at most three references per question");
     assert.ok(mapped.every(item => item.rule_refs.references.every(ref => ref.release_tag?.endsWith("-2026-r2"))),
-      "candidates were resolved against the 2026-r2 releases");
-    assert.equal(items.every(item => item.rule_refs.status === "needs_review"), true,
-      "candidate mappings require explicit human verification");
+      "references were resolved against the 2026-r2 releases");
+    assert.ok(mapped.every(item => item.rule_refs.references.length > 0));
+    assert.ok(noDirectRule.every(item => item.rule_refs.references.length === 0));
+    assert.equal(items.some(item => item.rule_refs.status === "needs_review"), false,
+      "the shipped mappings have completed explicit human verification");
   });
 
   it("validates status invariants, document prefixes, editions, and duplicate keys", () => {
@@ -214,6 +233,43 @@ describe("inspection rule references", () => {
     const [plain, forced] = await Promise.all([catalog.load(2026), catalog.load(2026, { force: true })]);
     assert.equal(calls.length, 6);
     assert.equal(plain.rules.length, forced.rules.length);
+  });
+
+  it("does not let an older load overwrite a completed forced refresh", async () => {
+    let resolveOldIndex;
+    let oldIndexRequested;
+    const oldIndexStarted = new Promise(resolve => { oldIndexRequested = resolve; });
+    let indexCalls = 0;
+    const catalog = createRulesCatalog({
+      baseUrl: "https://example.test/fsk-rules/",
+      fetchImpl: async (url) => {
+        if (String(url).endsWith("rules-manifest.json")) return jsonResponse(manifest());
+        indexCalls += 1;
+        if (indexCalls === 1) {
+          oldIndexRequested();
+          return new Promise(resolve => { resolveOldIndex = resolve; });
+        }
+        return jsonResponse(index([rule({
+          id: "formula-technical-12-1",
+          href: "#formula-technical-12-1",
+          citation: "제12조 1항",
+          text: "새 규정 내용",
+          content_hash: HASH_B,
+        })]));
+      },
+    });
+
+    const olderLoad = catalog.load(2026);
+    await oldIndexStarted;
+    const refreshed = await catalog.load(2026, { force: true });
+    assert.equal(refreshed.byKey.get("formula-technical.brake-light").content_hash, HASH_B);
+
+    resolveOldIndex(jsonResponse(index([rule()])));
+    await olderLoad;
+
+    const cached = await catalog.load(2026);
+    assert.equal(cached.byKey.get("formula-technical.brake-light").content_hash, HASH_B,
+      "the most recently started load owns the cache even if an older request finishes last");
   });
 
   it("times out an unresponsive catalog request", async () => {
