@@ -195,8 +195,8 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 |--------|------|------|---------|----------|-------------|
 | GET | `/active` | public | — | `[{ type, name, length, active, ... }]` | Active inspection types |
 | POST | `/state/:num` | public | `{ phone }` | `{ queue, rank, queues: [{ type, name, rank, total }] }` | Check queue position (rate-limited, phone verification); structured rows use the stable inspection key |
-| GET | `/booths/all` | public | — | `{ type: [{ booth_num, active, occupied_by, entered_at }] }` | All booth statuses |
-| GET | `/booths/:type` | public | — | `[{ booth_num, active, occupied_by, entered_at }]` | Booth status for inspection type |
+| GET | `/booths/all` | public | — | `{ type: [{ booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms }] }` | All booth statuses |
+| GET | `/booths/:type` | public | — | `[{ booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms }]` | Booth status for inspection type |
 
 ### Inspection Type Management
 
@@ -243,10 +243,11 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/admin/booths/:type` | `queue.operate` | — | `[{ booth_num, active, occupied_by, entered_at }]` | Booth list for type |
+| GET | `/admin/booths/:type` | `queue.operate` | — | `[{ booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms }]` | Booth list for type |
 | PATCH | `/admin/booths/:type/config` | `queue.manage` | `{ count }` | 200 | Change booth count (1-100) |
 | PATCH | `/admin/booths/:type/:boothNum` | `queue.operate` | `{ active: bool }` | 200 | Toggle booth active/inactive |
 | POST | `/admin/booths/:type/:boothNum/enter` | `queue.operate` | `{ num }` | 200 | Move team from queue to booth |
+| PATCH | `/admin/booths/:type/:boothNum/timer` | `queue.operate` | `{ paused: bool }` | Booth status | Pause or resume only the displayed inspection timer |
 | POST | `/admin/booths/:type/:boothNum/exit` | `queue.operate` | — | 200 | Complete inspection, record history |
 
 ### Statistics

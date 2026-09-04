@@ -59,7 +59,7 @@ function formatTimestamp(value) {
 
 function formatAccountIdentity(user) {
   const accountName = String(user.name || "").trim();
-  return accountName ? `${user.email}(${accountName})` : user.email;
+  return accountName ? `${user.email} (${accountName})` : user.email;
 }
 
 async function fetchUsers(showLoading = false) {

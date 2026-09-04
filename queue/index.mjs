@@ -236,6 +236,8 @@ db.transaction(() => {
     PRIMARY KEY (inspection, booth_num)
   );`);
   addColumn(db, "booth", "occupied_team_id INTEGER");
+  addColumn(db, "booth", "timer_paused_at INTEGER");
+  addColumn(db, "booth", "timer_paused_ms INTEGER NOT NULL DEFAULT 0");
 
   // 부스 사용 로그 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS booth_log (
@@ -542,7 +544,10 @@ const { broadcast: broadcastEvent, handler: sseHandler, close: closeSse } = crea
 app.get("/api/events", sseHandler(() => {
   const activeInspections = getActiveInspections();
   const allBooths = {};
-  for (const row of db.prepare("SELECT inspection, booth_num, active, occupied_by, entered_at FROM booth ORDER BY inspection, booth_num").all()) {
+  for (const row of db.prepare(`
+    SELECT inspection, booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms
+    FROM booth ORDER BY inspection, booth_num
+  `).all()) {
     (allBooths[row.inspection] ||= []).push(row);
   }
   return { activeInspections, allBooths };
@@ -791,7 +796,10 @@ app.get("/api/booths/all", (req, res) => {
     // 타입별 개별 쿼리(N+1) 대신 단일 조회 후 그룹핑 (SSE init과 동일 패턴)
     const allBooths = {};
     for (const k of Object.keys(inspections)) allBooths[k] = [];
-    for (const { inspection, ...row } of db.prepare("SELECT inspection, booth_num, active, occupied_by, entered_at FROM booth ORDER BY inspection, booth_num").all()) {
+    for (const { inspection, ...row } of db.prepare(`
+      SELECT inspection, booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms
+      FROM booth ORDER BY inspection, booth_num
+    `).all()) {
       if (allBooths[inspection]) allBooths[inspection].push(row);
     }
     return allBooths;
@@ -1407,7 +1415,11 @@ app.delete("/api/admin/history/:type", (req, res) => {
       db.prepare("DELETE FROM inspection_history WHERE inspection = ? AND year = ?").run(type, year);
 
       // 부스 상태 초기화: 해당 검차 종류의 모든 부스 점유 해제
-      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE inspection = ?").run(type);
+      db.prepare(`
+        UPDATE booth
+        SET occupied_by = NULL, entered_at = NULL, timer_paused_at = NULL, timer_paused_ms = 0
+        WHERE inspection = ?
+      `).run(type);
     })();
   });
 
@@ -1466,7 +1478,10 @@ app.put("/api/admin/inspection/:type/ignore", (req, res) => {
 
 // 부스 목록 조회 헬퍼
 function getBoothsForType(type) {
-  return db.prepare("SELECT booth_num, active, occupied_by, entered_at FROM booth WHERE inspection = ? ORDER BY booth_num").all(type);
+  return db.prepare(`
+    SELECT booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms
+    FROM booth WHERE inspection = ? ORDER BY booth_num
+  `).all(type);
 }
 
 // GET /api/admin/booths/:type - 검차별 부스 목록 조회
@@ -1653,7 +1668,12 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
       deleteQueueRow(type, num, year);
 
       // 부스 점유
-      db.prepare("UPDATE booth SET occupied_by = ?, occupied_team_id = ?, entered_at = ? WHERE inspection = ? AND booth_num = ?").run(
+      db.prepare(`
+        UPDATE booth
+        SET occupied_by = ?, occupied_team_id = ?, entered_at = ?,
+            timer_paused_at = NULL, timer_paused_ms = 0
+        WHERE inspection = ? AND booth_num = ?
+      `).run(
         num, activity.team?.id ?? null, now, type, boothNum
       );
 
@@ -1706,6 +1726,86 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
   sendSmsNotification(type, result.result.prev);
 });
 
+// PATCH /api/admin/booths/:type/:boothNum/timer - 검차 진행 표시 타이머 중단/재개
+app.patch("/api/admin/booths/:type/:boothNum/timer", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const boothNum = parseInt(req.params.boothNum, 10);
+  const paused = req.body.paused;
+
+  if (isNaN(boothNum) || boothNum < 1) {
+    return res.status(400).send("올바르지 않은 부스 번호입니다.");
+  }
+  if (typeof paused !== "boolean") {
+    return res.status(400).send("타이머 상태가 올바르지 않습니다.");
+  }
+
+  let boothBefore = null;
+  const result = dbRun(() => {
+    const booth = db.prepare("SELECT * FROM booth WHERE inspection = ? AND booth_num = ?").get(type, boothNum);
+    if (!booth) {
+      throw { status: 400, message: "존재하지 않는 부스입니다." };
+    }
+    if (booth.occupied_by === null) {
+      throw { status: 400, message: "비어있는 부스의 타이머는 변경할 수 없습니다." };
+    }
+
+    const pausedAt = booth.timer_paused_at == null ? null : Number(booth.timer_paused_at);
+    const pausedMs = Math.max(0, Number(booth.timer_paused_ms) || 0);
+    boothBefore = {
+      occupied_by: booth.occupied_by,
+      entered_at: booth.entered_at,
+      timer_paused_at: pausedAt,
+      timer_paused_ms: pausedMs,
+    };
+
+    const now = Date.now();
+    if (paused) {
+      if (pausedAt !== null) {
+        throw { status: 409, message: "타이머가 이미 중단되어 있습니다." };
+      }
+      db.prepare(`
+        UPDATE booth SET timer_paused_at = ?
+        WHERE inspection = ? AND booth_num = ?
+      `).run(now, type, boothNum);
+    } else {
+      if (pausedAt === null) {
+        throw { status: 409, message: "타이머가 이미 진행 중입니다." };
+      }
+      db.prepare(`
+        UPDATE booth SET timer_paused_at = NULL, timer_paused_ms = ?
+        WHERE inspection = ? AND booth_num = ?
+      `).run(pausedMs + Math.max(0, now - pausedAt), type, boothNum);
+    }
+
+    return getBoothsForType(type).find((item) => item.booth_num === boothNum);
+  });
+
+  if (!result.success) {
+    logger.warn(req, paused ? "booth.timer.pause" : "booth.timer.resume", {
+      error: result.internalError || result.error,
+      inspection: type,
+      booth: boothNum,
+      before: boothBefore,
+    }, type);
+    return res.status(result.status).send(result.error);
+  }
+
+  logger.log(req, paused ? "booth.timer.pause" : "booth.timer.resume", {
+    inspection: type,
+    booth: boothNum,
+    before: boothBefore,
+    after: result.result,
+  }, `#${result.result.occupied_by}`);
+
+  broadcastBooth(type);
+  res.json(result.result);
+});
+
 // POST /api/admin/booths/:type/:boothNum/exit - 부스에서 퇴장 (검차 완료)
 app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
   const typeValidation = validateInspection(req.params.type);
@@ -1734,6 +1834,8 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
         occupied_by: booth.occupied_by,
         occupied_team_id: booth.occupied_team_id ?? null,
         entered_at: booth.entered_at ?? null,
+        timer_paused_at: booth.timer_paused_at ?? null,
+        timer_paused_ms: booth.timer_paused_ms ?? 0,
       };
 
       const now = Date.now();
@@ -1791,7 +1893,9 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
       }
 
       db.prepare(`
-        UPDATE booth SET occupied_by = NULL, occupied_team_id = NULL, entered_at = NULL
+        UPDATE booth
+        SET occupied_by = NULL, occupied_team_id = NULL, entered_at = NULL,
+            timer_paused_at = NULL, timer_paused_ms = 0
         WHERE inspection = ? AND booth_num = ?
       `).run(type, boothNum);
 
@@ -1827,7 +1931,13 @@ app.post("/api/admin/booths/:type/:boothNum/exit", (req, res) => {
     current_year: result.result.currentYear,
     normalized_historical_state: result.result.normalizedHistoricalState,
     before: result.result.before,
-    after: { occupied_by: null, occupied_team_id: null, entered_at: null },
+    after: {
+      occupied_by: null,
+      occupied_team_id: null,
+      entered_at: null,
+      timer_paused_at: null,
+      timer_paused_ms: 0,
+    },
     open_log: { action: result.result.logAction, count: 1 },
   }, `#${result.result.num}`);
 

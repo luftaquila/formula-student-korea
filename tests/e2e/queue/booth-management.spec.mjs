@@ -44,6 +44,13 @@ async function apiEnterBooth(type, boothNum, num) {
   });
 }
 
+async function apiGetBooths(type = INSPECTION_TYPE) {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/booths/${type}`, {
+    headers: { Cookie: getAuthCookie("operationsOperator") },
+  });
+  return res.json();
+}
+
 async function cleanupQueue(type = INSPECTION_TYPE) {
   // Exit booth first
   await apiExitBooth(type, 1);
@@ -212,6 +219,47 @@ test.describe("Queue booth management", () => {
 
     // Should show success notification
     await expectNotification(page, "success", "출차");
+  });
+
+  test("pause and resume an occupied booth timer via admin UI", async ({ page }) => {
+    await apiRegister(10);
+    const entered = await apiEnterBooth(INSPECTION_TYPE, 1, 10);
+    expect(entered.status).toBe(200);
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    const batteryTab = page.locator(".tab", { hasText: "축전지" });
+    await expect(batteryTab).toBeVisible({ timeout: 10000 });
+    await batteryTab.click();
+
+    const boothCard = page.locator(".booth-card").filter({ has: page.locator(".booth-team-num", { hasText: "10" }) });
+    await expect(boothCard).toBeVisible({ timeout: 10000 });
+    await boothCard.getByRole("button", { name: "중단", exact: true }).click();
+    await expect(boothCard.getByRole("button", { name: "재개", exact: true })).toBeVisible();
+    await expect(boothCard).toHaveClass(/booth-paused/);
+    await expect(boothCard.getByText("일시중단", { exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const booths = await apiGetBooths();
+      return booths.find((booth) => booth.booth_num === 1)?.timer_paused_at ?? null;
+    }).not.toBeNull();
+
+    const frozenElapsed = await boothCard.locator(".booth-elapsed").textContent();
+    const publicPage = await page.context().newPage();
+    await publicPage.goto("/queue/status");
+    await waitForPageReady(publicPage);
+    const publicSection = publicPage.locator(".booth-type-section").filter({ hasText: "축전지" });
+    const publicBooth = publicSection.locator(".booth-item").first();
+    await expect(publicBooth).toHaveClass(/booth-paused/);
+    await expect(publicBooth.getByText("일시중단", { exact: true })).toBeVisible();
+    await publicPage.close();
+
+    await boothCard.getByRole("button", { name: "재개", exact: true }).click();
+    await expect(boothCard.getByRole("button", { name: "중단", exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const booths = await apiGetBooths();
+      return booths.find((booth) => booth.booth_num === 1)?.timer_paused_at ?? null;
+    }).toBeNull();
+    await expect.poll(() => boothCard.locator(".booth-elapsed").textContent()).not.toBe(frozenElapsed);
   });
 
   test("cancel queued team via admin UI", async ({ page }) => {

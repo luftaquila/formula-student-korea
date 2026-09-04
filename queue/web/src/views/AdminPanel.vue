@@ -14,6 +14,7 @@ import {
   restoreActivePenalty,
   enterBooth,
   exitBooth,
+  setBoothTimerPaused,
   updateBoothConfig,
   toggleBooth,
   fetchSmsSettings,
@@ -49,6 +50,7 @@ const penaltyModalOpen = ref(false);
 const penaltiesLoading = ref(false);
 const pendingPenaltyKey = ref("");
 const pendingPenaltyAction = ref("");
+const pendingBoothTimerKey = ref("");
 const penaltyClock = ref(Date.now());
 const penaltyButton = ref(null);
 const penaltyCloseButton = ref(null);
@@ -223,6 +225,23 @@ async function exitBoothAction(boothNum) {
     await refreshQueue(currentTab.value);
   } catch (e) {
     error(e.message);
+  }
+}
+
+async function toggleBoothTimerAction(booth) {
+  const key = `${currentTab.value}-${booth.booth_num}`;
+  if (pendingBoothTimerKey.value === key) return;
+  const paused = booth.timer_paused_at != null;
+  pendingBoothTimerKey.value = key;
+  try {
+    const updated = await setBoothTimerPaused(currentTab.value, booth.booth_num, !paused);
+    Object.assign(booth, updated);
+    syncElapsedTimers();
+    success(`${currentTabName.value}${booth.booth_num} 타이머를 ${paused ? "재개" : "중단"}했습니다.`);
+  } catch (e) {
+    error(e.message);
+  } finally {
+    pendingBoothTimerKey.value = "";
   }
 }
 
@@ -540,11 +559,16 @@ function goToInspection(num) {
                   v-for="booth in currentBooths"
                   :key="booth.booth_num"
                   class="booth-card"
-                  :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.occupied_by }"
+                  :class="{
+                    'booth-inactive': !booth.active,
+                    'booth-occupied': booth.occupied_by,
+                    'booth-paused': booth.timer_paused_at,
+                  }"
                 >
                   <div class="booth-card-header">
                     <span class="booth-num">{{ currentTabName }}{{ booth.booth_num }}</span>
                     <span v-if="!booth.active" class="badge badge-muted">비활성</span>
+                    <span v-else-if="booth.timer_paused_at" class="badge badge-danger">일시중단</span>
                     <span v-else-if="booth.occupied_by" class="badge badge-warning">검차중</span>
                     <span v-else class="badge badge-success">입차 가능</span>
                     <label class="toggle toggle-sm booth-toggle">
@@ -562,10 +586,20 @@ function goToInspection(num) {
                       <span class="booth-team-num">{{ booth.occupied_by }}</span>
                       <span class="booth-team-name">{{ entries[booth.occupied_by]?.univ }} {{ entries[booth.occupied_by]?.team }}</span>
                     </div>
-                    <div class="booth-elapsed">{{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}</div>
+                    <div class="booth-elapsed" :class="{ 'booth-elapsed-paused': booth.timer_paused_at }">
+                      {{ elapsedTimes[`${currentTab}-${booth.booth_num}`] || '00:00' }}
+                    </div>
                     <div class="booth-action-row">
                       <button class="btn btn-danger btn-sm" @click="exitBoothAction(booth.booth_num)">
                         출차
+                      </button>
+                      <button
+                        class="btn btn-sm"
+                        :class="booth.timer_paused_at ? 'btn-success' : 'btn-ghost'"
+                        :disabled="pendingBoothTimerKey === `${currentTab}-${booth.booth_num}`"
+                        @click="toggleBoothTimerAction(booth)"
+                      >
+                        {{ booth.timer_paused_at ? "재개" : "중단" }}
                       </button>
                       <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
                         인스펙션
@@ -1384,6 +1418,12 @@ function goToInspection(num) {
   border-color: var(--accent-warning, #f59e0b);
 }
 
+.booth-card.booth-paused {
+  border-color: var(--accent-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.06);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.18);
+}
+
 .booth-card-header {
   display: flex;
   align-items: center;
@@ -1453,6 +1493,10 @@ function goToInspection(num) {
   font-family: "JetBrains Mono", monospace;
   color: var(--accent-warning, #f59e0b);
   text-align: center;
+}
+
+.booth-elapsed-paused {
+  color: var(--accent-danger, #ef4444);
 }
 
 .booth-elapsed-empty {

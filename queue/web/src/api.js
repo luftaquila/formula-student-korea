@@ -103,6 +103,14 @@ export async function exitBooth(type, boothNum) {
   });
 }
 
+export async function setBoothTimerPaused(type, boothNum, paused) {
+  const res = await request(`/api/admin/booths/${type}/${boothNum}/timer`, {
+    method: "PATCH",
+    body: JSON.stringify({ paused }),
+  });
+  return res.json();
+}
+
 /* ============================================
    Admin API - 팀 우선순위 관리
    ============================================ */
