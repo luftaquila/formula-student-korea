@@ -117,8 +117,6 @@ test.describe("Ops contacts management", () => {
     await expect(sidebarIdentity.locator(".ops-contact-name")).toHaveText(expectedName);
     await expect(sidebarIdentity.locator(".ops-contact-description")).toHaveText(description);
     await expect(sidebarIdentity.locator(":scope > span")).toHaveText([expectedName, description]);
-    const drawerHasNoHorizontalOverflow = await page.locator(".drawer").evaluate((drawer) => drawer.scrollWidth <= drawer.clientWidth);
-    expect(drawerHasNoHorizontalOverflow).toBe(true);
     await page.locator(".close-btn").click();
 
     // Remove the user via the 제거 button

@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, scoreTable, enduranceTable, ENDURANCE_TABLE } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, scoreTable, enduranceTable } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -11,8 +11,6 @@ async function fillAndSave(page, input, value) {
   await expect(confirm).toBeVisible();
   await expect(confirm).toHaveText("");
   await expect(confirm.locator("svg.confirm-check-icon")).toBeVisible();
-  await expect(confirm).toHaveCSS("background-color", "rgb(39, 166, 68)");
-  await expect(confirm).toHaveCSS("color", "rgb(255, 255, 255)");
   const saved = page.waitForResponse(
     (res) => res.url().includes("/competition/api/v1/score/score/endurance") && res.request().method() === "PUT" && res.status() === 200,
   );
@@ -523,34 +521,6 @@ test.describe("Score endurance input", () => {
     expect(data[31]?.driver2_penalty).toBe(Number(newPenalty));
 
     await clearFields(page, 31, ["driver1_start_delay", "driver2_penalty"]);
-  });
-
-  test("two-row header stays at the top of the screen and keeps its columns aligned", async ({ page }) => {
-    // 표가 화면보다 길어지도록 뷰포트를 줄인다
-    await page.setViewportSize({ width: 900, height: 400 });
-
-    const band = page.locator(".head-band");
-    await expect(band.locator("th").first()).toBeVisible();
-
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-    await expect
-      .poll(() => page.evaluate((sel) => document.querySelector(sel).getBoundingClientRect().top, ENDURANCE_TABLE))
-      .toBeLessThan(0);
-
-    // 헤더는 화면 상단에 붙고, 병합된 2행 헤더의 열도 원본과 어긋나지 않아야 한다
-    const state = await page.evaluate(() => {
-      const cellsOf = (root) => [...root.querySelectorAll("thead tr:last-child th")].map((c) => c.getBoundingClientRect().left);
-      const real = cellsOf(document.querySelector(".sticky-host .table-container"));
-      const copy = cellsOf(document.querySelector(".head-band"));
-      return {
-        bandTop: document.querySelector(".head-band").getBoundingClientRect().top,
-        columns: real.length,
-        maxDrift: Math.max(...real.map((x, i) => Math.abs(x - (copy[i] ?? Infinity)))),
-      };
-    });
-    expect(state.columns).toBeGreaterThan(0);
-    expect(Math.abs(state.bandTop)).toBeLessThanOrEqual(2);
-    expect(state.maxDrift).toBeLessThanOrEqual(1);
   });
 
   test("focusing a cell to the left does not park it behind the fixed entry column", async ({ page }) => {

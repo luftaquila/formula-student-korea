@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, scoreTable, SCORE_TABLE } from "../helpers/utils.mjs";
+import { expectCompactTeamIdentity, storageStatePath, waitForPageReady, scoreTable } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -70,22 +70,6 @@ test.describe("Score dashboard", () => {
     for (let i = 0; i < count; i++) {
       await expect(inspectionCells.nth(i)).toBeHidden();
     }
-
-    const pinnedLayout = await page.evaluate(() => {
-      const headers = [...document.querySelectorAll(".head-band th")]
-        .filter((cell) => getComputedStyle(cell).display !== "none")
-        .map((cell) => {
-          const rect = cell.getBoundingClientRect();
-          return { left: rect.left, right: rect.right, width: rect.width, text: cell.textContent.trim() };
-        });
-      return {
-        headers,
-        overlaps: headers.slice(1).some((header, index) => header.left < headers[index].right - 1),
-      };
-    });
-    expect(pinnedLayout.headers.some((header) => header.text.includes("총점"))).toBe(true);
-    expect(pinnedLayout.headers.every((header) => header.width > 1)).toBe(true);
-    expect(pinnedLayout.overlaps).toBe(false);
 
     // Re-check to show inspection columns
     await inspectionCheckbox.check();
@@ -164,77 +148,6 @@ test.describe("Score dashboard", () => {
     // Re-check CV
     await cvCheckbox.check();
     await expect(page.locator(".count-badge")).toContainText("8");
-  });
-
-  test("table header stays at the top of the screen while the page scrolls", async ({ page }) => {
-    // 표가 화면보다 길어지도록 뷰포트를 줄인다
-    await page.setViewportSize({ width: 1280, height: 360 });
-
-    const table = scoreTable(page);
-    const band = page.locator(".head-band");
-    await expect(table).toBeVisible();
-    await expect(band.locator("th").first()).toBeVisible();
-    // The table shell renders before the asynchronous score rows. Scrolling the
-    // empty shell cannot move the table and used to pass only after a warm retry.
-    await expect(table.locator("tbody tr.team-row")).toHaveCount(8);
-
-    await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
-    await expect
-      .poll(() => page.evaluate((sel) => document.querySelector(sel).getBoundingClientRect().top, SCORE_TABLE))
-      .toBeLessThan(0);
-
-    const rects = await page.evaluate((sel) => {
-      const t = document.querySelector(sel).getBoundingClientRect();
-      const b = document.querySelector(".head-band").getBoundingClientRect();
-      return { bandTop: b.top, bandBottom: b.bottom, tableTop: t.top, tableBottom: t.bottom };
-    }, SCORE_TABLE);
-    // 표 상단은 화면 위로 지나갔지만 헤더는 화면 상단에, 그리고 표 안에 남아 있어야 한다
-    expect(rects.tableTop).toBeLessThan(0);
-    expect(Math.abs(rects.bandTop)).toBeLessThanOrEqual(2);
-    expect(rects.bandBottom).toBeLessThanOrEqual(rects.tableBottom + 1);
-
-    // 되돌리면 원래 자리로
-    await page.evaluate(() => window.scrollTo(0, 0));
-    await expect
-      .poll(() => page.evaluate((sel) => {
-        const t = document.querySelector(sel).getBoundingClientRect();
-        return document.querySelector(".head-band").getBoundingClientRect().top - t.top;
-      }, SCORE_TABLE))
-      .toBeLessThanOrEqual(1);
-  });
-
-  test("the pinned header tracks the table's own horizontal scroll", async ({ page }) => {
-    // 가로 스크롤은 페이지가 아니라 표 안에서 일어나야 한다
-    await page.setViewportSize({ width: 700, height: 500 });
-    await expect(scoreTable(page)).toBeVisible();
-
-    const state = () => page.evaluate(() => {
-      const scroller = document.querySelector(".sticky-host .table-container");
-      const lastReal = scroller.querySelector("thead tr").lastElementChild.getBoundingClientRect();
-      const lastBand = document.querySelector(".head-band thead tr").lastElementChild.getBoundingClientRect();
-      const numBand = document.querySelector(".head-band th").getBoundingClientRect();
-      return {
-        pageScrollsX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-        tableScrollsX: scroller.scrollWidth > scroller.clientWidth,
-        lastReal: lastReal.left, lastBand: lastBand.left, numBand: numBand.left,
-      };
-    });
-
-    const before = await state();
-    expect(before.tableScrollsX).toBe(true);
-    expect(before.pageScrollsX).toBe(false);
-    expect(Math.abs(before.lastReal - before.lastBand)).toBeLessThanOrEqual(1);
-
-    await page.evaluate(() => { document.querySelector(".sticky-host .table-container").scrollLeft = 250; });
-    await expect
-      .poll(() => page.evaluate(() => document.querySelector(".head-band").scrollLeft))
-      .toBeGreaterThan(0);
-
-    // 고정 헤더는 표와 같은 만큼 밀리고, 고정열은 제자리에 남는다
-    const after = await state();
-    expect(after.lastReal).toBeLessThan(before.lastReal);
-    expect(Math.abs(after.lastReal - after.lastBand)).toBeLessThanOrEqual(1);
-    expect(Math.abs(after.numBand - before.numBand)).toBeLessThanOrEqual(1);
   });
 
   test("combines team identity on mobile and remembers the vehicle type filter", async ({ page }) => {

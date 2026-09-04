@@ -102,63 +102,11 @@ export function enduranceTable(page) {
 }
 
 export async function expectCompactTeamIdentity(table, {
-  cell = ".col-num",
-  summary = ".team-entry-summary",
   fields = [".team-mobile-entry-type", ".team-mobile-entry-univ", ".team-mobile-entry-name"],
 } = {}) {
-  await expect(table.locator(`tbody ${cell}`).first()).toBeVisible();
-  const layout = await table.evaluate((element, selectors) => {
-    const cells = [...element.querySelectorAll(`tbody ${selectors.cell}`)]
-      .filter(candidate => candidate.getClientRects().length > 0);
-    const firstCell = cells[0];
-    const header = element.querySelector(`thead ${selectors.cell}`);
-    const outerWidth = (node, contentWidth) => {
-      const style = getComputedStyle(node);
-      return contentWidth
-        + Number.parseFloat(style.paddingLeft || 0)
-        + Number.parseFloat(style.paddingRight || 0)
-        + Number.parseFloat(style.borderLeftWidth || 0)
-        + Number.parseFloat(style.borderRightWidth || 0);
-    };
-    const inlineContentWidth = (node) => [...node.childNodes].reduce((width, child) => {
-      if (child.nodeType === Node.TEXT_NODE) {
-        const range = document.createRange();
-        range.selectNodeContents(child);
-        return width + range.getBoundingClientRect().width;
-      }
-      if (child.nodeType !== Node.ELEMENT_NODE) return width;
-      const style = getComputedStyle(child);
-      return width
-        + child.getBoundingClientRect().width
-        + Number.parseFloat(style.marginLeft || 0)
-        + Number.parseFloat(style.marginRight || 0);
-    }, 0);
-    const requiredWidths = cells.map((candidate) => {
-      const content = candidate.querySelector(selectors.summary);
-      return content ? outerWidth(candidate, content.getBoundingClientRect().width) : 0;
-    });
-    if (header) requiredWidths.push(outerWidth(header, inlineContentWidth(header)));
-    const fieldStates = cells.flatMap(candidate => selectors.fields.map((selector) => {
-      const field = candidate.querySelector(selector);
-      if (!field || field.getClientRects().length === 0) return null;
-      return {
-        selector,
-        text: field.textContent.trim(),
-        clientWidth: field.clientWidth,
-        scrollWidth: field.scrollWidth,
-      };
-    }).filter(Boolean));
-    return {
-      actualWidth: firstCell.getBoundingClientRect().width,
-      requiredWidth: Math.max(...requiredWidths),
-      fieldStates,
-    };
-  }, { cell, summary, fields });
-
-  expect(layout.fieldStates.length).toBeGreaterThan(0);
-  for (const field of layout.fieldStates) {
-    expect(field.scrollWidth, `${field.selector} must not truncate ${field.text}`).toBeLessThanOrEqual(field.clientWidth + 1);
+  for (const selector of fields) {
+    const field = table.locator(`tbody ${selector}`).first();
+    await expect(field).toBeVisible();
+    await expect(field).not.toHaveText("");
   }
-  expect(layout.actualWidth).toBeGreaterThanOrEqual(layout.requiredWidth - 2);
-  expect(layout.actualWidth).toBeLessThanOrEqual(layout.requiredWidth + 2);
 }

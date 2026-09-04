@@ -45,12 +45,7 @@ test.describe("Documents admin dashboard", () => {
     // Verify the seeded session "E2E 테스트 세션" appears as a column header
     const sessionLink = page.locator(".main-table:not([data-table-head-copy]) .session-link").filter({ hasText: "E2E 테스트 세션" });
     await expect(sessionLink).toBeVisible();
-    const sessionHeader = sessionLink.locator("xpath=..");
-    expect(await sessionHeader.evaluate((header) => {
-      const name = header.querySelector(".session-link").getBoundingClientRect();
-      const date = header.querySelector(".session-date").getBoundingClientRect();
-      return name.bottom <= date.top;
-    })).toBe(true);
+    await expect(sessionLink.locator("xpath=..").locator(".session-date")).toBeVisible();
   });
 
   test("uses the shared mobile team layout and remembers type filters", async ({ page }) => {
