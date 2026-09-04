@@ -77,7 +77,8 @@ test("landing renders permission-filtered operation and admin groups and persist
   assert.match(landing, /<h2 class="section-title">Admin<\/h2>/);
   assert.match(landing, /operations\.filter\(canOpen\)/);
   assert.match(landing, /administration\.filter\(canOpen\)/);
-  assert.match(landing, /grid-template-columns: repeat\(auto-fit, minmax\(170px, 1fr\)\)/);
+  assert.match(landing, /display: flex;\s*flex-wrap: wrap;/);
+  assert.match(landing, /flex: 1 1 170px;/);
   assert.equal(RESOURCES_DISCLOSURE_STORAGE_KEY, "fsk.resources.open");
   assert.match(landing, /RESOURCES_DISCLOSURE_STORAGE_KEY/);
   assert.match(navMenu, /<summary class="nav-section-title collapsible-title">\s*Resources/);

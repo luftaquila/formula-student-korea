@@ -1088,6 +1088,65 @@ describe('Booth management', () => {
     assert.equal(res.status, 400);
   });
 
+  it('PATCH /api/admin/booths/:type/:boothNum/timer pauses and resumes only the displayed timer', async () => {
+    const before = db.prepare(`
+      SELECT occupied_by, entered_at FROM booth
+      WHERE inspection = 'battery' AND booth_num = 1
+    `).get();
+    const logBefore = db.prepare(`
+      SELECT entered_at, exited_at FROM booth_log
+      WHERE inspection = 'battery' AND booth_num = 1 AND exited_at IS NULL
+    `).get();
+
+    const pause = await client.patch('/api/admin/booths/battery/1/timer', {
+      body: { paused: true },
+      cookie: officialCookie,
+    });
+    assert.equal(pause.status, 200);
+
+    const paused = db.prepare(`
+      SELECT entered_at, timer_paused_at, timer_paused_ms FROM booth
+      WHERE inspection = 'battery' AND booth_num = 1
+    `).get();
+    assert.equal(paused.entered_at, before.entered_at);
+    assert.ok(paused.timer_paused_at > 0);
+    assert.equal(paused.timer_paused_ms, 0);
+    const duplicatePause = await client.patch('/api/admin/booths/battery/1/timer', {
+      body: { paused: true },
+      cookie: officialCookie,
+    });
+    assert.equal(duplicatePause.status, 409);
+
+    const pausedAt = Date.now() - 5_000;
+    db.prepare(`
+      UPDATE booth SET timer_paused_at = ?, timer_paused_ms = 2_000
+      WHERE inspection = 'battery' AND booth_num = 1
+    `).run(pausedAt);
+
+    const resume = await client.patch('/api/admin/booths/battery/1/timer', {
+      body: { paused: false },
+      cookie: officialCookie,
+    });
+    assert.equal(resume.status, 200);
+
+    const resumed = db.prepare(`
+      SELECT entered_at, timer_paused_at, timer_paused_ms FROM booth
+      WHERE inspection = 'battery' AND booth_num = 1
+    `).get();
+    assert.equal(resumed.entered_at, before.entered_at);
+    assert.equal(resumed.timer_paused_at, null);
+    assert.ok(resumed.timer_paused_ms >= 7_000);
+    const duplicateResume = await client.patch('/api/admin/booths/battery/1/timer', {
+      body: { paused: false },
+      cookie: officialCookie,
+    });
+    assert.equal(duplicateResume.status, 409);
+    assert.deepEqual(db.prepare(`
+      SELECT entered_at, exited_at FROM booth_log
+      WHERE inspection = 'battery' AND booth_num = 1 AND exited_at IS NULL
+    `).get(), logBefore);
+  });
+
   it('PATCH /api/admin/booths/:type/:boothNum rejects deactivating occupied booth', async () => {
     // Booth 1 is occupied by entry 1
     const res = await client.patch('/api/admin/booths/battery/1', {
@@ -1125,6 +1184,8 @@ describe('Booth management', () => {
     const data = await booths.json();
     const booth1 = data.find(b => b.booth_num === 1);
     assert.equal(booth1.occupied_by, null);
+    assert.equal(booth1.timer_paused_at, null);
+    assert.equal(booth1.timer_paused_ms, 0);
   });
 
   it('POST /api/admin/booths/:type/:boothNum/exit rejects if booth empty', async () => {

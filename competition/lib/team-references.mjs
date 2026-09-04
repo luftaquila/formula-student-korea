@@ -98,8 +98,13 @@ export function clearCanonicalTeamTransientState(db, team) {
     if (count) changes[table] = count;
   }
   if (tableExists(db, "booth") && columns(db, "booth").has("occupied_team_id")) {
+    const boothColumns = columns(db, "booth");
+    const timerReset = boothColumns.has("timer_paused_at") && boothColumns.has("timer_paused_ms")
+      ? ", timer_paused_at = NULL, timer_paused_ms = 0"
+      : "";
     const count = db.prepare(`
-      UPDATE booth SET occupied_by = NULL, occupied_team_id = NULL, entered_at = NULL
+      UPDATE booth
+      SET occupied_by = NULL, occupied_team_id = NULL, entered_at = NULL${timerReset}
       WHERE occupied_team_id = ?
     `).run(team.id).changes;
     if (count) changes.booth = count;
@@ -327,6 +332,10 @@ export function installCanonicalTeamReferences(db) {
 
   if (tableExists(db, "booth")) {
     if (!columns(db, "booth").has("occupied_team_id")) db.exec("ALTER TABLE booth ADD COLUMN occupied_team_id INTEGER");
+    const boothColumns = columns(db, "booth");
+    const timerReset = boothColumns.has("timer_paused_at") && boothColumns.has("timer_paused_ms")
+      ? ", timer_paused_at = NULL, timer_paused_ms = 0"
+      : "";
     db.exec(`
       UPDATE booth
       SET occupied_team_id = COALESCE(
@@ -362,7 +371,7 @@ export function installCanonicalTeamReferences(db) {
       CREATE TRIGGER trg_booth_clear_team_update
       AFTER UPDATE OF occupied_by ON booth WHEN NEW.occupied_by IS NULL
       BEGIN
-        UPDATE booth SET occupied_team_id = NULL
+        UPDATE booth SET occupied_team_id = NULL${timerReset}
         WHERE inspection = NEW.inspection AND booth_num = NEW.booth_num;
       END;
     `);

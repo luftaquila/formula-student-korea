@@ -128,6 +128,7 @@ export function createRemoteUserValidator() {
           valid: true,
           id: data.id,
           role: data.role,
+          realname: typeof data.realname === "string" ? data.realname : "",
           permissions: Array.isArray(data.permissions) ? data.permissions : [],
           accessRevision: Number(data.accessRevision) || 0,
         };
@@ -355,6 +356,7 @@ export function createApp(deps, authRoleFn) {
             id: result.id,
             email: tokenUser.email,
             name: tokenUser.name,
+            realname: typeof result.realname === "string" ? result.realname : "",
             picture,
             role,
             permissions,

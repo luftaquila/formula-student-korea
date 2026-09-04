@@ -570,6 +570,8 @@ JSON 업로드는 현재 연도에 팀이 하나도 없을 때 한 번만 사용
 | `booth.count` | info | 부스 수 변경 |
 | `booth.toggle` | info | 부스 활성/비활성 토글 |
 | `booth.enter` | info | 부스 입장 |
+| `booth.timer.pause` | info | 검차 진행 타이머 중단 |
+| `booth.timer.resume` | info | 검차 진행 타이머 재개 |
 | `booth.exit` | info | 부스 퇴장 |
 | `settings.sms` | info | SMS 알림 토글 |
 | `settings.sms_rank` | info | SMS 알림 순번 변경 |

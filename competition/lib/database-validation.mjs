@@ -24,7 +24,7 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 131,
-  sha256: "83a36e66e0d2786040e4b1cdfdc883fcc5ee64b3d90c3daf80c4669d1346e3f9",
+  sha256: "9feec14de985a4b1829f69bde7570cc5edffbeb16ae502a822e550705ce1ef94",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
@@ -34,20 +34,32 @@ export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
 // endurance table with its 0/1 constraint before serving. Any other schema
 // still fails closed, and the next validation must match the current contract.
 const MISSING_ENDURANCE_DRIVER_NAMES = Object.freeze(["driver1_name", "driver2_name"]);
+const MISSING_BOOTH_TIMER_STATE = Object.freeze(["timer_paused_at", "timer_paused_ms"]);
+const upgradeColumns = (columns = {}) => Object.freeze({
+  booth: MISSING_BOOTH_TIMER_STATE,
+  ...columns,
+});
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    // Previous release: booth timers could not be paused.
+    objectCount: 131,
+    sha256: "83a36e66e0d2786040e4b1cdfdc883fcc5ee64b3d90c3daf80c4669d1346e3f9",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: upgradeColumns(),
+  }),
   Object.freeze({
     // Previous release: endurance records did not store driver names.
     objectCount: 131,
     sha256: "6d50f0c70d2411bdbf36adee7f4f399bd13a409cfa06848ed0139f2dc52cad60",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: upgradeColumns({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     // Previous release: Traffic used invalidated/result=-1 instead of status.
     objectCount: 131,
     sha256: "66e3d7c77e67e20986753a75d1aba69a614bb34130dcc4e31c1275011bbac8ad",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({
+    allowedMissingColumns: upgradeColumns({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
     }),
@@ -58,14 +70,14 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 131,
     sha256: "14bcbdd8cd48d0d126f61d8e9a3aaa280326221e6692a989c00ddec8e9ffc216",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: upgradeColumns({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     // Same registration predecessor combined with the previous Traffic schema.
     objectCount: 131,
     sha256: "6f97860d38a0b4f04adda2f2d0e92d65feb029386540c12e24e38ab9be5c1ce8",
     allowedMissingTables: Object.freeze([]),
-    allowedMissingColumns: Object.freeze({
+    allowedMissingColumns: upgradeColumns({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
     }),
@@ -74,13 +86,13 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 125,
     sha256: "06bac65306e9aed00a94e9a96bfb4a6f3e0c9fe49cdf2b013f34e3fac6b8d394",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: upgradeColumns({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "d15402064ce944ff614933980223c52aaf33392f26b2d5d29776aae69967fd93",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({
+    allowedMissingColumns: upgradeColumns({
       score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
     }),
   }),
@@ -88,13 +100,13 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 125,
     sha256: "bbfed20876a4642ecc6759441ac84d6c1c28e9b21689a8fafb2cfe4b44f400b4",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
+    allowedMissingColumns: upgradeColumns({ score_endurance: MISSING_ENDURANCE_DRIVER_NAMES }),
   }),
   Object.freeze({
     objectCount: 125,
     sha256: "b625e28d3c070bc9fbb29265234c37678a7b2624e7c03d3db75c0d3e8fec6afc",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({
+    allowedMissingColumns: upgradeColumns({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
     }),
@@ -103,7 +115,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 125,
     sha256: "1336208794493a2d46d703cbaa76ecd68f71f1fe6e1081817aef02aaf29a2554",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({
+    allowedMissingColumns: upgradeColumns({
       record: Object.freeze(["status"]),
       score_endurance: Object.freeze(["qualified", ...MISSING_ENDURANCE_DRIVER_NAMES]),
     }),
@@ -112,7 +124,7 @@ const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
     objectCount: 125,
     sha256: "f5d3df22739e93f7c3231d6dede2b7a5cbe39ca71158bd4fe9a5d60eeed44b7c",
     allowedMissingTables: Object.freeze(["registration_queue", "registration_settings"]),
-    allowedMissingColumns: Object.freeze({
+    allowedMissingColumns: upgradeColumns({
       record: Object.freeze(["status"]),
       score_endurance: MISSING_ENDURANCE_DRIVER_NAMES,
     }),
@@ -129,6 +141,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   registration_queue: ["id", "team_id", "phone", "status", "notified", "notify_claimed_at", "registered_at", "finished_at"],
   registration_settings: ["year", "open", "sms", "notify_rank", "updated_at"],
   inspection: ["type", "name", "active"],
+  booth: ["inspection", "booth_num", "active", "occupied_by", "occupied_team_id", "entered_at", "timer_paused_at", "timer_paused_ms"],
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
   record: ["name", "num", "univ", "team", "type", "result", "status", "team_id"],
   score_manual: ["year", "team_num", "score_type", "team_id"],

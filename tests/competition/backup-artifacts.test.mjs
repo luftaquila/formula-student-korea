@@ -265,6 +265,22 @@ function removeEnduranceDriverNames(dbPath) {
   writer.close();
 }
 
+function removeBoothTimerState(dbPath) {
+  const writer = new Database(dbPath);
+  writer.exec(`
+    DROP TRIGGER trg_booth_clear_team_update;
+    ALTER TABLE booth DROP COLUMN timer_paused_at;
+    ALTER TABLE booth DROP COLUMN timer_paused_ms;
+    CREATE TRIGGER trg_booth_clear_team_update
+    AFTER UPDATE OF occupied_by ON booth WHEN NEW.occupied_by IS NULL
+    BEGIN
+      UPDATE booth SET occupied_team_id = NULL
+      WHERE inspection = NEW.inspection AND booth_num = NEW.booth_num;
+    END;
+  `);
+  writer.close();
+}
+
 function removeQualifiedCheckConstraint(dbPath) {
   const writer = new Database(dbPath);
   const tableSql = writer.prepare(
@@ -849,6 +865,7 @@ describe("Competition backup/restore artifact validation", () => {
     created.close();
     restoreRetiredCalledStatus(dbPath);
     removeEnduranceDriverNames(dbPath);
+    removeBoothTimerState(dbPath);
 
     // A deployment snapshot taken before the upgrade must still validate: the
     // shipped contract is listed as upgradable, and the runtime rebuilds on boot.
@@ -934,6 +951,42 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
+  it("accepts the schema without booth pause state and upgrades it at runtime", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-booth-timer-schema-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    removeBoothTimerState(dbPath);
+
+    const predecessorResult = validateDatabase(dbPath);
+    assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
+    const predecessor = new Database(dbPath, { readonly: true });
+    assert.equal(
+      competitionSchemaContractDigest(captureCompetitionSchemaContract(predecessor)),
+      "83a36e66e0d2786040e4b1cdfdc883fcc5ee64b3d90c3daf80c4669d1346e3f9",
+    );
+    predecessor.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    const booth = upgraded.db.prepare(`
+      SELECT timer_paused_at, timer_paused_ms FROM booth ORDER BY inspection, booth_num LIMIT 1
+    `).get();
+    assert.deepEqual(booth, { timer_paused_at: null, timer_paused_ms: 0 });
+    upgraded.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    const contract = captureCompetitionSchemaContract(reader);
+    reader.close();
+    assert.equal(competitionSchemaContractDigest(contract), COMPETITION_SCHEMA_CONTRACT.sha256);
+    assert.equal(validateDatabase(dbPath).status, 0);
+  });
+
   it("accepts the exact pre-driver-name schema and adds both columns without validator writes", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-driver-name-schema-upgrade-"));
     roots.push(root);
@@ -954,6 +1007,7 @@ describe("Competition backup/restore artifact validation", () => {
       .run(CURRENT_YEAR);
     seeded.close();
     removeEnduranceDriverNames(dbPath);
+    removeBoothTimerState(dbPath);
 
     const predecessorResult = validateDatabase(dbPath);
     assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
@@ -996,6 +1050,7 @@ describe("Competition backup/restore artifact validation", () => {
     createCompetitionUnit(dbPath, uploads);
     removeRegistrationSchema(dbPath);
     removeEnduranceDriverNames(dbPath);
+    removeBoothTimerState(dbPath);
 
     const predecessorResult = validateDatabase(dbPath);
     assert.equal(predecessorResult.status, 0, predecessorResult.stderr);
@@ -1031,6 +1086,7 @@ describe("Competition backup/restore artifact validation", () => {
     createCompetitionUnit(dbPath, uploads);
     removeRegistrationSchema(dbPath);
     removeEnduranceDriverNames(dbPath);
+    removeBoothTimerState(dbPath);
 
     const predecessor = new Database(dbPath);
     predecessor.exec("ALTER TABLE score_endurance DROP COLUMN qualified");
@@ -1090,6 +1146,7 @@ describe("Competition backup/restore artifact validation", () => {
     removeRegistrationSchema(dbPath);
     removeQualifiedCheckConstraint(dbPath);
     removeEnduranceDriverNames(dbPath);
+    removeBoothTimerState(dbPath);
 
     const intermediate = new Database(dbPath, { readonly: true });
     assert.equal(

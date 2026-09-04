@@ -501,7 +501,9 @@ describe("Competition modular monolith", () => {
       insertLog.run(81, 1, previousYear, historicalWithReplacement);
       insertLog.run(82, 2, previousYear, historicalWithoutReplacement);
       const occupy = created.db.prepare(`
-        UPDATE booth SET occupied_by = ?, occupied_team_id = ?, entered_at = 1
+        UPDATE booth
+        SET occupied_by = ?, occupied_team_id = ?, entered_at = 1,
+            timer_paused_at = 4, timer_paused_ms = 2
         WHERE inspection = 'battery' AND booth_num = ?
       `);
       occupy.run(81, historicalWithReplacement, 1);
@@ -517,11 +519,11 @@ describe("Competition modular monolith", () => {
       }
 
       assert.deepEqual(created.db.prepare(`
-        SELECT booth_num, occupied_by, occupied_team_id, entered_at
+        SELECT booth_num, occupied_by, occupied_team_id, entered_at, timer_paused_at, timer_paused_ms
         FROM booth WHERE inspection = 'battery' AND booth_num IN (1, 2) ORDER BY booth_num
       `).all(), [
-        { booth_num: 1, occupied_by: null, occupied_team_id: null, entered_at: null },
-        { booth_num: 2, occupied_by: null, occupied_team_id: null, entered_at: null },
+        { booth_num: 1, occupied_by: null, occupied_team_id: null, entered_at: null, timer_paused_at: null, timer_paused_ms: 0 },
+        { booth_num: 2, occupied_by: null, occupied_team_id: null, entered_at: null, timer_paused_at: null, timer_paused_ms: 0 },
       ]);
       assert.equal(created.db.prepare(`
         SELECT COUNT(*) AS count FROM booth_log
@@ -550,8 +552,14 @@ describe("Competition modular monolith", () => {
           team_id: historicalWithReplacement, team_num: 81,
           state_year: previousYear, current_year: YEAR,
           normalized_historical_state: true,
-          before: { occupied_by: 81, occupied_team_id: historicalWithReplacement, entered_at: 1 },
-          after: { occupied_by: null, occupied_team_id: null, entered_at: null },
+          before: {
+            occupied_by: 81, occupied_team_id: historicalWithReplacement, entered_at: 1,
+            timer_paused_at: 4, timer_paused_ms: 2,
+          },
+          after: {
+            occupied_by: null, occupied_team_id: null, entered_at: null,
+            timer_paused_at: null, timer_paused_ms: 0,
+          },
           open_log: { action: "deleted_incomplete", count: 1 },
         },
         {
@@ -564,8 +572,14 @@ describe("Competition modular monolith", () => {
           team_id: historicalWithoutReplacement, team_num: 82,
           state_year: previousYear, current_year: YEAR,
           normalized_historical_state: true,
-          before: { occupied_by: 82, occupied_team_id: historicalWithoutReplacement, entered_at: 1 },
-          after: { occupied_by: null, occupied_team_id: null, entered_at: null },
+          before: {
+            occupied_by: 82, occupied_team_id: historicalWithoutReplacement, entered_at: 1,
+            timer_paused_at: 4, timer_paused_ms: 2,
+          },
+          after: {
+            occupied_by: null, occupied_team_id: null, entered_at: null,
+            timer_paused_at: null, timer_paused_ms: 0,
+          },
           open_log: { action: "deleted_incomplete", count: 1 },
         },
       ]);

@@ -25,9 +25,17 @@ const CURRENT_YEAR = currentCompetitionYear();
 const PREV_YEAR = CURRENT_YEAR - 1;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
+const managedNameAdminCookie = makeAuthCookie({
+  email: 'managed-admin@test.com', name: 'Google Admin', realname: 'Managed Admin', role: 'admin',
+});
+const unnamedAdminCookie = makeAuthCookie({ email: 'unnamed-admin@test.com', role: 'admin' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
-const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
-const secondOfficialCookie = makeAuthCookie({ email: 'second@test.com', name: 'Second Official', role: 'official' });
+const officialCookie = makeAuthCookie({
+  email: 'official@test.com', name: 'Official Account', realname: 'Official', role: 'official',
+});
+const secondOfficialCookie = makeAuthCookie({
+  email: 'second@test.com', name: 'Second Official Account', realname: 'Second Official', role: 'official',
+});
 const unnamedOfficialCookie = makeAuthCookie({ email: 'unnamed@test.com', role: 'official' });
 const inspectionOperatorCookie = makeAuthCookie({
   email: 'inspection-operator@test.com', name: 'Inspection Operator', role: 'official',
@@ -1624,18 +1632,20 @@ describe('Answer cleanup when utility field types change', () => {
 
     const updateRes = await client.put(`/api/sheet/template/${counterTransitionItemId}`, {
       body: { answer_type: 'counter' },
-      cookie: adminCookie,
+      cookie: managedNameAdminCookie,
     });
     assert.equal(updateRes.status, 200);
 
     const normalized = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/501`, { cookie: officialCookie })).json();
     assert.equal(normalized.answers[counterTransitionItemId].value, '7');
     assert.equal(normalized.answers[counterTransitionItemId].memo, 'leading-zero memo');
+    assert.equal(normalized.answers[counterTransitionItemId].answer_updated_by, 'Managed Admin');
     assert.equal(Object.hasOwn(normalized.answers[counterTransitionItemId], 'answer_version'), false);
 
     const cleared = await (await client.get(`/api/sheet/data/${CURRENT_YEAR}/502`, { cookie: officialCookie })).json();
     assert.equal(cleared.answers[counterTransitionItemId].value, '');
     assert.equal(cleared.answers[counterTransitionItemId].memo, 'invalid-value memo');
+    assert.equal(cleared.answers[counterTransitionItemId].answer_updated_by, 'Managed Admin');
     assert.equal(Object.hasOwn(cleared.answers[counterTransitionItemId], 'answer_version'), false);
   });
 
@@ -1650,6 +1660,18 @@ describe('Answer cleanup when utility field types change', () => {
       cookie: officialCookie,
     });
     assert.equal(memoRes.status, 200);
+
+    const unnamedRes = await client.put(`/api/sheet/template/${stopwatchTransitionItemId}`, {
+      body: { answer_type: 'stopwatch' },
+      cookie: unnamedAdminCookie,
+    });
+    assert.equal(unnamedRes.status, 409);
+    assert.match(await unnamedRes.text(), /계정 실명/);
+
+    const unchanged = db.prepare(
+      'SELECT answer_type FROM sheet_template WHERE id = ?'
+    ).get(stopwatchTransitionItemId);
+    assert.equal(unchanged.answer_type, 'text');
 
     const stopwatchRes = await client.put(`/api/sheet/template/${stopwatchTransitionItemId}`, {
       body: { answer_type: 'stopwatch' },

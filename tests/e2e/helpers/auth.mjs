@@ -25,16 +25,18 @@ function account({ grants = [], ...user }) {
 // The keys name capability profiles, not application roles. Every operational
 // profile is an Official account with one explicit grant list.
 export const TEST_USERS = Object.freeze({
-  admin: account({ email: "e2e-admin@test.com", name: "E2E Admin", role: "admin" }),
+  admin: account({ email: "e2e-admin@test.com", name: "E2E Admin", realname: "Admin Real Name", role: "admin" }),
   technicalOperator: account({
     email: "e2e-technical-operator@test.com",
     name: "E2E Technical Operator",
+    realname: "Technical Operator Real Name",
     role: "official",
     grants: ["course.manage", "traffic.operate", "score.manage"],
   }),
   operationsManager: account({
     email: "e2e-operations-manager@test.com",
     name: "E2E Operations Manager",
+    realname: "Operations Manager Real Name",
     role: "official",
     grants: [
       "registration.manage",
@@ -48,16 +50,18 @@ export const TEST_USERS = Object.freeze({
   operationsOperator: account({
     email: "e2e-operations-operator@test.com",
     name: "E2E Multi-service Operator",
+    realname: "Operations Operator Real Name",
     role: "official",
     grants: ["registration.operate", "queue.operate", "inspection.operate"],
   }),
   registrationOperator: account({
     email: "e2e-registration-operator@test.com",
     name: "E2E Registration Operator",
+    realname: "Registration Operator Real Name",
     role: "official",
     grants: ["registration.operate"],
   }),
-  student: account({ email: "e2e-student@test.com", name: "E2E Student", role: "student" }),
+  student: account({ email: "e2e-student@test.com", name: "E2E Student", realname: "Student Real Name", role: "student" }),
 });
 
 export function getAdminJwt() {

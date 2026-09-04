@@ -333,7 +333,7 @@ test.describe("Inspection summary dashboard", () => {
     const teamRow = table.locator("tbody tr.clickable-row").filter({ hasText: TEAM_UNIV });
     const passBadge = teamRow.locator(".badge-success").first();
     await expect(passBadge).toContainText("PASS");
-    await expect(teamRow.locator(".inspector-name").first()).toContainText("E2E Multi-service Operator");
+    await expect(teamRow.locator(".inspector-name").first()).toContainText("Operations Operator Real Name");
 
     // Clean up mutable values. Inspector participation intentionally remains as history.
     const cleanupCtx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });

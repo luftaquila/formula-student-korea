@@ -4,6 +4,17 @@ import { storageStatePath, waitForPageReady, expectNotification } from "../helpe
 
 const YEAR = currentCompetitionYear();
 
+async function clickAndAcceptConfirm(page, button) {
+  const handled = new Promise((resolve) => {
+    page.once("dialog", async (dialog) => {
+      await dialog.accept();
+      resolve(dialog.type());
+    });
+  });
+  await button.click();
+  expect(await handled).toBe("confirm");
+}
+
 test.describe("Inspection real-time sync via SSE", () => {
   // Dual-context SSE tests may need extra time on 2-core CI
   test.describe.configure({ timeout: 60000 });
@@ -77,7 +88,7 @@ test.describe("Inspection real-time sync via SSE", () => {
 
     // Set category result to FAIL in context 1
     const failBtn1 = page1.locator(".result-toggle button").filter({ hasText: "FAIL" });
-    await failBtn1.click();
+    await clickAndAcceptConfirm(page1, failBtn1);
     await expect(failBtn1).toHaveClass(/btn-danger/);
 
     // Verify the FAIL result badge appears in context 2's tab
@@ -89,7 +100,7 @@ test.describe("Inspection real-time sync via SSE", () => {
     await expect(failBtn2).toHaveClass(/btn-danger/, { timeout: 5000 });
 
     // Clean up result
-    await failBtn1.click();
+    await clickAndAcceptConfirm(page1, failBtn1);
 
     await context1.close();
     await context2.close();
@@ -121,8 +132,8 @@ test.describe("Inspection real-time sync via SSE", () => {
     });
     expect(putRes.status()).toBe(200);
 
-    await expect(page.locator(".inspector-list")).toContainText("E2E Admin", { timeout: 15000 });
-    await expect(row.locator(".answer-edit-metadata")).toContainText("E2E Admin", { timeout: 15000 });
+    await expect(page.locator(".inspector-list")).toContainText("Admin Real Name", { timeout: 15000 });
+    await expect(row.locator(".answer-edit-metadata")).toContainText("Admin Real Name", { timeout: 15000 });
     await expect(row.locator(".answer-edit-metadata")).not.toContainText("응답 ·");
 
     await adminPage.request.put("/competition/api/v1/inspection/sheet/answer", {

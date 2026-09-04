@@ -241,7 +241,11 @@ function clearState(message) {
                   v-for="booth in (allBooths[item.type] || [])"
                   :key="booth.booth_num"
                   class="booth-item"
-                  :class="{ 'booth-inactive': !booth.active, 'booth-occupied': booth.active && booth.occupied_by }"
+                  :class="{
+                    'booth-inactive': !booth.active,
+                    'booth-occupied': booth.active && booth.occupied_by,
+                    'booth-paused': booth.active && booth.timer_paused_at,
+                  }"
                 >
                   <div class="booth-num">{{ item.name }}{{ booth.booth_num }}</div>
                   <div class="booth-status-body">
@@ -249,8 +253,11 @@ function clearState(message) {
                       <span class="booth-status-tag inactive">비활성</span>
                     </template>
                     <template v-else-if="booth.occupied_by">
-                      <span class="booth-status-tag occupied">검차중</span>
-                      <span class="booth-elapsed">{{ elapsedTimes[`${item.type}-${booth.booth_num}`] || '00:00' }}</span>
+                      <span v-if="booth.timer_paused_at" class="booth-status-tag paused">일시중단</span>
+                      <span v-else class="booth-status-tag occupied">검차중</span>
+                      <span class="booth-elapsed" :class="{ 'booth-elapsed-paused': booth.timer_paused_at }">
+                        {{ elapsedTimes[`${item.type}-${booth.booth_num}`] || '00:00' }}
+                      </span>
                     </template>
                     <template v-else>
                       <span class="booth-status-tag empty">입차 가능</span>
@@ -353,6 +360,12 @@ function clearState(message) {
   border-color: var(--accent-warning, #f59e0b);
 }
 
+.booth-item.booth-paused {
+  border-color: var(--accent-danger, #ef4444);
+  background: rgba(239, 68, 68, 0.06);
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.18);
+}
+
 .booth-num {
   font-size: 0.875rem;
   font-weight: 700;
@@ -376,6 +389,11 @@ function clearState(message) {
   color: var(--accent-warning, #f59e0b);
 }
 
+.booth-status-tag.paused {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--accent-danger, #ef4444);
+}
+
 .booth-status-tag.inactive {
   background: var(--bg-secondary);
   color: var(--text-tertiary);
@@ -386,6 +404,10 @@ function clearState(message) {
   font-weight: 700;
   font-family: "JetBrains Mono", monospace;
   color: var(--accent-warning, #f59e0b);
+}
+
+.booth-elapsed-paused {
+  color: var(--accent-danger, #ef4444);
 }
 
 @media (max-width: 640px) {

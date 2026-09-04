@@ -35,6 +35,20 @@ async function replaceMemo(page, itemId, memo) {
   expect(response.status()).toBe(200);
 }
 
+async function clickAndAcceptConfirm(page, button, expectedMessage) {
+  const handled = new Promise((resolve) => {
+    page.once("dialog", async (dialog) => {
+      const details = { type: dialog.type(), message: dialog.message() };
+      await dialog.accept();
+      resolve(details);
+    });
+  });
+  await button.click();
+  const dialog = await handled;
+  expect(dialog.type).toBe("confirm");
+  expect(dialog.message).toContain(expectedMessage);
+}
+
 test.describe("Inspection sheet filling", () => {
   test.use({ storageState: storageStatePath("operationsOperator") });
 
@@ -291,11 +305,11 @@ test.describe("Inspection sheet filling", () => {
     await expect.poll(async () => {
       const dataRes = await page.request.get(`/competition/api/v1/inspection/sheet/data/${YEAR}/1`);
       return (await dataRes.json()).inspectors[chassis.id] || [];
-    }, { timeout: 10000 }).toContain("E2E Multi-service Operator");
-    await expect(page.locator(".inspector-list")).toContainText("E2E Multi-service Operator");
+    }, { timeout: 10000 }).toContain("Operations Operator Real Name");
+    await expect(page.locator(".inspector-list")).toContainText("Operations Operator Real Name");
     await expect(page.locator(".inspector-input")).toHaveCount(0);
     await expect(page.locator(".inspector-fill-btn")).toHaveCount(0);
-    await expect(answerMetadata).toContainText("E2E Multi-service Operator");
+    await expect(answerMetadata).toContainText("Operations Operator Real Name");
     await expect(answerMetadata).not.toContainText("응답 ·");
     await expect(answerMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
     expect(await answerMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");
@@ -344,7 +358,7 @@ test.describe("Inspection sheet filling", () => {
       return total > 0 && current === total;
     }).toBe(true);
     await expect(resultPassBtn).toBeEnabled();
-    await resultPassBtn.click();
+    await clickAndAcceptConfirm(page, resultPassBtn, "PASS 상태로 변경");
 
     // Verify the button becomes active
     await expect(resultPassBtn).toHaveClass(/btn-success/);
@@ -354,7 +368,7 @@ test.describe("Inspection sheet filling", () => {
     await expect(activeTab.locator(".tab-badge")).toHaveText("PASS");
 
     // Clean up: toggle off the result
-    await resultPassBtn.click();
+    await clickAndAcceptConfirm(page, resultPassBtn, "PASS 상태 해제");
     await expect(resultPassBtn).not.toHaveClass(/btn-success/);
 
     await restoreInspectionAnswers({
@@ -371,7 +385,7 @@ test.describe("Inspection sheet filling", () => {
 
     // Click the FAIL button
     const resultFailBtn = page.locator(".result-toggle button").filter({ hasText: "FAIL" });
-    await resultFailBtn.click();
+    await clickAndAcceptConfirm(page, resultFailBtn, "FAIL 상태로 변경");
 
     // Verify the button becomes active
     await expect(resultFailBtn).toHaveClass(/btn-danger/);
@@ -381,7 +395,7 @@ test.describe("Inspection sheet filling", () => {
     await expect(activeTab.locator(".tab-badge")).toHaveText("FAIL");
 
     // Clean up
-    await resultFailBtn.click();
+    await clickAndAcceptConfirm(page, resultFailBtn, "FAIL 상태 해제");
 
     // Restore first tab
     await page.locator(".tab").filter({ hasText: "전기 검차" }).click();
@@ -422,7 +436,7 @@ test.describe("Inspection sheet filling", () => {
       const data = await resp.json();
       return data.answers[firstItemId]?.memo === newMemo;
     }, { timeout: 10000 }).toBeTruthy();
-    await expect(memoMetadata).toContainText("E2E Multi-service Operator");
+    await expect(memoMetadata).toContainText("Operations Operator Real Name");
     await expect(memoMetadata).not.toContainText("메모 ·");
     await expect(memoMetadata.locator("time")).toHaveAttribute("datetime", /^\d{4}-\d{2}-\d{2}T/);
     expect(await memoMetadata.evaluate(element => getComputedStyle(element).textAlign)).toBe("left");
@@ -462,9 +476,9 @@ test.describe("Inspection sheet filling", () => {
   test("sets a category result without a manual inspector field", async ({ page }) => {
     await expect(page.locator(".inspector-input")).toHaveCount(0);
     const resultFailBtn = page.locator(".result-toggle button").filter({ hasText: "FAIL" });
-    await resultFailBtn.click();
+    await clickAndAcceptConfirm(page, resultFailBtn, "FAIL 상태로 변경");
     await expect(resultFailBtn).toHaveClass(/btn-danger/);
-    await resultFailBtn.click();
+    await clickAndAcceptConfirm(page, resultFailBtn, "FAIL 상태 해제");
     await expect(resultFailBtn).not.toHaveClass(/btn-danger/);
   });
 

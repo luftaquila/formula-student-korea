@@ -565,6 +565,25 @@ describe('createCachedValidator', () => {
 });
 
 describe('createApp validateUser caching integration', () => {
+  it('keeps the account name and exposes the authoritative real name separately', async () => {
+    const app = createApp({
+      express,
+      validateUser: async () => ({ valid: true, role: 'student', realname: 'Real Name' }),
+      validateUserCacheTtl: 0,
+    }, () => 'student');
+    app.get('/api/identity', (req, res) => res.json({ name: req.user.name, realname: req.user.realname }));
+    const { server, baseUrl } = await startServer(app);
+    try {
+      const client = createClient(baseUrl);
+      const cookie = makeAuthCookie({ email: 'identity@test.com', name: 'Account Name', role: 'student' });
+      const response = await client.get('/api/identity', { cookie });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { name: 'Account Name', realname: 'Real Name' });
+    } finally {
+      await stopServer(server);
+    }
+  });
+
   it('wraps the validator with a cache by default (one inner call for two requests)', async () => {
     let calls = 0;
     const app = createApp({

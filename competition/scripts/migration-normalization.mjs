@@ -25,7 +25,13 @@ export function clearInactiveTeamLiveState(db, team) {
   if (tableExists(db, "booth")) {
     const boothColumns = columns(db, "booth");
     if (boothColumns.has("occupied_team_id")) {
-      db.prepare("UPDATE booth SET occupied_by = NULL, entered_at = NULL WHERE occupied_team_id = ?").run(team.id);
+      const timerReset = boothColumns.has("timer_paused_at") && boothColumns.has("timer_paused_ms")
+        ? ", timer_paused_at = NULL, timer_paused_ms = 0"
+        : "";
+      db.prepare(`
+        UPDATE booth SET occupied_by = NULL, entered_at = NULL${timerReset}
+        WHERE occupied_team_id = ?
+      `).run(team.id);
     }
   }
   if (tableExists(db, "booth_log")) {
