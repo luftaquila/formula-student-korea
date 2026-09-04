@@ -333,7 +333,7 @@ watch(lastEntriesUpdate, (update) => {
       </div>
     </div>
 
-    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
+    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드</div>
 
     <div class="card team-list-card">
       <div class="card-header">

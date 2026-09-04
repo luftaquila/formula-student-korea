@@ -687,7 +687,7 @@ function goBack() {
       </div>
     </div>
 
-    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
+    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드</div>
 
     <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
 
@@ -880,7 +880,7 @@ function goBack() {
                     :class="`status-${item.rule_refs?.status || 'needs_review'}`"
                     :disabled="isReadOnly"
                     :aria-label="`${item.name} 규정 연결 편집`"
-                    :title="isReadOnly ? '과거 연도는 수정할 수 없습니다.' : '규정 연결 편집'"
+                    :title="isReadOnly ? '읽기 전용 모드에서는 수정할 수 없습니다.' : '규정 연결 편집'"
                     @click="openRuleDialog(item)"
                   >{{ ruleStatusLabel(item) }}</button>
                   <button v-if="!isReadOnly" class="btn btn-danger btn-sm" @click="removeNode(grp.items, ii)">삭제</button>

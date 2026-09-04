@@ -1038,7 +1038,7 @@ watch(reconnected, async () => {
       </button>
     </div>
 
-    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
+    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드</div>
 
     <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
 

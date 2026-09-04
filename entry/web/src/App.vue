@@ -18,10 +18,15 @@ const addingEntry = ref(false);
 const searchQuery = ref("");
 const teamWriteYears = competitionTeamWriteYears();
 const selectedYear = ref(teamWriteYears[0]);
-const availableYears = ref(teamWriteYears);
+const availableYears = ref([...teamWriteYears].sort((a, b) => b - a));
 const vehicleTypes = ref([]);
+const loadedEntriesYear = ref(null);
+const loadedVehicleTypesYear = ref(null);
 const activeUpdating = ref(new Set());
 const rosterReadOnly = computed(() => !teamWriteYears.includes(selectedYear.value));
+const rosterDataReady = computed(() => loadedEntriesYear.value === selectedYear.value
+  && loadedVehicleTypesYear.value === selectedYear.value);
+const rosterEditorDisabled = computed(() => rosterReadOnly.value || !rosterDataReady.value);
 const refreshNotice = " 열려 있는 Queue·Inspection·Traffic 화면을 새로고침하세요.";
 
 const errorMessage = (e) => e?.data?.message || e?.message || "요청을 처리할 수 없습니다.";
@@ -60,32 +65,41 @@ function getTypeColor(type) {
 async function loadYears() {
   try {
     const storedYears = await fetchYears();
-    availableYears.value = [
-      ...teamWriteYears,
-      ...storedYears.filter((year) => !teamWriteYears.includes(year)),
-    ];
+    availableYears.value = [...new Set([...teamWriteYears, ...storedYears])]
+      .sort((a, b) => b - a);
     if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) selectedYear.value = availableYears.value[0];
   } catch (e) { error(errorMessage(e)); }
 }
 async function loadEntries() {
   const year = selectedYear.value;
+  loadedEntriesYear.value = null;
+  entries.value = {};
   loading.value = true;
   try {
     const loaded = await fetchEntries(year);
-    if (selectedYear.value === year) entries.value = loaded;
+    if (selectedYear.value === year) {
+      entries.value = loaded;
+      loadedEntriesYear.value = year;
+    }
   }
   catch (e) { if (selectedYear.value === year) error(errorMessage(e)); }
   finally { if (selectedYear.value === year) loading.value = false; }
 }
 async function loadVehicleTypes() {
   const year = selectedYear.value;
+  loadedVehicleTypesYear.value = null;
+  vehicleTypes.value = [];
   try {
     const loaded = await fetchVehicleTypes(year);
-    if (selectedYear.value === year) vehicleTypes.value = loaded;
+    if (selectedYear.value === year) {
+      vehicleTypes.value = loaded;
+      loadedVehicleTypesYear.value = year;
+    }
   }
   catch (e) { if (selectedYear.value === year) error(errorMessage(e)); }
 }
 async function handleAdd(entry) {
+  if (rosterEditorDisabled.value) return;
   addingEntry.value = true;
   const type = vehicleTypes.value.find((candidate) => candidate.name === entry.type);
   try { await addEntry({ ...entry, vehicleTypeId: type?.id ?? null }, selectedYear.value); success(`${entry.num}번 엔트리를 추가했습니다.${refreshNotice}`); await loadEntries(); }
@@ -93,11 +107,13 @@ async function handleAdd(entry) {
   finally { addingEntry.value = false; }
 }
 async function handleUpdate(entry) {
+  if (rosterEditorDisabled.value) return;
   const type = vehicleTypes.value.find((candidate) => candidate.name === entry.type);
   try { await updateEntry({ ...entry, vehicleTypeId: type?.id ?? null }); success(`${entry.num}번 엔트리를 수정했습니다.${refreshNotice}`); await loadEntries(); }
   catch (e) { error(errorMessage(e)); }
 }
 async function handleActive(entry) {
+  if (rosterEditorDisabled.value) return;
   if (!entry.active && !window.confirm(
     "이 팀을 비활성화하면 진행 중인 대기열·검차·측정 상태가 정리됩니다. 계속하시겠습니까?",
   )) return;
@@ -113,6 +129,7 @@ async function handleActive(entry) {
   finally { const next = new Set(activeUpdating.value); next.delete(entry.num); activeUpdating.value = next; }
 }
 async function handleUpload(data) {
+  if (rosterEditorDisabled.value) return false;
   try {
     await uploadEntries(data, selectedYear.value);
     success(`엔트리 목록을 업로드했습니다.${refreshNotice}`);
@@ -124,10 +141,12 @@ async function handleUpload(data) {
   }
 }
 async function handleAddType({ name, color }) {
+  if (rosterEditorDisabled.value) return;
   try { await addVehicleType(name, color, selectedYear.value); success(`차량 유형 '${name}'을(를) 추가했습니다.`); await loadVehicleTypes(); }
   catch (e) { error(errorMessage(e)); }
 }
 async function handleUpdateType({ id, ...data }) {
+  if (rosterEditorDisabled.value) return;
   try {
     await updateVehicleType(id, data, selectedYear.value);
     success(`차량 유형을 수정했습니다.${refreshNotice}`);
@@ -136,11 +155,13 @@ async function handleUpdateType({ id, ...data }) {
   catch (e) { error(errorMessage(e)); }
 }
 async function handleDeleteType(id) {
+  if (rosterEditorDisabled.value) return;
   try { await deleteVehicleType(id, selectedYear.value); success("차량 유형을 삭제했습니다."); await Promise.all([loadVehicleTypes(), loadEntries()]); }
   catch (e) { error(errorMessage(e)); }
 }
 
 watch(selectedYear, () => {
+  activeUpdating.value = new Set();
   loadEntries();
   loadVehicleTypes();
 });
@@ -164,11 +185,11 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
 
     <main class="main-content">
       <aside class="sidebar">
-        <fieldset class="roster-editor" :disabled="rosterReadOnly">
+        <fieldset class="roster-editor" :disabled="rosterEditorDisabled">
           <EntryForm :vehicle-types="vehicleTypes" :loading="addingEntry" @submit="handleAdd" />
           <FileManager
             :year="selectedYear"
-            :allow-upload="!rosterReadOnly && totalCount === 0"
+            :allow-upload="!rosterEditorDisabled && totalCount === 0"
             :upload="handleUpload"
           />
           <VehicleTypeManager :vehicle-types="vehicleTypes" @add="handleAddType" @update="handleUpdateType" @delete="handleDeleteType" />
@@ -210,7 +231,7 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
           <p>데이터를 불러오는 중...</p>
         </div>
 
-        <EntryTable v-else :entries="filteredEntries" :vehicle-types="vehicleTypes" :active-updating="activeUpdating" :readonly="rosterReadOnly" @update="handleUpdate" @active="handleActive" />
+        <EntryTable v-else :entries="filteredEntries" :vehicle-types="vehicleTypes" :active-updating="activeUpdating" :readonly="rosterEditorDisabled" @update="handleUpdate" @active="handleActive" />
       </section>
     </main>
   </div>

@@ -4,6 +4,18 @@ import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 const PREV_YEAR = YEAR - 1;
+const NEXT_YEAR = YEAR + 1;
+
+async function exposeNextYear(page) {
+  await page.route("**/competition/api/v1/meta", async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    await route.fulfill({
+      response,
+      json: { ...meta, years: [...new Set([...meta.years, NEXT_YEAR])] },
+    });
+  });
+}
 
 test.describe("Competition year boundary", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -31,5 +43,16 @@ test.describe("Competition year boundary", () => {
     await waitForPageReady(page);
     await expect(page.locator(".readonly-banner")).not.toBeVisible();
     await expect(page.getByTestId("inspection-team-year-filter")).toHaveValue(String(YEAR));
+  });
+
+  test("labels a future year as read-only without calling it historical", async ({ page }) => {
+    await exposeNextYear(page);
+    await page.goto("/inspection");
+    await waitForPageReady(page);
+
+    const yearSelect = page.getByTestId("inspection-team-year-filter");
+    await yearSelect.selectOption(String(NEXT_YEAR));
+
+    await expect(page.locator(".readonly-banner")).toHaveText("읽기 전용 모드");
   });
 });
