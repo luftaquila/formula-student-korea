@@ -306,13 +306,19 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/sheet/template` | `inspection.operate` | `?year=` | Tree: `[{ id, name, excluded_types, subcategories: [{ groups: [{ items }] }] }]` | Template tree for year |
+| GET | `/sheet/template` | `inspection.operate` | `?year=` | Tree: `[{ id, name, excluded_types, subcategories: [{ groups: [{ items: [{ ..., field_key, rule_refs }] }] }] }]` | Template tree for year; `rule_refs.status` is `verified`, `needs_review`, or `no_direct_rule` |
 | POST | `/sheet/template` | `inspection.manage` | `{ year, level, parent_id?, name, sort_order?, answer_type?, remarks?, unit?, pdf_include?, excluded_types? }` | `{ id }` | Create template node |
 | PUT | `/sheet/template/:id` | `inspection.manage` | `{ name?, sort_order?, answer_type?, remarks?, unit?, pdf_include?, excluded_types? }` | 200 | Update template node |
 | DELETE | `/sheet/template/:id` | `inspection.manage` | — | 200 | Delete template node (CASCADE, blocks past years) |
 | POST | `/sheet/template/reorder` | `inspection.manage` | `{ items: [{ id, sort_order }] }` | 200 | Reorder sibling nodes |
-| POST | `/sheet/template/copy` | `inspection.manage` | `{ from_year, to_year }` | 201 | Copy template across years |
-| POST | `/sheet/template/import` | `inspection.manage` | `{ year, template: [...] }` | 201 | Import template from JSON |
+| POST | `/sheet/template/copy` | `inspection.manage` | `{ from_year, to_year }` | 201 `{ statuses, reasons, catalog_required, catalog_available }` | Copy template across years and carry verified references only when stable keys and content hashes match; the catalog is consulted only when a source item carries references |
+| POST | `/sheet/template/import` | `inspection.manage` | `{ year, template: [...] }` | 201 | Destructively import a full template from JSON; verified references follow their stable keys into the target catalog and stay `verified` only when the clause content is unchanged, including same-edition revisions |
+| GET | `/sheet/rules/search` | `inspection.operate` | `?year=&document?=&q?=` | `{ year, rules: [{ edition, document, rule_key, clause_id, citation, text, content_hash, release_tag }] }` | Search stable-keyed catalog clauses; maximum 100 results |
+| PUT | `/sheet/template/:id/rule-refs` | `inspection.manage` | `{ expected_rule_refs, status, rule_keys: [...] }` | `rule_refs` | Replace one item's references using the caller's last-read `rule_refs`; a mismatch returns `409 INSPECTION_STALE_WRITE` without persistence. Only `verified` accepts non-empty keys. Each stored reference carries `edition`, `document`, `rule_key`, `clause_id`, `citation`, `source_hash`, and the catalog `release_tag` it was resolved against |
+| POST | `/sheet/template/rule-refs/import` | `inspection.manage` | `{ year, template: [...] }` | `{ year, counts }` | Import only rule references from the normal template export; requires an exact transactional `field_key` set, rechecks verified content hashes including same-edition revisions, and does not replace template rows or answers |
+| POST | `/sheet/template/rule-refs/sync` | `inspection.manage` | `{ from_year, to_year }` | `{ counts, reasons }` | Fill target `needs_review` items by matching `field_key`; verified target decisions are preserved |
+| POST | `/sheet/template/rule-refs/revalidate` | `inspection.manage` | `{ year }` | `{ year, counts }` | Refresh catalog metadata; changed or missing verified clauses become `needs_review` and are never auto-promoted |
+| GET | `/sheet/rule-link/:itemId/:referenceIndex` | `inspection.operate` | — | 302 | Resolve a verified, hash-matching stable key to the current safe Pages anchor for that edition |
 
 `excluded_types` is a category-level array of vehicle type **names** (from entry's `vehicle_types_<year>`) that must NOT see the category. Exclusions rather than inclusions are stored, so `[]` (the default) means every type sees it and a newly added vehicle type is visible without touching existing categories. Max 50 names; a non-array is rejected with 400. It survives `copy` and JSON export/import, and only categories carry it (other levels always report `[]`).
 

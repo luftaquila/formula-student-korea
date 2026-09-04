@@ -34,6 +34,12 @@ function decodePathCapture(value) {
 
 function addInspectionYears(req, db, years) {
   const path = normalizedPath(req);
+  const ruleRefsItemCapture = path.match(/^\/api\/sheet\/template\/([^/]+)\/rule-refs$/)?.[1];
+  const ruleRefsItemId = ruleRefsItemCapture == null ? null : Number(decodePathCapture(ruleRefsItemCapture));
+  if (Number.isInteger(ruleRefsItemId)) {
+    addStoredYear(years, db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(ruleRefsItemId)?.year);
+    return;
+  }
   const templateCapture = path.match(/^\/api\/sheet\/template\/([^/]+)$/)?.[1];
   const templateId = templateCapture == null ? null : Number(decodePathCapture(templateCapture));
   if (Number.isInteger(templateId)) {
@@ -52,8 +58,15 @@ function addInspectionYears(req, db, years) {
     addExplicitYear(years, req.body?.to_year);
     return;
   }
+  if (path === "/api/sheet/template/rule-refs/sync") {
+    parseCompetitionYear(req.body?.from_year, { defaultCurrent: false });
+    addExplicitYear(years, req.body?.to_year);
+    return;
+  }
   if (path === "/api/sheet/template"
     || path === "/api/sheet/template/import"
+    || path === "/api/sheet/template/rule-refs/import"
+    || path === "/api/sheet/template/rule-refs/revalidate"
     || /^\/api\/sheet\/(?:answer|memo|category-result)$/.test(path)) {
     addExplicitYear(years, req.body?.year);
     return;

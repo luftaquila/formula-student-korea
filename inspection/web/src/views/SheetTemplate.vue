@@ -13,6 +13,11 @@ import {
   reorderSheetNodes,
   copySheetTemplate,
   importSheetTemplate,
+  searchSheetRules,
+  updateSheetRuleRefs,
+  importSheetRuleRefs,
+  syncSheetRuleRefs,
+  revalidateSheetRuleRefs,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 
@@ -25,9 +30,26 @@ const template = ref([]);
 const vehicleTypes = ref([]);
 const loading = ref(true);
 const copyFromYear = ref("");
+const ruleSyncFromYear = ref("");
+const ruleStatusFilter = ref("all");
+const ruleDialog = ref(null);
+const selectedRuleItem = ref(null);
+const ruleDocument = ref("");
+const ruleQuery = ref("");
+const ruleResults = ref([]);
+const selectedRuleKeys = ref([]);
+const ruleSearching = ref(false);
 const activeTab = ref(Number(sessionStorage.getItem("inspectionActiveTab")) || 0);
 
 const currentCategory = computed(() => template.value[activeTab.value] || null);
+const allItems = computed(() => template.value.flatMap(cat =>
+  (cat.subcategories || []).flatMap(sub =>
+    (sub.groups || []).flatMap(group => group.items || []))));
+const ruleCounts = computed(() => {
+  const counts = { verified: 0, needs_review: 0, no_direct_rule: 0 };
+  for (const item of allItems.value) counts[item.rule_refs?.status || "needs_review"] += 1;
+  return counts;
+});
 
 const calculationSourceOptions = computed(() => {
   const options = [];
@@ -136,8 +158,8 @@ async function onYearChange() {
 async function handleCopy() {
   if (!copyFromYear.value) return;
   try {
-    await copySheetTemplate(Number(copyFromYear.value), selectedYear.value);
-    success("템플릿이 복사되었습니다.");
+    const result = await copySheetTemplate(Number(copyFromYear.value), selectedYear.value);
+    success(`템플릿이 복사되었습니다. 규정 연결 검토 필요 ${result.statuses?.needs_review || 0}건`);
     await loadTemplate();
   } catch (e) {
     error(e.message || "복사에 실패했습니다.");
@@ -182,7 +204,13 @@ async function addChild(parent, level, childKey) {
     const newNode = { id, field_key, name: defaultName, level, sort_order: maxOrder + 1, year: selectedYear.value, parent_id: parent.id };
     if (level === "subcategory") { newNode.groups = []; newNode.remarks = ""; }
     else if (level === "group") newNode.items = [];
-    else if (level === "item") { newNode.answer_type = "passfail"; newNode.remarks = ""; newNode.unit = ""; newNode.calculation = null; }
+    else if (level === "item") {
+      newNode.answer_type = "passfail";
+      newNode.remarks = "";
+      newNode.unit = "";
+      newNode.calculation = null;
+      newNode.rule_refs = { status: "needs_review", references: [] };
+    }
     children.push(newNode);
   } catch (e) {
     error("추가에 실패했습니다.");
@@ -434,6 +462,88 @@ function openPrintPage() {
   window.open(`${base}/template/print?year=${selectedYear.value}`, "_blank");
 }
 
+function ruleStatusLabel(item) {
+  const status = item.rule_refs?.status || "needs_review";
+  if (status === "verified") return `규정 ${item.rule_refs.references.length}`;
+  if (status === "no_direct_rule") return "대응 없음";
+  return "연결 검토";
+}
+
+function selectedRulePreview(ruleKey) {
+  const rule = ruleResults.value.find(candidate => candidate.rule_key === ruleKey)
+    || selectedRuleItem.value?.rule_refs?.references?.find(candidate => candidate.rule_key === ruleKey);
+  if (!rule) return ruleKey;
+  return `${rule.document === "formula-technical" ? "기술" : "경기"} ${rule.citation} · ${ruleKey}`;
+}
+
+async function runRuleSearch() {
+  ruleSearching.value = true;
+  try {
+    const result = await searchSheetRules(selectedYear.value, ruleDocument.value, ruleQuery.value);
+    ruleResults.value = result.rules;
+  } catch (e) {
+    error(e.message || "규정 카탈로그를 검색할 수 없습니다.");
+    ruleResults.value = [];
+  } finally {
+    ruleSearching.value = false;
+  }
+}
+
+async function openRuleDialog(item) {
+  selectedRuleItem.value = item;
+  selectedRuleKeys.value = (item.rule_refs?.references || []).map(ref => ref.rule_key);
+  ruleQuery.value = item.name;
+  ruleDocument.value = "";
+  ruleResults.value = [];
+  ruleDialog.value?.showModal();
+  await runRuleSearch();
+}
+
+function closeRuleDialog() {
+  ruleDialog.value?.close();
+  selectedRuleItem.value = null;
+}
+
+async function saveRuleStatus(status) {
+  const item = selectedRuleItem.value;
+  if (!item) return;
+  try {
+    const keys = status === "verified" ? selectedRuleKeys.value : [];
+    item.rule_refs = await updateSheetRuleRefs(item.id, item.rule_refs, status, keys);
+    success("규정 연결을 저장했습니다.");
+    closeRuleDialog();
+  } catch (e) {
+    if (e.status === 409 && e.data?.code === "INSPECTION_STALE_WRITE" && e.data.current?.rule_refs) {
+      item.rule_refs = e.data.current.rule_refs;
+      closeRuleDialog();
+      error(e.message);
+      return;
+    }
+    error(e.message || "규정 연결을 저장할 수 없습니다.");
+  }
+}
+
+async function handleRuleSync() {
+  if (!ruleSyncFromYear.value) return;
+  try {
+    const result = await syncSheetRuleRefs(Number(ruleSyncFromYear.value), selectedYear.value);
+    success(`규정 연결 동기화 완료: 검증 ${result.counts.verified}건, 검토 ${result.counts.needs_review}건`);
+    await loadTemplate();
+  } catch (e) {
+    error(e.message || "규정 연결 동기화에 실패했습니다.");
+  }
+}
+
+async function handleRuleRevalidate() {
+  try {
+    const result = await revalidateSheetRuleRefs(selectedYear.value);
+    success(`규정 연결 재검증 완료: 변경 ${result.counts.changed}건, 누락 ${result.counts.missing}건`);
+    await loadTemplate();
+  } catch (e) {
+    error(e.message || "규정 연결 재검증에 실패했습니다.");
+  }
+}
+
 // ---- JSON Export / Import ----
 function stripIds(tree) {
   return tree.map(cat => ({
@@ -454,6 +564,7 @@ function stripIds(tree) {
           unit: item.unit || "",
           field_key: item.field_key,
           calculation: item.calculation || null,
+          rule_refs: item.rule_refs || { status: "needs_review", references: [] },
         })),
       })),
     })),
@@ -494,6 +605,26 @@ function importJson() {
   input.click();
 }
 
+function importRuleRefsJson() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json";
+  input.onchange = async (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    try {
+      const data = JSON.parse(await file.text());
+      if (!Array.isArray(data)) throw new Error("JSON 배열이 아닙니다.");
+      const result = await importSheetRuleRefs(selectedYear.value, data);
+      success(`규정 연결 ${Object.values(result.counts).reduce((sum, count) => sum + count, 0)}건을 가져왔습니다.`);
+      await loadTemplate();
+    } catch (e) {
+      error(e.message || "규정 연결 가져오기에 실패했습니다.");
+    }
+  };
+  input.click();
+}
+
 function goBack() {
   router.push("/");
 }
@@ -511,6 +642,7 @@ function goBack() {
       <div class="top-actions-right">
         <button class="btn btn-primary btn-sm" @click="openPrintPage" :disabled="loading || !template.length">인쇄</button>
         <button class="btn btn-ghost btn-sm" @click="exportJson" :disabled="loading || !template.length">JSON 내보내기</button>
+        <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importRuleRefsJson" :disabled="loading || !template.length">규정 연결 가져오기</button>
         <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importJson" :disabled="loading">JSON 가져오기</button>
       </div>
     </div>
@@ -530,6 +662,26 @@ function goBack() {
             <option v-for="y in availableYears.filter(y => y !== selectedYear)" :key="y" :value="y">{{ y }}년</option>
           </select>
           <button class="btn btn-primary btn-sm" :disabled="!copyFromYear" @click="handleCopy">복사</button>
+        </div>
+      </div>
+      <div v-if="template.length" class="filter-group">
+        <label class="filter-label">규정 연결 상태</label>
+        <select class="filter-input" v-model="ruleStatusFilter">
+          <option value="all">전체 {{ allItems.length }}</option>
+          <option value="verified">검증 {{ ruleCounts.verified }}</option>
+          <option value="needs_review">검토 필요 {{ ruleCounts.needs_review }}</option>
+          <option value="no_direct_rule">대응 없음 {{ ruleCounts.no_direct_rule }}</option>
+        </select>
+      </div>
+      <div v-if="!isReadOnly && template.length" class="filter-group">
+        <label class="filter-label">규정 연결 갱신</label>
+        <div class="copy-row">
+          <select class="filter-input" v-model="ruleSyncFromYear">
+            <option value="">이전 연도 선택</option>
+            <option v-for="y in availableYears.filter(y => y !== selectedYear)" :key="y" :value="y">{{ y }}년</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" :disabled="!ruleSyncFromYear" @click="handleRuleSync">동기화</button>
+          <button class="btn btn-ghost btn-sm" @click="handleRuleRevalidate">재검증</button>
         </div>
       </div>
     </div>
@@ -674,6 +826,7 @@ function goBack() {
                 v-for="(item, ii) in grp.items"
                 :key="item.id"
                 class="item-row"
+                v-show="ruleStatusFilter === 'all' || (item.rule_refs?.status || 'needs_review') === ruleStatusFilter"
                 data-drag-container
                 @dragstart.stop="onDragStart($event, grp.items, ii)"
                 @dragend="onDragEnd"
@@ -720,6 +873,14 @@ function goBack() {
                     :disabled="isReadOnly"
                     placeholder="비고"
                   />
+                  <button
+                    type="button"
+                    class="rule-status-btn"
+                    :class="`status-${item.rule_refs?.status || 'needs_review'}`"
+                    :disabled="isReadOnly"
+                    :title="isReadOnly ? '과거 연도는 수정할 수 없습니다.' : '규정 연결 편집'"
+                    @click="openRuleDialog(item)"
+                  >{{ ruleStatusLabel(item) }}</button>
                   <button v-if="!isReadOnly" class="btn btn-danger btn-sm" @click="removeNode(grp.items, ii)">삭제</button>
                 </div>
                 <!-- Checktable config -->
@@ -850,6 +1011,48 @@ function goBack() {
         </div>
       </div>
     </template>
+
+    <dialog ref="ruleDialog" class="rule-dialog" @cancel.prevent="closeRuleDialog">
+      <form method="dialog" class="rule-dialog-card" @submit.prevent="runRuleSearch">
+        <div class="rule-dialog-header">
+          <div>
+            <strong>규정 연결</strong>
+            <p>{{ selectedRuleItem?.name }}</p>
+          </div>
+          <button type="button" class="btn btn-ghost btn-sm" aria-label="닫기" @click="closeRuleDialog">닫기</button>
+        </div>
+        <div class="rule-search-row">
+          <select class="filter-input" v-model="ruleDocument">
+            <option value="">전체 규정</option>
+            <option value="formula-technical">차량기술규정</option>
+            <option value="formula-competition">경기진행규정</option>
+          </select>
+          <input class="node-name-input" v-model="ruleQuery" maxlength="200" placeholder="문구, 인용 또는 rule_key 검색" />
+          <button class="btn btn-primary btn-sm" type="submit" :disabled="ruleSearching">검색</button>
+        </div>
+        <div class="rule-results" aria-live="polite">
+          <span v-if="ruleSearching" class="rule-empty">검색 중…</span>
+          <label v-for="rule in ruleResults" v-else :key="rule.rule_key" class="rule-result">
+            <input type="checkbox" :value="rule.rule_key" v-model="selectedRuleKeys" />
+            <span>
+              <strong>{{ rule.document === 'formula-technical' ? '기술' : '경기' }} {{ rule.citation }}</strong>
+              <small>{{ rule.rule_key }}</small>
+              <span>{{ rule.text }}</span>
+            </span>
+          </label>
+          <span v-if="!ruleSearching && !ruleResults.length" class="rule-empty">검색 결과가 없습니다. 먼저 규정집에 영구 키가 등록되었는지 확인하세요.</span>
+        </div>
+        <div class="rule-selected" v-if="selectedRuleKeys.length">
+          <strong>선택 {{ selectedRuleKeys.length }}개</strong>
+          <span v-for="ruleKey in selectedRuleKeys" :key="ruleKey">{{ selectedRulePreview(ruleKey) }}</span>
+        </div>
+        <div class="rule-dialog-actions">
+          <button type="button" class="btn btn-ghost btn-sm" @click="saveRuleStatus('needs_review')">연결 지우기</button>
+          <button type="button" class="btn btn-ghost btn-sm" @click="saveRuleStatus('no_direct_rule')">직접 대응 규정 없음</button>
+          <button type="button" class="btn btn-primary btn-sm" :disabled="!selectedRuleKeys.length" @click="saveRuleStatus('verified')">선택 규정 저장</button>
+        </div>
+      </form>
+    </dialog>
   </div>
 </template>
 
@@ -1338,6 +1541,80 @@ function goBack() {
   flex: 0 0 120px;
 }
 
+.rule-status-btn {
+  flex-shrink: 0;
+  min-height: 32px;
+  padding: 0.25rem 0.625rem;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  background: transparent;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.rule-status-btn:disabled { cursor: default; opacity: 0.7; }
+.status-verified { color: var(--accent-success, #16a34a); }
+.status-needs_review { color: var(--accent-warning, #d97706); }
+.status-no_direct_rule { color: var(--text-tertiary); }
+
+.rule-dialog {
+  width: min(760px, calc(100vw - 2rem));
+  max-height: min(760px, calc(100vh - 2rem));
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 14px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.rule-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+
+.rule-dialog-card {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  padding: 1rem;
+}
+
+.rule-dialog-header,
+.rule-dialog-actions,
+.rule-search-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rule-dialog-header { justify-content: space-between; }
+.rule-dialog-header p { margin: 0.25rem 0 0; color: var(--text-secondary); font-size: 0.875rem; }
+.rule-search-row .node-name-input { flex: 1; }
+.rule-dialog-actions { justify-content: flex-end; flex-wrap: wrap; }
+
+.rule-results {
+  min-height: 180px;
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+}
+
+.rule-result {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.625rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+  cursor: pointer;
+}
+
+.rule-result:last-child { border-bottom: 0; }
+.rule-result > span { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.rule-result small { color: var(--text-tertiary); overflow-wrap: anywhere; }
+.rule-result span span { color: var(--text-secondary); font-size: 0.8125rem; line-height: 1.45; }
+.rule-empty { display: block; padding: 2rem 1rem; text-align: center; color: var(--text-tertiary); }
+.rule-selected { display: flex; flex-direction: column; gap: 0.2rem; color: var(--text-secondary); font-size: 0.8125rem; }
+
 @media (max-width: 640px) {
   .top-actions {
     flex-wrap: wrap;
@@ -1382,5 +1659,8 @@ function goBack() {
   .remarks-input {
     max-width: 100%;
   }
+
+  .rule-search-row { align-items: stretch; flex-direction: column; }
+  .rule-dialog-actions > .btn { flex: 1 1 auto; }
 }
 </style>

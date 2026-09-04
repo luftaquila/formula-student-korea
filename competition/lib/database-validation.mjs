@@ -24,7 +24,7 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 131,
-  sha256: "9feec14de985a4b1829f69bde7570cc5edffbeb16ae502a822e550705ce1ef94",
+  sha256: "6ea17b5f529d947108915839bb104a90c27089eb639d3d67f7149376bc904e64",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
@@ -34,14 +34,30 @@ export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
 // endurance table with its 0/1 constraint before serving. Any other schema
 // still fails closed, and the next validation must match the current contract.
 const MISSING_ENDURANCE_DRIVER_NAMES = Object.freeze(["driver1_name", "driver2_name"]);
+const MISSING_RULE_REFS = Object.freeze(["rule_refs"]);
 const MISSING_BOOTH_TIMER_STATE = Object.freeze(["timer_paused_at", "timer_paused_ms"]);
 const upgradeColumns = (columns = {}) => Object.freeze({
   booth: MISSING_BOOTH_TIMER_STATE,
+  sheet_template: MISSING_RULE_REFS,
   ...columns,
 });
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
   Object.freeze({
-    // Previous release: booth timers could not be paused.
+    // Main after the booth-timer release, before deterministic rule references.
+    objectCount: 131,
+    sha256: "9feec14de985a4b1829f69bde7570cc5edffbeb16ae502a822e550705ce1ef94",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({ sheet_template: MISSING_RULE_REFS }),
+  }),
+  Object.freeze({
+    // Rule-reference preview deployments before the booth-timer release.
+    objectCount: 131,
+    sha256: "0e716bc37b1853ace4cc7b1ac464b4f3ba6488f3a4ee61d63b89a5f1ebca4279",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({ booth: MISSING_BOOTH_TIMER_STATE }),
+  }),
+  Object.freeze({
+    // Previous release: neither booth pause state nor rule references existed.
     objectCount: 131,
     sha256: "83a36e66e0d2786040e4b1cdfdc883fcc5ee64b3d90c3daf80c4669d1346e3f9",
     allowedMissingTables: Object.freeze([]),
@@ -141,6 +157,7 @@ const REQUIRED_COLUMNS = Object.freeze({
   registration_queue: ["id", "team_id", "phone", "status", "notified", "notify_claimed_at", "registered_at", "finished_at"],
   registration_settings: ["year", "open", "sms", "notify_rank", "updated_at"],
   inspection: ["type", "name", "active"],
+  sheet_template: ["id", "year", "level", "parent_id", "sort_order", "name", "answer_type", "remarks", "unit", "pdf_include", "excluded_types", "field_key", "calculation", "rule_refs"],
   booth: ["inspection", "booth_num", "active", "occupied_by", "occupied_team_id", "entered_at", "timer_paused_at", "timer_paused_ms"],
   sheet_answer: ["year", "team_num", "item_id", "value", "memo", "answer_updated_at", "answer_updated_by", "memo_updated_at", "memo_updated_by", "team_id"],
   record: ["name", "num", "univ", "team", "type", "result", "status", "team_id"],

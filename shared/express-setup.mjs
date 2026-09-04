@@ -224,8 +224,19 @@ export function createApp(deps, authRoleFn) {
     setHeaders: (res) => res.setHeader("Cache-Control", "public, max-age=31536000, immutable"),
   }));
 
-  app.use(express.json({ limit: "100kb" }));
-  app.use(express.urlencoded({ extended: true, limit: "100kb" }));
+  // 큰 본문은 선언된 경로에서만 받는다. 그 외 경로는 기존 100kb 한도를 유지해
+  // 답변/메모 같은 빈번한 쓰기 경로의 파싱 부담을 늘리지 않는다.
+  const defaultLimit = "100kb";
+  const largeLimit = deps.jsonLimit;
+  const largePaths = new Set(deps.jsonLimitPaths || []);
+  const defaultJson = express.json({ limit: defaultLimit });
+  if (largeLimit && largePaths.size) {
+    const largeJson = express.json({ limit: largeLimit });
+    app.use((req, res, next) => (largePaths.has(req.path) ? largeJson : defaultJson)(req, res, next));
+  } else {
+    app.use(largeLimit ? express.json({ limit: largeLimit }) : defaultJson);
+  }
+  app.use(express.urlencoded({ extended: true, limit: defaultLimit }));
 
   // 1. Cookie parsing (no external dependency)
   app.use((req, res, next) => {

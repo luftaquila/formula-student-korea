@@ -46,6 +46,16 @@ Traffic submits the stable `competition_team.id`; the server resolves that ID ag
 
 Inspection answers and memos have no numeric client or database version. A save includes the value last read by the editor as `expectedValue` or `expectedMemo`. If it differs from the current stored value, the server returns `409 INSPECTION_STALE_WRITE` and does not persist the request. The UI discards the stale local edit and tells the operator to refresh and retry. Saves for the same field are serialized in the browser; there is no local-storage draft or conflict-resolution UI.
 
+## Inspection rule references
+
+Inspection items store deterministic rule references in `sheet_template.rule_refs`. An item's stable `field_key` identifies the inspection question, while the rules site's semantic `rule_key` identifies a clause across editions. Clause numbers, citations, hashes, release tags, and final links are never accepted as authoritative client input: Competition resolves them from the schema v2 catalog at `RULES_BASE_URL`, whose manifest names the deployed `site_tag` and each document's immutable `release_tag`. The catalog is bounded, validated, cached for ten minutes, and is not part of service readiness. Mutations that consult the catalog log the site tag and document releases they were judged against.
+
+Single-item rule-reference edits also use value-based stale-write protection: the caller sends the complete `rule_refs` value it last read, and Competition compares it with the stored value inside the update transaction. A mismatch returns `409 INSPECTION_STALE_WRITE` without persistence; no numeric reference version or merge behavior is introduced.
+
+Only `verified` references expose links. The redirect endpoint resolves the stored key against the item's edition and requires an unchanged clause content hash, so a pure renumber follows the new anchor while a substantive change fails closed until a chief revalidates it. `needs_review` is visible but disabled; `no_direct_rule` is intentionally hidden. Year copying and explicit synchronization match items by `field_key`; no runtime LLM participates in lookup or approval.
+
+Rollout, revalidation after a rulebook release, and year rollover steps are in the [rule links runbook](runbooks/inspection-rule-links.md).
+
 ## Documents files
 
 The database and Documents upload tree are one consistency unit. Documents rejects symbolic links in every existing component of the configured upload-root path before creating or cleaning directories, then synchronously removes `_tmp` contents, unreferenced files and symlinks, and empty directories before the process becomes ready. Cleanup errors fail startup. Missing database-referenced files and metadata that does not match the runtime path-shape rules are audited and rejected by migration, backup, and restore validation.

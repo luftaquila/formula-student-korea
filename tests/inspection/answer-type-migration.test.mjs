@@ -67,6 +67,10 @@ describe('Inspection answer-type migration', () => {
       assert.equal(row.unit, 'legacy-unit');
       assert.equal(row.pdf_include, 0);
       assert.equal(row.excluded_types, '["EV"]');
+      const migratedItem = migratedDb.prepare("SELECT field_key, calculation, rule_refs FROM sheet_template WHERE id = ?").get(itemId);
+      assert.equal(migratedItem.field_key, `item-2026-${itemId}`);
+      assert.equal(migratedItem.calculation, '');
+      assert.deepEqual(JSON.parse(migratedItem.rule_refs), { status: 'needs_review', references: [] });
       assert.equal(
         migratedDb.prepare("SELECT value FROM sheet_answer WHERE item_id = ?").get(itemId).value,
         'preserved answer',

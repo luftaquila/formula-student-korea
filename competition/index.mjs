@@ -127,6 +127,9 @@ export function createCompetitionApp(options = {}) {
     staticRoot: staticRoots.inspection,
     teamStore: teams.store,
     mutationGuard: guarded("inspection"),
+    rulesBaseUrl: options.rulesBaseUrl,
+    rulesFetch: options.rulesFetch,
+    rulesCatalogOptions: options.rulesCatalogOptions,
     onEvent: (event, data) => dispatchScoreSourceEvent("inspection", event, data),
   });
   const traffic = createTrafficApp({
