@@ -602,7 +602,7 @@ function goToInspection(num) {
                         {{ booth.timer_paused_at ? "재개" : "중단" }}
                       </button>
                       <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
-                        인스펙션
+                        검차
                       </button>
                     </div>
                   </div>
