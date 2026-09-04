@@ -54,6 +54,8 @@ Single-item rule-reference edits also use value-based stale-write protection: th
 
 Only `verified` references expose links. The redirect endpoint resolves the stored key against the item's edition and requires an unchanged clause content hash, so a pure renumber follows the new anchor while a substantive change fails closed until a chief revalidates it. `needs_review` is visible but disabled; `no_direct_rule` is intentionally hidden. Year copying and explicit synchronization match items by `field_key`; no runtime LLM participates in lookup or approval.
 
+Inline rule content uses the same stable-key and content-hash checks for every reference on an item. The server loads each distinct rule document through a bounded LRU keyed by its immutable release tag, parses each distinct document once per request, extracts all current catalog `clause_id` fragments from that shared AST, and returns them inside an inert JSON response. The browser then allowlists the extracted HTML and MathML before rendering it; stored clause numbers never drive resolution, and opening other items from the same release neither downloads nor transfers the full rulebook again.
+
 Rollout, revalidation after a rulebook release, and year rollover steps are in the [rule links runbook](runbooks/inspection-rule-links.md).
 
 ## Documents files

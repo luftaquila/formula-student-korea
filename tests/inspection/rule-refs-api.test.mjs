@@ -14,7 +14,7 @@ import { currentCompetitionYear } from "../../shared/competition-year.mjs";
 
 setupTestEnv();
 
-import { createInspectionApp } from "../../inspection/index.mjs";
+import { createInspectionApp, parseRuleDocument } from "../../inspection/index.mjs";
 
 const YEAR = currentCompetitionYear();
 const HASH_A = `sha256:${"a".repeat(64)}`;
@@ -71,6 +71,16 @@ function catalogPayload(hash = HASH_A, clauseId = "formula-technical-10-9") {
         href: `#${clauseId}`,
         content_hash: hash,
         rule_key: "formula-technical.brake-light",
+      }, {
+        id: "formula-technical-48",
+        year: YEAR,
+        edition: YEAR,
+        document: "formula-technical",
+        citation: "제48조",
+        text: "차량은 접지 기준을 충족해야 한다.",
+        href: "#formula-technical-48",
+        content_hash: HASH_B,
+        rule_key: "formula-technical.grounding",
       }],
     },
   };
@@ -86,8 +96,31 @@ let payload = catalogPayload();
 let catalogUnavailable = false;
 let catalogNow = 0;
 let rulesFetchGate = null;
+let rulePageMode = "ok";
+let rulePageFetches = 0;
+let rulePageParses = 0;
+const RULE_PAGE_HTML = `<main>
+  <div id="formula-technical-10-9"><p>제동등을 장착해야 한다.</p></div>
+  <div>${"규정집의 다른 본문 ".repeat(1000)}</div>
+  <h2 id="formula-technical-48">제48조</h2>
+  <p>차량은 접지 기준을 충족해야 한다.</p>
+  <h2 id="formula-technical-49">제49조</h2>
+</main>`;
 const rulesFetch = async (url) => {
   if (catalogUnavailable) throw new Error("injected catalog outage");
+  if (String(url).endsWith(`/${YEAR}/formula-technical/`)) {
+    rulePageFetches += 1;
+    if (rulePageMode === "not-html") {
+      return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+    }
+    if (rulePageMode === "oversized") {
+      return new Response("<main></main>", {
+        status: 200,
+        headers: { "content-type": "text/html", "content-length": String(2 * 1024 * 1024 + 1) },
+      });
+    }
+    return new Response(RULE_PAGE_HTML, { status: 200, headers: { "content-type": "text/html" } });
+  }
   if (rulesFetchGate && String(url).endsWith("rules-manifest.json")) {
     const gate = rulesFetchGate;
     rulesFetchGate = null;
@@ -113,6 +146,10 @@ before(async () => {
     validateUser: TRUST_JWT,
     rulesBaseUrl: "https://rules.test/fsk-rules/",
     rulesFetch,
+    ruleDocumentParser: (source) => {
+      rulePageParses += 1;
+      return parseRuleDocument(source);
+    },
     rulesCatalogOptions: { now: () => catalogNow, ttlMs: 100 },
   });
   const db = created.db;
@@ -226,7 +263,7 @@ describe("inspection rule reference API", () => {
     assert.equal(restored.status, 200);
   });
 
-  it("redirects a verified unchanged key to the current Pages anchor", async () => {
+  it("redirects a verified key and serves bounded, extracted rule content", async () => {
     const response = await fetch(`${baseUrl}/api/sheet/rule-link/${ids.first}/0`, {
       headers: { cookie: officialCookie },
       redirect: "manual",
@@ -234,6 +271,65 @@ describe("inspection rule reference API", () => {
     assert.equal(response.status, 302);
     assert.equal(response.headers.get("location"),
       `https://rules.test/fsk-rules/${YEAR}/formula-technical/#formula-technical-10-9`);
+
+    const fetchesBeforeFailures = rulePageFetches;
+    rulePageMode = "not-html";
+    const wrongType = await client.get(`/api/sheet/rule-content/${ids.first}`, { cookie: officialCookie });
+    assert.equal(wrongType.status, 503);
+    assert.equal((await wrongType.json()).code, "RULE_CONTENT_UNAVAILABLE");
+    assert.equal(rulePageFetches, fetchesBeforeFailures + 1);
+
+    rulePageMode = "oversized";
+    const oversized = await client.get(`/api/sheet/rule-content/${ids.first}`, { cookie: officialCookie });
+    assert.equal(oversized.status, 503);
+    assert.equal((await oversized.json()).code, "RULE_CONTENT_UNAVAILABLE");
+    assert.equal(rulePageFetches, fetchesBeforeFailures + 2, "failed responses are not cached");
+
+    const db = created.db;
+    const firstBefore = db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.first).rule_refs;
+    const secondBefore = db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.second).rule_refs;
+    const grounding = {
+      edition: YEAR,
+      document: "formula-technical",
+      rule_key: "formula-technical.grounding",
+      clause_id: "formula-technical-48",
+      citation: "제48조",
+      source_hash: HASH_B,
+      release_tag: `formula-technical-${YEAR}-r2`,
+    };
+    try {
+      const firstRefs = JSON.parse(firstBefore);
+      firstRefs.references.push(grounding);
+      db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?").run(JSON.stringify(firstRefs), ids.first);
+      db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?").run(JSON.stringify({
+        status: "verified", references: [grounding],
+      }), ids.second);
+
+      rulePageMode = "ok";
+      const fetchesBeforeSuccess = rulePageFetches;
+      const parsesBeforeSuccess = rulePageParses;
+      const content = await client.get(`/api/sheet/rule-content/${ids.first}`, { cookie: officialCookie });
+      assert.equal(content.status, 200);
+      assert.match(content.headers.get("content-type"), /^application\/json/);
+      const rawBody = await content.text();
+      const body = JSON.parse(rawBody);
+      assert.equal(body.rules.length, 2);
+      assert.equal(rulePageFetches, fetchesBeforeSuccess + 1, "same-document references share one upstream fetch");
+      assert.equal(rulePageParses, parsesBeforeSuccess + 1, "same-document references share one parsed AST");
+      assert.match(body.rules[0].content_html, /제동등을 장착해야 한다/);
+      assert.match(body.rules[1].content_html, /<h2 id="formula-technical-48">제48조<\/h2>/);
+      assert.doesNotMatch(rawBody, /규정집의 다른 본문/);
+
+      const anotherItem = await client.get(`/api/sheet/rule-content/${ids.second}`, { cookie: officialCookie });
+      assert.equal(anotherItem.status, 200);
+      assert.equal((await anotherItem.json()).rules.length, 1);
+      assert.equal(rulePageFetches, fetchesBeforeSuccess + 1, "the released document is cached across items");
+      assert.equal(rulePageParses, parsesBeforeSuccess + 2, "each request parses a cached document only once");
+    } finally {
+      rulePageMode = "ok";
+      db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?").run(firstBefore, ids.first);
+      db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?").run(secondBefore, ids.second);
+    }
   });
 
   it("imports only rule references atomically by the exact field-key set", async () => {

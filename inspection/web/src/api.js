@@ -99,6 +99,11 @@ export function sheetRuleLink(itemId, referenceIndex) {
   return `/competition/api/v1/inspection/sheet/rule-link/${encodeURIComponent(itemId)}/${encodeURIComponent(referenceIndex)}`;
 }
 
+export async function fetchSheetRuleContent(itemId) {
+  const res = await request(`/api/sheet/rule-content/${encodeURIComponent(itemId)}`);
+  return res.json();
+}
+
 export async function fetchSheetSummary(year) {
   const res = await request(`/api/sheet/summary?year=${year}`);
   return res.json();

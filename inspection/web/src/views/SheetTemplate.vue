@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from "vue"
 import { createKeyedDebouncer } from "@shared/debounce.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { useRouter } from "vue-router";
+import { ruleDocumentLabel } from "../utils/rule-text";
 import {
   fetchEntryYears,
   fetchSheetTemplate,
@@ -473,7 +474,7 @@ function selectedRulePreview(ruleKey) {
   const rule = ruleResults.value.find(candidate => candidate.rule_key === ruleKey)
     || selectedRuleItem.value?.rule_refs?.references?.find(candidate => candidate.rule_key === ruleKey);
   if (!rule) return ruleKey;
-  return `${rule.document === "formula-technical" ? "기술" : "경기"} ${rule.citation} · ${ruleKey}`;
+  return `${ruleDocumentLabel(rule.document)} ${rule.citation} · ${ruleKey}`;
 }
 
 async function runRuleSearch() {
@@ -878,6 +879,7 @@ function goBack() {
                     class="rule-status-btn"
                     :class="`status-${item.rule_refs?.status || 'needs_review'}`"
                     :disabled="isReadOnly"
+                    :aria-label="`${item.name} 규정 연결 편집`"
                     :title="isReadOnly ? '과거 연도는 수정할 수 없습니다.' : '규정 연결 편집'"
                     @click="openRuleDialog(item)"
                   >{{ ruleStatusLabel(item) }}</button>
@@ -1012,14 +1014,14 @@ function goBack() {
       </div>
     </template>
 
-    <dialog ref="ruleDialog" class="rule-dialog" @cancel.prevent="closeRuleDialog">
+    <dialog ref="ruleDialog" class="rule-dialog" aria-labelledby="rule-dialog-title" @cancel.prevent="closeRuleDialog">
       <form method="dialog" class="rule-dialog-card" @submit.prevent="runRuleSearch">
         <div class="rule-dialog-header">
-          <div>
-            <strong>규정 연결</strong>
+          <div class="rule-dialog-title">
+            <strong id="rule-dialog-title">규정 연결</strong>
             <p>{{ selectedRuleItem?.name }}</p>
           </div>
-          <button type="button" class="btn btn-ghost btn-sm" aria-label="닫기" @click="closeRuleDialog">닫기</button>
+          <button type="button" class="btn btn-ghost btn-sm rule-dialog-close" aria-label="닫기" @click="closeRuleDialog">닫기</button>
         </div>
         <div class="rule-search-row">
           <select class="filter-input" v-model="ruleDocument">
@@ -1035,7 +1037,7 @@ function goBack() {
           <label v-for="rule in ruleResults" v-else :key="rule.rule_key" class="rule-result">
             <input type="checkbox" :value="rule.rule_key" v-model="selectedRuleKeys" />
             <span>
-              <strong>{{ rule.document === 'formula-technical' ? '기술' : '경기' }} {{ rule.citation }}</strong>
+              <strong>{{ ruleDocumentLabel(rule.document) }} {{ rule.citation }}</strong>
               <small>{{ rule.rule_key }}</small>
               <span>{{ rule.text }}</span>
             </span>
@@ -1561,7 +1563,10 @@ function goBack() {
 .rule-dialog {
   width: min(760px, calc(100vw - 2rem));
   max-height: min(760px, calc(100vh - 2rem));
+  max-height: min(760px, calc(100dvh - 2rem));
+  margin: auto;
   padding: 0;
+  overflow: hidden;
   border: 1px solid var(--border-color);
   border-radius: 14px;
   background: var(--bg-card);
@@ -1575,7 +1580,9 @@ function goBack() {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  max-height: inherit;
   padding: 1rem;
+  overflow: hidden;
 }
 
 .rule-dialog-header,
@@ -1586,14 +1593,31 @@ function goBack() {
   gap: 0.5rem;
 }
 
-.rule-dialog-header { justify-content: space-between; }
-.rule-dialog-header p { margin: 0.25rem 0 0; color: var(--text-secondary); font-size: 0.875rem; }
+.rule-dialog-header {
+  flex: 0 0 auto;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.rule-dialog-title { flex: 1 1 auto; min-width: 0; }
+.rule-dialog-header p {
+  max-height: 6.5rem;
+  margin: 0.25rem 0 0;
+  overflow-y: auto;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+.rule-dialog-close {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.rule-search-row { flex: 0 0 auto; }
 .rule-search-row .node-name-input { flex: 1; }
-.rule-dialog-actions { justify-content: flex-end; flex-wrap: wrap; }
+.rule-dialog-actions { flex: 0 0 auto; justify-content: flex-end; flex-wrap: wrap; }
 
 .rule-results {
-  min-height: 180px;
-  max-height: 420px;
+  flex: 1 1 420px;
+  min-height: 0;
   overflow: auto;
   border: 1px solid var(--border-color);
   border-radius: 10px;
@@ -1611,9 +1635,23 @@ function goBack() {
 .rule-result:last-child { border-bottom: 0; }
 .rule-result > span { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
 .rule-result small { color: var(--text-tertiary); overflow-wrap: anywhere; }
-.rule-result span span { color: var(--text-secondary); font-size: 0.8125rem; line-height: 1.45; }
+.rule-result span span {
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
 .rule-empty { display: block; padding: 2rem 1rem; text-align: center; color: var(--text-tertiary); }
-.rule-selected { display: flex; flex-direction: column; gap: 0.2rem; color: var(--text-secondary); font-size: 0.8125rem; }
+.rule-selected {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  gap: 0.2rem;
+  max-height: 5rem;
+  overflow-y: auto;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
 
 @media (max-width: 640px) {
   .top-actions {

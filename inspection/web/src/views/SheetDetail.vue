@@ -9,11 +9,13 @@ import {
   updateSheetAnswer,
   updateSheetMemo,
   updateSheetCategoryResult,
+  fetchSheetRuleContent,
   sheetRuleLink,
 } from "../api";
 import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { createSaveQueue, reconcileSaveQueuesAfterReconnect } from "../utils/save-queue";
+import { ruleDocumentLabel, sanitizeRuleContentHtml } from "../utils/rule-text";
 import { createCalculationEvaluator, formatCalculationValue } from "../../../lib/calculations.mjs";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
@@ -93,8 +95,137 @@ function getCalculationHint(item) {
   return status === "invalid" ? "원본 값이 올바른 숫자가 아닙니다." : "";
 }
 
-function ruleDocumentLabel(document) {
-  return document === "formula-technical" ? "기술" : "경기";
+const rulePopoverStates = ref({});
+const RULE_POPOVER_GAP = 8;
+const openRulePopoverItemId = ref(null);
+let rulePopoverTrigger = null;
+let rulePopoverViewportWidth = null;
+let rulePopoverOpenedAtScrollY = 0;
+let rulePopoverHasScrolled = false;
+
+function rulePopoverId(itemId) {
+  return `rule-popover-${itemId}`;
+}
+
+function rulePopoverState(itemId) {
+  return rulePopoverStates.value[itemId] || { loading: false, error: "", rules: [] };
+}
+
+function closeRulePopover({ restoreFocus = false } = {}) {
+  const trigger = rulePopoverTrigger;
+  openRulePopoverItemId.value = null;
+  rulePopoverTrigger = null;
+  rulePopoverViewportWidth = null;
+  rulePopoverHasScrolled = false;
+  if (restoreFocus) trigger?.focus();
+}
+
+function onRulePopoverDocumentClick(event) {
+  if (openRulePopoverItemId.value === null) return;
+  const popover = document.getElementById(rulePopoverId(openRulePopoverItemId.value));
+  if (popover?.contains(event.target) || rulePopoverTrigger?.contains(event.target)) return;
+  closeRulePopover();
+}
+
+function onRulePopoverKeydown(event) {
+  if (event.key === "Escape" && openRulePopoverItemId.value !== null) {
+    event.preventDefault();
+    closeRulePopover({ restoreFocus: true });
+  }
+}
+
+function positionOpenRulePopover() {
+  if (openRulePopoverItemId.value === null || !rulePopoverTrigger?.isConnected) return;
+  const viewportWidth = document.documentElement.clientWidth;
+  if (viewportWidth === rulePopoverViewportWidth) return;
+  positionRulePopover(openRulePopoverItemId.value, rulePopoverTrigger);
+}
+
+async function loadRulePopover(item) {
+  const current = rulePopoverState(item.id);
+  if (current.loading || current.rules.length) return;
+  rulePopoverStates.value = {
+    ...rulePopoverStates.value,
+    [item.id]: { loading: true, error: "", rules: [] },
+  };
+  try {
+    const payload = await fetchSheetRuleContent(item.id);
+    if (!Array.isArray(payload?.rules)) {
+      throw new Error("규정 원문 응답이 올바르지 않습니다.");
+    }
+    const rules = payload.rules.map((rule) => {
+      const contentHtml = sanitizeRuleContentHtml(rule.content_html);
+      if (!contentHtml) throw new Error("규정 원문에서 연결된 조항을 찾을 수 없습니다.");
+      return { ...rule, contentHtml, referenceIndex: rule.reference_index };
+    });
+    rulePopoverStates.value = {
+      ...rulePopoverStates.value,
+      [item.id]: { loading: false, error: "", rules },
+    };
+  } catch (cause) {
+    rulePopoverStates.value = {
+      ...rulePopoverStates.value,
+      [item.id]: {
+        loading: false,
+        error: cause?.message || "규정 원문을 불러올 수 없습니다.",
+        rules: [],
+      },
+    };
+  }
+}
+
+function positionRulePopover(itemId, trigger) {
+  const popover = document.getElementById(rulePopoverId(itemId));
+  if (!popover || openRulePopoverItemId.value !== String(itemId)) return;
+  const triggerRect = trigger.getBoundingClientRect();
+  const viewportWidth = document.documentElement.clientWidth;
+  const viewportHeight = document.documentElement.clientHeight;
+  const edge = 12;
+  const gap = RULE_POPOVER_GAP;
+  const progressRect = document.querySelector(".inspection-progress")?.getBoundingClientRect();
+  const protectedTop = progressRect && progressRect.bottom > edge && progressRect.top < viewportHeight
+    ? Math.min(viewportHeight - edge, progressRect.bottom + gap)
+    : edge;
+  const desiredHeight = Math.min(480, popover.scrollHeight + 2);
+  const belowTop = Math.max(protectedTop, triggerRect.bottom + gap);
+  const belowSpace = Math.max(0, viewportHeight - edge - belowTop);
+  const aboveBottom = Math.max(protectedTop, triggerRect.top - gap);
+  const aboveSpace = Math.max(0, aboveBottom - protectedTop);
+  const placeBelow = desiredHeight <= belowSpace
+    || (desiredHeight > aboveSpace && belowSpace >= aboveSpace);
+  const availableHeight = placeBelow ? belowSpace : aboveSpace;
+  popover.style.maxHeight = `${Math.min(480, availableHeight)}px`;
+  const popoverRect = popover.getBoundingClientRect();
+  const left = Math.min(
+    Math.max(edge, triggerRect.right - popoverRect.width),
+    viewportWidth - popoverRect.width - edge,
+  );
+  const top = placeBelow
+    ? belowTop
+    : Math.max(protectedTop, aboveBottom - popoverRect.height);
+  popover.style.left = `${left + window.scrollX}px`;
+  popover.style.top = `${top + window.scrollY}px`;
+  rulePopoverViewportWidth = viewportWidth;
+}
+
+async function onRulePopoverClick(item, event) {
+  const trigger = event.currentTarget;
+  const itemId = String(item.id);
+  if (openRulePopoverItemId.value === itemId) {
+    closeRulePopover();
+    return;
+  }
+  openRulePopoverItemId.value = itemId;
+  rulePopoverTrigger = trigger;
+  rulePopoverOpenedAtScrollY = window.scrollY;
+  rulePopoverHasScrolled = false;
+  await nextTick();
+  positionRulePopover(item.id, trigger);
+  await loadRulePopover(item);
+  await nextTick();
+  if (openRulePopoverItemId.value === itemId && !rulePopoverHasScrolled) {
+    positionRulePopover(item.id, trigger);
+  }
 }
 
 // 탭 번호는 템플릿 원본 순서를 따른다 — 유형별로 숨겨진 카테고리가 있어도
@@ -135,7 +266,10 @@ onMounted(async () => {
   const savedY = categoryRequested ? 0 : Number(sessionStorage.getItem("inspectionScrollY")) || 0;
   await nextTick();
   scrollActiveTabIntoView();
-  requestAnimationFrame(() => window.scrollTo(0, savedY));
+  requestAnimationFrame(() => {
+    window.scrollTo(0, savedY);
+    scheduleCurrentViewportItemUpdate();
+  });
 });
 
 // 팀 목록과 동일한 유형 배지 색상 규칙 (등록되지 않은 유형은 blue로 폴백)
@@ -479,6 +613,9 @@ const inspectionStatusMap = computed(() => buildInspectionStatusMap(
   currentCategory.value,
   sheetData.value.answers,
 ));
+const currentViewportItemId = ref(null);
+const navigationStatusItemId = ref(null);
+const highlightedStatusItemId = computed(() => navigationStatusItemId.value || currentViewportItemId.value);
 
 const statusLegend = computed(() => [
   { state: "pass", label: "PASS", count: inspectionStatusMap.value.counts.pass },
@@ -539,6 +676,7 @@ const memoItems = computed(() => {
 
 const SUMMARY_COLLAPSE_MS = 220;
 const SCROLL_TARGET_GAP = 8;
+const SCROLL_POSITION_EPSILON = 1;
 
 function waitForSummaryCollapse(shouldWait) {
   return shouldWait
@@ -549,10 +687,14 @@ function waitForSummaryCollapse(shouldWait) {
 function scrollBelowProgress(element) {
   const progressHeight = document.querySelector(".inspection-progress")?.getBoundingClientRect().height || 0;
   const elementTop = window.scrollY + element.getBoundingClientRect().top;
+  const maxScrollY = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+  const targetTop = Math.min(maxScrollY, Math.max(0, elementTop - progressHeight - SCROLL_TARGET_GAP));
+  const willScroll = Math.abs(window.scrollY - targetTop) > 1;
   window.scrollTo({
-    top: Math.max(0, elementTop - progressHeight - SCROLL_TARGET_GAP),
+    top: targetTop,
     behavior: "smooth",
   });
+  return willScroll;
 }
 
 async function scrollToMemoItem(item) {
@@ -579,12 +721,23 @@ function formatUpdatedAt(value) {
 }
 
 async function scrollToItem(itemId) {
+  const targetItemId = String(itemId);
+  navigationStatusItemId.value = targetItemId;
   outlineOpen.value = false;
   failedOpen.value = false;
   missingOpen.value = false;
   await nextTick();
   const el = document.getElementById(`item-${itemId}`);
-  if (el) scrollBelowProgress(el);
+  if (!el) {
+    navigationStatusItemId.value = null;
+    return;
+  }
+  const startY = window.scrollY;
+  if (!scrollBelowProgress(el)) {
+    finishStatusMapNavigation();
+  } else {
+    watchStatusMapNavigationEnd(startY);
+  }
 }
 
 // ---- Checktable helpers ----
@@ -636,7 +789,97 @@ function goBack() {
 
 // ---- Scroll position persistence ----
 let scrollTimer = null;
+let currentItemFrame = null;
+let navigationSettleFrame = null;
+let navigationLastScrollY = 0;
+let navigationHasMoved = false;
+let navigationStableFrames = 0;
+const NAVIGATION_SETTLE_FRAMES = 6;
+
+function finishStatusMapNavigation() {
+  if (navigationStatusItemId.value !== null) {
+    currentViewportItemId.value = navigationStatusItemId.value;
+    navigationStatusItemId.value = null;
+  }
+  if (navigationSettleFrame !== null) {
+    window.cancelAnimationFrame(navigationSettleFrame);
+    navigationSettleFrame = null;
+  }
+}
+
+function checkStatusMapNavigationSettled() {
+  navigationSettleFrame = null;
+  if (navigationStatusItemId.value === null) return;
+
+  const scrollY = window.scrollY;
+  if (Math.abs(scrollY - navigationLastScrollY) > 0.5) {
+    navigationLastScrollY = scrollY;
+    navigationHasMoved = true;
+    navigationStableFrames = 0;
+  } else if (navigationHasMoved) {
+    navigationStableFrames += 1;
+  }
+
+  if (navigationHasMoved && navigationStableFrames >= NAVIGATION_SETTLE_FRAMES) {
+    finishStatusMapNavigation();
+    return;
+  }
+  navigationSettleFrame = window.requestAnimationFrame(checkStatusMapNavigationSettled);
+}
+
+function watchStatusMapNavigationEnd(startY) {
+  if (navigationSettleFrame !== null) window.cancelAnimationFrame(navigationSettleFrame);
+  navigationLastScrollY = startY;
+  navigationHasMoved = Math.abs(window.scrollY - startY) > 0.5;
+  navigationStableFrames = 0;
+  navigationSettleFrame = window.requestAnimationFrame(checkStatusMapNavigationSettled);
+}
+
+function interruptStatusMapNavigation() {
+  if (navigationStatusItemId.value === null) return;
+  navigationStatusItemId.value = null;
+  if (navigationSettleFrame !== null) {
+    window.cancelAnimationFrame(navigationSettleFrame);
+    navigationSettleFrame = null;
+  }
+  updateCurrentViewportItem();
+}
+
+function updateCurrentViewportItem() {
+  currentItemFrame = null;
+  const rows = document.querySelectorAll(".item-row[data-item-id]");
+  const progressBottom = document.querySelector(".inspection-progress")?.getBoundingClientRect().bottom || 0;
+  const threshold = progressBottom + SCROLL_TARGET_GAP + SCROLL_POSITION_EPSILON;
+
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (rows[middle].getBoundingClientRect().bottom <= threshold) low = middle + 1;
+    else high = middle;
+  }
+
+  const row = rows[low];
+  const rect = row?.getBoundingClientRect();
+  currentViewportItemId.value = rect && rect.top < window.innerHeight
+    ? row.dataset.itemId
+    : null;
+}
+
+function scheduleCurrentViewportItemUpdate() {
+  if (currentItemFrame === null) {
+    currentItemFrame = window.requestAnimationFrame(updateCurrentViewportItem);
+  }
+}
+
 function onScroll() {
+  if (openRulePopoverItemId.value !== null
+    && Math.abs(window.scrollY - rulePopoverOpenedAtScrollY) > 0.5) {
+    rulePopoverHasScrolled = true;
+  }
+  if (navigationStatusItemId.value === null) {
+    scheduleCurrentViewportItemUpdate();
+  }
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
     sessionStorage.setItem("inspectionScrollY", window.scrollY);
@@ -645,10 +888,25 @@ function onScroll() {
 
 onMounted(() => {
   window.addEventListener("scroll", onScroll);
+  window.addEventListener("resize", scheduleCurrentViewportItemUpdate);
+  window.addEventListener("resize", positionOpenRulePopover);
+  window.addEventListener("pointerdown", interruptStatusMapNavigation, { passive: true });
+  window.addEventListener("click", onRulePopoverDocumentClick);
+  window.addEventListener("wheel", interruptStatusMapNavigation, { passive: true });
+  window.addEventListener("keydown", onRulePopoverKeydown);
+  scheduleCurrentViewportItemUpdate();
 });
 
 onBeforeUnmount(() => {
   window.removeEventListener("scroll", onScroll);
+  window.removeEventListener("resize", scheduleCurrentViewportItemUpdate);
+  window.removeEventListener("resize", positionOpenRulePopover);
+  window.removeEventListener("pointerdown", interruptStatusMapNavigation);
+  window.removeEventListener("click", onRulePopoverDocumentClick);
+  window.removeEventListener("wheel", interruptStatusMapNavigation);
+  window.removeEventListener("keydown", onRulePopoverKeydown);
+  if (currentItemFrame !== null) window.cancelAnimationFrame(currentItemFrame);
+  if (navigationSettleFrame !== null) window.cancelAnimationFrame(navigationSettleFrame);
   if (stopwatchInterval !== null) window.clearInterval(stopwatchInterval);
   for (const timer of saveStateTimers.values()) clearTimeout(timer);
   saveStateTimers.clear();
@@ -657,12 +915,20 @@ onBeforeUnmount(() => {
 });
 
 watch(activeTab, () => {
+  closeRulePopover();
+  currentViewportItemId.value = null;
+  navigationStatusItemId.value = null;
+  if (navigationSettleFrame !== null) {
+    window.cancelAnimationFrame(navigationSettleFrame);
+    navigationSettleFrame = null;
+  }
   outlineOpen.value = false;
   failedOpen.value = false;
   missingOpen.value = false;
   memoOpen.value = false;
   sessionStorage.setItem("inspectionScrollY", 0);
   window.scrollTo(0, 0);
+  nextTick(scheduleCurrentViewportItemUpdate);
 });
 
 watch(visibleCategories, (cats) => {
@@ -842,14 +1108,14 @@ watch(reconnected, async () => {
           </div>
         </div>
 
-        <div class="inspection-status-legend" aria-label="문항 상태 범례">
+        <div class="inspection-status-legend" role="group" aria-label="문항 상태 범례">
           <span v-for="entry in statusLegend" :key="entry.state" class="status-legend-item">
             <span class="status-swatch" :class="`status-${entry.state}`"></span>
             {{ entry.label }} {{ entry.count }}
           </span>
         </div>
 
-        <div class="inspection-status-map" aria-label="문항 상태 맵">
+        <div class="inspection-status-map" role="group" aria-label="문항 상태 맵">
           <template v-for="sub in inspectionStatusMap.subcategories" :key="sub.id">
             <div
               v-for="group in sub.groups"
@@ -864,7 +1130,8 @@ watch(reconnected, async () => {
                 :key="item.id"
                 type="button"
                 class="status-map-item"
-                :class="`status-${item.state}`"
+                :class="[`status-${item.state}`, { 'is-current': highlightedStatusItemId === String(item.id) }]"
+                :aria-current="currentViewportItemId === String(item.id) ? 'true' : undefined"
                 :aria-label="statusItemLabel(sub, group, item)"
                 :title="statusItemLabel(sub, group, item)"
                 @click="scrollToItem(item.id)"
@@ -873,7 +1140,7 @@ watch(reconnected, async () => {
           </template>
         </div>
 
-        <div v-if="outlineOpen" class="inspection-outline">
+        <div v-if="outlineOpen" class="inspection-outline" role="navigation" aria-label="소분류 목차">
           <div class="inspection-outline-heading">소분류와 그룹을 눌러 이동</div>
           <div class="inspection-outline-list">
             <div
@@ -1015,34 +1282,70 @@ watch(reconnected, async () => {
             <div v-for="(grp, gi) in sub.groups" :key="grp.id" :id="`group-${grp.id}`" class="group-section">
               <h5 class="group-title">{{ grpNum(gi) }}. {{ grp.name }}<span v-if="grp.remarks" class="group-remarks"> — {{ grp.remarks }}</span></h5>
 
-              <div v-for="(item, ii) in grp.items" :key="item.id" :id="`item-${item.id}`" class="item-row">
+              <div v-for="(item, ii) in grp.items" :key="item.id" :id="`item-${item.id}`" :data-item-id="item.id" class="item-row">
                 <span class="item-num-label">{{ itemNum(ii) }}</span>
                 <div class="item-content">
                   <div class="item-heading">
                     <div class="item-info">
                       <div class="item-name-row">
                         <div class="item-name"><span v-html="renderMd(item.name)"></span></div>
-                        <a
-                          v-if="item.rule_refs?.status === 'verified' && item.rule_refs.references.length === 1"
-                          class="rule-help-button"
-                          :href="sheetRuleLink(item.id, 0)"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          :aria-label="`${item.name} 대응 규정 열기`"
-                          title="대응 규정 열기"
-                        >?</a>
-                        <details v-else-if="item.rule_refs?.status === 'verified' && item.rule_refs.references.length > 1" class="rule-help-menu">
-                          <summary class="rule-help-button" :aria-label="`${item.name} 대응 규정 선택`" title="대응 규정 선택">?</summary>
-                          <div class="rule-help-options">
-                            <a
-                              v-for="(reference, referenceIndex) in item.rule_refs.references"
-                              :key="reference.rule_key"
-                              :href="sheetRuleLink(item.id, referenceIndex)"
-                              target="_blank"
-                              rel="noopener noreferrer"
-                            >{{ ruleDocumentLabel(reference.document) }} {{ reference.citation }}</a>
-                          </div>
-                        </details>
+                        <template v-if="item.rule_refs?.status === 'verified' && item.rule_refs.references.length">
+                          <button
+                            type="button"
+                            class="rule-help-button"
+                            aria-haspopup="dialog"
+                            :aria-controls="rulePopoverId(item.id)"
+                            :aria-expanded="openRulePopoverItemId === String(item.id)"
+                            :aria-label="`${item.name} 대응 규정 보기`"
+                            title="대응 규정 보기"
+                            @click="onRulePopoverClick(item, $event)"
+                          >
+                            <span class="rule-help-emoji" aria-hidden="true">📖</span>
+                            <span class="rule-help-label">규정</span>
+                          </button>
+                          <Teleport to="body">
+                            <div
+                              v-if="openRulePopoverItemId === String(item.id)"
+                              :id="rulePopoverId(item.id)"
+                              class="rule-help-popover"
+                              role="dialog"
+                              :aria-label="`${item.name} 대응 규정`"
+                            >
+                              <div v-if="rulePopoverState(item.id).loading" class="rule-help-message">규정 원문을 불러오는 중…</div>
+                              <div v-else-if="rulePopoverState(item.id).error" class="rule-help-message rule-help-error">
+                                {{ rulePopoverState(item.id).error }}
+                              </div>
+                              <template v-else>
+                                <article
+                                  v-for="rule in rulePopoverState(item.id).rules"
+                                  :key="rule.rule_key"
+                                  class="rule-help-clause"
+                                >
+                                  <strong>{{ ruleDocumentLabel(rule.document) }} {{ rule.citation }}</strong>
+                                  <div
+                                    class="rule-source-content"
+                                    role="document"
+                                    :aria-label="`${rule.citation} 규정 원문`"
+                                    v-html="rule.contentHtml"
+                                  ></div>
+                                  <a
+                                    class="rule-source-link"
+                                    :href="sheetRuleLink(item.id, rule.referenceIndex)"
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    원문
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                      <path d="M14 3h7v7" />
+                                      <path d="M10 14 21 3" />
+                                      <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+                                    </svg>
+                                  </a>
+                                </article>
+                              </template>
+                            </div>
+                          </Teleport>
+                        </template>
                         <button
                           v-else-if="(item.rule_refs?.status || 'needs_review') === 'needs_review'"
                           type="button"
@@ -1050,7 +1353,7 @@ watch(reconnected, async () => {
                           disabled
                           :aria-label="`${item.name} 규정 연결 검토 필요`"
                           title="규정 연결 검토 필요"
-                        >?</button>
+                        >검토 중</button>
                       </div>
                       <span v-if="item.remarks && item.answer_type !== 'checktable'" class="item-remarks">{{ item.remarks }}</span>
                     </div>
@@ -1580,21 +1883,45 @@ watch(reconnected, async () => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 28px;
-  width: 28px;
+  flex: 0 0 auto;
+  gap: 0.25rem;
   height: 28px;
-  padding: 0;
-  border: 1px solid var(--accent-primary);
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent-primary) 10%, transparent);
-  color: var(--accent-primary);
-  font: 700 0.8125rem/1 inherit;
-  text-decoration: none;
+  padding: 0 0.55rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
   cursor: pointer;
-  list-style: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
-.rule-help-button::-webkit-details-marker { display: none; }
+.rule-help-button:hover {
+  border-color: var(--text-tertiary);
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.rule-help-emoji {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  font-size: 0.8125rem;
+  line-height: 1;
+  transform: translateY(-0.5px);
+}
+
+.rule-help-label {
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  line-height: 14px;
+}
+
 .rule-help-button.needs-review {
   border-color: var(--accent-warning, #d97706);
   background: color-mix(in srgb, var(--accent-warning, #d97706) 12%, transparent);
@@ -1603,31 +1930,120 @@ watch(reconnected, async () => {
   opacity: 0.85;
 }
 
-.rule-help-menu { position: relative; flex: 0 0 auto; }
-.rule-help-options {
+.rule-help-popover {
   position: absolute;
-  top: calc(100% + 0.375rem);
-  right: 0;
-  z-index: 20;
-  display: flex;
-  min-width: 160px;
-  flex-direction: column;
-  overflow: hidden;
+  z-index: 10;
+  inset: auto;
+  width: min(420px, calc(100vw - 1.5rem));
+  max-height: min(480px, calc(100vh - 1.5rem));
+  max-height: min(480px, calc(100dvh - 1.5rem));
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
   border: 1px solid var(--border-color);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--bg-card);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  color: var(--text-primary);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.35);
 }
 
-.rule-help-options a {
-  padding: 0.625rem 0.75rem;
+.rule-help-message {
+  padding: 1rem;
+  color: var(--text-tertiary);
+  font-size: 0.8125rem;
+}
+
+.rule-help-error {
+  color: var(--accent-danger);
+}
+
+.rule-help-clause {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.875rem 1rem;
+}
+
+.rule-help-clause + .rule-help-clause {
+  border-top: 1px solid var(--border-color);
+}
+
+.rule-help-clause strong {
   color: var(--text-primary);
   font-size: 0.8125rem;
-  text-decoration: none;
-  white-space: nowrap;
 }
 
-.rule-help-options a:hover { background: var(--bg-hover); }
+.rule-source-content {
+  width: 100%;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.rule-source-content :deep(h2) {
+  margin: 0 0 0.625rem;
+  color: var(--text-primary);
+  font-size: 0.875rem;
+}
+
+.rule-source-content :deep(p) {
+  margin: 0 0 0.625rem;
+}
+
+.rule-source-content :deep(ol),
+.rule-source-content :deep(ul) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.25rem 0 0.5rem;
+  padding-left: 1.5rem;
+}
+
+.rule-source-content :deep(li > p:last-child) {
+  margin-bottom: 0;
+}
+
+.rule-source-content :deep(li > ol),
+.rule-source-content :deep(li > ul) {
+  margin-top: 0.25rem;
+}
+
+.rule-source-content :deep(math[display="block"]),
+.rule-source-content :deep(p > math:only-child) {
+  display: block;
+  max-width: 100%;
+  margin: 0.75rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.rule-source-content :deep(table) {
+  width: 100%;
+  margin: 0.625rem 0;
+  border-collapse: collapse;
+}
+
+.rule-source-content :deep(td),
+.rule-source-content :deep(th) {
+  padding: 0.375rem;
+  border: 1px solid var(--border-color);
+  vertical-align: top;
+}
+
+.rule-source-link {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-end;
+  gap: 0.25rem;
+  color: var(--accent-primary);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.rule-source-link:hover { text-decoration: underline; }
+.rule-source-link svg { width: 13px; height: 13px; }
 
 .item-name :deep(ul) {
   margin: 0.25rem 0;
@@ -2067,6 +2483,7 @@ watch(reconnected, async () => {
 .status-swatch {
   width: 10px;
   height: 10px;
+  border: 1px solid transparent;
   border-radius: 3px;
 }
 
@@ -2094,15 +2511,32 @@ watch(reconnected, async () => {
   transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
 
-.status-map-item:hover {
+.status-map-item:active,
+.status-map-item.is-current {
   z-index: 1;
   transform: scale(1.25);
   box-shadow: var(--shadow-hover);
 }
 
-.status-map-item:focus-visible {
-  z-index: 1;
-  transform: scale(1.25);
+.inspection-status-map:has(.status-map-item:active) .status-map-item.is-current:not(:active) {
+  z-index: auto;
+  transform: none;
+  box-shadow: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .status-map-item:hover,
+  .status-map-item:focus-visible {
+    z-index: 1;
+    transform: scale(1.25);
+  }
+
+  .inspection-status-map:has(.status-map-item:hover) .status-map-item.is-current:not(:hover),
+  .inspection-status-map:has(.status-map-item:focus-visible) .status-map-item.is-current:not(:focus-visible) {
+    z-index: auto;
+    transform: none;
+    box-shadow: none;
+  }
 }
 
 .status-pass {
@@ -2361,14 +2795,6 @@ watch(reconnected, async () => {
   flex-direction: column;
   align-items: center;
   gap: 1rem;
-}
-
-@media (max-width: 640px) {
-  .rule-help-button {
-    flex-basis: 44px;
-    width: 44px;
-    height: 44px;
-  }
 }
 
 </style>

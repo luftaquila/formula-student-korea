@@ -80,25 +80,26 @@ test.describe("Inspection sheet filling", () => {
 
   test("integrates item and outline navigation into the status map", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
-    const progress = page.locator(".inspection-progress");
+    const progress = page.getByRole("region", { name: "검차 문항 현황과 빠른 이동" });
     await expect(progress).toBeVisible();
-    await expect(progress.locator(".inspection-status-map")).toBeVisible();
-    await expect(progress.locator(".inspection-status-legend")).toContainText("FAIL");
-    await expect(progress.locator(".inspection-status-legend")).toContainText("미입력");
+    await expect(progress.getByRole("group", { name: "문항 상태 맵" })).toBeVisible();
+    await expect(progress.getByRole("group", { name: "문항 상태 범례" })).toContainText("FAIL");
+    await expect(progress.getByRole("group", { name: "문항 상태 범례" })).toContainText("미입력");
     await expect(page.locator(".fab-container")).toHaveCount(0);
 
     const initialScrollY = await page.evaluate(() => window.scrollY);
-    const itemLink = progress.locator('.status-map-item[aria-label*="전압 확인"]');
+    const itemLink = progress.getByRole("button", { name: /전압 확인:/ });
     await expect(itemLink).toBeVisible();
     await itemLink.click();
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBeGreaterThan(initialScrollY);
+    await expect(itemLink).toHaveAttribute("aria-current", "true");
 
-    const outlineToggle = progress.locator(".inspection-outline-toggle");
+    const outlineToggle = progress.getByRole("button", { name: "소분류 목차" });
     await outlineToggle.click();
-    const outline = progress.locator(".inspection-outline");
+    const outline = progress.getByRole("navigation", { name: "소분류 목차" });
     await expect(outline).toBeVisible();
-    await expect(outline.locator(".outline-subcategory-link").filter({ hasText: "배터리" })).toBeVisible();
-    const groupLink = outline.locator(".inspection-outline-groups button").filter({ hasText: "1-1 배터리 팩" });
+    await expect(outline.getByRole("button", { name: /배터리$/ })).toBeVisible();
+    const groupLink = outline.getByRole("button", { name: "1-1 배터리 팩" });
     await groupLink.click();
     await expect(outline).toBeHidden();
   });

@@ -832,10 +832,12 @@ watch(lastEntriesUpdate, (update) => {
 
 .category-cell-link {
   cursor: pointer;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .category-cell-link:hover {
-  background: var(--bg-hover);
+  background: color-mix(in srgb, var(--accent-primary) 14%, var(--bg-hover));
+  box-shadow: inset 0 0 0 1px var(--accent-primary);
 }
 
 .category-cell-link:focus-visible {
