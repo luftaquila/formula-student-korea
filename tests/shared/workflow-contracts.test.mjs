@@ -25,8 +25,26 @@ function e2eShards(workflow) {
     .map(([, shard, body]) => ({ shard, body }));
 }
 
-function trafficSpecs(body) {
-  return [...body.matchAll(/tests\/e2e\/traffic\/[^\s]+\.spec\.mjs/g)].map(([spec]) => spec);
+function projectSpecs(body, project) {
+  const pattern = new RegExp(`tests/e2e/${project}/[^\\s]+\\.spec\\.mjs`, "g");
+  return [...body.matchAll(pattern)].map(([spec]) => spec);
+}
+
+function assertShardCoverage(project) {
+  const actual = fs.readdirSync(`tests/e2e/${project}`)
+    .filter((name) => name.endsWith(".spec.mjs"))
+    .map((name) => `tests/e2e/${project}/${name}`)
+    .sort();
+  const listed = e2eShards(testWorkflow)
+    .filter(({ shard }) => shard.startsWith(`${project}-`))
+    .flatMap(({ body }) => projectSpecs(body, project));
+
+  assert.equal(
+    new Set(listed).size,
+    listed.length,
+    `${project} specs must not be listed more than once`,
+  );
+  assert.deepEqual(listed.toSorted(), actual);
 }
 
 describe("CI workflow operational contracts", () => {
@@ -126,16 +144,9 @@ describe("CI workflow operational contracts", () => {
     }
   });
 
-  it("lists every Traffic E2E spec exactly once across its isolated shards", () => {
-    const actual = fs.readdirSync("tests/e2e/traffic")
-      .filter((name) => name.endsWith(".spec.mjs"))
-      .map((name) => `tests/e2e/traffic/${name}`)
-      .sort();
-    const listed = e2eShards(testWorkflow)
-      .filter(({ shard }) => shard.startsWith("traffic-"))
-      .flatMap(({ body }) => trafficSpecs(body));
-
-    assert.equal(new Set(listed).size, listed.length, "Traffic specs must not be listed more than once");
-    assert.deepEqual(listed.toSorted(), actual);
+  it("lists every explicitly sharded E2E spec exactly once", () => {
+    for (const project of ["auth", "inspection", "queue", "score", "traffic"]) {
+      assertShardCoverage(project);
+    }
   });
 });

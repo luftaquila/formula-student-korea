@@ -107,11 +107,19 @@ test.describe("Inspection summary dashboard", () => {
         team.results ||= {};
         team.results[category.id] = "";
       }
+      // A fresh summary contains only teams with saved inspection state. Build
+      // the one result this scenario needs instead of depending on another
+      // spec to have mutated team 1 first.
+      body.teams[1] ||= { inspectors: {}, results: {} };
       body.teams[1].results[category.id] = "PASS";
       await route.fulfill({ response, json: body });
     });
 
+    const summaryLoaded = page.waitForResponse(
+      (response) => response.url().includes("/competition/api/v1/inspection/sheet/summary?") && response.status() === 200,
+    );
     await page.goto("/inspection");
+    await summaryLoaded;
     await waitForPageReady(page);
 
     const rows = page.locator(".sheet-table tbody tr.clickable-row");
@@ -143,7 +151,11 @@ test.describe("Inspection summary dashboard", () => {
       await route.fulfill({ response, json: body });
     });
 
+    const summaryLoaded = page.waitForResponse(
+      (response) => response.url().includes("/competition/api/v1/inspection/sheet/summary?") && response.status() === 200,
+    );
     await page.goto("/inspection");
+    await summaryLoaded;
     await waitForPageReady(page);
 
     const table = page.locator(".sheet-table");

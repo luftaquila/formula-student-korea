@@ -238,19 +238,25 @@ jobs:
         # cross-service's multi-service load broke auth's log-aggregation page
         # when co-located.
         include:
-          - shard: auth-core
+          - shard: auth-users
             projects: >-
               --project=auth
-              tests/e2e/auth/access-device-management.spec.mjs
               tests/e2e/auth/account-applications.spec.mjs
               tests/e2e/auth/bulk-operations.spec.mjs
               tests/e2e/auth/csv-upload.spec.mjs
+              tests/e2e/auth/user-management.spec.mjs
+            workers: 2
+            services: auth competition email
+            seeds: users vehicle-types entries
+          - shard: auth-access
+            projects: >-
+              --project=auth
+              tests/e2e/auth/access-device-management.spec.mjs
               tests/e2e/auth/forward-auth.spec.mjs
               tests/e2e/auth/ops-contacts.spec.mjs
               tests/e2e/auth/rbac.spec.mjs
               tests/e2e/auth/role-propagation.spec.mjs
               tests/e2e/auth/session.spec.mjs
-              tests/e2e/auth/user-management.spec.mjs
             workers: 2
             services: auth competition email
             seeds: users vehicle-types entries
@@ -335,13 +341,41 @@ jobs:
             workers: 1
             services: auth competition email
             seeds: users vehicle-types entries
-          - shard: inspection
-            projects: --project=inspection
+          # Sheet mutation specs own distinct team numbers, while the summary
+          # tests require the complete seeded team and category set.
+          - shard: inspection-sheet
+            projects: >-
+              --project=inspection
+              tests/e2e/inspection/rbac.spec.mjs
+              tests/e2e/inspection/save-reliability.spec.mjs
+              tests/e2e/inspection/sheet-fill.spec.mjs
+              tests/e2e/inspection/three-editors.spec.mjs
+              tests/e2e/inspection/validation-and-sse.spec.mjs
+              tests/e2e/inspection/year-switch.spec.mjs
             workers: 3
             services: auth competition email
-            # Inspection reliability/RBAC specs own teams 7, 28, and 98. Seed
-            # them only in this isolated shard so canonical team validation is
-            # exercised without changing the eight-team baseline elsewhere.
+            # These specs own teams 1, 7, 28, 30, and 98.
+            seeds: users vehicle-types entries inspection-entries inspection
+          - shard: inspection-workflows
+            projects: >-
+              --project=inspection
+              tests/e2e/inspection/realtime-sync.spec.mjs
+              tests/e2e/inspection/rule-links.spec.mjs
+              tests/e2e/inspection/template-advanced.spec.mjs
+              tests/e2e/inspection/template-roundtrip.spec.mjs
+              tests/e2e/inspection/template.spec.mjs
+            workers: 3
+            services: auth competition email
+            seeds: users vehicle-types entries inspection-entries inspection
+          # Summary assertions read the aggregate team/category state. Give
+          # them a dedicated database so template mutations cannot erase the
+          # response data while a summary request is in flight.
+          - shard: inspection-summary
+            projects: >-
+              --project=inspection
+              tests/e2e/inspection/summary.spec.mjs
+            workers: 1
+            services: auth competition email
             seeds: users vehicle-types entries inspection-entries inspection
           - shard: documents
             projects: --project=documents
