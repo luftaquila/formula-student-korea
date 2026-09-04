@@ -1,6 +1,7 @@
 import express from "express";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { parse as parseHtml, serialize, serializeOuter } from "parse5";
 import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { runMigrationOnce } from "../shared/db-setup.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
@@ -26,6 +27,10 @@ import {
   validateRuleRefs,
 } from "./lib/rule-refs.mjs";
 
+export function parseRuleDocument(source) {
+  return parseHtml(source);
+}
+
 export function createInspectionApp(options = {}) {
 
 const { app, db, logger, dbRun } = createServiceSkeleton({
@@ -45,11 +50,15 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     return access.permission("inspection.operate"); // SPA
   },
 });
+const rulesFetch = options.rulesFetch || globalThis.fetch;
+const ruleDocumentParser = options.ruleDocumentParser || parseRuleDocument;
 const rulesCatalog = createRulesCatalog({
   baseUrl: options.rulesBaseUrl || process.env.RULES_BASE_URL || DEFAULT_RULES_BASE_URL,
-  fetchImpl: options.rulesFetch || globalThis.fetch,
+  fetchImpl: rulesFetch,
   ...(options.rulesCatalogOptions || {}),
 });
+const rulePageCache = new Map();
+const RULE_PAGE_CACHE_LIMIT = 16;
 ensureInactiveTeamView(db);
 
 function auditRejection(req, action, detail, target) {
@@ -725,8 +734,8 @@ app.put("/api/sheet/template/:id/rule-refs", async (req, res) => {
   return res.json(value);
 });
 
-// `?` 버튼은 새 탭으로 이 엔드포인트를 직접 열기 때문에, 브라우저 탐색에는 JSON 대신
-// 읽을 수 있는 안내 페이지를 준다. API 호출(Accept: */*, application/json)은 JSON을 유지한다.
+// `원문` 링크는 새 탭으로 직접 열리므로, 브라우저 탐색에는 JSON 대신 읽을 수 있는
+// 안내 페이지를 준다. API 호출(Accept: */*, application/json)은 JSON을 유지한다.
 const RULE_LINK_MESSAGES = Object.freeze({
   INVALID_RULE_REFERENCE: "올바르지 않은 규정 연결 요청입니다.",
   ITEM_NOT_FOUND: "문항을 찾을 수 없습니다.",
@@ -735,6 +744,7 @@ const RULE_LINK_MESSAGES = Object.freeze({
   RULE_REFERENCE_MISSING: "연결된 규정 조항이 현재 규정집에서 사라졌습니다. 재검증이 필요합니다.",
   RULE_REFERENCE_CHANGED: "연결된 규정 조항의 내용이 바뀌었습니다. 재검증이 필요합니다.",
   RULE_CATALOG_UNAVAILABLE: "규정 카탈로그를 확인할 수 없습니다. 잠시 후 다시 시도하세요.",
+  RULE_CONTENT_UNAVAILABLE: "규정 원문을 불러올 수 없습니다. 잠시 후 다시 시도하세요.",
 });
 
 function ruleLinkFailure(req, res, status, code) {
@@ -748,61 +758,245 @@ function ruleLinkFailure(req, res, status, code) {
   return res.status(status).json({ code, message });
 }
 
-app.get("/api/sheet/rule-link/:itemId/:referenceIndex", async (req, res) => {
+async function resolveSheetRules(req, res, action, requestedReferenceIndex = null) {
   const itemId = Number(req.params.itemId);
-  const referenceIndex = Number(req.params.referenceIndex);
-  if (!Number.isInteger(itemId) || !Number.isInteger(referenceIndex) || referenceIndex < 0) {
+  if (!Number.isInteger(itemId)
+    || (requestedReferenceIndex !== null
+      && (!Number.isInteger(requestedReferenceIndex) || requestedReferenceIndex < 0))) {
     return ruleLinkFailure(req, res, 400, "INVALID_RULE_REFERENCE");
   }
   const lookup = dbRun(() => db.prepare(
     "SELECT id, year, name, rule_refs FROM sheet_template WHERE id = ? AND level = 'item'",
   ).get(itemId));
   if (!lookup.success) {
-    logger.warn(req, "rule_link.resolve", { error: lookup.internalError || lookup.error, item_id: itemId, phase: "item_lookup" }, `template:${itemId}`);
+    logger.warn(req, action, { error: lookup.internalError || lookup.error, item_id: itemId, phase: "item_lookup" }, `template:${itemId}`);
     return res.status(lookup.status).send(lookup.error);
   }
   if (!lookup.result) {
-    logger.warn(req, "rule_link.resolve", { error: "item_not_found", item_id: itemId, phase: "item_lookup" }, `template:${itemId}`);
+    logger.warn(req, action, { error: "item_not_found", item_id: itemId, phase: "item_lookup" }, `template:${itemId}`);
     return ruleLinkFailure(req, res, 404, "ITEM_NOT_FOUND");
   }
   let stored;
   try { stored = parseStoredRuleRefs(lookup.result.rule_refs, lookup.result.year); }
   catch (error) {
-    logger.warn(req, "rule_link.resolve", { error: error.message, item_id: itemId, year: lookup.result.year, phase: "stored_rule_refs" }, lookup.result.name);
+    logger.warn(req, action, { error: error.message, item_id: itemId, year: lookup.result.year, phase: "stored_rule_refs" }, lookup.result.name);
     return ruleLinkFailure(req, res, 500, "INVALID_STORED_RULE_REFS");
   }
-  const reference = stored.references[referenceIndex];
-  if (stored.status !== "verified" || !reference) {
-    logger.warn(req, "rule_link.resolve", {
-      error: "rule_reference_not_verified", item_id: itemId, year: lookup.result.year, reference_index: referenceIndex,
+  const references = requestedReferenceIndex === null
+    ? stored.references.map((reference, referenceIndex) => ({ reference, referenceIndex }))
+    : [{ reference: stored.references[requestedReferenceIndex], referenceIndex: requestedReferenceIndex }];
+  if (stored.status !== "verified" || references.length === 0 || references.some(({ reference }) => !reference)) {
+    logger.warn(req, action, {
+      error: "rule_reference_not_verified", item_id: itemId, year: lookup.result.year,
+      reference_index: requestedReferenceIndex,
     }, lookup.result.name);
     return ruleLinkFailure(req, res, 409, "RULE_REFERENCE_NOT_VERIFIED");
   }
   try {
     const catalog = await rulesCatalog.load(lookup.result.year);
-    const current = catalog.byKey.get(reference.rule_key);
-    if (!current) {
-      logger.warn(req, "rule_link.resolve", {
-        error: "rule_reference_missing", item_id: itemId, year: lookup.result.year, rule_key: reference.rule_key,
-      }, lookup.result.name);
-      return ruleLinkFailure(req, res, 409, "RULE_REFERENCE_MISSING");
+    const resolved = [];
+    for (const { reference, referenceIndex } of references) {
+      const current = catalog.byKey.get(reference.rule_key);
+      if (!current) {
+        logger.warn(req, action, {
+          error: "rule_reference_missing", item_id: itemId, year: lookup.result.year,
+          reference_index: referenceIndex, rule_key: reference.rule_key,
+        }, lookup.result.name);
+        return ruleLinkFailure(req, res, 409, "RULE_REFERENCE_MISSING");
+      }
+      if (current.content_hash !== reference.source_hash) {
+        logger.warn(req, action, {
+          error: "rule_reference_changed", item_id: itemId, year: lookup.result.year,
+          reference_index: referenceIndex, rule_key: reference.rule_key,
+        }, lookup.result.name);
+        return ruleLinkFailure(req, res, 409, "RULE_REFERENCE_CHANGED");
+      }
+      resolved.push({ current, referenceIndex });
     }
-    if (current.content_hash !== reference.source_hash) {
-      logger.warn(req, "rule_link.resolve", {
-        error: "rule_reference_changed", item_id: itemId, year: lookup.result.year, rule_key: reference.rule_key,
-      }, lookup.result.name);
-      return ruleLinkFailure(req, res, 409, "RULE_REFERENCE_CHANGED");
-    }
-    return res.redirect(302, current.url);
+    return { rules: resolved, itemId, itemName: lookup.result.name, year: lookup.result.year };
   } catch (error) {
     if (req.accepts(["json", "html"]) === "html") {
-      logger.warn(req, "rule_link.resolve", {
+      logger.warn(req, action, {
         error: error?.message || String(error), code: error?.code || "RULE_CATALOG_UNAVAILABLE", phase: "rule_catalog",
         item_id: itemId, year: lookup.result.year,
       }, lookup.result.name);
       return ruleLinkFailure(req, res, 503, "RULE_CATALOG_UNAVAILABLE");
     }
-    return ruleCatalogFailure(req, res, "rule_link.resolve", error, { item_id: itemId, year: lookup.result.year });
+    return ruleCatalogFailure(req, res, action, error, { item_id: itemId, year: lookup.result.year });
+  }
+}
+
+async function fetchRulePage(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+  const maxBytes = 2 * 1024 * 1024;
+  try {
+    const response = await rulesFetch(url, {
+      headers: { accept: "text/html" },
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response?.ok) throw new Error(`규정 페이지가 HTTP ${response?.status ?? "오류"}를 반환했습니다.`);
+    if (!String(response.headers?.get?.("content-type") || "").toLowerCase().startsWith("text/html")) {
+      throw new Error("규정 페이지가 HTML을 반환하지 않았습니다.");
+    }
+    const declared = Number(response.headers?.get?.("content-length"));
+    if (Number.isFinite(declared) && declared > maxBytes) throw new Error("규정 페이지 응답이 너무 큽니다.");
+    if (!response.body?.getReader) {
+      const body = Buffer.from(await response.arrayBuffer());
+      if (body.byteLength > maxBytes) throw new Error("규정 페이지 응답이 너무 큽니다.");
+      return body.toString("utf8");
+    }
+    const reader = response.body.getReader();
+    const chunks = [];
+    let size = 0;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel();
+        throw new Error("규정 페이지 응답이 너무 큽니다.");
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks, size).toString("utf8");
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function cacheRulePage(document) {
+  const key = `${document.releaseTag}:${document.url}`;
+  const cached = rulePageCache.get(key);
+  if (cached) {
+    rulePageCache.delete(key);
+    rulePageCache.set(key, cached);
+    return cached;
+  }
+
+  const pending = fetchRulePage(document.url);
+  rulePageCache.set(key, pending);
+  while (rulePageCache.size > RULE_PAGE_CACHE_LIMIT) {
+    rulePageCache.delete(rulePageCache.keys().next().value);
+  }
+  void pending.catch(() => {
+    if (rulePageCache.get(key) === pending) rulePageCache.delete(key);
+  });
+  return pending;
+}
+
+function htmlNodeId(node) {
+  return node.attrs?.find((attribute) => attribute.name === "id")?.value || "";
+}
+
+function findHtmlNodeById(node, id) {
+  if (htmlNodeId(node) === id) return node;
+  for (const child of node.childNodes || []) {
+    const found = findHtmlNodeById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+function extractRulePageClause(parsedDocument, clauseId) {
+  const target = findHtmlNodeById(parsedDocument, clauseId);
+  if (!target) return "";
+  if (target.tagName !== "h2") return serialize(target).trim();
+
+  const siblings = target.parentNode?.childNodes || [];
+  const start = siblings.indexOf(target);
+  const selected = [];
+  for (let index = start; index >= 0 && index < siblings.length; index += 1) {
+    const sibling = siblings[index];
+    if (!sibling.tagName) continue;
+    if (selected.length && (["h1", "h2"].includes(sibling.tagName) || htmlNodeId(sibling) === "rules-index-end")) break;
+    selected.push(serializeOuter(sibling));
+  }
+  return selected.join("").trim();
+}
+
+app.get("/api/sheet/rule-link/:itemId/:referenceIndex", async (req, res) => {
+  const resolved = await resolveSheetRules(req, res, "rule_link.resolve", Number(req.params.referenceIndex));
+  if (res.headersSent) return;
+  return res.redirect(302, resolved.rules[0].current.url);
+});
+
+app.get("/api/sheet/rule-content/:itemId", async (req, res) => {
+  const resolved = await resolveSheetRules(req, res, "rule_content.resolve");
+  if (res.headersSent) return;
+
+  const documents = [];
+  const documentIndexes = new Map();
+  const referenceDocumentIndexes = new Map();
+  for (const { current, referenceIndex } of resolved.rules) {
+    const sourceUrl = new URL(current.url);
+    sourceUrl.hash = "";
+    let documentIndex = documentIndexes.get(sourceUrl.href);
+    if (documentIndex === undefined) {
+      documentIndex = documents.length;
+      documentIndexes.set(sourceUrl.href, documentIndex);
+      documents.push({
+        url: sourceUrl.href,
+        document: current.document,
+        edition: current.edition,
+        releaseTag: current.release_tag,
+      });
+    }
+    referenceDocumentIndexes.set(referenceIndex, documentIndex);
+  }
+
+  try {
+    const parsedDocuments = await Promise.all(documents.map(async (document, documentIndex) => {
+      let source;
+      try {
+        source = await cacheRulePage(document);
+      } catch (error) {
+        logger.warn(req, "rule_content.fetch", {
+          error: error?.message || String(error), item_id: resolved.itemId, year: resolved.year,
+          phase: "rule_document_fetch", document_index: documentIndex,
+          document: document.document, edition: document.edition, release_tag: document.releaseTag,
+        }, resolved.itemName);
+        throw error;
+      }
+      try {
+        return ruleDocumentParser(source);
+      } catch (error) {
+        logger.warn(req, "rule_content.parse", {
+          error: error?.message || String(error), item_id: resolved.itemId, year: resolved.year,
+          phase: "rule_document_parse", document_index: documentIndex,
+          document: document.document, edition: document.edition, release_tag: document.releaseTag,
+        }, resolved.itemName);
+        throw error;
+      }
+    }));
+    const rules = resolved.rules.map(({ current, referenceIndex }) => {
+      const documentIndex = referenceDocumentIndexes.get(referenceIndex);
+      const contentHtml = extractRulePageClause(parsedDocuments[documentIndex], current.clause_id);
+      if (!contentHtml) {
+        logger.warn(req, "rule_content.extract", {
+          error: "rule_clause_missing", item_id: resolved.itemId, year: resolved.year,
+          phase: "rule_clause_extract", reference_index: referenceIndex,
+          rule_key: current.rule_key, clause_id: current.clause_id,
+          document: current.document, edition: current.edition, release_tag: current.release_tag,
+        }, resolved.itemName);
+        throw new Error("규정 원문에서 연결된 조항을 찾을 수 없습니다.");
+      }
+      return {
+        reference_index: referenceIndex,
+        edition: current.edition,
+        document: current.document,
+        rule_key: current.rule_key,
+        clause_id: current.clause_id,
+        citation: current.citation,
+        content_hash: current.content_hash,
+        release_tag: current.release_tag,
+        content_html: contentHtml,
+      };
+    });
+    return res.json({ rules });
+  } catch (error) {
+    return ruleLinkFailure(req, res, 503, "RULE_CONTENT_UNAVAILABLE");
   }
 });
 

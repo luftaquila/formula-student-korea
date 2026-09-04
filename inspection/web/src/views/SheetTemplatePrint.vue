@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from "vue";
 import { useRoute } from "vue-router";
 import { fetchSheetTemplate } from "../api";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { ruleDocumentLabel } from "../utils/rule-text";
 
 const route = useRoute();
 const year = computed(() => Number(route.query.year) || currentCompetitionYear());
@@ -40,7 +41,7 @@ function ruleCitation(item) {
   const refs = item.rule_refs;
   if (!refs || refs.status !== "verified") return "";
   return refs.references
-    .map(ref => `${ref.document === "formula-technical" ? "기술" : "경기"} ${ref.citation}`)
+    .map(ref => `${ruleDocumentLabel(ref.document)} ${ref.citation}`)
     .join(" · ");
 }
 
