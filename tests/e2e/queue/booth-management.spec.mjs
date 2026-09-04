@@ -55,6 +55,20 @@ async function cleanupQueue(type = INSPECTION_TYPE) {
   }
 }
 
+async function clickAndAcceptConfirm(page, button, expectedMessage) {
+  const handled = new Promise((resolve) => {
+    page.once("dialog", async (dialog) => {
+      const details = { type: dialog.type(), message: dialog.message() };
+      await dialog.accept();
+      resolve(details);
+    });
+  });
+  await button.click();
+  const dialog = await handled;
+  expect(dialog.type).toBe("confirm");
+  expect(dialog.message).toContain(expectedMessage);
+}
+
 test.describe("Queue booth management", () => {
   test.use({ storageState: storageStatePath("operationsOperator") });
 
@@ -165,7 +179,7 @@ test.describe("Queue booth management", () => {
 
     // Click enter booth button
     const enterBtn = page.getByRole("button", { name: "입차" }).first();
-    await enterBtn.click();
+    await clickAndAcceptConfirm(page, enterBtn, "입차 확인\n#2");
 
     // Should show success notification
     await expectNotification(page, "success", "입차");
@@ -192,10 +206,9 @@ test.describe("Queue booth management", () => {
     // The booth should show the team and an exit button
     await expect(page.locator(".booth-team-num", { hasText: "3" })).toBeVisible({ timeout: 10000 });
 
-    // Click exit booth button (exit is guarded by a confirm() dialog)
-    page.on("dialog", (dialog) => dialog.accept());
+    // Click exit booth button
     const exitBtn = page.getByRole("button", { name: "출차" }).first();
-    await exitBtn.click();
+    await clickAndAcceptConfirm(page, exitBtn, "출차 확인\n#3");
 
     // Should show success notification
     await expectNotification(page, "success", "출차");

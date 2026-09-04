@@ -200,6 +200,8 @@ async function toggleVisibility(type, currentHidden) {
 async function enterBoothAction(boothNum) {
   const num = boothSelectedTeam.value[boothNum];
   if (!num) return;
+  const entry = entries.value[num];
+  if (!confirm(`${currentTabName.value}${boothNum} 입차 확인\n#${num} ${entry?.univ ?? ""} ${entry?.team ?? ""}`)) return;
   try {
     await enterBooth(currentTab.value, boothNum, num);
     success(`엔트리 ${num}번 ${currentTabName.value}${boothNum} 입차`);

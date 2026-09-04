@@ -1036,7 +1036,7 @@ app.put("/api/sheet/answer", (req, res) => {
   const expectedValueProvided = Object.hasOwn(req.body, "expectedValue") && typeof expectedValue === "string";
 
   const updatedAt = new Date().toISOString();
-  const updatedBy = req.user?.name?.trim() || "";
+  const updatedBy = req.user?.realname?.trim() || "";
 
   const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
@@ -1147,7 +1147,7 @@ app.put("/api/sheet/memo", (req, res) => {
 
   const newMemo = memo ?? "";
   const updatedAt = new Date().toISOString();
-  const updatedBy = req.user?.name?.trim() || "";
+  const updatedBy = req.user?.realname?.trim() || "";
   const result = dbRun(() => db.transaction(() => {
     const prev = db.prepare(
       `SELECT memo, memo_updated_at, memo_updated_by

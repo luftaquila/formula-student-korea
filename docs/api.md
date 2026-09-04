@@ -109,7 +109,7 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/users/exists/:email` | internal | — | 200 or 404 | Check if user exists and is active |
-| GET | `/api/users/access/:email` | internal | — | `{ id, role, permissions, accessRevision }` or 404 | Authoritative access snapshot used by services |
+| GET | `/api/users/access/:email` | internal | — | `{ id, role, realname, permissions, accessRevision }` or 404 | Authoritative access and real-name snapshot used by services |
 | GET | `/api/internal/users` | internal | — | `[{ id, email, name, role, realname, phone, active }]` | List minimal user profiles for trusted Documents and Email consumers without opening the Admin API |
 
 ### Kiosk devices

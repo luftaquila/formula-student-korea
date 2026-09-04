@@ -26,8 +26,12 @@ const PREV_YEAR = CURRENT_YEAR - 1;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const chiefCookie = makeAuthCookie({ email: 'chief@test.com', name: 'Chief', role: 'chief' });
-const officialCookie = makeAuthCookie({ email: 'official@test.com', name: 'Official', role: 'official' });
-const secondOfficialCookie = makeAuthCookie({ email: 'second@test.com', name: 'Second Official', role: 'official' });
+const officialCookie = makeAuthCookie({
+  email: 'official@test.com', name: 'Official Account', realname: 'Official', role: 'official',
+});
+const secondOfficialCookie = makeAuthCookie({
+  email: 'second@test.com', name: 'Second Official Account', realname: 'Second Official', role: 'official',
+});
 const unnamedOfficialCookie = makeAuthCookie({ email: 'unnamed@test.com', role: 'official' });
 const inspectionOperatorCookie = makeAuthCookie({
   email: 'inspection-operator@test.com', name: 'Inspection Operator', role: 'official',

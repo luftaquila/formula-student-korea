@@ -57,6 +57,11 @@ function formatTimestamp(value) {
   return d ? d.toLocaleString("ko-KR") : "-";
 }
 
+function formatAccountIdentity(user) {
+  const accountName = String(user.name || "").trim();
+  return accountName ? `${user.email}(${accountName})` : user.email;
+}
+
 async function fetchUsers(showLoading = false) {
   if (showLoading) loading.value = true;
   try {
@@ -879,8 +884,7 @@ onUnmounted(() => {
             <thead>
               <tr>
                 <th class="col-check"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
-                <th class="col-email sortable" @click="handleSort('email')">이메일 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
-                <th class="col-name sortable" @click="handleSort('name')">이름 <span class="sort-icon">{{ getSortIcon('name') }}</span></th>
+                <th class="col-account sortable" @click="handleSort('email')">계정 <span class="sort-icon">{{ getSortIcon('email') }}</span></th>
                 <th class="col-role sortable" @click="handleSort('role')">역할 <span class="sort-icon">{{ getSortIcon('role') }}</span></th>
                 <th class="col-access">권한</th>
                 <th class="col-realname sortable" @click="handleSort('realname')">실명 <span class="sort-icon">{{ getSortIcon('realname') }}</span></th>
@@ -893,8 +897,7 @@ onUnmounted(() => {
             <tbody>
               <tr v-for="user in sortedUsers" :key="user.id" :class="{ 'row-inactive': !user.active }">
                 <td class="col-check"><input type="checkbox" :checked="selectedIds.has(user.id)" @change="toggleOne(user.id)" /></td>
-                <td class="col-email">{{ user.email }}</td>
-                <td class="col-name">{{ user.name || "-" }}</td>
+                <td class="col-account">{{ formatAccountIdentity(user) }}</td>
                 <td class="col-role">
                   <span class="badge" :class="roleBadgeClass(user.role)">{{ user.role }}</span>
                 </td>
@@ -1369,6 +1372,7 @@ onUnmounted(() => {
 
 .col-email,
 .col-name,
+.col-account,
 .col-role,
 .col-realname,
 .col-phone,
@@ -1385,7 +1389,8 @@ onUnmounted(() => {
   font-size: 0.8125rem;
 }
 
-.col-email {
+.col-email,
+.col-account {
   font-size: 0.8125rem;
 }
 

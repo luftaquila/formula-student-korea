@@ -220,12 +220,16 @@ onMounted(() => {
 }
 
 .services {
-  display: grid;
-  /* auto-fit keeps short rows stretched edge to edge. The 170px minimum caps a
-     1200px .section at six cards per row (seven would need 7*170 + 6*24 > 1200px). */
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 1.5rem;
   width: 100%;
+}
+
+.services :deep(.service-card) {
+  /* 170px caps a 1200px section at six cards per row. Flex growth lets every
+     wrapped row, including the last one, fill the section width. */
+  flex: 1 1 170px;
 }
 
 @media (max-width: 768px) {
@@ -240,8 +244,12 @@ onMounted(() => {
   }
 
   .services {
-    grid-template-columns: repeat(2, 1fr);
     gap: 0.75rem;
+  }
+
+  .services :deep(.service-card) {
+    flex-basis: calc(50% - 0.375rem);
+    min-width: 0;
   }
 }
 

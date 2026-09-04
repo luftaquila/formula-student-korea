@@ -177,7 +177,7 @@ test.describe("Inspection corner-weight answer propagates to score dashboard", (
       };
     }, { timeout: 10000 }).toEqual({
       result: "-", // No PASS/FAIL recorded → empty placeholder.
-      inspector: "(E2E Admin)", // Answer edits automatically retain the real-name editor.
+      inspector: "(Admin Real Name)", // Answer edits automatically retain the real-name editor.
     });
   });
 });

@@ -164,11 +164,19 @@ describe("official access grants", () => {
     assert.ok(access.permissions.includes("score.operate"));
     assert.ok(access.permissions.includes("score.manage"));
 
+    const realnameUpdate = await client.patch(`/api/users/${user.id}`, {
+      cookie: adminCookie,
+      body: { realname: "Operator Real Name" },
+    });
+    assert.equal(realnameUpdate.status, 200);
+
     const authoritative = await client.get("/api/users/access/operator@test.com", {
       headers: { "X-Internal-Service": TEST_INTERNAL_SECRET },
     });
     assert.equal(authoritative.status, 200);
-    assert.deepEqual((await authoritative.json()).permissions, access.permissions);
+    const authoritativeBody = await authoritative.json();
+    assert.equal(authoritativeBody.realname, "Operator Real Name");
+    assert.deepEqual(authoritativeBody.permissions, access.permissions);
 
     const operatorCookie = makeAuthCookie({
       email: "operator@test.com", name: "Operator", role: "official",

@@ -19,11 +19,19 @@ async function api(method, path, body, role = "admin", expectedStatus = 200) {
 
 export async function seedUsers() {
   // Admin is auto-created via ADMIN_EMAIL env var.
-  // Create every non-bootstrap test user.
+  // Create every non-bootstrap test user and seed the separately managed real
+  // name that Inspection records as editor/inspector identity.
   for (const [profile, user] of Object.entries(TEST_USERS)) {
-    if (profile === "admin") continue;
-    const created = await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);
-    const { id } = await created.json();
+    let id;
+    if (profile === "admin") {
+      const listed = await (await api("GET", "/auth/api/users", null, "admin")).json();
+      id = listed.find(candidate => candidate.email === user.email)?.id;
+      if (!id) throw new Error(`[seed] bootstrap admin missing: ${user.email}`);
+    } else {
+      const created = await api("POST", "/auth/api/users", { email: user.email, role: user.role }, "admin", 201);
+      ({ id } = await created.json());
+    }
+    await api("PATCH", `/auth/api/users/${id}`, { realname: user.realname }, "admin");
     if (user.role === "official" && user.grants.length > 0) {
       await api("PUT", `/auth/api/users/${id}/access`, {
         expectedRevision: 0,
