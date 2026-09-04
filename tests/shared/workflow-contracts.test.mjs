@@ -11,6 +11,7 @@ import {
 
 const testWorkflow = fs.readFileSync(".github/workflows/test.yml", "utf8");
 const buildWorkflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
+const pnpmSetupAction = fs.readFileSync(".github/actions/setup-pnpm/action.yml", "utf8");
 const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const workspaceConfig = fs.readFileSync("pnpm-workspace.yaml", "utf8");
 const workspaceLock = fs.readFileSync("pnpm-lock.yaml", "utf8");
@@ -77,10 +78,16 @@ describe("CI workflow operational contracts", () => {
     }
   });
 
-  it("pins pnpm and installs the shared workspace lockfile in CI", () => {
+  it("caches the pinned pnpm executable and retries cache misses", () => {
     assert.equal(packageManifest.packageManager, "pnpm@11.25.0");
-    assert.equal((testWorkflow.match(/uses: pnpm\/setup@v2\.1\.0/g) || []).length, 2);
-    assert.doesNotMatch(testWorkflow, /uses: pnpm\/setup@v2\.1\.0[\s\S]+?cache: true/);
+    assert.equal((testWorkflow.match(/uses: \.\/\.github\/actions\/setup-pnpm/g) || []).length, 2);
+    assert.doesNotMatch(testWorkflow, /uses: pnpm\/setup|download-artifact|  toolchain:/);
+    assert.equal((pnpmSetupAction.match(/uses: pnpm\/setup@v2\.1\.0/g) || []).length, 2);
+    assert.match(pnpmSetupAction, /key: pnpm-home-v2\.1\.0-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ steps\.pnpm-version\.outputs\.version \}\}/);
+    assert.match(pnpmSetupAction, /steps\.pnpm-setup\.outcome == 'failure'[\s\S]+?uses: pnpm\/setup@v2\.1\.0/);
+    assert.doesNotMatch(pnpmSetupAction, /restore-keys:|cache: true/);
+    assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n/);
+    assert.match(testWorkflow, /  e2e:\n    needs: changes\n/);
     assert.match(testWorkflow, /run: pnpm install --frozen-lockfile/);
     assert.doesNotMatch(testWorkflow, /package-lock\.json|\bnpm ci\b/);
   });

@@ -41,9 +41,8 @@ jobs:
         with:
           node-version: 22
 
-      - uses: pnpm/setup@v2.1.0
-        with:
-          install: false
+      - name: Set up pnpm
+        uses: ./.github/actions/setup-pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -595,9 +594,8 @@ jobs:
         with:
           node-version: 22
 
-      - uses: pnpm/setup@v2.1.0
-        with:
-          install: false
+      - name: Set up pnpm
+        uses: ./.github/actions/setup-pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile --filter formula-student-korea
