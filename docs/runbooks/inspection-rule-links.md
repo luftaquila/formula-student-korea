@@ -10,9 +10,11 @@ metadata copied from the catalog at verification time.
 - `RULES_BASE_URL` points at the catalog origin (`/srv/k3s` configmaps, both clusters).
   The catalog is fetched with a 3 s timeout, a 5 MB cap, and a ten-minute cache. It is
   not part of readiness: an outage disables rule links and the chief endpoints only.
-- The catalog must serve `rules-manifest.json` schema v2 with `deployment.site_tag`
-  and per-document `release_tag`. A v1 manifest is rejected and every rule endpoint
-  returns `503 RULE_CATALOG_UNAVAILABLE`.
+- The catalog must serve `rules-manifest.json` schema v2 with a
+  `site-YYYYMMDD-vN` `deployment.site_tag` and per-document
+  `formula-<document>-YYYY-vN` `release_tag`. Other release-name formats and a v1
+  manifest are rejected, and every rule endpoint returns
+  `503 RULE_CATALOG_UNAVAILABLE`.
 
 ## First rollout of a year
 
@@ -30,7 +32,7 @@ metadata copied from the catalog at verification time.
 
 ## When fsk-rules publishes a new release
 
-A new document revision (`formula-*-2026-rN`) or site tag changes the catalog:
+A new document revision (`formula-*-2026-vN`) or site tag changes the catalog:
 
 1. Run `재검증` for the year. Renumbered clauses with an unchanged `content_hash` keep
    `verified` and follow the new anchor; changed or missing clauses drop to

@@ -15,7 +15,7 @@ const PDF_HASH = `sha256:${"c".repeat(64)}`;
 const SOURCE_COMMIT = "a".repeat(40);
 const DOC_DIGEST = `sha256:${"d".repeat(64)}`;
 
-function manifest(overrides = {}, deployment = { site_tag: "site-20260904.1", source_commit: SOURCE_COMMIT }) {
+function manifest(overrides = {}, deployment = { site_tag: "site-20260904-v1", source_commit: SOURCE_COMMIT }) {
   return {
     schema_version: 2,
     latest_edition: 2026,
@@ -23,8 +23,8 @@ function manifest(overrides = {}, deployment = { site_tag: "site-20260904.1", so
     documents: [{
       edition: 2026,
       revision: 2,
-      version: "2026-r2",
-      release_tag: "formula-technical-2026-r2",
+      version: "2026-v2",
+      release_tag: "formula-technical-2026-v2",
       document_digest: DOC_DIGEST,
       document: "formula-technical",
       title: "차량기술규정",
@@ -103,8 +103,8 @@ describe("inspection rule references", () => {
     assert.equal(noDirectRule.length, 21);
     assert.equal(mapped.flatMap(item => item.rule_refs.references).length, 470);
     assert.ok(items.every(item => item.rule_refs.references.length <= 3), "at most three references per question");
-    assert.ok(mapped.every(item => item.rule_refs.references.every(ref => ref.release_tag?.endsWith("-2026-r2"))),
-      "references were resolved against the 2026-r2 releases");
+    assert.ok(mapped.every(item => item.rule_refs.references.every(ref => ref.release_tag?.endsWith("-2026-v1"))),
+      "references were resolved against the 2026-v1 releases");
     assert.ok(mapped.every(item => item.rule_refs.references.length > 0));
     assert.ok(noDirectRule.every(item => item.rule_refs.references.length === 0));
     assert.equal(items.some(item => item.rule_refs.status === "needs_review"), false,
@@ -147,17 +147,17 @@ describe("inspection rule references", () => {
       baseUrl: "https://example.test/fsk-rules/",
       fetchImpl: fixtureFetch(),
     }).load(2026);
-    assert.deepEqual(loaded.deployment, { site_tag: "site-20260904.1", source_commit: SOURCE_COMMIT });
+    assert.deepEqual(loaded.deployment, { site_tag: "site-20260904-v1", source_commit: SOURCE_COMMIT });
     assert.deepEqual(loaded.documents, [{
-      document: "formula-technical", revision: 2, version: "2026-r2",
-      release_tag: "formula-technical-2026-r2", document_digest: DOC_DIGEST,
+      document: "formula-technical", revision: 2, version: "2026-v2",
+      release_tag: "formula-technical-2026-v2", document_digest: DOC_DIGEST,
     }]);
     const rule = loaded.byKey.get("formula-technical.brake-light");
-    assert.equal(rule.release_tag, "formula-technical-2026-r2");
+    assert.equal(rule.release_tag, "formula-technical-2026-v2");
     assert.equal(transitionRuleRefs({ status: "verified", references: [{
       edition: 2026, document: "formula-technical", rule_key: "formula-technical.brake-light",
       clause_id: "formula-technical-10-9", citation: "제10조 9항", source_hash: HASH_A,
-    }] }, loaded).references[0].release_tag, "formula-technical-2026-r2");
+    }] }, loaded).references[0].release_tag, "formula-technical-2026-v2");
 
     const legacy = manifest();
     legacy.schema_version = 1;
@@ -171,10 +171,11 @@ describe("inspection rule references", () => {
     }).load(2026), /스키마가 올바르지 않습니다/);
 
     for (const broken of [
-      manifest({ version: "2026-r3" }),
-      manifest({ release_tag: "formula-competition-2026-r2" }),
+      manifest({ version: "2026-v3" }),
+      manifest({ release_tag: "formula-competition-2026-v2" }),
       manifest({ document_digest: "sha256:short" }),
       manifest({}, { site_tag: "20260904", source_commit: SOURCE_COMMIT }),
+      manifest({}, { site_tag: "site-20260904.1", source_commit: SOURCE_COMMIT }),
       manifest({}, { site_tag: null, source_commit: "not-a-sha" }),
     ]) {
       await assert.rejects(createRulesCatalog({
@@ -189,15 +190,37 @@ describe("inspection rule references", () => {
     }).load(2026)).deployment.site_tag, null);
   });
 
+  it("accepts the current v1 document and site release identities", async () => {
+    const current = manifest({
+      revision: 1,
+      version: "2026-v1",
+      release_tag: "formula-technical-2026-v1",
+    }, { site_tag: "site-20260904-v1", source_commit: SOURCE_COMMIT });
+    const loaded = await createRulesCatalog({
+      baseUrl: "https://example.test/fsk-rules/",
+      fetchImpl: fixtureFetch({ manifestValue: current }),
+    }).load(2026);
+
+    assert.equal(loaded.deployment.site_tag, "site-20260904-v1");
+    assert.equal(loaded.documents[0].version, "2026-v1");
+    assert.equal(loaded.documents[0].release_tag, "formula-technical-2026-v1");
+  });
+
   it("accepts a stored release_tag only for the reference's own document and edition", () => {
     const reference = {
       edition: 2026, document: "formula-technical", rule_key: "formula-technical.brake-light",
       clause_id: "formula-technical-10-9", citation: "제10조 9항", source_hash: HASH_A,
     };
-    assert.equal(validateRuleRefs({ status: "verified", references: [{ ...reference, release_tag: "formula-technical-2026-r2" }] })
-      .references[0].release_tag, "formula-technical-2026-r2");
+    assert.equal(validateRuleRefs({ status: "verified", references: [{ ...reference, release_tag: "formula-technical-2026-v2" }] })
+      .references[0].release_tag, "formula-technical-2026-v2");
     assert.equal("release_tag" in validateRuleRefs({ status: "verified", references: [reference] }).references[0], false);
-    for (const release_tag of ["formula-competition-2026-r2", "formula-technical-2025-r2", "formula-technical-2026-r0", "r2"]) {
+    for (const release_tag of [
+      "formula-competition-2026-v2",
+      "formula-technical-2025-v2",
+      "formula-technical-2026-v0",
+      "formula-technical-2026-r2",
+      "v2",
+    ]) {
       assert.throws(() => validateRuleRefs({ status: "verified", references: [{ ...reference, release_tag }] }), /release_tag/);
     }
   });
