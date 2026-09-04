@@ -36,9 +36,11 @@ export async function installSSEEventProbe(page, eventNames) {
   await page.addInitScript((names) => {
     const NativeEventSource = window.EventSource;
     window.__e2eSSEEventCounts = Object.fromEntries(names.map((name) => [name, 0]));
+    window.__e2eEventSources = [];
     window.EventSource = class extends NativeEventSource {
       constructor(...args) {
         super(...args);
+        window.__e2eEventSources.push(this);
         for (const name of names) {
           this.addEventListener(name, () => { window.__e2eSSEEventCounts[name] += 1; });
         }
@@ -49,6 +51,14 @@ export async function installSSEEventProbe(page, eventNames) {
 
 export async function sseEventCount(page, eventName) {
   return page.evaluate((name) => window.__e2eSSEEventCounts?.[name] ?? 0, eventName);
+}
+
+export async function forceSSEReconnect(page) {
+  await page.evaluate(() => {
+    const source = window.__e2eEventSources?.at(-1);
+    if (!source) throw new Error("No active EventSource to disconnect");
+    source.dispatchEvent(new Event("error"));
+  });
 }
 
 export async function expectSSEEventAfter(page, eventName, action) {

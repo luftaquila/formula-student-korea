@@ -2,6 +2,7 @@ import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import {
   expectSSEEventAfter,
+  forceSSEReconnect,
   installSSEEventProbe,
   sseEventCount,
   storageStatePath,
@@ -82,18 +83,19 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     expect(await startIngest.json()).toMatchObject({ stored: 1, rejected: 0 });
     await expect(page.locator(".records-section .record-card").first().locator(".record-item")).toBeVisible({ timeout: 5000 });
 
-    // SSE가 끊긴 동안 별도 클라이언트에서 도착과 저장이 완료되는 상황을 재현한다.
-    const initCountBeforeOffline = await sseEventCount(page, "init");
-    await page.context().setOffline(true);
+    // SSE 오류 후 앱이 재연결을 예약한 동안 별도 클라이언트에서 도착과 저장이
+    // 완료되는 상황을 재현한다. 브라우저 offline 토글은 열린 EventSource를 실제로
+    // 끊는 시점을 보장하지 않으므로 오류 경로를 직접 발생시킨다.
+    const initCountBeforeReconnect = await sseEventCount(page, "init");
+    await forceSSEReconnect(page);
     const finishIngest = await observerPage.request.post("/competition/api/v1/traffic/wireless/ingest", {
       data: { events: [{ node_id: NODE_F, master_tick: finishTick.toString(), ev_seq: eventSequence, rssi: -61, snr: 9 }] },
     });
     expect(finishIngest.status()).toBe(200);
     expect(await finishIngest.json()).toMatchObject({ stored: 1, rejected: 0 });
-    await page.context().setOffline(false);
 
     // 재연결 시 timing event는 backfill되고, records 이벤트는 세션의 정확한 name/rowid로 복구된다.
-    await expect.poll(() => sseEventCount(page, "init"), { timeout: 8000 }).toBeGreaterThan(initCountBeforeOffline);
+    await expect.poll(() => sseEventCount(page, "init"), { timeout: 8000 }).toBeGreaterThan(initCountBeforeReconnect);
     await expect(page.locator(".traffic-light.green")).toBeVisible({ timeout: 5000 });
 
     // 클라이언트는 표시만(서버가 저장) — 측정 기록 섹션 노출
