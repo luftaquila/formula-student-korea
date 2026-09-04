@@ -8,10 +8,64 @@ export async function expectNotification(page, type, text) {
   await expect(page.locator(`[data-sonner-toast][data-type="${type}"]`).first()).toContainText(text, { timeout: 5000 });
 }
 
-export async function dismissNotifications(page) {
-  // vue-sonner 토스트는 notyf 처럼 클릭으로 닫히지 않는다(닫기 버튼 미사용).
-  // 다음 단언이 직전 토스트가 아닌 새 토스트를 보도록, 현재 배치가 자동 소멸할 때까지 대기.
-  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, { timeout: 6000 }).catch(() => {});
+export async function expectNotificationAfter(page, type, text, action) {
+  await page.locator("[data-sonner-toast]").evaluateAll((toasts) => {
+    for (const toast of toasts) toast.setAttribute("data-e2e-notification-seen", "true");
+  });
+  await action();
+  await expect(page.locator(
+    `[data-sonner-toast][data-type="${type}"]:not([data-e2e-notification-seen])`,
+  ).first()).toContainText(text, { timeout: 5000 });
+}
+
+export async function installTestClock(page) {
+  await page.clock.install();
+}
+
+export async function advanceTestClock(page, milliseconds) {
+  await page.clock.fastForward(milliseconds);
+}
+
+export async function drainBrowserEvents(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
+}
+
+export async function installSSEEventProbe(page, eventNames) {
+  await page.addInitScript((names) => {
+    const NativeEventSource = window.EventSource;
+    window.__e2eSSEEventCounts = Object.fromEntries(names.map((name) => [name, 0]));
+    window.__e2eEventSources = [];
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) {
+        super(...args);
+        window.__e2eEventSources.push(this);
+        for (const name of names) {
+          this.addEventListener(name, () => { window.__e2eSSEEventCounts[name] += 1; });
+        }
+      }
+    };
+  }, eventNames);
+}
+
+export async function sseEventCount(page, eventName) {
+  return page.evaluate((name) => window.__e2eSSEEventCounts?.[name] ?? 0, eventName);
+}
+
+export async function forceSSEReconnect(page) {
+  await page.evaluate(() => {
+    const source = window.__e2eEventSources?.at(-1);
+    if (!source) throw new Error("No active EventSource to disconnect");
+    source.dispatchEvent(new Event("error"));
+  });
+}
+
+export async function expectSSEEventAfter(page, eventName, action) {
+  const previousCount = await sseEventCount(page, eventName);
+  const result = await action();
+  await expect.poll(() => sseEventCount(page, eventName)).toBeGreaterThan(previousCount);
+  return result;
 }
 
 export async function waitForPageReady(page) {

@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
-  dismissNotifications,
   expectNotification,
+  expectNotificationAfter,
   waitForPageReady,
 } from "../helpers/utils.mjs";
 
@@ -31,12 +31,15 @@ test.describe("Queue public status page", () => {
   test("reports exact validation errors for an empty or unknown entry", async ({ page }) => {
     await page.getByRole("button", { name: "조회" }).click();
     await expectNotification(page, "error", "엔트리 번호를 입력하세요");
-    await dismissNotifications(page);
 
     await page.getByPlaceholder("번호").fill("999");
     await page.getByPlaceholder("010-0000-0000").fill("01012345678");
-    await page.getByRole("button", { name: "조회" }).click();
-    await expectNotification(page, "error", "존재하지 않는 엔트리 번호입니다");
+    await expectNotificationAfter(
+      page,
+      "error",
+      "존재하지 않는 엔트리 번호입니다",
+      () => page.getByRole("button", { name: "조회" }).click(),
+    );
   });
 
   test("shows the exact no-queue result for a valid unregistered team", async ({ page }) => {

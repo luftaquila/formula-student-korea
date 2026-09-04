@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { drainBrowserEvents, storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 // Edit-lock gating of map-tap cone-add, and the ruler measurement overlay.
 // Mobile viewport (bottom-sheet shell), admin. The edit FAB defaults to LOCKED,
@@ -52,10 +52,17 @@ test.describe("Edit lock + measurement", () => {
     const tapPos = { x: Math.round(box.width / 2), y: Math.round(box.height * 0.25) };
 
     // While locked, a tap on empty map space only (possibly) clears selection —
-    // it must NOT add a cone. Asserting the ABSENCE of an add needs a bounded
-    // wait: any POST /cones would fire right after the tap's touchend.
+    // it must NOT add a cone. Observe outgoing requests and drain the browser's
+    // input/render queue instead of sleeping for a guessed duration.
+    const addRequests = [];
+    page.on("request", (request) => {
+      if (request.method() === "POST" && request.url().includes(`/course/api/courses/${courseId}/cones`)) {
+        addRequests.push(request.url());
+      }
+    });
     await mapEl.tap({ position: tapPos });
-    await page.waitForTimeout(500);
+    await drainBrowserEvents(page);
+    expect(addRequests).toHaveLength(0);
     await expect(page.locator(".cone-item")).toHaveCount(baseline);
 
     // Unlock and tap again → a cone is added.

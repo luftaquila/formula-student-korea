@@ -11,6 +11,7 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_SECRET,
+  waitForCondition,
 } from '../helpers/test-utils.mjs';
 import { currentCompetitionYear } from '../../shared/competition-year.mjs';
 
@@ -695,7 +696,13 @@ function connectSSE(sseBaseUrl, sseUrlPath, cookie) {
       } catch {}
     }).catch(() => {});
   });
-  return { events, close: () => controller.abort(), ready };
+  const waitForEvent = async (event, predicate = () => true) => {
+    return waitForCondition(
+      () => events.find((candidate) => candidate.event === event && predicate(candidate.data)),
+      { label: `${event} SSE event` },
+    );
+  };
+  return { events, close: () => controller.abort(), ready, waitForEvent };
 }
 
 describe('SSE broadcast payloads', () => {
@@ -717,8 +724,7 @@ describe('SSE broadcast payloads', () => {
     });
     assert.equal(res.status, 201);
 
-    // Give SSE time to propagate
-    await new Promise(r => setTimeout(r, 200));
+    await sse.waitForEvent('records', (data) => data.type === 'add');
     sse.close();
 
     const recordEvents = sse.events.filter(e => e.event === 'records');
@@ -753,7 +759,7 @@ describe('SSE broadcast payloads', () => {
     });
     assert.equal(res.status, 200);
 
-    await new Promise(r => setTimeout(r, 200));
+    await sse.waitForEvent('records', (data) => data.type === 'update');
     sse.close();
 
     const recordEvents = sse.events.filter(e => e.event === 'records');
@@ -1191,7 +1197,7 @@ describe('Wireless state & SSE', () => {
       body: { events: [{ node_id: '5', master_tick: '5000', ev_seq: 1, rssi: -60, snr: 11 }] },
       cookie: adminCookie,
     });
-    await new Promise(r => setTimeout(r, 200));
+    await sse.waitForEvent('wireless:event');
     sse.close();
     const ev = sse.events.find(e => e.event === 'wireless:event');
     assert.ok(ev, 'received wireless:event');
@@ -1202,7 +1208,7 @@ describe('Wireless state & SSE', () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
     await client.put('/api/wireless/physical-event', { body: { event_type: '오토크로스' }, cookie: adminCookie });
-    await new Promise(r => setTimeout(r, 200));
+    await sse.waitForEvent('wireless:light');
     sse.close();
     const ev = sse.events.find(e => e.event === 'wireless:light');
     assert.ok(ev, 'received wireless:light');
@@ -1214,7 +1220,7 @@ describe('Wireless state & SSE', () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
     await client.put('/api/wireless/mapping/6', { body: { event_type: '오토크로스', role: 'finish' }, cookie: adminCookie });
-    await new Promise(r => setTimeout(r, 200));
+    await sse.waitForEvent('wireless:mapping');
     sse.close();
     const ev = sse.events.find(e => e.event === 'wireless:mapping');
     assert.ok(ev, 'received wireless:mapping');
@@ -1327,7 +1333,7 @@ describe('Wireless sessions & arm', () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
     await client.post('/api/wireless/arm', { body: { event_type: '스키드패드', action: 'green', green_tick: '16000000' }, cookie: adminCookie });
-    await new Promise((r) => setTimeout(r, 200));
+    await sse.waitForEvent('wireless:session');
     sse.close();
     const ev = sse.events.find((e) => e.event === 'wireless:session');
     assert.ok(ev, 'received wireless:session');
@@ -1339,7 +1345,6 @@ describe('Wireless sessions & arm', () => {
   it('SSE init frame includes wireless.sessions', async () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
-    await new Promise((r) => setTimeout(r, 150));
     sse.close();
     const init = sse.events.find((e) => e.event === 'init');
     assert.ok(init);
@@ -1763,7 +1768,7 @@ describe('Wireless physical command downlink', () => {
     await sse.ready;
     const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'green' }, cookie: adminCookie });
     assert.equal(res.status, 200);
-    await new Promise((r) => setTimeout(r, 200));
+    await sse.waitForEvent('wireless:command');
     sse.close();
     const ev = sse.events.find((e) => e.event === 'wireless:command');
     assert.ok(ev, 'received wireless:command');

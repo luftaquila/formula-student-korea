@@ -1,7 +1,9 @@
 import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'http';
+import { once } from 'node:events';
 import { createRequire } from 'node:module';
+import { waitForCondition } from '../helpers/test-utils.mjs';
 
 const require = createRequire(import.meta.url);
 const express = require('../../auth/node_modules/express');
@@ -11,27 +13,19 @@ import { createSSEManager } from '../../shared/sse.mjs';
 function getSSE(url) {
   return new Promise((resolve, reject) => {
     http.get(url, (res) => {
+      res.sseData = '';
+      res.on('data', (chunk) => { res.sseData += chunk.toString(); });
       resolve(res);
     }).on('error', reject);
   });
 }
 
-function readSSEData(res, count) {
-  return new Promise((resolve) => {
-    let data = '';
-    let received = 0;
-    res.on('data', (chunk) => {
-      data += chunk.toString();
-      // Count complete events (terminated by double newline)
-      const events = data.split('\n\n').filter(e => e.trim());
-      received = events.length;
-      if (received >= count) {
-        resolve(data);
-      }
-    });
-    // Timeout fallback
-    setTimeout(() => resolve(data), 2000);
-  });
+async function readSSEData(res, count) {
+  await waitForCondition(
+    () => res.sseData.split('\n\n').filter((event) => event.trim()).length >= count,
+    { label: `${count} SSE events` },
+  );
+  return res.sseData;
 }
 
 describe('SSE Manager', () => {
@@ -76,8 +70,7 @@ describe('SSE Manager', () => {
     const { baseUrl, broadcast } = await createSSEApp();
     const res = await getSSE(`${baseUrl}/events`);
 
-    // Wait a tick for the client to be registered
-    await new Promise((r) => setTimeout(r, 50));
+    await readSSEData(res, 1);
 
     broadcast('update', { value: 42 });
 
@@ -95,8 +88,7 @@ describe('SSE Manager', () => {
     const res1 = await getSSE(`${baseUrl}/events`);
     assert.equal(res1.statusCode, 200);
 
-    // Wait for registration
-    await new Promise((r) => setTimeout(r, 50));
+    await readSSEData(res1, 1);
 
     // Second client should get 503
     const res2 = await getSSE(`${baseUrl}/events`);
@@ -112,10 +104,10 @@ describe('SSE Manager', () => {
     // Connect and disconnect
     const res1 = await getSSE(`${baseUrl}/events`);
     assert.equal(res1.statusCode, 200);
+    await readSSEData(res1, 1);
+    const closed = once(res1, 'close');
     res1.destroy();
-
-    // Wait for close event to propagate
-    await new Promise((r) => setTimeout(r, 100));
+    await closed;
 
     // Now a new client should be able to connect
     const res2 = await getSSE(`${baseUrl}/events`);
@@ -128,7 +120,7 @@ describe('SSE Manager', () => {
     const { baseUrl, broadcast } = await createSSEApp();
     const res = await getSSE(`${baseUrl}/events`);
 
-    await new Promise((r) => setTimeout(r, 50));
+    await readSSEData(res, 1);
 
     broadcast('bad\r\nevent', { ok: true });
 
@@ -144,7 +136,7 @@ describe('SSE Manager', () => {
     const { baseUrl, broadcast } = await createSSEApp();
     const res = await getSSE(`${baseUrl}/events`);
 
-    await new Promise((r) => setTimeout(r, 50));
+    await readSSEData(res, 1);
 
     broadcast('msg', { n: 1 });
     broadcast('msg', { n: 2 });

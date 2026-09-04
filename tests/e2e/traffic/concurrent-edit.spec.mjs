@@ -1,6 +1,11 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import {
+  expectSSEEventAfter,
+  installSSEEventProbe,
+  storageStatePath,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
 
 const YEAR = currentCompetitionYear();
@@ -59,6 +64,7 @@ test.describe("Traffic record concurrent edit guard", () => {
   });
 
   test("SSE update deferred while inline editing same record", async ({ page }) => {
+    await installSSEEventProbe(page, ["records"]);
     await page.goto("/traffic/record");
     await waitForPageReady(page);
 
@@ -97,12 +103,10 @@ test.describe("Traffic record concurrent edit guard", () => {
     const record1 = records.find((r) => r.num === 1);
 
     // API: PATCH OC field on record 1 while cones input is focused
-    await page.request.patch(`/competition/api/v1/traffic/records/${FULL_TABLE_NAME}/${record1.rowid}`, {
-      data: { field: "oc", value: "7" },
-    });
-
-    // Wait for SSE to arrive
-    await page.waitForTimeout(2000);
+    await expectSSEEventAfter(page, "records", () => page.request.patch(
+      `/competition/api/v1/traffic/records/${FULL_TABLE_NAME}/${record1.rowid}`,
+      { data: { field: "oc", value: "7" } },
+    ));
 
     // OC cell should still show old value (isEditingRow guard defers the update)
     await expect(ocCell.locator(".penalty-text")).toHaveText(initialOcText);

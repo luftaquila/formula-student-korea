@@ -49,6 +49,26 @@ export function stopServer(server) {
   return new Promise((resolve) => server.close(resolve));
 }
 
+export async function waitForCondition(check, {
+  timeoutMs = 2_000,
+  intervalMs = 10,
+  label = 'condition',
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      const value = await check();
+      if (value) return value;
+    } catch (error) {
+      lastError = error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  const suffix = lastError ? `: ${lastError.message}` : '';
+  throw new Error(`${label} timed out after ${timeoutMs}ms${suffix}`);
+}
+
 export function cleanup(...paths) {
   for (const p of paths) {
     try { fs.unlinkSync(p); } catch {}

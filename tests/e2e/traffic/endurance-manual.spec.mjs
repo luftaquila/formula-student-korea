@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, setCustomEventName } from "../helpers/utils.mjs";
+import { advanceTestClock, installTestClock, storageStatePath, waitForPageReady, setCustomEventName } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 const EVENT = "E2E-Endurance-Quick-Edit";
@@ -16,6 +16,7 @@ test.describe("Endurance manual mode post-processing", () => {
   });
 
   test("shows the editor after the first saved lap and clears it on reset", async ({ page }) => {
+    await installTestClock(page);
     await page.goto("/traffic/endurance");
     await waitForPageReady(page);
 
@@ -28,7 +29,7 @@ test.describe("Endurance manual mode post-processing", () => {
     const sensor = page.getByTestId("manual-sensor-1");
     await sensor.click(); // 출발선 t0
     await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
-    await page.waitForTimeout(400);
+    await advanceTestClock(page, 400);
     await sensor.click(); // 첫 랩 저장
 
     await expect(page.locator(".lap-section").getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });

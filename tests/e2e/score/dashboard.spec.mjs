@@ -174,6 +174,9 @@ test.describe("Score dashboard", () => {
     const band = page.locator(".head-band");
     await expect(table).toBeVisible();
     await expect(band.locator("th").first()).toBeVisible();
+    // The table shell renders before the asynchronous score rows. Scrolling the
+    // empty shell cannot move the table and used to pass only after a warm retry.
+    await expect(table.locator("tbody tr.team-row")).toHaveCount(8);
 
     await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
     await expect

@@ -132,11 +132,14 @@ test.describe("Inspection summary dashboard", () => {
   });
 
   test("hides a category column when the active filters leave no applicable teams", async ({ page }) => {
+    let hiddenCategoryId;
+    let remainingCategoryId;
     await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
       const response = await route.fetch();
       const body = await response.json();
+      [hiddenCategoryId, remainingCategoryId] = body.categories.slice(0, 2).map(({ id }) => id);
+      for (const category of body.categories) category.excluded_types = [];
       body.categories[0].excluded_types = ["CV"];
-      body.categories[1].excluded_types = [];
       await route.fulfill({ response, json: body });
     });
 
@@ -144,12 +147,9 @@ test.describe("Inspection summary dashboard", () => {
     await waitForPageReady(page);
 
     const table = page.locator(".sheet-table");
-    const headers = table.locator("thead th.col-result");
-    await expect(headers).toHaveCount(2);
-    const hiddenCategoryId = await headers.first().getAttribute("data-category-id");
-    const remainingCategoryId = await headers.nth(1).getAttribute("data-category-id");
     const hiddenHeader = table.locator(`thead th.col-result[data-category-id="${hiddenCategoryId}"]`);
     await expect(hiddenHeader).toHaveCount(1);
+    await expect(table.locator(`thead th.col-result[data-category-id="${remainingCategoryId}"]`)).toHaveCount(1);
 
     await page.getByTestId("inspection-team-type-filter").locator('input[value="EV"]').uncheck();
     await expect(table.locator("tbody tr.clickable-row")).not.toHaveCount(0);
