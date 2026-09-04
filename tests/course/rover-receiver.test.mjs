@@ -10,6 +10,7 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_INTERNAL_SECRET,
+  waitForCondition,
 } from '../helpers/test-utils.mjs';
 
 setupTestEnv();
@@ -33,7 +34,7 @@ before(async () => {
 });
 
 after(async () => {
-  for (const s of openStreams) s.close();
+  await Promise.all(openStreams.map((stream) => stream.close()));
   // SSE sockets are long-lived; force them shut so server.close() can resolve.
   server.closeAllConnections?.();
   await stopServer(server);
@@ -54,7 +55,7 @@ async function openSse(url, headers, readyEvent, base = baseUrl) {
   const events = [];
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
-  (async () => {
+  const drained = (async () => {
     let buf = '';
     try {
       for (;;) {
@@ -78,7 +79,11 @@ async function openSse(url, headers, readyEvent, base = baseUrl) {
   })();
   const handle = {
     events,
-    close: () => controller.abort(),
+    close: async () => {
+      controller.abort();
+      await drained;
+      await new Promise((resolve) => setImmediate(resolve));
+    },
     async waitFor(name, { timeoutMs = 10000, match = null } = {}) {
       const start = Date.now();
       for (;;) {
@@ -115,11 +120,14 @@ async function withFreshServer(fn, appOptions = {}) {
   const app2 = createCourseApp({ dbPath: p, ...appOptions, validateUser: TRUST_JWT });
   const started2 = await startServer(app2.app);
   const cli2 = createClient(started2.baseUrl);
+  const firstStream = openStreams.length;
   try {
     await fn({ url: started2.baseUrl, cli: cli2, db: app2.db });
   } finally {
+    await Promise.all(openStreams.slice(firstStream).map((stream) => stream.close()));
     started2.server.closeAllConnections?.();
     await stopServer(started2.server);
+    await new Promise((resolve) => setImmediate(resolve));
     app2.db.close();
     cleanup(p);
   }
@@ -157,14 +165,11 @@ describe('dual rover + receiver connection', () => {
   it('both slots stay connected simultaneously', async () => {
     const rover = await openStream('rover');
     const receiver = await openStream('gps');
-    // Give the server a tick to register both.
-    await new Promise((r) => setTimeout(r, 50));
-    const s = await status();
+    const s = await poll(status, (value) => value.connected && value.receiver.connected);
     assert.equal(s.connected, true, 'rover connected');
     assert.equal(s.receiver.connected, true, 'receiver connected');
-    rover.close();
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await Promise.all([rover.close(), receiver.close()]);
+    await poll(status, (value) => !value.connected && !value.receiver.connected);
   });
 });
 
@@ -184,7 +189,7 @@ describe('device liveness watchdog', () => {
         assert.equal(s.receiver.connected, false, 'watchdog flipped it offline');
         assert.equal(s.receiver.last_disconnect_reason, 'stale');
       } finally {
-        receiver.close();
+        await receiver.close();
       }
     }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
   });
@@ -233,7 +238,7 @@ describe('device liveness watchdog', () => {
           );
         }
       } finally {
-        rover.close();
+        await rover.close();
       }
     }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
   });
@@ -250,7 +255,7 @@ describe('device liveness watchdog', () => {
         }
         assert.equal((await statusOf(cli)).receiver.connected, true, 'telemetry kept it online');
       } finally {
-        receiver.close();
+        await receiver.close();
       }
     }, { deviceStaleMs: 150, deviceWatchdogTickMs: 30 });
   });
@@ -270,8 +275,8 @@ describe('position_source priority', () => {
       { lat: s.receiver.last_position.lat, lng: s.receiver.last_position.lng },
       { lat: 37.5, lng: 127.0 },
     );
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await receiver.close();
+    await poll(status, (value) => !value.receiver.connected);
   });
 });
 
@@ -307,9 +312,8 @@ describe('POST /api/rover/request routing', () => {
     const body = await res.json();
     assert.deepEqual({ lat: body.lat, lng: body.lng }, { lat: 37.1, lng: 127.9 });
 
-    rover.close();
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await Promise.all([rover.close(), receiver.close()]);
+    await poll(status, (value) => !value.connected && !value.receiver.connected);
   });
 
   it('returns 422 when the device reports a cone-capture failure', async () => {
@@ -327,8 +331,8 @@ describe('POST /api/rover/request routing', () => {
     });
     const res = await reqPromise;
     assert.equal(res.status, 422);
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await receiver.close();
+    await poll(status, (value) => !value.receiver.connected);
   });
 
   it('falls back to the rover when no receiver is connected', async () => {
@@ -347,7 +351,7 @@ describe('POST /api/rover/request routing', () => {
       assert.equal(res.status, 200);
       const body = await res.json();
       assert.equal(body.lat, 36.0);
-      rover.close();
+      await rover.close();
     });
   });
 });
@@ -437,9 +441,8 @@ describe('base activation propagates to both devices', () => {
     const toNgii = await rover.waitFor('ntrip-source', { match: (d) => d.source === 'ngii' });
     assert.equal(toNgii.data.source, 'ngii');
 
-    rover.close();
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await Promise.all([rover.close(), receiver.close()]);
+    await poll(status, (value) => !value.connected && !value.receiver.connected);
   });
 });
 
@@ -455,8 +458,8 @@ describe('POST /api/rover/base/rtcm relay', () => {
     assert.equal(res.status, 200);
     const evt = await rover.waitFor('rtcm');
     assert.equal(evt.data.data, payload);
-    rover.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await rover.close();
+    await poll(status, (value) => !value.connected);
   });
 });
 
@@ -494,8 +497,8 @@ describe('POST /api/rover/request routing vs active source', () => {
       const r = await reqPromise;
       assert.equal(r.status, 200);
       assert.equal((await r.json()).lat, 36.6);
-      rover.close();
-      receiver.close();
+      await Promise.all([rover.close(), receiver.close()]);
+      await poll(() => statusOf(cli2), (value) => !value.connected && !value.receiver.connected);
     } finally {
       srv2.closeAllConnections?.();
       await stopServer(srv2);
@@ -529,9 +532,8 @@ describe('base receiver reconnect', () => {
     assert.equal(evt.data.receiver.mode, 'base');
 
     await client.put('/api/gps/config', { cookie: adminCookie, body: { ntrip_source: 'ngii' } });
-    browser.close();
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await Promise.all([browser.close(), receiver.close()]);
+    await poll(status, (value) => !value.receiver.connected);
   });
 });
 
@@ -567,9 +569,8 @@ describe('survey failure reporting', () => {
     const pts = await (await client.get('/api/gps/survey-points', { cookie: adminCookie })).json();
     assert.equal(pts.points.find((p) => p.id === point.id).lat, null);
 
-    browser.close();
-    receiver.close();
-    await new Promise((r) => setTimeout(r, 50));
+    await Promise.all([browser.close(), receiver.close()]);
+    await poll(status, (value) => !value.receiver.connected);
   });
 });
 
@@ -623,8 +624,7 @@ describe('live marker event source (device → source mapping)', () => {
       // and label the coordinate as coming from the receiver (not "gps").
       const evt = await browser.waitFor('rover', { match: (d) => d.source === 'receiver' });
       assert.deepEqual({ lat: evt.data.lat, lng: evt.data.lng }, { lat: 37.5, lng: 127.0 });
-      browser.close();
-      receiver.close();
+      await Promise.all([browser.close(), receiver.close()]);
     });
   });
 });
@@ -644,13 +644,14 @@ describe('receiver disconnect clears its stale position', () => {
       let s = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
       assert.equal(s.position_source, 'receiver');
 
-      receiver.close();
-      // Wait for the server to observe the SSE close and clear the stale position.
-      await new Promise((r) => setTimeout(r, 200));
-      s = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+      await receiver.close();
+      s = await waitForCondition(async () => {
+        const next = await (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
+        return next.receiver.connected ? false : next;
+      }, { label: 'receiver disconnect state' });
       assert.equal(s.receiver.last_position, null, 'stale position dropped on disconnect');
       assert.equal(s.position_source, 'rover', 'capture falls back to the rover');
-      rover.close();
+      await rover.close();
     });
   });
 });
@@ -670,7 +671,7 @@ describe('survey start conflict', () => {
         cookie: adminCookie, body: { duration_s: 30 },
       });
       assert.equal(second.status, 409, 'a second survey while one runs is rejected');
-      receiver.close();
+      await receiver.close();
     });
   });
 });

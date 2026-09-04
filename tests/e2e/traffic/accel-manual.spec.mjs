@@ -1,6 +1,14 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications, setCustomEventName } from "../helpers/utils.mjs";
+import {
+  advanceTestClock,
+  expectNotification,
+  expectNotificationAfter,
+  installTestClock,
+  setCustomEventName,
+  storageStatePath,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -17,6 +25,7 @@ test.describe("Acceleration manual mode measurement", () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await installTestClock(page);
     await page.goto("/traffic/accel");
     await waitForPageReady(page);
   });
@@ -49,7 +58,7 @@ test.describe("Acceleration manual mode measurement", () => {
 
     // Click sensor 1 (start)
     await sensor1.click();
-    await page.waitForTimeout(500);
+    await advanceTestClock(page, 500);
 
     // Click sensor 2 (finish)
     await sensor2.click();
@@ -165,14 +174,12 @@ test.describe("Acceleration manual mode measurement", () => {
     const sensor1 = page.getByTestId("manual-sensor-1");
     const sensor2 = page.getByTestId("manual-sensor-2");
     await sensor1.click();
-    await page.waitForTimeout(500);
+    await advanceTestClock(page, 500);
     await sensor2.click();
 
     // Wait for record to appear
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
     await expect(page.getByTestId("record-quick-edit")).toBeVisible();
-    await dismissNotifications(page);
-
     // Click reset button
     const resetBtn = page.locator("button.btn-warning.btn-block", { hasText: "초기화" });
     await resetBtn.click();
@@ -186,13 +193,12 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect(sensor1).toBeVisible();
 
     await sensor1.click();
-    await page.waitForTimeout(500);
-    await sensor2.click();
+    await advanceTestClock(page, 500);
+    await expectNotificationAfter(page, "success", "기록 저장", () => sensor2.click());
 
     // Verify new record appears
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
     await expect(page.getByTestId("record-quick-edit")).toBeVisible();
-    await expectNotification(page, "success", "기록 저장");
   });
 
   test("keeps post-processing on OFF and replaces it for the next record", async ({ page }) => {
@@ -207,7 +213,7 @@ test.describe("Acceleration manual mode measurement", () => {
 
     await green.click();
     await sensor1.click();
-    await page.waitForTimeout(400);
+    await advanceTestClock(page, 400);
     await sensor2.click();
     await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
 
@@ -217,7 +223,7 @@ test.describe("Acceleration manual mode measurement", () => {
     await green.click();
     await expect(page.getByTestId("record-quick-edit")).not.toBeVisible();
     await sensor1.click();
-    await page.waitForTimeout(400);
+    await advanceTestClock(page, 400);
     await sensor2.click();
     await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 5000 });
   });

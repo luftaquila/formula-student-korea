@@ -10,6 +10,7 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_INTERNAL_SECRET,
+  waitForCondition,
 } from '../helpers/test-utils.mjs';
 
 setupTestEnv();
@@ -1913,8 +1914,16 @@ describe('Mission interruption survival + resume', () => {
     const drained = (async () => {
       try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
     })();
-    await new Promise((r) => setTimeout(r, 60)); // let the handler register roverClient
-    return async () => { ac.abort(); await drained; await new Promise((r) => setTimeout(r, 120)); };
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/status', { cookie: adminCookie })).json()
+    ).connected, { label: 'rover SSE connection' });
+    return async () => {
+      ac.abort();
+      await drained;
+      await waitForCondition(async () => !(
+        await (await cli.get('/api/rover/status', { cookie: adminCookie })).json()
+      ).connected, { label: 'rover SSE disconnection' });
+    };
   }
 
   before(async () => {
@@ -2021,8 +2030,16 @@ describe('Mission soft pause / resume', () => {
     const drained = (async () => {
       try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
     })();
-    await new Promise((r) => setTimeout(r, 60));
-    return async () => { ac.abort(); await drained; await new Promise((r) => setTimeout(r, 120)); };
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/status', { cookie: adminCookie })).json()
+    ).connected, { label: 'rover SSE connection' });
+    return async () => {
+      ac.abort();
+      await drained;
+      await waitForCondition(async () => !(
+        await (await cli.get('/api/rover/status', { cookie: adminCookie })).json()
+      ).connected, { label: 'rover SSE disconnection' });
+    };
   }
 
   before(async () => {
@@ -2120,8 +2137,16 @@ describe('Mission obstacle auto-pause (perception)', () => {
     const drained = (async () => {
       try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
     })();
-    await new Promise((r) => setTimeout(r, 60));
-    return async () => { ac.abort(); await drained; await new Promise((r) => setTimeout(r, 120)); };
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/status', { cookie: adminCookie })).json()
+    ).connected, { label: 'rover SSE connection' });
+    return async () => {
+      ac.abort();
+      await drained;
+      await waitForCondition(async () => !(
+        await (await cli.get('/api/rover/status', { cookie: adminCookie })).json()
+      ).connected, { label: 'rover SSE disconnection' });
+    };
   }
 
   const exec = () => cli.post('/api/rover/execute', {
@@ -2385,7 +2410,6 @@ describe('Cone schema migration (center + alt ordering)', () => {
 // ─── Camera relay (MJPEG) ───────────────────────────────────────────────
 describe('Camera relay', () => {
   let srv, url, cli, localDb, localDbPath;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   before(async () => {
     localDbPath = tmpDbPath();
@@ -2454,9 +2478,12 @@ describe('Camera relay', () => {
     return () => { stopped = true; reader.cancel().catch(() => {}); };
   }
   async function waitFor(cond, timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) { if (cond()) return true; await sleep(20); }
-    return cond();
+    try {
+      await waitForCondition(cond, { timeoutMs, label: 'camera stream condition' });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   it('relays a frame rover→browser and toggles capture on first/last viewer', async () => {
@@ -2469,7 +2496,9 @@ describe('Camera relay', () => {
     assert.equal(ctl.status, 200);
     const ctlSink = {};
     const stopCtl = pump(ctl.body.getReader(), ctlSink);
-    await sleep(60);
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
+    ).camera_connected, { label: 'camera control connection' });
 
     // No viewer yet → camera connected but idle.
     let st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
@@ -2527,8 +2556,10 @@ describe('Camera relay', () => {
       'last viewer triggers camera-stop');
     assert.ok(await waitFor(() => (ctlSink.text.match(/depth-off/g) || []).length > offBefore, 1500),
       'last viewer also clears the depth mode (depth-off)');
-    st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-    for (let i = 0; i < 75 && st.depth; i++) { await sleep(20); st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json(); }
+    st = await waitForCondition(async () => {
+      const next = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+      return next.depth ? false : next;
+    }, { label: 'camera depth reset' });
     assert.equal(st.depth, false, 'depth mode resets when the last viewer leaves');
 
     stopCtl();
@@ -2549,7 +2580,9 @@ describe('Camera relay', () => {
     assert.equal(ctl.status, 200);
     const ctlSink = {};
     const stopCtl = pump(ctl.body.getReader(), ctlSink);
-    await sleep(60);
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
+    ).camera_connected, { label: 'camera control connection' });
 
     // A WebRTC 2D gating viewer (mode=2d hold). No MJPEG viewer at all.
     const holdAc = new AbortController();
@@ -2582,8 +2615,10 @@ describe('Camera relay', () => {
     holdAc.abort();
     assert.ok(await waitFor(() => (ctlSink.text.match(/depth-off/g) || []).length > offBefore, 1500),
       'the last 2D viewer leaving clears depth (depth-off)');
-    let st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-    for (let i = 0; i < 75 && st.depth; i++) { await sleep(20); st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json(); }
+    const st = await waitForCondition(async () => {
+      const next = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
+      return next.depth ? false : next;
+    }, { label: 'WebRTC depth reset' });
     assert.equal(st.depth, false, 'depth resets when the last 2D viewer leaves');
 
     stopCtl();
@@ -2617,7 +2652,9 @@ describe('Camera relay', () => {
     // (a new container boots with detection off, so the server re-asserts truth).
     stopCtl();
     ctlAc.abort();
-    await sleep(60);
+    await waitForCondition(async () => !(
+      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
+    ).camera_connected, { label: 'camera control disconnection' });
     const ctl2Ac = new AbortController();
     const ctl2 = await fetch(`${url}/api/rover/camera/control`, {
       headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
@@ -2666,7 +2703,7 @@ describe('Camera relay', () => {
       }
       // A held stream registers server-side a beat after the headers arrive;
       // wait until all MAX are counted so the over-cap check isn't racy.
-      for (let t = 0; t < 50 && (await viewers()) < MAX; t++) await sleep(20);
+      await waitForCondition(async () => (await viewers()) === MAX, { label: 'all camera viewers' });
       assert.equal(await viewers(), MAX, 'server should have registered all viewers');
 
       const over = await openStream();
@@ -2674,7 +2711,7 @@ describe('Camera relay', () => {
       assert.equal(over.status, 503, 'a viewer past the cap must be rejected');
     } finally {
       for (const o of opened) { try { o.req.destroy(); } catch { /* ignore */ } }
-      await sleep(150); // let the server reap the closed viewers before the next test
+      await waitForCondition(async () => (await viewers()) === 0, { label: 'camera viewer cleanup' });
     }
   });
 });
@@ -2682,7 +2719,6 @@ describe('Camera relay', () => {
 // ─── Stereo calibration (UI-triggered) ──────────────────────────────────
 describe('Stereo calibration trigger', () => {
   let srv, url, cli, localDb, localDbPath;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const progress = (body) => fetch(`${url}/api/rover/calibration-progress`, {
     method: 'POST',
     headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'application/json' },
@@ -2749,33 +2785,30 @@ describe('Stereo calibration trigger', () => {
     const drained = (async () => {
       try { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); } } catch { /* aborted */ }
     })();
-    await sleep(60);
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
+    ).camera_connected, {
+      label: 'stereo control connection',
+    });
 
     assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 0.03 }, cookie: adminCookie })).status, 200);
-    let ok = false;
-    for (let i = 0; i < 20 && !ok; i++) {
-      if (text.includes('event: calibrate') && text.includes('0.03')) ok = true;
-      else await sleep(50);
-    }
-    assert.ok(ok, 'perception control SSE receives calibrate with square_m');
+    await waitForCondition(() => text.includes('event: calibrate') && text.includes('0.03'), {
+      label: 'stereo calibration command',
+    });
     assert.equal((await status()).stereo_calibration.status, 'running');
     // Perception disconnects mid-calibration → status must flip to 'failed' so
     // the operator isn't locked out (not stuck 'running' forever).
     ac.abort();
     await drained.catch(() => {});
-    let failed = false;
-    for (let i = 0; i < 20 && !failed; i++) {
-      if ((await status()).stereo_calibration.status === 'failed') failed = true;
-      else await sleep(50);
-    }
-    assert.ok(failed, 'a perception disconnect mid-calibration flips status to failed');
+    await waitForCondition(async () => (await status()).stereo_calibration.status === 'failed', {
+      label: 'stereo calibration disconnect failure',
+    });
   });
 });
 
 // ─── Ground calibration (UI-triggered, above-ground detector) ───────────
 describe('Ground calibration trigger', () => {
   let srv, url, cli, localDb, localDbPath;
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const progress = (body) => fetch(`${url}/api/rover/calibration-progress`, {
     method: 'POST',
     headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'application/json' },
@@ -2832,23 +2865,21 @@ describe('Ground calibration trigger', () => {
     const drained = (async () => {
       try { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); } } catch { /* aborted */ }
     })();
-    await sleep(60);
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
+    ).camera_connected, {
+      label: 'ground control connection',
+    });
     assert.equal((await cli.post('/api/rover/calibrate-ground', { body: { frames: 30 }, cookie: adminCookie })).status, 200);
-    let ok = false;
-    for (let i = 0; i < 20 && !ok; i++) {
-      if (text.includes('event: calibrate-ground')) ok = true;
-      else await sleep(50);
-    }
-    assert.ok(ok, 'perception control SSE receives calibrate-ground');
+    await waitForCondition(() => text.includes('event: calibrate-ground'), {
+      label: 'ground calibration command',
+    });
     assert.equal((await status()).ground_calibration.status, 'running');
     ac.abort();
     await drained.catch(() => {});
-    let failed = false;
-    for (let i = 0; i < 20 && !failed; i++) {
-      if ((await status()).ground_calibration.status === 'failed') failed = true;
-      else await sleep(50);
-    }
-    assert.ok(failed, 'a perception disconnect mid-ground-calibration flips status to failed');
+    await waitForCondition(async () => (await status()).ground_calibration.status === 'failed', {
+      label: 'ground calibration disconnect failure',
+    });
     // A close that aborted a running calibration is warn-level (it broke
     // something the operator was waiting on), tagged with which calibration.
     const rec = localDb.prepare(
@@ -2872,24 +2903,27 @@ describe('Ground calibration trigger', () => {
     const drained = (async () => {
       try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
     })();
-    await sleep(60);
+    await waitForCondition(async () => (
+      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
+    ).camera_connected, {
+      label: 'bare camera control connection',
+    });
     const before = localDb.prepare(
       "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'"
     ).get().n;
     ac.abort();
     await drained.catch(() => {});
-    let rec = null;
-    for (let i = 0; i < 20 && !rec; i++) {
+    const rec = await waitForCondition(() => {
       const cnt = localDb.prepare(
         "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'"
       ).get().n;
       if (cnt > before) {
-        rec = localDb.prepare(
+        return localDb.prepare(
           "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_closed' ORDER BY id DESC LIMIT 1"
         ).get();
-      } else await sleep(50);
-    }
-    assert.ok(rec, 'a bare disconnect logs control_closed');
+      }
+      return false;
+    }, { label: 'bare camera disconnect audit' });
     assert.equal(rec.level, 'info', 'a benign close is info, not warn');
     assert.equal(rec.detail, null, 'a benign close carries no aborted-calibration detail');
   });
@@ -2997,12 +3031,10 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     const reader = streamRes.body.getReader();
     const dec = new TextDecoder();
     (async () => { try { for (;;) { const { done, value } = await reader.read(); if (done) break; if (value) streamText += dec.decode(value, { stream: true }); } } catch { /* aborted */ } })();
-    // Wait until the server registers the rover as connected.
-    for (let i = 0; i < 100; i++) {
+    await waitForCondition(async () => {
       const s = await client.get('/api/rover/status', { cookie: adminCookie });
-      if (s.status === 200 && (await s.json()).connected) break;
-      await new Promise((r) => setTimeout(r, 20));
-    }
+      return s.status === 200 && (await s.json()).connected;
+    }, { label: 'telemetry rover connection' });
   });
 
   after(async () => {
@@ -3010,7 +3042,9 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     // Let the server process the SSE disconnect (which interrupts the still-
     // running mission — a DB write) before the top-level after() closes the db,
     // otherwise that write can race db.close() and throw on teardown.
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForCondition(async () => !(
+      await (await client.get('/api/rover/status', { cookie: adminCookie })).json()
+    ).connected, { label: 'telemetry rover disconnection' });
   });
 
   it('persists ntrip_connected / corr_age_ms / ntrip_fail_count / h_acc_m and serves them back', async () => {
@@ -3095,12 +3129,9 @@ describe('Mission telemetry historizes NTRIP link health', () => {
     const body = await res.json();
     assert.equal(body.ended, true);
     assert.equal(body.mission_id, missionId);
-    const deadline = Date.now() + 1000;
-    while (Date.now() < deadline && !streamText.includes('event: end-mission')) {
-      await new Promise((r) => setTimeout(r, 20));
-    }
-    assert.ok(streamText.includes('event: end-mission'),
-      'end-mission is relayed to the connected rover SSE stream');
+    await waitForCondition(() => streamText.includes('event: end-mission'), {
+      label: 'end-mission rover event',
+    });
   });
 });
 

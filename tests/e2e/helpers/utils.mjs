@@ -8,10 +8,28 @@ export async function expectNotification(page, type, text) {
   await expect(page.locator(`[data-sonner-toast][data-type="${type}"]`).first()).toContainText(text, { timeout: 5000 });
 }
 
-export async function dismissNotifications(page) {
-  // vue-sonner 토스트는 notyf 처럼 클릭으로 닫히지 않는다(닫기 버튼 미사용).
-  // 다음 단언이 직전 토스트가 아닌 새 토스트를 보도록, 현재 배치가 자동 소멸할 때까지 대기.
-  await expect(page.locator("[data-sonner-toast]")).toHaveCount(0, { timeout: 6000 }).catch(() => {});
+export async function expectNotificationAfter(page, type, text, action) {
+  await page.locator("[data-sonner-toast]").evaluateAll((toasts) => {
+    for (const toast of toasts) toast.setAttribute("data-e2e-notification-seen", "true");
+  });
+  await action();
+  await expect(page.locator(
+    `[data-sonner-toast][data-type="${type}"]:not([data-e2e-notification-seen])`,
+  ).first()).toContainText(text, { timeout: 5000 });
+}
+
+export async function installTestClock(page) {
+  await page.clock.install();
+}
+
+export async function advanceTestClock(page, milliseconds) {
+  await page.clock.fastForward(milliseconds);
+}
+
+export async function drainBrowserEvents(page) {
+  await page.evaluate(() => new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
 }
 
 export async function waitForPageReady(page) {

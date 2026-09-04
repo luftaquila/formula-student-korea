@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import { drainBrowserEvents, storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 // Mobile viewport (isMobile = innerWidth <= 768) so the inspector renders as a
 // bottom sheet with the drag/tap handle, and hasTouch so .tap() dispatches real
@@ -78,10 +78,9 @@ test.describe("Course bottom sheet expand", () => {
     // Expansion is driven synchronously by the tap; poll the height to confirm.
     await expect.poll(async () => (await inspector.boundingBox()).height).toBeGreaterThan(120);
 
-    // Asserting the ABSENCE of an event needs a bounded wait: a compatibility
-    // click, if the browser were to generate one, is dispatched right after the
-    // tap's touchend. This is not an API/save wait.
-    await page.waitForTimeout(500);
+    // A compatibility click is queued with the touch sequence. Drain two frames
+    // so the browser has dispatched it without imposing an arbitrary delay.
+    await drainBrowserEvents(page);
 
     const clicks = await page.evaluate(() => window.__clicks);
     expect(clicks, `ghost click(s) fired after tap-to-expand: ${JSON.stringify(clicks)}`).toEqual([]);

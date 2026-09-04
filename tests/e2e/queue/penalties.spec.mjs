@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, expectNotificationAfter } from "../helpers/utils.mjs";
 
 test.describe("Queue active penalties modal", () => {
   test.use({ storageState: storageStatePath("operationsOperator") });
@@ -79,12 +79,14 @@ test.describe("Queue active penalties modal", () => {
     await expectNotification(page, "success", "페널티를 해제했습니다");
     await expect(modal).toContainText("1건");
     expect(cleared).toBe(true);
-    await dismissNotifications(page);
 
     page.once("dialog", (dialog) => dialog.accept());
-    await modal.locator(".penalty-item", { hasText: "#2" }).getByRole("button", { name: "해제 후 순번 복구" }).click();
-
-    await expectNotification(page, "success", "페널티를 해제하고 순번을 복구했습니다");
+    await expectNotificationAfter(
+      page,
+      "success",
+      "페널티를 해제하고 순번을 복구했습니다",
+      () => modal.locator(".penalty-item", { hasText: "#2" }).getByRole("button", { name: "해제 후 순번 복구" }).click(),
+    );
     await expect(modal).toContainText("현재 적용 중인 페널티가 없습니다.");
     expect(restored).toBe(true);
   });

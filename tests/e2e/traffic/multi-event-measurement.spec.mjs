@@ -1,6 +1,6 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, setCustomEventName } from "../helpers/utils.mjs";
+import { advanceTestClock, installTestClock, storageStatePath, waitForPageReady, expectNotification, setCustomEventName } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -22,6 +22,8 @@ test.describe("Simultaneous event measurement", () => {
 
     const page1 = await context1.newPage();
     const page2 = await context2.newPage();
+    await installTestClock(page1);
+    await installTestClock(page2);
 
     // Context 1: accel page
     await page1.goto("/traffic/accel");
@@ -55,7 +57,7 @@ test.describe("Simultaneous event measurement", () => {
     const accelSensor2 = page1.getByTestId("manual-sensor-2");
     await expect(accelSensor1).toBeVisible();
     await accelSensor1.click();
-    await page1.waitForTimeout(500);
+    await advanceTestClock(page1, 500);
     await accelSensor2.click();
 
     // Autocross: sensor1 → sensor2 (가속과 동일한 출발/도착 2센서)
@@ -63,7 +65,7 @@ test.describe("Simultaneous event measurement", () => {
     const autocrossSensor2 = page2.getByTestId("manual-sensor-2");
     await expect(autocrossSensor1).toBeVisible();
     await autocrossSensor1.click();
-    await page2.waitForTimeout(500);
+    await advanceTestClock(page2, 500);
     await autocrossSensor2.click();
 
     // Both should save successfully

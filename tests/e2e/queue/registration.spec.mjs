@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import {
-  dismissNotifications,
   expectNotification,
+  expectNotificationAfter,
   storageStatePath,
   waitForPageReady,
 } from "../helpers/utils.mjs";
@@ -81,12 +81,15 @@ test.describe("Queue registration", () => {
 
     await page.getByRole("button", { name: "등록하기" }).click();
     await expectNotification(page, "error", "검차 종류를 선택하세요");
-    await dismissNotifications(page);
 
     await page.locator(".inspection-btn").filter({ hasText: TYPE_NAME }).click();
     await agreement.click();
-    await page.getByRole("button", { name: "등록하기" }).click();
-    await expectNotification(page, "error", "개인정보 수집 및 이용에 동의해주세요");
+    await expectNotificationAfter(
+      page,
+      "error",
+      "개인정보 수집 및 이용에 동의해주세요",
+      () => page.getByRole("button", { name: "등록하기" }).click(),
+    );
   });
 
   test("registers an owned team through the UI and resets the completed form", async ({ page }) => {

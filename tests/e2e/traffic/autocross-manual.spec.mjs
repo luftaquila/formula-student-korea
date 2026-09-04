@@ -1,6 +1,14 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications, setCustomEventName } from "../helpers/utils.mjs";
+import {
+  advanceTestClock,
+  expectNotification,
+  expectNotificationAfter,
+  installTestClock,
+  setCustomEventName,
+  storageStatePath,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
 
@@ -18,6 +26,7 @@ test.describe("Autocross manual mode measurement", () => {
   });
 
   test.beforeEach(async ({ page }) => {
+    await installTestClock(page);
     await page.goto("/traffic/autocross");
     await waitForPageReady(page);
   });
@@ -40,7 +49,7 @@ test.describe("Autocross manual mode measurement", () => {
     await expect(sensor2).toBeVisible();
 
     await sensor1.click(); // 출발
-    await page.waitForTimeout(500);
+    await advanceTestClock(page, 500);
     await sensor2.click(); // 도착 → 기록
 
     const savedSection = page.locator(".saved-section");
@@ -71,12 +80,10 @@ test.describe("Autocross manual mode measurement", () => {
     const sensor1 = page.getByTestId("manual-sensor-1");
     const sensor2 = page.getByTestId("manual-sensor-2");
     await sensor1.click();
-    await page.waitForTimeout(500);
+    await advanceTestClock(page, 500);
     await sensor2.click();
 
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
-    await dismissNotifications(page);
-
     const resetBtn = page.locator("button.btn-warning.btn-block", { hasText: "초기화" });
     await resetBtn.click();
 
@@ -85,10 +92,9 @@ test.describe("Autocross manual mode measurement", () => {
     await page.locator("button.btn-success", { hasText: "녹색등" }).click();
     await expect(sensor1).toBeVisible();
     await sensor1.click();
-    await page.waitForTimeout(500);
-    await sensor2.click();
+    await advanceTestClock(page, 500);
+    await expectNotificationAfter(page, "success", "기록 저장", () => sensor2.click());
 
     await expect(page.locator(".saved-section")).toBeVisible({ timeout: 5000 });
-    await expectNotification(page, "success", "기록 저장");
   });
 });

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, dismissNotifications } from "../helpers/utils.mjs";
+import { storageStatePath, waitForPageReady, expectNotification, expectNotificationAfter } from "../helpers/utils.mjs";
 import { PDF_CONTENT } from "../helpers/documents.mjs";
 
 const SESSION_NAME = "E2E 테스트 세션";
@@ -68,13 +68,11 @@ test.describe("Documents student flow", () => {
     expect(downloadRes.status()).toBe(200);
     expect((await downloadRes.body()).length).toBeGreaterThan(0);
 
-    await dismissNotifications(page);
-    await fileInput.setInputFiles({
+    await expectNotificationAfter(page, "error", "허용되지 않는 파일", () => fileInput.setInputFiles({
       name: "invalid-file.txt",
       mimeType: "text/plain",
       buffer: Buffer.from("invalid extension"),
-    });
-    await expectNotification(page, "error", "허용되지 않는 파일");
+    }));
     await expect(page.locator(".selected-file").filter({ hasText: "invalid-file.txt" })).not.toBeVisible();
   });
 });

@@ -1505,8 +1505,8 @@ describe('Queue sorting', () => {
       cookie: chiefCookie,
     });
 
-    // Small delay to ensure different timestamps
-    await new Promise(r => setTimeout(r, 10));
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(1_000, 'battery', 2, CURRENT_YEAR);
 
     // Register entry 3 (first inspection)
     await client.post('/api/admin/register/battery', {
@@ -1514,13 +1514,16 @@ describe('Queue sorting', () => {
       cookie: chiefCookie,
     });
 
-    await new Promise(r => setTimeout(r, 10));
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(2_000, 'battery', 3, CURRENT_YEAR);
 
     // Register entry 1 (first inspection, registered after entry 3)
     await client.post('/api/admin/register/battery', {
       body: { num: 1, phone: '01012345678' },
       cookie: chiefCookie,
     });
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(3_000, 'battery', 1, CURRENT_YEAR);
 
     // Set priority: entry 1 = priority 2, entry 3 = priority 1
     await client.post('/api/admin/priority/battery', {
@@ -1593,7 +1596,8 @@ describe('Queue sorting with ignore flags', () => {
       body: { num: 1, phone: '01011111111' },
     });
 
-    await new Promise(r => setTimeout(r, 10));
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(1_000, testType, 1, CURRENT_YEAR);
 
     // Register entry 2 with high priority
     await client.post(`/api/admin/priority/${testType}`, {
@@ -1604,6 +1608,8 @@ describe('Queue sorting with ignore flags', () => {
       cookie: chiefCookie,
       body: { num: 2, phone: '01022222222' },
     });
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(2_000, testType, 2, CURRENT_YEAR);
 
     // Default: entry 2 (priority 1) should be before entry 1 (priority 999)
     let queue = await client.get(`/api/admin/inspection/${testType}`, { cookie: officialCookie });
@@ -1653,12 +1659,15 @@ describe('Queue sorting with ignore flags', () => {
       body: { num: 1, phone: '01011111111' },
     });
 
-    await new Promise(r => setTimeout(r, 10));
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(1_000, testType, 1, CURRENT_YEAR);
 
     await client.post(`/api/admin/register/${testType}`, {
       cookie: chiefCookie,
       body: { num: 2, phone: '01022222222' },
     });
+    db.prepare("UPDATE inspection_queue SET timestamp = ? WHERE inspection = ? AND num = ? AND year = ?")
+      .run(2_000, testType, 2, CURRENT_YEAR);
 
     // Default: entry 2 (first inspection) should be before entry 1 (reinspection)
     let queue = await client.get(`/api/admin/inspection/${testType}`, { cookie: officialCookie });

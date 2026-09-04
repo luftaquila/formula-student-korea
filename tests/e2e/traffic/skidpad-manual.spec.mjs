@@ -1,10 +1,18 @@
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady, expectNotification, setCustomEventName } from "../helpers/utils.mjs";
+import {
+  advanceTestClock,
+  expectNotification,
+  installTestClock,
+  setCustomEventName,
+  storageStatePath,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 
 test.describe("Skidpad manual mode measurement", () => {
   test.use({ storageState: storageStatePath("admin") });
 
   test.beforeEach(async ({ page }) => {
+    await installTestClock(page);
     await page.goto("/traffic/skidpad");
     await waitForPageReady(page);
   });
@@ -30,19 +38,19 @@ test.describe("Skidpad manual mode measurement", () => {
 
     // Start: first click initializes lastTick (no lap recorded)
     await sensor1.click();
-    await page.waitForTimeout(1100);
+    await advanceTestClock(page, 1100);
 
     // Lap 1: click sensor 1 (after cooldown)
     await sensor1.click();
-    await page.waitForTimeout(1100);
+    await advanceTestClock(page, 1100);
 
     // Lap 2: click sensor 1
     await sensor1.click();
-    await page.waitForTimeout(1100);
+    await advanceTestClock(page, 1100);
 
     // Lap 3: click sensor 1
     await sensor1.click();
-    await page.waitForTimeout(1100);
+    await advanceTestClock(page, 1100);
 
     // Lap 4: click sensor 1 -- this triggers the save
     await sensor1.click();
@@ -75,7 +83,7 @@ test.describe("Skidpad manual mode measurement", () => {
 
     // Trigger a few laps
     await sensor1.click();
-    await page.waitForTimeout(1100);
+    await advanceTestClock(page, 1100);
     await sensor1.click();
 
     // Verify sensor records section appears
