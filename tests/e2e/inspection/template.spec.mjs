@@ -3,6 +3,20 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 
 const YEAR = currentCompetitionYear();
+const NEXT_YEAR = YEAR + 1;
+
+function templatePayload(year, name, id) {
+  return [{
+    id,
+    year,
+    level: "category",
+    name,
+    sort_order: 0,
+    pdf_include: 1,
+    excluded_types: [],
+    subcategories: [],
+  }];
+}
 
 test.describe("Inspection template management", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -39,6 +53,68 @@ test.describe("Inspection template management", () => {
     const panel = page.locator(".category-panel");
     await expect(panel.locator(".sub-name").first()).toHaveValue("프레임");
     await expect(panel.locator(".grp-name").first()).toHaveValue("롤바");
+  });
+
+  test("discards a delayed template response from an older year selection", async ({ page }) => {
+    let releaseNextResponse;
+    let markNextRequestStarted;
+    const nextResponseGate = new Promise((resolve) => {
+      releaseNextResponse = resolve;
+    });
+    const nextRequestStarted = new Promise((resolve) => {
+      markNextRequestStarted = resolve;
+    });
+
+    await page.route("**/competition/api/v1/meta", async (route) => {
+      const response = await route.fetch();
+      const meta = await response.json();
+      await route.fulfill({
+        response,
+        json: {
+          ...meta,
+          years: [...new Set([...meta.years, NEXT_YEAR])].sort((a, b) => b - a),
+        },
+      });
+    });
+    await page.route("**/competition/api/v1/inspection/sheet/template?year=*", async (route) => {
+      const requestedYear = Number(new URL(route.request().url()).searchParams.get("year"));
+      if (requestedYear === NEXT_YEAR) {
+        markNextRequestStarted();
+        await nextResponseGate;
+        await route.fulfill({
+          json: templatePayload(NEXT_YEAR, "Delayed next-year template", 92001),
+        });
+        return;
+      }
+      await route.fulfill({
+        json: templatePayload(YEAR, "Latest current-year template", 92002),
+      });
+    });
+
+    await page.reload();
+    await waitForPageReady(page);
+    const yearSelect = page.locator(".filter-bar select.filter-input").first();
+    const categoryName = page.locator(".category-header .cat-name");
+    await expect(categoryName).toHaveValue("Latest current-year template");
+
+    await yearSelect.selectOption(String(NEXT_YEAR));
+    await nextRequestStarted;
+    await expect(page.getByRole("button", { name: "JSON 가져오기" })).toBeDisabled();
+
+    await yearSelect.selectOption(String(YEAR));
+    await expect(categoryName).toHaveValue("Latest current-year template");
+    const delayedResponse = page.waitForResponse((response) =>
+      response.url().includes(`/inspection/sheet/template?year=${NEXT_YEAR}`),
+    );
+    releaseNextResponse();
+    await delayedResponse;
+    await page.evaluate(() => new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    }));
+
+    await expect(yearSelect).toHaveValue(String(YEAR));
+    await expect(categoryName).toHaveValue("Latest current-year template");
+    await expect(page.getByRole("button", { name: "JSON 가져오기" })).toBeEnabled();
   });
 
   test("adds a new category", async ({ page }) => {
