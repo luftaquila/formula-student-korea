@@ -55,6 +55,30 @@ For rover work, follow [rover/README.md](rover/README.md).
 - Keep parallel tests isolated with unique data. Do not assert a global exact count
   when another shard can add records.
 
+### Test contract and synchronization
+
+- Assert externally observable behavior or an explicitly documented stable
+  contract at the lowest layer that can prove it. Reserve E2E tests for deployed
+  boundaries and critical user journeys instead of repeating unit or API coverage.
+- Do not use source text, function or variable names, CSS classes, internal markup
+  order, or implementation-specific copy and pixel values as a substitute for a
+  behavior assertion. When a Dockerfile, manifest, or migration is itself a shipped
+  contract, parse or execute it and assert its semantics rather than its formatting.
+- Exact copy, color, font, and position assertions require a documented public,
+  accessibility, or compatibility reason. Otherwise assert that information is
+  visible, usable, and not clipped or overflowing, with one representative visual
+  flow where it adds coverage.
+- Synchronize by registering the response or event waiter before its triggering
+  action, or use a web-first assertion, bounded condition poll, or fake clock. Do
+  not wait for cosmetic animation or notification disappearance. A bounded absence
+  wait is allowed only when absence throughout that exact documented interval is
+  the behavior under test.
+- A retry-only pass is a failure to fix, not an acceptable CI result. New tests must
+  remain deterministic with retries disabled and repeated execution.
+- Performance changes must include comparable before/after wall measurements and
+  CI run links. Drop an optimization that does not improve its target or that adds
+  flakiness or loses required behavior coverage.
+
 CI is defined in [.github/workflows/test.yml](.github/workflows/test.yml). Inspect a
 failed run with `gh run view <run-id> --log-failed`.
 

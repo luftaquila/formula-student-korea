@@ -17,6 +17,13 @@ instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
   fix, and observe the test pass.
 - Add or update deterministic tests for every behavior change. Never use fixed
   sleeps for API or SSE synchronization. Playwright E2E runs only in CI.
+- Test externally observable behavior or an explicitly documented stable contract
+  at the lowest practical layer. Do not lock source text, internal identifiers,
+  markup/CSS shape, copy, or pixel values unless that exact representation is a
+  documented public, accessibility, or compatibility requirement.
+- Do not duplicate the same invariant across unit, API, and E2E tests. Treat a
+  retry-only pass as a defect, and measure performance changes with comparable
+  before/after wall times.
 - Do not create commits or pull requests unless requested. Keep requested commits
   focused and consistent with the repository's commit style.
 
