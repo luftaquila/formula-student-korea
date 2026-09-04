@@ -48,7 +48,7 @@ test.describe("Entry team management", () => {
       yearSelect.selectOption(String(NEXT_YEAR)),
     ]);
 
-    await expect(page.locator(".roster-editor")).toBeEnabled();
+    await expect(page.locator(".roster-editor input").first()).toBeEnabled();
   });
 
   test("keeps editing disabled when either dataset for a newly selected year fails", async ({ page }) => {
@@ -80,16 +80,17 @@ test.describe("Entry team management", () => {
 
     await page.locator(".year-select").selectOption(String(NEXT_YEAR));
     await Promise.all([entriesRequested, vehicleTypesRequested]);
-    await expect(page.locator(".roster-editor")).toBeDisabled();
+    const editorInput = page.locator(".roster-editor input").first();
+    await expect(editorInput).toBeDisabled();
     await expect(page.locator(".entry-table:not([data-table-head-copy])")).not.toBeVisible();
 
     releaseEntries();
     await expect(page.locator(".entry-table:not([data-table-head-copy])")).toBeVisible();
-    await expect(page.locator(".roster-editor")).toBeDisabled();
+    await expect(editorInput).toBeDisabled();
 
     releaseVehicleTypes();
     await expectNotification(page, "error", "vehicle type load failed");
-    await expect(page.locator(".roster-editor")).toBeDisabled();
+    await expect(editorInput).toBeDisabled();
   });
 
   test("adds a new entry", async ({ page }) => {
