@@ -1,0 +1,30 @@
+packages:
+  - auth
+  - auth/web
+  - calendar
+  - calendar/web
+  - competition
+  - course
+  - course/web
+  - documents
+  - documents/web
+  - email
+  - email/web
+  - entry/web
+  - inspection
+  - inspection/web
+  - landing
+  - queue
+  - queue/web
+  - registration
+  - registration/web
+  - score
+  - score/web
+  - traffic
+  - traffic/web
+
+injectWorkspacePackages: true
+
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true

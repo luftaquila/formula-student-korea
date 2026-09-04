@@ -53,7 +53,7 @@ validate_competition_database() {
 
   # Developer checkouts may have the native dependency locally. Deployment
   # checkouts intentionally need not: use the exact installed Competition
-  # image there so backup/restore do not depend on host npm state.
+  # image there so backup/restore do not depend on host package-manager state.
   if command -v node >/dev/null 2>&1 \
     && [ -d "$ROOT/competition/node_modules/better-sqlite3" ]; then
     node "$validator" "$database"

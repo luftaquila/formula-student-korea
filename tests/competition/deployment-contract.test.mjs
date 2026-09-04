@@ -30,9 +30,9 @@ describe("Competition deployment contract", () => {
         `Build Images competition mapping is missing ${module}`);
       assert.ok(buildLoops.length > 0 && buildLoops.every((loop) => loop.includes(module)),
         `Competition Dockerfile build loop is missing ${module}`);
-      assert.ok(dockerfile.includes(`COPY ${module}/web/package*.json ${module}/web/`),
+      assert.ok(dockerfile.includes(`COPY ${module}/web/package.json ${module}/web/package.json`),
         `Competition image dependency copy is missing ${module}`);
-      assert.ok(dockerfile.includes(`COPY --from=builder /build/${module}/web/dist ${module}/web/dist/`),
+      assert.ok(dockerfile.includes(`COPY --from=builder /workspace/${module}/web/dist ${module}/web/dist/`),
         `Competition runtime image is missing ${module}`);
     }
   });
