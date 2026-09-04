@@ -245,7 +245,7 @@ test.describe("Queue booth management", () => {
 
     const frozenElapsed = await boothCard.locator(".booth-elapsed").textContent();
     const publicPage = await page.context().newPage();
-    await publicPage.goto("/queue/status");
+    await publicPage.goto("/queue/");
     await waitForPageReady(publicPage);
     const publicSection = publicPage.locator(".booth-type-section").filter({ hasText: "축전지" });
     const publicBooth = publicSection.locator(".booth-item").first();

@@ -18,7 +18,7 @@ test.describe("User management", () => {
     await expect(table).toBeVisible();
 
     // Verify table headers
-    await expect(table.locator("th").filter({ hasText: "이메일" })).toBeVisible();
+    await expect(table.locator("th").filter({ hasText: "계정" })).toBeVisible();
     await expect(table.locator("th").filter({ hasText: "역할" })).toBeVisible();
     await expect(table.locator("th").filter({ hasText: "실명" })).toBeVisible();
     await expect(table.locator("th").filter({ hasText: "학교/팀" })).toBeVisible();

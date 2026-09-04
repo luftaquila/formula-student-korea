@@ -82,8 +82,8 @@ test.describe("Documents admin dashboard", () => {
     const row = table.locator("tbody tr").filter({ hasText: "서울대학교" });
     await expect(row).toBeVisible();
 
-    // Check that the student email appears in the account column
-    await expect(row.locator(".selected-email")).toContainText("e2e-student@test.com");
+    // Check that the student's managed real name appears in the account column
+    await expect(row.locator(".selected-email")).toContainText("Student Real Name");
   });
 
   test("adds a student-team mapping via dropdown", async ({ page }) => {
