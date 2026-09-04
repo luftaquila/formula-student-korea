@@ -67,6 +67,34 @@ describe("CI workflow operational contracts", () => {
     assert.doesNotMatch(testWorkflow, /package-lock\.json|\bnpm ci\b/);
   });
 
+  it("keys the browser cache by the installed Playwright version", () => {
+    const installAt = testWorkflow.lastIndexOf("      - name: Install dependencies\n");
+    const versionAt = testWorkflow.indexOf("      - name: Resolve Playwright version\n");
+    const restoreAt = testWorkflow.indexOf("      - name: Restore Playwright cache\n");
+
+    assert.ok(installAt >= 0 && installAt < versionAt && versionAt < restoreAt);
+    assert.match(testWorkflow, /id: playwright-version[\s\S]+?require\('@playwright\/test\/package\.json'\)\.version/);
+    assert.equal(
+      (testWorkflow.match(/key: playwright-\$\{\{ runner\.os \}\}-\$\{\{ steps\.playwright-version\.outputs\.version \}\}/g) || []).length,
+      2,
+    );
+    assert.doesNotMatch(testWorkflow, /key: playwright-[^\n]+hashFiles\('pnpm-lock\.yaml'\)/);
+  });
+
+  it("imports service-scoped main caches without exporting shard caches", () => {
+    const buildSteps = testWorkflow.match(
+      /      - name: Build changed images\n([\s\S]+?)\n      # No --wait:/,
+    )?.[1] || "";
+    const scopes = [...buildSteps.matchAll(/\.cache-from=type=gha,scope=([a-z-]+)-amd64/g)]
+      .map((match) => match[1])
+      .sort();
+
+    assert.deepEqual(scopes, ["auth", "caddy", "calendar", "competition", "course", "email"]);
+    assert.doesNotMatch(buildSteps, /cache-to=/);
+    assert.match(buildSteps, /continue-on-error: true/);
+    assert.match(buildSteps, /name: Build changed images \(retry without cache import\)/);
+  });
+
   it("treats Registration as Competition code in build, unit, and E2E plans", () => {
     for (const workflow of [testWorkflow, buildWorkflow]) {
       assert.match(workflow, /            registration:\n              - 'registration\/\*\*'/);

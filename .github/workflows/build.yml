@@ -181,6 +181,8 @@ jobs:
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
+            [worker.oci]
+              max-parallelism = 4
 
       - name: Set build config
         id: config

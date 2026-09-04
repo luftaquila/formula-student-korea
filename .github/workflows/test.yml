@@ -474,6 +474,8 @@ jobs:
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
+            [worker.oci]
+              max-parallelism = 4
 
       # Pull prebuilt :latest for services unchanged vs main; build only changed
       # ones below. This is the wall-clock win: a test-only change pulls every
@@ -498,7 +500,9 @@ jobs:
           fi
 
       - name: Build changed images
+        id: cached-build
         if: steps.shard-plan.outputs.bake_targets != ''
+        continue-on-error: true
         uses: docker/bake-action@v7
         env:
           DOCKER_BUILD_SUMMARY: false
@@ -509,15 +513,16 @@ jobs:
           source: .
           files: compose.yml
           targets: ${{ steps.shard-plan.outputs.bake_targets }}
-          # No layer cache, deliberately. Every target shared one gha scope, so
-          # each image's export overwrote the previous one's manifest and the
-          # next run could only hit for whichever wrote last — a measured 3
-          # manifest imports and 4 CACHED layers across 8 images. The export was
-          # not a free bet either: it was 593s of a 621s bake step (the images
-          # themselves build in ~30s), and at 13 shards x ~8 images per run it
-          # pushed the repository's Actions cache to 11.5GB against a 10GB limit
-          # across 10,811 entries, so the resulting eviction also churned the
-          # pnpm and Playwright caches that do pay off.
+          # Import the service-scoped amd64 caches published by build.yml on
+          # main. PR shards never export: that avoids the old cross-image scope
+          # overwrite, multi-minute exports, and Actions-cache eviction churn.
+          set: |
+            auth.cache-from=type=gha,scope=auth-amd64
+            competition.cache-from=type=gha,scope=competition-amd64
+            email.cache-from=type=gha,scope=email-amd64
+            course.cache-from=type=gha,scope=course-amd64
+            calendar.cache-from=type=gha,scope=calendar-amd64
+            caddy-local.cache-from=type=gha,scope=caddy-amd64
           #
           # No `set: <target>.tags=...` either. bake takes each target's tag from
           # that service's `image:` in compose.yml, which is the name `docker
@@ -528,6 +533,19 @@ jobs:
           # looking for the upstream one. calendar never had an override and was
           # tagged correctly regardless, which is what proves the rest were dead
           # weight.
+          load: true
+
+      # A missing/evicted gha blob must degrade to a cold build, not a red E2E
+      # shard. Do not add cache-from here: this is the deterministic fallback.
+      - name: Build changed images (retry without cache import)
+        if: steps.cached-build.outcome == 'failure'
+        uses: docker/bake-action@v7
+        env:
+          DOCKER_BUILD_SUMMARY: false
+        with:
+          source: .
+          files: compose.yml
+          targets: ${{ steps.shard-plan.outputs.bake_targets }}
           load: true
 
       # No --wait: services boot in the background while node/playwright install
@@ -547,15 +565,21 @@ jobs:
         with:
           install: false
 
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --filter formula-student-korea
+
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          version=$(node -p "require('@playwright/test/package.json').version")
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Restore Playwright cache
         id: playwright-cache
         uses: actions/cache/restore@v5
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile --filter formula-student-korea
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
@@ -572,7 +596,7 @@ jobs:
         if: always() && steps.playwright-cache.outputs.cache-hit != 'true'
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       - uses: actions/upload-artifact@v7
         if: failure()
