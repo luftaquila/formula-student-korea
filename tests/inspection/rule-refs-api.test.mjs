@@ -34,12 +34,12 @@ function catalogPayload(hash = HASH_A, clauseId = "formula-technical-10-9") {
     manifest: {
       schema_version: 2,
       latest_edition: YEAR,
-      deployment: { site_tag: "site-20260904.1", source_commit: "a".repeat(40) },
+      deployment: { site_tag: "site-20260904-v1", source_commit: "a".repeat(40) },
       documents: [{
         edition: YEAR,
         revision: 2,
-        version: `${YEAR}-r2`,
-        release_tag: `formula-technical-${YEAR}-r2`,
+        version: `${YEAR}-v2`,
+        release_tag: `formula-technical-${YEAR}-v2`,
         document_digest: `sha256:${"d".repeat(64)}`,
         document: "formula-technical",
         title: "차량기술규정",
@@ -295,7 +295,7 @@ describe("inspection rule reference API", () => {
       clause_id: "formula-technical-48",
       citation: "제48조",
       source_hash: HASH_B,
-      release_tag: `formula-technical-${YEAR}-r2`,
+      release_tag: `formula-technical-${YEAR}-v2`,
     };
     try {
       const firstRefs = JSON.parse(firstBefore);
@@ -390,7 +390,7 @@ describe("inspection rule reference API", () => {
             clause_id: "formula-technical-10-9",
             citation: "제10조 9항",
             source_hash: HASH_B,
-            release_tag: `formula-technical-${YEAR}-r1`,
+            release_tag: `formula-technical-${YEAR}-v1`,
           }],
         },
       },
@@ -406,7 +406,7 @@ describe("inspection rule reference API", () => {
       const stored = JSON.parse(db.prepare("SELECT rule_refs FROM sheet_template WHERE id = ?").get(ids.first).rule_refs);
       assert.equal(stored.status, "needs_review");
       assert.equal(stored.references[0].source_hash, HASH_A);
-      assert.equal(stored.references[0].release_tag, `formula-technical-${YEAR}-r2`);
+      assert.equal(stored.references[0].release_tag, `formula-technical-${YEAR}-v2`);
     } finally {
       const restore = db.prepare("UPDATE sheet_template SET rule_refs = ? WHERE id = ?");
       for (const row of before) restore.run(row.rule_refs, row.id);
@@ -617,7 +617,7 @@ describe("inspection rule reference API", () => {
     assert.deepEqual(stored["brake-light"].references[0], {
       edition: YEAR, document: "formula-technical", rule_key: "formula-technical.brake-light",
       clause_id: "formula-technical-12-1", citation: "제12조 1항", source_hash: HASH_B,
-      release_tag: `formula-technical-${YEAR}-r2`,
+      release_tag: `formula-technical-${YEAR}-v2`,
     }, "the renumbered clause is followed because its content hash is unchanged");
     // Changed content keeps the clause as a review candidate but never as verified.
     assert.equal(stored["brake-light-area"].status, "needs_review");

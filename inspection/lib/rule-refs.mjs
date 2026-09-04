@@ -7,8 +7,8 @@ const RULE_KEY_PATTERN = /^formula-(technical|competition)\.[a-z0-9]+(?:[.-][a-z
 const CLAUSE_ID_PATTERN = /^formula-(technical|competition)-[a-z0-9-]+$/;
 const HASH_PATTERN = /^sha256:[a-f0-9]{64}$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
-const DOCUMENT_TAG_PATTERN = /^formula-(technical|competition)-\d{4}-r[1-9]\d*$/;
-const SITE_TAG_PATTERN = /^site-\d{8}\.[1-9]\d*$/;
+const DOCUMENT_TAG_PATTERN = /^formula-(technical|competition)-\d{4}-v[1-9]\d*$/;
+const SITE_TAG_PATTERN = /^site-\d{8}-v[1-9]\d*$/;
 const COMMIT_PATTERN = /^[a-f0-9]{40}$/;
 
 function isIsoDate(value) {
@@ -75,7 +75,7 @@ export function validateRuleRefs(value, { edition } = {}) {
     }
     if (typeof ref.source_hash !== "string" || !HASH_PATTERN.test(ref.source_hash)) throw new Error("올바르지 않은 규정 내용 해시입니다.");
     if (ref.release_tag !== undefined && (typeof ref.release_tag !== "string" || !DOCUMENT_TAG_PATTERN.test(ref.release_tag)
-      || !ref.release_tag.startsWith(`${ref.document}-${ref.edition}-r`))) {
+      || !ref.release_tag.startsWith(`${ref.document}-${ref.edition}-v`))) {
       throw new Error("올바르지 않은 규정 release_tag입니다.");
     }
     if (seen.has(ref.rule_key)) throw new Error("같은 규정을 중복 연결할 수 없습니다.");
@@ -217,7 +217,7 @@ function validateManifest(value, base) {
       throw new RuleCatalogError("규정 매니페스트 문서 메타데이터가 올바르지 않습니다.");
     }
     if (!Number.isInteger(doc.revision) || doc.revision < 1
-      || doc.version !== `${doc.edition}-r${doc.revision}`
+      || doc.version !== `${doc.edition}-v${doc.revision}`
       || doc.release_tag !== `${doc.document}-${doc.version}`
       || typeof doc.document_digest !== "string" || !HASH_PATTERN.test(doc.document_digest)) {
       throw new RuleCatalogError("규정 매니페스트 문서 버전 정보가 올바르지 않습니다.");
