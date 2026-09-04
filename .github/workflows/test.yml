@@ -341,9 +341,8 @@ jobs:
             workers: 1
             services: auth competition email
             seeds: users vehicle-types entries
-          # Sheet mutation specs own distinct team numbers. Keep the long
-          # sheet-fill file separate from summary/realtime specs that also use
-          # team 1, while the remaining files retain file-level parallelism.
+          # Sheet mutation specs own distinct team numbers, while the summary
+          # tests require the complete seeded team and category set.
           - shard: inspection-sheet
             projects: >-
               --project=inspection
@@ -362,11 +361,20 @@ jobs:
               --project=inspection
               tests/e2e/inspection/realtime-sync.spec.mjs
               tests/e2e/inspection/rule-links.spec.mjs
-              tests/e2e/inspection/summary.spec.mjs
               tests/e2e/inspection/template-advanced.spec.mjs
               tests/e2e/inspection/template-roundtrip.spec.mjs
               tests/e2e/inspection/template.spec.mjs
             workers: 3
+            services: auth competition email
+            seeds: users vehicle-types entries inspection-entries inspection
+          # Summary assertions read the aggregate team/category state. Give
+          # them a dedicated database so template mutations cannot erase the
+          # response data while a summary request is in flight.
+          - shard: inspection-summary
+            projects: >-
+              --project=inspection
+              tests/e2e/inspection/summary.spec.mjs
+            workers: 1
             services: auth competition email
             seeds: users vehicle-types entries inspection-entries inspection
           - shard: documents
