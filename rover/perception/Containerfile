@@ -12,7 +12,7 @@
 # rover, so the marginal cost over the pilot image is just the OpenCV wheel
 # (the heavy CV that's deliberately kept out of the lean pilot image).
 #
-# Built by .github/workflows/rover-perception-image.yml and pushed to
+# Built by the perception job in .github/workflows/rover.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}.
 # Pulled at runtime by the host's perception.service, which invokes
 # /usr/local/bin/perception-run to `podman run` this image with the /dev/video*

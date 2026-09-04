@@ -20,6 +20,7 @@
     "test:email": "node --test tests/email/*.test.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2"
+    "@playwright/test": "^1.58.2",
+    "yaml": "^2.9.0"
   }
 }

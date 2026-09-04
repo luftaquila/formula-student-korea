@@ -50,7 +50,8 @@ decides pump on/off and forwards it via `mcu_bridge_node` as `D <0|1>`.
 - **Pi**: navigation, RTK, course bridge, dispense sequencing (pump
   on/off on the MCU).
 
-Bridge: `mcu_bridge_node`. Firmware CI: `.github/workflows/rover-mcu.yml`.
+Bridge: `mcu_bridge_node`. Firmware CI: the `mcu` job in
+`.github/workflows/rover.yml`.
 
 ## Architecture
 
@@ -198,9 +199,9 @@ Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover d
 
 ## Provisioning
 
-1. **Build SD image** — manual dispatch `rover-sd-image.yml`. Auto-resolves
-   the latest AlmaLinux gpt-10-arm64, applies fan dtparams, bakes a
-   one-shot `fsk-firstboot.service` (`bootc switch …:candidate &&
+1. **Build SD image** — manually dispatch `rover.yml` with component `sd`.
+   It auto-resolves the latest AlmaLinux gpt-10-arm64, applies fan dtparams,
+   bakes a one-shot `fsk-firstboot.service` (`bootc switch …:candidate &&
    reboot`). Artifact: `fsk-rover-sd.img.xz`.
 
 2. **Flash + boot**. Pi reboots once mid-bring-up. After ~60 s: IP on
@@ -464,13 +465,17 @@ Address as `/dev/ttyMCU` — `/dev/ttyACM*` ordering is non-deterministic.
 
 ## CI
 
-| Workflow | Trigger | Output |
-|----------|---------|--------|
-| `rover-pilot-image.yml` | `main` push under `pilot/**`; manual | `fsk-rover-pilot` OCI; pytest gate |
-| `rover-perception-image.yml` | `main` push under `perception/**`; manual | `fsk-rover-perception` OCI; compileall + pytest gate |
-| `rover-host-image.yml` | `main` push under `host/**`; manual | `fsk-rover-host` OCI |
-| `rover-sd-image.yml` | manual only | `fsk-rover-sd.img.xz` |
-| `rover-mcu.yml` | `main` push under `mcu/**`; manual | `rover_mcu.uf2` |
+All rover CI lives in `.github/workflows/rover.yml`. Pushes to `main` run only
+the jobs selected by the changed paths; manual runs select one `component`.
+
+| Component | Automatic trigger | Output |
+|-----------|-------------------|--------|
+| `pilot` | `pilot/**` | `fsk-rover-pilot` OCI; pytest gate |
+| `perception` | `perception/**` | `fsk-rover-perception` OCI; compileall + pytest gate |
+| `host` | `host/**` | `fsk-rover-host` OCI |
+| `sd` | none (manual only) | `fsk-rover-sd.img.xz` |
+| `mcu` | `mcu/**` | `rover_mcu.uf2` |
+| `gps` | `gps/**` or shared Pilot library changes | compileall + pytest gate |
 
 ## Release channels
 

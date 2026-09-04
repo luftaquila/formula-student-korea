@@ -201,7 +201,8 @@ cd rover/gps
 python3 -m pytest test/ -q     # pure logic: fix status, telemetry, SSE parse
 ```
 
-CI: `.github/workflows/rover-gps.yml` (push to `main` under `gps/**`).
+CI: the `gps` job in `.github/workflows/rover.yml` (push to `main` under
+`gps/**` or changes to the Pilot libraries reused by GPS).
 
 ## Recovery
 

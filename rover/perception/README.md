@@ -280,4 +280,4 @@ ssh fsk@<rover-ip> sudo journalctl -u perception.service -n 50
 
 | Workflow | Trigger | Output |
 |----------|---------|--------|
-| `rover-perception-image.yml` | `main` push under `perception/**`; manual | `fsk-rover-perception` OCI; `compileall` + `pytest` gate (stereo decision + debounce) |
+| `rover.yml` (`perception`) | `main` push under `perception/**`; manual component selection | `fsk-rover-perception` OCI; `compileall` + `pytest` gate (stereo decision + debounce) |

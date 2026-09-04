@@ -10,10 +10,10 @@
 # upgrades roll the host (rare, requires reboot); podman-auto-update
 # rolls the pilot container (frequent, in place).
 #
-# Built by .github/workflows/rover-host-image.yml and pushed to
+# Built by the host job in .github/workflows/rover.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}.
 # Flashable SD images are produced from this base by
-# .github/workflows/rover-sd-image.yml using AlmaLinux's
+# the sd job in .github/workflows/rover.yml using AlmaLinux's
 # bootc-images-rpi tooling (which knows about Pi 5's GPT/FAT
 # firmware partition layout).
 
