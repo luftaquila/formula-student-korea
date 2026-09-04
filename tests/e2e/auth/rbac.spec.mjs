@@ -80,6 +80,9 @@ test.describe("Cross-application RBAC", () => {
       await expect(resources).toHaveAttribute("open", "");
       await resources.locator("summary").click();
       await expect(resources).not.toHaveAttribute("open", "");
+      await expect.poll(() => page.evaluate(
+        () => localStorage.getItem("fsk.resources.open"),
+      )).toBe("closed");
       await page.reload();
       await expect(page.locator("main details.resources-section")).not.toHaveAttribute("open", "");
     });

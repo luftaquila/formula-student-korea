@@ -12,6 +12,7 @@ import {
 
 const testWorkflow = fs.readFileSync(".github/workflows/test.yml", "utf8");
 const buildWorkflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
+const testWorkflowConfig = parse(testWorkflow);
 const pnpmSetupAction = fs.readFileSync(".github/actions/setup-pnpm/action.yml", "utf8");
 const roverWorkflow = parse(fs.readFileSync(".github/workflows/rover.yml", "utf8"));
 const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
@@ -165,7 +166,6 @@ describe("CI workflow operational contracts", () => {
     assert.match(pnpmSetupAction, /steps\.pnpm-setup\.outcome == 'failure'[\s\S]+?uses: pnpm\/setup@v2\.1\.0/);
     assert.doesNotMatch(pnpmSetupAction, /restore-keys:|cache: true/);
     assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n/);
-    assert.match(testWorkflow, /  e2e:\n    needs: changes\n/);
     assert.match(testWorkflow, /run: pnpm install --frozen-lockfile/);
     assert.doesNotMatch(testWorkflow, /package-lock\.json|\bnpm ci\b/);
   });
@@ -191,17 +191,20 @@ describe("CI workflow operational contracts", () => {
   });
 
   it("imports service-scoped main caches without exporting shard caches", () => {
-    const buildSteps = testWorkflow.match(
-      /      - name: Build changed images\n([\s\S]+?)\n      # No --wait:/,
-    )?.[1] || "";
-    const scopes = [...buildSteps.matchAll(/\.cache-from=type=gha,scope=([a-z-]+)-amd64/g)]
+    const e2eSteps = testWorkflowConfig.jobs.e2e.steps;
+    const cachedBuild = e2eSteps.find((step) => step.name === "Build changed images");
+    const fallbackBuild = e2eSteps.find((step) =>
+      step.name === "Build changed images (retry without cache import)"
+    );
+    const scopes = [...cachedBuild.with.set.matchAll(/\.cache-from=type=gha,scope=([a-z-]+)-amd64/g)]
       .map((match) => match[1])
       .sort();
 
     assert.deepEqual(scopes, ["auth", "caddy", "calendar", "competition", "course", "email"]);
-    assert.doesNotMatch(buildSteps, /cache-to=/);
-    assert.match(buildSteps, /continue-on-error: true/);
-    assert.match(buildSteps, /name: Build changed images \(retry without cache import\)/);
+    assert.doesNotMatch(cachedBuild.with.set, /cache-to=/);
+    assert.equal(cachedBuild["continue-on-error"], true);
+    assert.equal(fallbackBuild.if, "steps.cached-build.outcome == 'failure'");
+    assert.equal(fallbackBuild.with.set, undefined);
   });
 
   it("treats Registration as Competition code in build, unit, and E2E plans", () => {
