@@ -75,10 +75,12 @@ describe("CI workflow operational contracts", () => {
     assert.ok(installAt >= 0 && installAt < versionAt && versionAt < restoreAt);
     assert.match(testWorkflow, /id: playwright-version[\s\S]+?require\('@playwright\/test\/package\.json'\)\.version/);
     assert.equal(
-      (testWorkflow.match(/key: playwright-\$\{\{ runner\.os \}\}-\$\{\{ steps\.playwright-version\.outputs\.version \}\}/g) || []).length,
+      (testWorkflow.match(/key: playwright-\$\{\{ runner\.os \}\}-chromium-\$\{\{ steps\.playwright-version\.outputs\.version \}\}/g) || []).length,
       2,
     );
     assert.doesNotMatch(testWorkflow, /key: playwright-[^\n]+hashFiles\('pnpm-lock\.yaml'\)/);
+    assert.match(testWorkflow, /run: pnpm exec playwright install chromium/);
+    assert.doesNotMatch(testWorkflow, /playwright install --with-deps/);
   });
 
   it("imports service-scoped main caches without exporting shard caches", () => {
