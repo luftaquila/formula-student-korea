@@ -16,7 +16,7 @@ Teams table paths are relative to `/competition/api/v1` because Teams, vehicle t
 
 Former standalone, nested `/{module}/api/*`, lifecycle, finalize, snapshot, and version routes are not compatibility APIs and return `404`.
 
-Competition years use `Asia/Seoul`. Reads may select any valid year. Every Teams, Queue, Registration, Inspection, Traffic, Score, and Documents mutation is allowed only for the current KST year; a different year returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
+Competition years use `Asia/Seoul`. Reads may select any valid year. Team and vehicle-type roster mutations may select the current or next KST year; Queue, Registration, Inspection, Traffic, Score, and Documents mutations remain limited to the current KST year. A year outside the applicable write window returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
 
 Competition process health is separate from module compatibility health:
 
@@ -160,12 +160,12 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/meta` | public | — | `{ currentYear, years }` | KST current year and readable stored years |
+| GET | `/meta` | public | — | `{ currentYear, years }` | KST current year and readable stored years, with the current year first |
 | GET | `/teams` | public / admin | `?year=&includeInactive=true` | `[{ id, year, number, university, name, vehicleTypeId, vehicleType, active }]` | Public reads active teams; admin may include inactive teams |
 | GET | `/teams/:id` | admin | — | Team | Read one team by stable ID |
 | GET | `/teams/export` | admin | `?year=` | `{ year, teams }` download | Export a readable year; vehicle types are represented by name on each team |
-| POST | `/teams/import` | admin | `{ teams }?year=` | `201 [Team]` | Initial import; current year only and only while it has no teams; referenced type names must already exist |
-| POST | `/teams` | admin | `{ number, university, name, vehicleTypeId? }?year=` | `201 Team` | Create a current-year team with a stable ID |
+| POST | `/teams/import` | admin | `{ teams }?year=` | `201 [Team]` | Initial import; current or next year only and only while it has no teams; referenced type names must already exist |
+| POST | `/teams` | admin | `{ number, university, name, vehicleTypeId? }?year=` | `201 Team` | Create a current- or next-year team with a stable ID |
 | PATCH | `/teams/:id` | admin | `{ number?, university?, name?, vehicleTypeId?, active? }` | Team | Update projections or deactivate without changing the stable ID |
 
 There is no team delete or roster replacement endpoint. Deactivation preserves historical rows and clears only transient operational state.
@@ -175,9 +175,9 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/vehicle-types` | public | `?year=` | `[{ id, year, name, sortOrder, color }]` | List yearly vehicle types |
-| POST | `/vehicle-types` | admin | `{ name, color?, sortOrder? }?year=` | Vehicle type | Create a current-year vehicle type |
+| POST | `/vehicle-types` | admin | `{ name, color?, sortOrder? }?year=` | Vehicle type | Create a current- or next-year vehicle type |
 | PATCH | `/vehicle-types/:id` | admin | `{ name?, color?, sortOrder? }` | Vehicle type | Update type and affected team projections transactionally |
-| DELETE | `/vehicle-types/:id` | admin | — | 204 | Delete an unused current-year vehicle type |
+| DELETE | `/vehicle-types/:id` | admin | — | 204 | Delete an unused current- or next-year vehicle type |
 
 ---
 

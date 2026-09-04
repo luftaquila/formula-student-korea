@@ -28,9 +28,9 @@ Entry, Queue, Registration, Inspection, Traffic, Score, and Documents are not de
 
 `competition_team` is the only team source of truth. Its `id` is the stable identity used by operational rows. Team number, university, team name, and vehicle-type name are mutable projections updated transactionally in the shared database.
 
-Competition years are interpreted in `Asia/Seoul`. Reads may select any valid year. Every Competition mutation is allowed only for the current KST year and otherwise fails with `409 YEAR_READ_ONLY`. There is no draft/finalize state, roster version, snapshot, replacement version, or soft-delete inference.
+Competition years are interpreted in `Asia/Seoul`. Reads may select any valid year. Team and vehicle-type roster mutations may target the current or next KST year so the next competition can be prepared in advance. Every operational mutation remains limited to the current KST year; writes outside each allowed window fail with `409 YEAR_READ_ONLY`. There is no draft/finalize state, roster version, snapshot, replacement version, or soft-delete inference.
 
-Teams are created individually or imported once into an empty current year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Registration/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current year.
+Teams are created individually or imported once into an empty current or next year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Registration/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current or next year.
 
 Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting row. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
 

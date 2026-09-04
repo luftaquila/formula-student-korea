@@ -1,5 +1,9 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+
+const YEAR = currentCompetitionYear();
+const NEXT_YEAR = YEAR + 1;
 
 test.describe("Entry team management", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -27,6 +31,20 @@ test.describe("Entry team management", () => {
 
     // Verify entry count badge
     await expect(page.locator(".entry-count")).toHaveText(/\d+대/);
+  });
+
+  test("defaults to the current year and offers next-year roster preparation", async ({ page }) => {
+    const yearSelect = page.locator(".year-select");
+    await expect(yearSelect).toHaveValue(String(YEAR));
+    await expect(yearSelect.locator(`option[value="${NEXT_YEAR}"]`)).toHaveCount(1);
+
+    await Promise.all([
+      page.waitForResponse((response) => response.url().includes(`/teams?includeInactive=true&year=${NEXT_YEAR}`)),
+      page.waitForResponse((response) => response.url().includes(`/vehicle-types?year=${NEXT_YEAR}`)),
+      yearSelect.selectOption(String(NEXT_YEAR)),
+    ]);
+
+    await expect(page.locator(".roster-editor")).toBeEnabled();
   });
 
   test("adds a new entry", async ({ page }) => {

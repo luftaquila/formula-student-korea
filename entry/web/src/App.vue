@@ -8,7 +8,7 @@ import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { fetchYears, fetchEntries, addEntry, updateEntry, setEntryActive, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "@shared/useNotification.js";
-import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { competitionTeamWriteYears } from "@shared/competition-year.mjs";
 import { usePersistentTypeFilters } from "@shared/usePersistentTypeFilters.js";
 
 const { success, error } = useNotification();
@@ -16,12 +16,12 @@ const entries = ref({});
 const loading = ref(true);
 const addingEntry = ref(false);
 const searchQuery = ref("");
-const selectedYear = ref(currentCompetitionYear());
-const availableYears = ref([]);
+const teamWriteYears = competitionTeamWriteYears();
+const selectedYear = ref(teamWriteYears[0]);
+const availableYears = ref(teamWriteYears);
 const vehicleTypes = ref([]);
 const activeUpdating = ref(new Set());
-const currentYear = currentCompetitionYear();
-const rosterReadOnly = computed(() => selectedYear.value !== currentYear);
+const rosterReadOnly = computed(() => !teamWriteYears.includes(selectedYear.value));
 const refreshNotice = " 열려 있는 Queue·Inspection·Traffic 화면을 새로고침하세요.";
 
 const errorMessage = (e) => e?.data?.message || e?.message || "요청을 처리할 수 없습니다.";
@@ -59,7 +59,11 @@ function getTypeColor(type) {
 
 async function loadYears() {
   try {
-    availableYears.value = await fetchYears();
+    const storedYears = await fetchYears();
+    availableYears.value = [
+      ...teamWriteYears,
+      ...storedYears.filter((year) => !teamWriteYears.includes(year)),
+    ];
     if (availableYears.value.length && !availableYears.value.includes(selectedYear.value)) selectedYear.value = availableYears.value[0];
   } catch (e) { error(errorMessage(e)); }
 }

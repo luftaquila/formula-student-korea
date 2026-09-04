@@ -222,7 +222,8 @@ describe("Competition modular monolith", () => {
     try {
       const meta = await client.get("/competition/api/v1/meta");
       assert.equal(meta.status, 200);
-      assert.equal((await meta.json()).currentYear, YEAR);
+      const metadata = await meta.json();
+      assert.equal(metadata.currentYear, YEAR);
 
       const typeResponse = await client.post(`/competition/api/v1/vehicle-types?year=${YEAR}`, {
         cookie: admin, body: { name: "C-Formula", color: "red" },
@@ -238,6 +239,15 @@ describe("Competition modular monolith", () => {
       const team = await createResponse.json();
       assert.equal(team.number, 7);
       assert.equal(Object.hasOwn(team, "version"), false);
+
+      const futureCreate = await client.post(`/competition/api/v1/teams?year=${YEAR + 1}`, {
+        cookie: admin,
+        body: { number: 7007, university: "Future University", name: "Future Team" },
+      });
+      assert.equal(futureCreate.status, 201, await futureCreate.clone().text());
+      assert.equal((await futureCreate.json()).year, YEAR + 1);
+      const futureMeta = await client.get("/competition/api/v1/meta");
+      assert.deepEqual((await futureMeta.json()).years.slice(0, 2), [YEAR, YEAR + 1]);
 
       const duplicate = await client.post(`/competition/api/v1/teams?year=${YEAR}`, {
         cookie: admin,

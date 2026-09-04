@@ -33,7 +33,7 @@ describe("Competition TeamStore", () => {
     db.close();
   });
 
-  it("allows current-year writes and rejects every noncurrent-year mutation", () => {
+  it("allows current and next-year roster preparation but rejects other-year mutations", () => {
     const db = new Database(":memory:");
     const store = new TeamStore(db);
     db.prepare(`INSERT INTO competition_team (year, num, univ, name) VALUES (?, 1, 'Old', 'Old')`).run(YEAR - 1);
@@ -42,28 +42,42 @@ describe("Competition TeamStore", () => {
       () => store.updateTeam(1, { name: "Changed" }),
       (error) => error.status === 409 && error.code === "YEAR_READ_ONLY",
     );
+
+    const futureType = store.createVehicleType(YEAR + 1, { name: "Future EV", color: "blue" });
+    const futureTeam = store.createTeam(YEAR + 1, {
+      number: 2, university: "B", name: "Future", vehicleTypeId: futureType.id,
+    });
+    assert.equal(store.updateTeam(futureTeam.id, { name: "Prepared" }).after.name, "Prepared");
+    assert.equal(
+      store.updateVehicleType(futureType.id, { name: "Future EV 2" }).after.name,
+      "Future EV 2",
+    );
+    const unusedFutureType = store.createVehicleType(YEAR + 1, { name: "Unused", color: "red" });
+    assert.equal(store.deleteVehicleType(unusedFutureType.id).year, YEAR + 1);
+
     assert.throws(
-      () => store.createTeam(YEAR + 1, { number: 2, university: "B", name: "Future" }),
+      () => store.createTeam(YEAR + 2, { number: 3, university: "C", name: "Too Future" }),
       (error) => error.status === 409 && error.code === "YEAR_READ_ONLY",
     );
     db.close();
   });
 
-  it("imports a complete team list exactly once into an empty year", () => {
+  it("imports a complete team list exactly once into an empty preparation year", () => {
     const db = new Database(":memory:");
     const store = new TeamStore(db);
-    const type = store.createVehicleType(YEAR, { name: "E-Formula", color: "blue" });
-    const imported = store.importInitial(YEAR, { teams: [
+    const preparationYear = YEAR + 1;
+    const type = store.createVehicleType(preparationYear, { name: "E-Formula", color: "blue" });
+    const imported = store.importInitial(preparationYear, { teams: [
       { number: 1, university: "A", name: "Alpha", vehicleTypeId: type.id },
       { number: 2, university: "B", name: "Beta", active: false },
     ] });
     assert.equal(imported.length, 2);
     assert.equal(imported[1].active, false);
     assert.throws(
-      () => store.importInitial(YEAR, { teams: [] }),
+      () => store.importInitial(preparationYear, { teams: [] }),
       (error) => error.status === 409 && error.code === "TEAM_IMPORT_NOT_EMPTY",
     );
-    assert.equal(store.listTeams(YEAR, { includeInactive: true }).length, 2);
+    assert.equal(store.listTeams(preparationYear, { includeInactive: true }).length, 2);
     db.close();
   });
 

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { parse } from "yaml";
 
 import {
+  competitionTeamWriteYears,
   competitionDateStart,
   competitionYearBounds,
   currentCompetitionYear,
@@ -131,6 +132,18 @@ describe("CI workflow operational contracts", () => {
     assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n    env:\n      TZ: Asia\/Seoul\n/);
     assert.equal(currentCompetitionYear(new Date("2025-12-31T14:59:59.999Z")), 2025);
     assert.equal(currentCompetitionYear(new Date("2025-12-31T15:00:00.000Z")), 2026);
+    assert.deepEqual(
+      competitionTeamWriteYears({ now: new Date("2025-12-31T14:59:59.999Z") }),
+      [2025, 2026],
+    );
+    assert.deepEqual(
+      competitionTeamWriteYears({ now: new Date("2025-12-31T15:00:00.000Z") }),
+      [2026, 2027],
+    );
+    assert.deepEqual(
+      competitionTeamWriteYears({ now: new Date("2098-12-31T15:00:00.000Z") }),
+      [2099],
+    );
     assert.equal(competitionDateStart("2026-01-01"), Date.parse("2025-12-31T15:00:00.000Z"));
     assert.equal(formatCompetitionDate(Date.parse("2026-01-01T00:30:00.000Z")), "2026-01-01");
     assert.deepEqual(competitionYearBounds(2026), {
