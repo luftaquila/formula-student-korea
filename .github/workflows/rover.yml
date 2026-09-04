@@ -227,7 +227,7 @@ jobs:
       needs.changes.outputs.perception == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: rover-perception-verify-${{ github.ref }}
+      group: rover-perception-image-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v6
@@ -312,7 +312,7 @@ jobs:
       needs.changes.outputs.pilot == 'true'
     runs-on: ubuntu-latest
     concurrency:
-      group: rover-pilot-verify-${{ github.ref }}
+      group: rover-pilot-image-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v6

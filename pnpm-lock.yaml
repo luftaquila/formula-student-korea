@@ -12,6 +12,9 @@ importers:
       '@playwright/test':
         specifier: ^1.58.2
         version: 1.58.2
+      yaml:
+        specifier: ^2.9.0
+        version: 2.9.0
 
   auth:
     dependencies:
@@ -36,10 +39,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   calendar:
     dependencies:
@@ -82,10 +85,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   competition:
     dependencies:
@@ -137,10 +140,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   documents:
     dependencies:
@@ -171,10 +174,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   email:
     dependencies:
@@ -199,10 +202,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   entry/web:
     dependencies:
@@ -215,10 +218,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   inspection:
     dependencies:
@@ -243,10 +246,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   landing:
     dependencies:
@@ -259,10 +262,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   queue:
     dependencies:
@@ -290,10 +293,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   registration:
     dependencies:
@@ -318,10 +321,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   score:
     dependencies:
@@ -349,10 +352,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
   traffic:
     dependencies:
@@ -383,10 +386,10 @@ importers:
     devDependencies:
       '@vitejs/plugin-vue':
         specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6)(vue@3.5.42)
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
       vite:
         specifier: ^7.3.0
-        version: 7.3.6
+        version: 7.3.6(yaml@2.9.0)
 
 packages:
 
@@ -1944,6 +1947,11 @@ packages:
   y18n@4.0.3:
     resolution: {integrity: sha512-JKhqTOwSrqNA1NY5lSztJ1GrBiUodLMmIZuLiDaMRJ+itFd+ABVE8XBjOvIWL+rSqNDC74LCSFmlb/U4UZ4hJQ==}
 
+  yaml@2.9.0:
+    resolution: {integrity: sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==}
+    engines: {node: '>= 14.6'}
+    hasBin: true
+
   yargs-parser@18.1.3:
     resolution: {integrity: sha512-o50j0JeToy/4K6OZcaQmW6lyXXKhq7csREXcDwk2omFPJEwUNOVtJKvmDr9EI1fAJZUyZcRF7kxGBWmRXudrCQ==}
     engines: {node: '>=6'}
@@ -2207,10 +2215,10 @@ snapshots:
 
   '@types/node@14.18.63': {}
 
-  '@vitejs/plugin-vue@6.0.8(vite@7.3.6)(vue@3.5.42)':
+  '@vitejs/plugin-vue@6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)':
     dependencies:
       '@rolldown/pluginutils': 1.0.1
-      vite: 7.3.6
+      vite: 7.3.6(yaml@2.9.0)
       vue: 3.5.42
 
   '@vue/compiler-core@3.5.42':
@@ -3401,7 +3409,7 @@ snapshots:
 
   vary@1.1.2: {}
 
-  vite@7.3.6:
+  vite@7.3.6(yaml@2.9.0):
     dependencies:
       esbuild: 0.28.2
       fdir: 6.5.0(picomatch@4.0.7)
@@ -3411,6 +3419,7 @@ snapshots:
       tinyglobby: 0.2.17
     optionalDependencies:
       fsevents: 2.3.3
+      yaml: 2.9.0
 
   vue-router@4.6.4(vue@3.5.42):
     dependencies:
@@ -3456,6 +3465,8 @@ snapshots:
   xmlchars@2.2.0: {}
 
   y18n@4.0.3: {}
+
+  yaml@2.9.0: {}
 
   yargs-parser@18.1.3:
     dependencies:
