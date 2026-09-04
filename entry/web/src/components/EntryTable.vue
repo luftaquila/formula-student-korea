@@ -73,7 +73,7 @@ function getSortIcon(key) {
 }
 
 function getAriaSort(key) {
-  if (sortKey.value !== key) return "none";
+  if (sortKey.value !== key) return undefined;
   return sortOrder.value === "asc" ? "ascending" : "descending";
 }
 
