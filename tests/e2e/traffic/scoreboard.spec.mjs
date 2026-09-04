@@ -104,6 +104,10 @@ test.describe("Traffic scoreboard", () => {
       input.value = "#345678";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    await expect.poll(() => page.locator(".panel").first().evaluate((panel) => (
+      getComputedStyle(panel).getPropertyValue("--panel-color").trim()
+    ))).toBe("#345678");
+
     await accelerationVisibility.uncheck();
     await expect(page.locator(".panel")).toHaveCount(0);
 
