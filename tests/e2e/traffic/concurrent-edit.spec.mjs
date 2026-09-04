@@ -1,30 +1,16 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import {
+  expectSSEEventAfter,
+  installSSEEventProbe,
+  storageStatePath,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
 
 const YEAR = currentCompetitionYear();
 const TABLE_NAME = `e2e-concurrent`;
 const FULL_TABLE_NAME = `FSK ${YEAR} ${TABLE_NAME}`;
-
-async function installRecordsEventProbe(page) {
-  await page.addInitScript(() => {
-    const NativeEventSource = window.EventSource;
-    window.__e2eRecordsEventCount = 0;
-    window.EventSource = class extends NativeEventSource {
-      constructor(...args) {
-        super(...args);
-        this.addEventListener("records", () => { window.__e2eRecordsEventCount += 1; });
-      }
-    };
-  });
-}
-
-async function expectRecordsEventAfter(page, action) {
-  const previousCount = await page.evaluate(() => window.__e2eRecordsEventCount);
-  await action();
-  await expect.poll(() => page.evaluate(() => window.__e2eRecordsEventCount)).toBeGreaterThan(previousCount);
-}
 
 test.describe("Traffic record concurrent edit guard", () => {
   test.use({ storageState: storageStatePath("admin") });
@@ -78,7 +64,7 @@ test.describe("Traffic record concurrent edit guard", () => {
   });
 
   test("SSE update deferred while inline editing same record", async ({ page }) => {
-    await installRecordsEventProbe(page);
+    await installSSEEventProbe(page, ["records"]);
     await page.goto("/traffic/record");
     await waitForPageReady(page);
 
@@ -117,7 +103,7 @@ test.describe("Traffic record concurrent edit guard", () => {
     const record1 = records.find((r) => r.num === 1);
 
     // API: PATCH OC field on record 1 while cones input is focused
-    await expectRecordsEventAfter(page, () => page.request.patch(
+    await expectSSEEventAfter(page, "records", () => page.request.patch(
       `/competition/api/v1/traffic/records/${FULL_TABLE_NAME}/${record1.rowid}`,
       { data: { field: "oc", value: "7" } },
     ));

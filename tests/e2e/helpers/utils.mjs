@@ -32,6 +32,32 @@ export async function drainBrowserEvents(page) {
   }));
 }
 
+export async function installSSEEventProbe(page, eventNames) {
+  await page.addInitScript((names) => {
+    const NativeEventSource = window.EventSource;
+    window.__e2eSSEEventCounts = Object.fromEntries(names.map((name) => [name, 0]));
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) {
+        super(...args);
+        for (const name of names) {
+          this.addEventListener(name, () => { window.__e2eSSEEventCounts[name] += 1; });
+        }
+      }
+    };
+  }, eventNames);
+}
+
+export async function sseEventCount(page, eventName) {
+  return page.evaluate((name) => window.__e2eSSEEventCounts?.[name] ?? 0, eventName);
+}
+
+export async function expectSSEEventAfter(page, eventName, action) {
+  const previousCount = await sseEventCount(page, eventName);
+  const result = await action();
+  await expect.poll(() => sseEventCount(page, eventName)).toBeGreaterThan(previousCount);
+  return result;
+}
+
 export async function waitForPageReady(page) {
   await page.waitForLoadState("domcontentloaded");
 }
