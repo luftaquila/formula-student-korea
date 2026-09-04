@@ -12,6 +12,7 @@ import {
 const testWorkflow = fs.readFileSync(".github/workflows/test.yml", "utf8");
 const buildWorkflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
 const pnpmSetupAction = fs.readFileSync(".github/actions/setup-pnpm/action.yml", "utf8");
+const roverWorkflow = fs.readFileSync(".github/workflows/rover.yml", "utf8");
 const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const workspaceConfig = fs.readFileSync("pnpm-workspace.yaml", "utf8");
 const workspaceLock = fs.readFileSync("pnpm-lock.yaml", "utf8");
@@ -49,6 +50,27 @@ function assertShardCoverage(project) {
 }
 
 describe("CI workflow operational contracts", () => {
+  it("routes all Rover automation through one component-aware workflow", () => {
+    const roverWorkflowFiles = fs.readdirSync(".github/workflows")
+      .filter((name) => name.startsWith("rover-") || name === "rover.yml");
+    const filters = roverWorkflow.match(/          filters: \|\n([\s\S]+?)\n\n  gps:/)?.[1] || "";
+
+    assert.deepEqual(roverWorkflowFiles, ["rover.yml"]);
+    for (const component of ["pilot", "perception", "host", "mcu", "gps", "sd"]) {
+      assert.match(roverWorkflow, new RegExp(`^          - ${component}$`, "m"));
+    }
+    for (const component of ["pilot", "perception", "host", "mcu", "gps"]) {
+      assert.match(filters, new RegExp(`^            ${component}:$`, "m"));
+      assert.match(filters, new RegExp(`^              - 'rover/${component}/\\*\\*'$`, "m"));
+    }
+    assert.match(filters, /^              - 'rover\/pilot\/pilot\/lib\/\*\*'$/m);
+    assert.doesNotMatch(filters, /^            sd:$/m);
+    assert.match(
+      roverWorkflow,
+      /^    if: github\.event_name == 'workflow_dispatch' && inputs\.component == 'sd'$/m,
+    );
+  });
+
   it("runs unit tests in Seoul time and preserves the UTC/KST year boundary", () => {
     assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n    env:\n      TZ: Asia\/Seoul\n/);
     assert.equal(currentCompetitionYear(new Date("2025-12-31T14:59:59.999Z")), 2025);

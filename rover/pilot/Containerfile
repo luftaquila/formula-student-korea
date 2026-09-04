@@ -1,7 +1,7 @@
 # FSK rover pilot container — runs the five ROS 2 Jazzy nodes
 # (gps, mcu_bridge, navigator, spray, bridge) on the rover host.
 #
-# Built by .github/workflows/rover-pilot-image.yml and pushed to
+# Built by the pilot job in .github/workflows/rover.yml and pushed to
 # ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}.
 # Pulled at runtime by the host's pilot.service systemd unit
 # (see rover/host/files/usr/lib/systemd/system/pilot.service),
