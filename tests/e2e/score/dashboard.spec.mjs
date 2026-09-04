@@ -58,15 +58,18 @@ test.describe("Score dashboard", () => {
     const inspectionCheckbox = page.locator(".filter-bar").locator("label.filter-checkbox").filter({ hasText: "검차" }).locator("input[type='checkbox']");
     await expect(inspectionCheckbox).toBeVisible();
 
+    // The filter renders before the asynchronous score payload populates its
+    // inspection categories. Wait for the behavior under test to exist.
+    const inspectionCells = scoreTable(page).locator("th.col-inspection");
+    await expect(inspectionCells).not.toHaveCount(0);
+
     // Uncheck inspection columns
     if (await inspectionCheckbox.isChecked()) {
       await inspectionCheckbox.uncheck();
     }
 
     // Verify inspection columns are hidden (col-inspection cells should not be visible)
-    const inspectionCells = scoreTable(page).locator("th.col-inspection");
     const count = await inspectionCells.count();
-    expect(count).toBeGreaterThan(0);
     for (let i = 0; i < count; i++) {
       await expect(inspectionCells.nth(i)).toBeHidden();
     }
