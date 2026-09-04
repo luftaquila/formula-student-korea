@@ -1,5 +1,5 @@
 import { VEHICLE_COLORS } from "../../shared/constants.js";
-import { assertCurrentCompetitionYear, parseCompetitionYear } from "../../shared/competition-year.mjs";
+import { assertCompetitionTeamWriteYear, parseCompetitionYear } from "../../shared/competition-year.mjs";
 import {
   clearCanonicalTeamTransientState,
   updateCanonicalTeamProjections,
@@ -208,7 +208,7 @@ export class TeamStore {
   }
 
   createTeam(yearValue, input) {
-    const year = assertCurrentCompetitionYear(yearValue);
+    const year = assertCompetitionTeamWriteYear(yearValue);
     const number = requireNum(input?.number);
     const university = requireText(input?.university, "학교명");
     const name = requireText(input?.name, "팀명");
@@ -233,7 +233,7 @@ export class TeamStore {
     return this.db.transaction(() => {
       const before = this.getById(id);
       if (!before) throw httpError("존재하지 않는 팀입니다.", 404, "TEAM_NOT_FOUND");
-      assertCurrentCompetitionYear(before.year);
+      assertCompetitionTeamWriteYear(before.year);
       const afterInput = {
         number: Object.hasOwn(patch || {}, "number") ? requireNum(patch.number) : before.number,
         university: Object.hasOwn(patch || {}, "university")
@@ -270,7 +270,7 @@ export class TeamStore {
   }
 
   importInitial(yearValue, raw) {
-    const year = assertCurrentCompetitionYear(yearValue);
+    const year = assertCompetitionTeamWriteYear(yearValue);
     if (this.db.prepare("SELECT 1 FROM competition_team WHERE year = ? LIMIT 1").get(year)) {
       throw httpError("이미 팀이 등록된 연도에는 일괄 가져오기를 할 수 없습니다.", 409, "TEAM_IMPORT_NOT_EMPTY");
     }
@@ -317,7 +317,7 @@ export class TeamStore {
   }
 
   createVehicleType(yearValue, input) {
-    const year = assertCurrentCompetitionYear(yearValue);
+    const year = assertCompetitionTeamWriteYear(yearValue);
     const name = requireText(input?.name, "차량 유형명");
     const color = requireColor(input?.color);
     const sortOrder = requireSortOrder(input?.sortOrder, this.listVehicleTypes(year).length);
@@ -339,7 +339,7 @@ export class TeamStore {
     return this.db.transaction(() => {
       const before = this.getVehicleType(id);
       if (!before) throw httpError("존재하지 않는 차량 유형입니다.", 404, "VEHICLE_TYPE_NOT_FOUND");
-      assertCurrentCompetitionYear(before.year);
+      assertCompetitionTeamWriteYear(before.year);
       const name = Object.hasOwn(patch || {}, "name") ? requireText(patch.name, "차량 유형명") : before.name;
       const color = Object.hasOwn(patch || {}, "color") ? requireColor(patch.color) : before.color;
       const sortOrder = Object.hasOwn(patch || {}, "sortOrder")
@@ -373,7 +373,7 @@ export class TeamStore {
     return this.db.transaction(() => {
       const type = this.getVehicleType(id);
       if (!type) throw httpError("존재하지 않는 차량 유형입니다.", 404, "VEHICLE_TYPE_NOT_FOUND");
-      assertCurrentCompetitionYear(type.year);
+      assertCompetitionTeamWriteYear(type.year);
       if (this.db.prepare("SELECT 1 FROM competition_team WHERE vehicle_type_id = ? LIMIT 1").get(id)) {
         throw httpError("사용 중인 차량 유형은 삭제할 수 없습니다.", 409, "VEHICLE_TYPE_IN_USE");
       }

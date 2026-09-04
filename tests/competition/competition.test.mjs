@@ -222,7 +222,8 @@ describe("Competition modular monolith", () => {
     try {
       const meta = await client.get("/competition/api/v1/meta");
       assert.equal(meta.status, 200);
-      assert.equal((await meta.json()).currentYear, YEAR);
+      const metadata = await meta.json();
+      assert.equal(metadata.currentYear, YEAR);
 
       const typeResponse = await client.post(`/competition/api/v1/vehicle-types?year=${YEAR}`, {
         cookie: admin, body: { name: "C-Formula", color: "red" },
@@ -238,6 +239,17 @@ describe("Competition modular monolith", () => {
       const team = await createResponse.json();
       assert.equal(team.number, 7);
       assert.equal(Object.hasOwn(team, "version"), false);
+
+      const futureCreate = await client.post(`/competition/api/v1/teams?year=${YEAR + 1}`, {
+        cookie: admin,
+        body: { number: 7007, university: "Future University", name: "Future Team" },
+      });
+      assert.equal(futureCreate.status, 201, await futureCreate.clone().text());
+      assert.equal((await futureCreate.json()).year, YEAR + 1);
+      const futureMeta = await client.get("/competition/api/v1/meta");
+      const futureYears = (await futureMeta.json()).years;
+      assert.deepEqual(futureYears, [...futureYears].sort((a, b) => b - a));
+      assert.deepEqual(futureYears.slice(0, 2), [YEAR + 1, YEAR]);
 
       const duplicate = await client.post(`/competition/api/v1/teams?year=${YEAR}`, {
         cookie: admin,
@@ -426,7 +438,7 @@ describe("Competition modular monolith", () => {
     }
   });
 
-  it("allows operational writes before the event and rejects noncurrent-year mutations", async () => {
+  it("allows next-year Inspection preparation while rejecting historical mutations", async () => {
     const fixture = fixtureRoot();
     fixtures.push(fixture);
     const created = createCompetitionApp({
@@ -441,6 +453,15 @@ describe("Competition modular monolith", () => {
         cookie: admin, body: { year: YEAR, level: "category", name: "Safety" },
       });
       assert.equal(current.status, 200, await current.clone().text());
+
+      const next = await client.post("/competition/api/v1/inspection/sheet/template", {
+        cookie: admin, body: { year: YEAR + 1, level: "category", name: "Next Safety" },
+      });
+      assert.equal(next.status, 200, await next.clone().text());
+      assert.equal(
+        created.db.prepare("SELECT COUNT(*) AS count FROM sheet_template WHERE year = ?").get(YEAR + 1).count,
+        1,
+      );
 
       const old = await client.post("/competition/api/v1/inspection/sheet/template", {
         cookie: admin, body: { year: YEAR - 1, level: "category", name: "Old" },

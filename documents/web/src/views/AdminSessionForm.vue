@@ -4,6 +4,7 @@ import { useRoute, useRouter } from "vue-router";
 import { useNotification } from "@shared/useNotification.js";
 import { request, fetchEntryYears, fetchAdminEntries, fetchVehicleTypes } from "../api.js";
 import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
 
 const route = useRoute();
 const router = useRouter();
@@ -37,7 +38,10 @@ const typeFilters = ref({});
 async function loadYears() {
   try {
     years.value = await fetchEntryYears();
-    if (years.value.length > 0) selectedYear.value = years.value[0];
+    const currentYear = currentCompetitionYear();
+    selectedYear.value = years.value.includes(currentYear)
+      ? currentYear
+      : (years.value[0] ?? null);
   } catch (e) {
     notyf.error(e.message);
   }

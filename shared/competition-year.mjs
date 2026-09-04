@@ -10,6 +10,20 @@ export function currentCompetitionYear(now = new Date()) {
   return Number(SEOUL_YEAR.format(now));
 }
 
+export function competitionPreparationYears({ now } = {}) {
+  const currentYear = currentCompetitionYear(now);
+  return currentYear < YEAR_MAX ? [currentYear, currentYear + 1] : [currentYear];
+}
+
+export function competitionTeamWriteYears(options = {}) {
+  return competitionPreparationYears(options);
+}
+
+export function isCompetitionPreparationYear(yearValue, { now } = {}) {
+  const year = Number(yearValue);
+  return Number.isInteger(year) && competitionPreparationYears({ now }).includes(year);
+}
+
 export function competitionDateStart(value) {
   const match = typeof value === "string" && value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!match) return null;
@@ -57,6 +71,44 @@ export function assertCurrentCompetitionYear(yearValue, { now } = {}) {
   const currentYear = currentCompetitionYear(now);
   if (year !== currentYear) {
     throw Object.assign(new Error(`${year}년은 읽기 전용입니다. 현재 연도(${currentYear})만 수정할 수 있습니다.`), {
+      status: 409,
+      code: "YEAR_READ_ONLY",
+      year,
+      currentYear,
+    });
+  }
+  return year;
+}
+
+export function assertCompetitionTeamWriteYear(yearValue, { now } = {}) {
+  const year = parseCompetitionYear(yearValue, { now });
+  const writableYears = competitionPreparationYears({ now });
+  if (!writableYears.includes(year)) {
+    const currentYear = writableYears[0];
+    const nextYear = writableYears[1];
+    const writableDescription = nextYear == null
+      ? `현재 연도(${currentYear})`
+      : `현재 연도(${currentYear})와 다음 연도(${nextYear})`;
+    throw Object.assign(new Error(`${year}년은 읽기 전용입니다. 엔트리는 ${writableDescription}만 수정할 수 있습니다.`), {
+      status: 409,
+      code: "YEAR_READ_ONLY",
+      year,
+      currentYear,
+    });
+  }
+  return year;
+}
+
+export function assertCompetitionPreparationYear(yearValue, { now } = {}) {
+  const year = parseCompetitionYear(yearValue, { now });
+  const writableYears = competitionPreparationYears({ now });
+  if (!writableYears.includes(year)) {
+    const currentYear = writableYears[0];
+    const nextYear = writableYears[1];
+    const writableDescription = nextYear == null
+      ? `현재 연도(${currentYear})`
+      : `현재 연도(${currentYear})와 다음 연도(${nextYear})`;
+    throw Object.assign(new Error(`${year}년은 읽기 전용입니다. ${writableDescription}만 수정할 수 있습니다.`), {
       status: 409,
       code: "YEAR_READ_ONLY",
       year,

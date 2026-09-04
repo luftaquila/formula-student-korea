@@ -17,7 +17,7 @@ import { useSSE } from "../composables/useSSE";
 import { createSaveQueue, reconcileSaveQueuesAfterReconnect } from "../utils/save-queue";
 import { ruleDocumentLabel, sanitizeRuleContentHtml } from "../utils/rule-text";
 import { createCalculationEvaluator, formatCalculationValue } from "../../../lib/calculations.mjs";
-import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { isCompetitionPreparationYear } from "@shared/competition-year.mjs";
 
 const { error } = useNotification();
 const router = useRouter();
@@ -48,7 +48,7 @@ function scrollActiveTabIntoView() {
   });
 }
 
-const isReadOnly = computed(() => year !== currentCompetitionYear());
+const isReadOnly = computed(() => !isCompetitionPreparationYear(year));
 
 // 이 팀의 차량 유형에 해당하는 카테고리만 남긴다. 유형이 없는 팀은 제외 대상이 없으므로 전체를 본다.
 const visibleCategories = computed(() => {
@@ -1038,7 +1038,7 @@ watch(reconnected, async () => {
       </button>
     </div>
 
-    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
+    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드</div>
 
     <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
 

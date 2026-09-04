@@ -23,6 +23,7 @@ const Database = requireFromInspection('better-sqlite3');
 
 const CURRENT_YEAR = currentCompetitionYear();
 const PREV_YEAR = CURRENT_YEAR - 1;
+const NEXT_YEAR = CURRENT_YEAR + 1;
 
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 const managedNameAdminCookie = makeAuthCookie({
@@ -99,6 +100,84 @@ describe('Explicit Inspection permissions', () => {
       cookie: queueManagerCookie,
     });
     assert.equal(queueDenied.status, 403);
+  });
+});
+
+describe('Next-year Inspection preparation', () => {
+  it('allows template, answer, memo, result, reorder, and delete mutations', async () => {
+    try {
+      const category = await client.post('/api/sheet/template', {
+        body: { year: NEXT_YEAR, level: 'category', name: 'Next Category', sort_order: 0 },
+        cookie: adminCookie,
+      });
+      assert.equal(category.status, 200);
+      const categoryId = Number((await category.json()).id);
+
+      const secondCategory = await client.post('/api/sheet/template', {
+        body: { year: NEXT_YEAR, level: 'category', name: 'Next Category 2', sort_order: 1 },
+        cookie: adminCookie,
+      });
+      assert.equal(secondCategory.status, 200);
+      const secondCategoryId = Number((await secondCategory.json()).id);
+
+      const subcategory = await client.post('/api/sheet/template', {
+        body: { year: NEXT_YEAR, level: 'subcategory', parent_id: categoryId, name: 'Next Subcategory' },
+        cookie: adminCookie,
+      });
+      const subcategoryId = Number((await subcategory.json()).id);
+      const group = await client.post('/api/sheet/template', {
+        body: { year: NEXT_YEAR, level: 'group', parent_id: subcategoryId, name: 'Next Group' },
+        cookie: adminCookie,
+      });
+      const groupId = Number((await group.json()).id);
+      const item = await client.post('/api/sheet/template', {
+        body: {
+          year: NEXT_YEAR,
+          level: 'item',
+          parent_id: groupId,
+          name: 'Next Item',
+          answer_type: 'passfail',
+        },
+        cookie: adminCookie,
+      });
+      const itemId = Number((await item.json()).id);
+
+      const answer = await client.put('/api/sheet/answer', {
+        body: { year: NEXT_YEAR, team_num: 9090, item_id: itemId, value: 'PASS', expectedValue: '' },
+        cookie: officialCookie,
+      });
+      assert.equal(answer.status, 200, await answer.clone().text());
+
+      const memo = await client.put('/api/sheet/memo', {
+        body: { year: NEXT_YEAR, team_num: 9090, item_id: itemId, memo: 'prepared', expectedMemo: '' },
+        cookie: officialCookie,
+      });
+      assert.equal(memo.status, 200, await memo.clone().text());
+
+      const result = await client.put('/api/sheet/category-result', {
+        body: { year: NEXT_YEAR, team_num: 9090, category_id: categoryId, result: 'PASS' },
+        cookie: officialCookie,
+      });
+      assert.equal(result.status, 200, await result.clone().text());
+
+      const reorder = await client.post('/api/sheet/template/reorder', {
+        body: {
+          items: [
+            { id: categoryId, sort_order: 1 },
+            { id: secondCategoryId, sort_order: 0 },
+          ],
+        },
+        cookie: adminCookie,
+      });
+      assert.equal(reorder.status, 200, await reorder.clone().text());
+
+      const deleted = await client.delete(`/api/sheet/template/${secondCategoryId}`, {
+        cookie: adminCookie,
+      });
+      assert.equal(deleted.status, 200, await deleted.clone().text());
+    } finally {
+      db.prepare("DELETE FROM sheet_template WHERE year = ?").run(NEXT_YEAR);
+    }
   });
 });
 

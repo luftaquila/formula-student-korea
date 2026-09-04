@@ -9,7 +9,31 @@ import {
 } from "../helpers/documents.mjs";
 
 const YEAR = currentCompetitionYear();
+const NEXT_YEAR = YEAR + 1;
 const SESSION_NAME = "E2E 연도별 다운로드 격리 세션";
+
+async function exposeNextYear(page) {
+  await page.route("**/competition/api/v1/meta", async (route) => {
+    const response = await route.fetch();
+    const meta = await response.json();
+    await route.fulfill({
+      response,
+      json: {
+        ...meta,
+        years: [...new Set([...meta.years, NEXT_YEAR])].sort((a, b) => b - a),
+      },
+    });
+  });
+}
+
+async function expectDescendingYearsWithCurrentSelected(yearSelect) {
+  await expect(yearSelect).toHaveValue(String(YEAR));
+  const yearOptions = await yearSelect.locator("option").evaluateAll((options) =>
+    options.map((option) => Number(option.value)),
+  );
+  expect(yearOptions[0]).toBe(NEXT_YEAR);
+  expect(yearOptions).toEqual([...yearOptions].sort((a, b) => b - a));
+}
 
 test.describe("Documents admin year-level actions", () => {
   test.describe.configure({ mode: "serial" });
@@ -40,6 +64,20 @@ test.describe("Documents admin year-level actions", () => {
     } finally {
       await manager.close();
     }
+  });
+
+  test("lists years descending without changing the Documents default year", async ({ page }) => {
+    await exposeNextYear(page);
+    await page.goto("/documents/admin");
+    await waitForPageReady(page);
+
+    const dashboardYear = page.locator(".filter-bar select.filter-input").first();
+    await expectDescendingYearsWithCurrentSelected(dashboardYear);
+
+    await page.getByRole("link", { name: "세션 생성" }).click();
+    const sessionYear = page.locator(".session-form select.form-select");
+    await expect(sessionYear).toBeVisible();
+    await expectDescendingYearsWithCurrentSelected(sessionYear);
   });
 
   test("downloads current-year files as a zip from the dashboard", async ({ page }) => {

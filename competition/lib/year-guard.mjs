@@ -1,21 +1,22 @@
 import {
+  assertCompetitionPreparationYear,
   assertCurrentCompetitionYear,
   currentCompetitionYear,
   parseCompetitionYear,
 } from "../../shared/competition-year.mjs";
 
-function parseExplicitYear(value) {
+function parseExplicitYear(value, assertWritableYear = assertCurrentCompetitionYear) {
   if (value == null || value === "") return null;
-  return assertCurrentCompetitionYear(value);
+  return assertWritableYear(value);
 }
 
-function addExplicitYear(years, value) {
-  const year = parseExplicitYear(value);
+function addExplicitYear(years, value, assertWritableYear) {
+  const year = parseExplicitYear(value, assertWritableYear);
   if (year != null) years.add(year);
 }
 
-function addStoredYear(years, value) {
-  if (value != null) years.add(assertCurrentCompetitionYear(value));
+function addStoredYear(years, value, assertWritableYear = assertCurrentCompetitionYear) {
+  if (value != null) years.add(assertWritableYear(value));
 }
 
 export function normalizedPath(req) {
@@ -33,34 +34,40 @@ function decodePathCapture(value) {
 }
 
 function addInspectionYears(req, db, years) {
+  const addExplicitInspectionYear = (value) => {
+    addExplicitYear(years, value, assertCompetitionPreparationYear);
+  };
+  const addStoredInspectionYear = (value) => {
+    addStoredYear(years, value, assertCompetitionPreparationYear);
+  };
   const path = normalizedPath(req);
   const ruleRefsItemCapture = path.match(/^\/api\/sheet\/template\/([^/]+)\/rule-refs$/)?.[1];
   const ruleRefsItemId = ruleRefsItemCapture == null ? null : Number(decodePathCapture(ruleRefsItemCapture));
   if (Number.isInteger(ruleRefsItemId)) {
-    addStoredYear(years, db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(ruleRefsItemId)?.year);
+    addStoredInspectionYear(db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(ruleRefsItemId)?.year);
     return;
   }
   const templateCapture = path.match(/^\/api\/sheet\/template\/([^/]+)$/)?.[1];
   const templateId = templateCapture == null ? null : Number(decodePathCapture(templateCapture));
   if (Number.isInteger(templateId)) {
-    addStoredYear(years, db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(templateId)?.year);
+    addStoredInspectionYear(db.prepare("SELECT year FROM sheet_template WHERE id = ?").get(templateId)?.year);
     return;
   }
   if (path === "/api/sheet/template/reorder") {
     if (Array.isArray(req.body?.items)) {
       const lookup = db.prepare("SELECT year FROM sheet_template WHERE id = ?");
-      for (const item of req.body.items) addStoredYear(years, lookup.get(Number(item?.id))?.year);
+      for (const item of req.body.items) addStoredInspectionYear(lookup.get(Number(item?.id))?.year);
     }
     return;
   }
   if (path === "/api/sheet/template/copy") {
     parseCompetitionYear(req.body?.from_year, { defaultCurrent: false });
-    addExplicitYear(years, req.body?.to_year);
+    addExplicitInspectionYear(req.body?.to_year);
     return;
   }
   if (path === "/api/sheet/template/rule-refs/sync") {
     parseCompetitionYear(req.body?.from_year, { defaultCurrent: false });
-    addExplicitYear(years, req.body?.to_year);
+    addExplicitInspectionYear(req.body?.to_year);
     return;
   }
   if (path === "/api/sheet/template"
@@ -68,7 +75,7 @@ function addInspectionYears(req, db, years) {
     || path === "/api/sheet/template/rule-refs/import"
     || path === "/api/sheet/template/rule-refs/revalidate"
     || /^\/api\/sheet\/(?:answer|memo|category-result)$/.test(path)) {
-    addExplicitYear(years, req.body?.year);
+    addExplicitInspectionYear(req.body?.year);
     return;
   }
   years.add(currentCompetitionYear());
@@ -152,7 +159,7 @@ function addRegistrationYears(req, db, years) {
 }
 
 export function createModuleYearGuard({ module, db }) {
-  return function requireCurrentCompetitionYear(req) {
+  return function requireWritableCompetitionYear(req) {
     const years = new Set();
     let credentialedRead = false;
     if (module === "queue") years.add(currentCompetitionYear());
@@ -164,7 +171,10 @@ export function createModuleYearGuard({ module, db }) {
     else years.add(currentCompetitionYear());
     if (credentialedRead) return { module, years: [] };
     if (years.size === 0) years.add(currentCompetitionYear());
-    for (const year of years) assertCurrentCompetitionYear(year);
+    const assertWritableYear = module === "inspection"
+      ? assertCompetitionPreparationYear
+      : assertCurrentCompetitionYear;
+    for (const year of years) assertWritableYear(year);
     return { module, years: [...years].sort((a, b) => a - b) };
   };
 }

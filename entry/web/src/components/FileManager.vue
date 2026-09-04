@@ -117,7 +117,7 @@ async function handleUpload() {
         </button>
       </div>
       <p v-else class="import-note">
-        엔트리 업로드는 현재 연도에 등록된 팀이 없을 때만 사용할 수 있습니다.
+        엔트리 업로드는 올해 또는 다음 연도에 등록된 팀이 없을 때만 사용할 수 있습니다.
       </p>
 
       <!-- Download Section -->

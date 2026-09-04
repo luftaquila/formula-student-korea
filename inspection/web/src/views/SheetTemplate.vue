@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, computed, nextTick, watch } from "vue";
 import { createKeyedDebouncer } from "@shared/debounce.js";
-import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import { currentCompetitionYear, isCompetitionPreparationYear } from "@shared/competition-year.mjs";
 import { useRouter } from "vue-router";
 import { ruleDocumentLabel } from "../utils/rule-text";
 import {
@@ -30,6 +30,7 @@ const availableYears = ref([]);
 const template = ref([]);
 const vehicleTypes = ref([]);
 const loading = ref(true);
+const loadedTemplateYear = ref(null);
 const copyFromYear = ref("");
 const ruleSyncFromYear = ref("");
 const ruleStatusFilter = ref("all");
@@ -79,7 +80,11 @@ watch(activeTab, async (val) => {
   requestAnimationFrame(resizeAllTextareas);
 });
 
-const isReadOnly = computed(() => selectedYear.value !== currentCompetitionYear());
+const isReadOnly = computed(() => !isCompetitionPreparationYear(selectedYear.value));
+const editorDisabled = computed(() => isReadOnly.value
+  || loading.value
+  || loadedTemplateYear.value !== selectedYear.value);
+let templateLoadSeq = 0;
 
 onMounted(async () => {
   try {
@@ -90,8 +95,8 @@ onMounted(async () => {
     await loadTemplate();
   } catch (e) {
     error("데이터를 가져올 수 없습니다.");
+    loading.value = false;
   }
-  loading.value = false;
   const savedY = Number(sessionStorage.getItem("inspectionScrollY")) || 0;
   await nextTick();
   requestAnimationFrame(() => window.scrollTo(0, savedY));
@@ -125,17 +130,29 @@ onBeforeUnmount(() => {
 });
 
 async function loadTemplate() {
+  const year = selectedYear.value;
+  const seq = ++templateLoadSeq;
+  loadedTemplateYear.value = null;
+  template.value = [];
+  vehicleTypes.value = [];
+  loading.value = true;
   try {
     const [tmpl, vtList] = await Promise.all([
-      fetchSheetTemplate(selectedYear.value),
-      fetchVehicleTypes(selectedYear.value).catch(() => []),
+      fetchSheetTemplate(year),
+      fetchVehicleTypes(year).catch(() => []),
     ]);
+    if (seq !== templateLoadSeq || selectedYear.value !== year) return;
     template.value = tmpl;
     vehicleTypes.value = vtList;
+    loadedTemplateYear.value = year;
   } catch (e) {
+    if (seq !== templateLoadSeq || selectedYear.value !== year) return;
     template.value = [];
     vehicleTypes.value = [];
+  } finally {
+    if (seq === templateLoadSeq && selectedYear.value === year) loading.value = false;
   }
+  if (seq !== templateLoadSeq || selectedYear.value !== year) return;
   if (activeTab.value >= template.value.length) {
     activeTab.value = Math.max(0, template.value.length - 1);
   }
@@ -151,9 +168,7 @@ function resizeAllTextareas() {
 }
 
 async function onYearChange() {
-  loading.value = true;
   await loadTemplate();
-  loading.value = false;
 }
 
 async function handleCopy() {
@@ -643,8 +658,8 @@ function goBack() {
       <div class="top-actions-right">
         <button class="btn btn-primary btn-sm" @click="openPrintPage" :disabled="loading || !template.length">인쇄</button>
         <button class="btn btn-ghost btn-sm" @click="exportJson" :disabled="loading || !template.length">JSON 내보내기</button>
-        <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importRuleRefsJson" :disabled="loading || !template.length">규정 연결 가져오기</button>
-        <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importJson" :disabled="loading">JSON 가져오기</button>
+        <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importRuleRefsJson" :disabled="editorDisabled || !template.length">규정 연결 가져오기</button>
+        <button v-if="!isReadOnly" class="btn btn-ghost btn-sm" @click="importJson" :disabled="editorDisabled">JSON 가져오기</button>
       </div>
     </div>
 
@@ -655,7 +670,7 @@ function goBack() {
           <option v-for="y in availableYears" :key="y" :value="y">{{ y }}년</option>
         </select>
       </div>
-      <div v-if="!isReadOnly && template.length === 0" class="filter-group">
+      <div v-if="!editorDisabled && template.length === 0" class="filter-group">
         <label class="filter-label">이전 연도 복사</label>
         <div class="copy-row">
           <select class="filter-input" v-model="copyFromYear">
@@ -674,7 +689,7 @@ function goBack() {
           <option value="no_direct_rule">대응 없음 {{ ruleCounts.no_direct_rule }}</option>
         </select>
       </div>
-      <div v-if="!isReadOnly && template.length" class="filter-group">
+      <div v-if="!editorDisabled && template.length" class="filter-group">
         <label class="filter-label">규정 연결 갱신</label>
         <div class="copy-row">
           <select class="filter-input" v-model="ruleSyncFromYear">
@@ -687,12 +702,12 @@ function goBack() {
       </div>
     </div>
 
-    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드 (과거 연도)</div>
+    <div v-if="isReadOnly" class="readonly-banner">읽기 전용 모드</div>
 
     <div v-if="loading" class="loading"><div class="loading-spinner"></div></div>
 
     <template v-else>
-      <div v-if="template.length === 0 && !isReadOnly" class="empty-state-box">
+      <div v-if="template.length === 0 && !editorDisabled" class="empty-state-box">
         <p>템플릿이 없습니다.</p>
         <button class="btn btn-primary" @click="addCategory">카테고리 추가</button>
       </div>
@@ -711,10 +726,10 @@ function goBack() {
           @dragover="onDragOver($event, template, idx)"
           @drop="onDrop($event, template, idx)"
         >
-          <span v-if="!isReadOnly" class="tab-drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
+          <span v-if="!editorDisabled" class="tab-drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
           {{ catNum(idx) }}. {{ cat.name }}
         </button>
-        <button v-if="!isReadOnly" class="tab tab-add" @click="addCategory" title="카테고리 추가">+</button>
+        <button v-if="!editorDisabled" class="tab tab-add" @click="addCategory" title="카테고리 추가">+</button>
       </div>
 
       <!-- Category Panel -->
@@ -726,14 +741,14 @@ function goBack() {
               class="node-name-input cat-name"
               v-model="currentCategory.name"
               @input="onNameChange(currentCategory)"
-              :disabled="isReadOnly"
+              :disabled="editorDisabled"
               placeholder="카테고리명"
             />
-            <label v-if="!isReadOnly" class="pdf-toggle" title="PDF 내보내기에 포함">
+            <label v-if="!editorDisabled" class="pdf-toggle" title="PDF 내보내기에 포함">
               <input type="checkbox" :checked="currentCategory.pdf_include" @change="currentCategory.pdf_include = $event.target.checked ? 1 : 0; onPdfIncludeChange(currentCategory)" />
               <span class="pdf-toggle-label">PDF</span>
             </label>
-            <div class="node-actions" v-if="!isReadOnly">
+            <div class="node-actions" v-if="!editorDisabled">
               <button class="btn btn-danger btn-sm" @click="removeNode(template, activeTab)">삭제</button>
             </div>
           </div>
@@ -748,7 +763,7 @@ function goBack() {
               <input
                 type="checkbox"
                 :checked="isTypeVisible(currentCategory, vt.name)"
-                :disabled="isReadOnly"
+                :disabled="editorDisabled"
                 @change="onTypeVisibleChange(currentCategory, vt.name, $event.target.checked)"
               />
               <span class="badge" :class="'badge-type-' + vt.color">{{ vt.name }}</span>
@@ -768,23 +783,23 @@ function goBack() {
             @drop.stop="onDrop($event, currentCategory.subcategories, si)"
           >
             <div class="node-row sub-row">
-              <span v-if="!isReadOnly" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
+              <span v-if="!editorDisabled" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
               <span class="node-num sub-num">{{ subNum(si) }} -</span>
               <input
                 class="node-name-input sub-name"
                 v-model="sub.name"
                 @input="onNameChange(sub)"
-                :disabled="isReadOnly"
+                :disabled="editorDisabled"
                 placeholder="소분류명"
               />
               <input
                 class="node-name-input remarks-input"
                 v-model="sub.remarks"
                 @input="onRemarksChange(sub)"
-                :disabled="isReadOnly"
+                :disabled="editorDisabled"
                 placeholder="비고"
               />
-              <div class="node-actions" v-if="!isReadOnly">
+              <div class="node-actions" v-if="!editorDisabled">
                 <button class="btn btn-danger btn-sm" @click="removeNode(currentCategory.subcategories, si)">삭제</button>
               </div>
             </div>
@@ -801,23 +816,23 @@ function goBack() {
               @drop.stop="onDrop($event, sub.groups, gi)"
             >
               <div class="node-row grp-row">
-                <span v-if="!isReadOnly" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
+                <span v-if="!editorDisabled" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
                 <span class="node-num grp-num">{{ grpNum(gi) }}.</span>
                 <input
                   class="node-name-input grp-name"
                   v-model="grp.name"
                   @input="onNameChange(grp)"
-                  :disabled="isReadOnly"
+                  :disabled="editorDisabled"
                   placeholder="그룹명"
                 />
                 <input
                   class="node-name-input remarks-input"
                   v-model="grp.remarks"
                   @input="onRemarksChange(grp)"
-                  :disabled="isReadOnly"
+                  :disabled="editorDisabled"
                   placeholder="비고"
                 />
-                <div class="node-actions" v-if="!isReadOnly">
+                <div class="node-actions" v-if="!editorDisabled">
                   <button class="btn btn-danger btn-sm" @click="removeNode(sub.groups, gi)">삭제</button>
                 </div>
               </div>
@@ -835,13 +850,13 @@ function goBack() {
                 @drop.stop="onDrop($event, grp.items, ii)"
               >
                 <div class="node-row">
-                  <span v-if="!isReadOnly" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
+                  <span v-if="!editorDisabled" class="drag-handle" @mousedown="onHandleMouseDown" title="드래그하여 순서 변경">⠿</span>
                   <span class="node-num item-num">{{ itemNum(ii) }}</span>
                   <textarea
                     class="node-name-input item-name item-textarea"
                     v-model="item.name"
                     @input="onItemNameInput($event, item)"
-                    :disabled="isReadOnly"
+                    :disabled="editorDisabled"
                     placeholder="항목명"
                     rows="1"
                   ></textarea>
@@ -849,7 +864,7 @@ function goBack() {
                     class="filter-input type-select"
                     v-model="item.answer_type"
                     @change="onAnswerTypeChange(item)"
-                    :disabled="isReadOnly"
+                    :disabled="editorDisabled"
                   >
                     <option value="passfail">PASS/FAIL/N/A</option>
                     <option value="number">숫자</option>
@@ -863,7 +878,7 @@ function goBack() {
                     class="node-name-input unit-input"
                     v-model="item.unit"
                     @input="onUnitChange(item)"
-                    :disabled="isReadOnly"
+                    :disabled="editorDisabled"
                     placeholder="단위"
                   />
                   <input
@@ -871,19 +886,19 @@ function goBack() {
                     class="node-name-input remarks-input"
                     v-model="item.remarks"
                     @input="onRemarksChange(item)"
-                    :disabled="isReadOnly"
+                    :disabled="editorDisabled"
                     placeholder="비고"
                   />
                   <button
                     type="button"
                     class="rule-status-btn"
                     :class="`status-${item.rule_refs?.status || 'needs_review'}`"
-                    :disabled="isReadOnly"
+                    :disabled="editorDisabled"
                     :aria-label="`${item.name} 규정 연결 편집`"
-                    :title="isReadOnly ? '과거 연도는 수정할 수 없습니다.' : '규정 연결 편집'"
+                    :title="isReadOnly ? '읽기 전용 모드에서는 수정할 수 없습니다.' : editorDisabled ? '템플릿을 불러온 뒤 수정할 수 있습니다.' : '규정 연결 편집'"
                     @click="openRuleDialog(item)"
                   >{{ ruleStatusLabel(item) }}</button>
-                  <button v-if="!isReadOnly" class="btn btn-danger btn-sm" @click="removeNode(grp.items, ii)">삭제</button>
+                  <button v-if="!editorDisabled" class="btn btn-danger btn-sm" @click="removeNode(grp.items, ii)">삭제</button>
                 </div>
                 <!-- Checktable config -->
                 <div v-if="item.answer_type === 'checktable'" class="checktable-config">
@@ -893,7 +908,7 @@ function goBack() {
                       class="node-name-input"
                       :value="getChecktableConfig(item).columns.join(', ')"
                       @input="onChecktableColumnsChange(item, $event.target.value)"
-                      :disabled="isReadOnly"
+                      :disabled="editorDisabled"
                       placeholder="증빙자료, Pipe시트, 연료호스, ..."
                     />
                   </div>
@@ -903,7 +918,7 @@ function goBack() {
                       class="node-name-input"
                       :value="getChecktableConfig(item).rows.join(', ')"
                       @input="onChecktableRowsChange(item, $event.target.value)"
-                      :disabled="isReadOnly"
+                      :disabled="editorDisabled"
                       placeholder="사전검토, 현장검토, ..."
                     />
                   </div>
@@ -933,7 +948,7 @@ function goBack() {
                     <select
                       class="filter-input calculation-mode"
                       :value="item.calculation?.mode || 'manual'"
-                      :disabled="isReadOnly"
+                      :disabled="editorDisabled"
                       @change="setCalculationMode(item, $event.target.value)"
                     >
                       <option value="manual">직접 입력</option>
@@ -948,7 +963,7 @@ function goBack() {
                         <select
                           class="filter-input"
                           :value="item.calculation.operation"
-                          :disabled="isReadOnly"
+                          :disabled="editorDisabled"
                           @change="setCalculationOperation(item, $event.target.value)"
                         >
                           <option value="multiply">원본 × 고정값</option>
@@ -965,7 +980,7 @@ function goBack() {
                           multiple
                           :size="Math.min(4, sourceOptionsFor(item).length)"
                           v-model="item.calculation.sources"
-                          :disabled="isReadOnly"
+                          :disabled="editorDisabled"
                           @change="saveCalculation(item)"
                         >
                           <option v-for="option in sourceOptionsFor(item)" :key="option.key" :value="option.key">{{ option.label }}</option>
@@ -974,7 +989,7 @@ function goBack() {
                           v-else
                           class="filter-input"
                           v-model="item.calculation.sources[0]"
-                          :disabled="isReadOnly"
+                          :disabled="editorDisabled"
                           @change="saveCalculation(item)"
                         >
                           <option v-for="option in sourceOptionsFor(item)" :key="option.key" :value="option.key">{{ option.label }}</option>
@@ -982,34 +997,34 @@ function goBack() {
                       </label>
                       <label v-if="item.calculation.operation === 'multiply'" class="calculation-field compact">
                         <span>곱할 값</span>
-                        <input class="node-name-input" type="number" step="any" v-model.number="item.calculation.factor" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                        <input class="node-name-input" type="number" step="any" v-model.number="item.calculation.factor" :disabled="editorDisabled" @input="onCalculationChange(item)" />
                       </label>
                       <label class="calculation-field compact">
                         <span>소수 자릿수</span>
-                        <input class="node-name-input" type="number" min="0" max="6" step="1" v-model.number="item.calculation.precision" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                        <input class="node-name-input" type="number" min="0" max="6" step="1" v-model.number="item.calculation.precision" :disabled="editorDisabled" @input="onCalculationChange(item)" />
                       </label>
                     </div>
                     <div v-if="item.calculation.operation === 'range_lookup'" class="calculation-ranges">
                       <div class="range-heading"><span>원본 상한 (이하)</span><span>결과값</span></div>
                       <div v-for="(range, ri) in item.calculation.ranges" :key="ri" class="range-row">
-                        <input class="node-name-input" type="number" step="any" v-model.number="range.max" :disabled="isReadOnly" @input="onCalculationChange(item)" />
+                        <input class="node-name-input" type="number" step="any" v-model.number="range.max" :disabled="editorDisabled" @input="onCalculationChange(item)" />
                         <span>→</span>
-                        <input class="node-name-input" type="number" step="any" v-model.number="range.value" :disabled="isReadOnly" @input="onCalculationChange(item)" />
-                        <button v-if="!isReadOnly" type="button" class="btn btn-danger btn-sm" :disabled="item.calculation.ranges.length <= 1" @click="removeCalculationRange(item, ri)">삭제</button>
+                        <input class="node-name-input" type="number" step="any" v-model.number="range.value" :disabled="editorDisabled" @input="onCalculationChange(item)" />
+                        <button v-if="!editorDisabled" type="button" class="btn btn-danger btn-sm" :disabled="item.calculation.ranges.length <= 1" @click="removeCalculationRange(item, ri)">삭제</button>
                       </div>
-                      <button v-if="!isReadOnly" type="button" class="btn btn-ghost btn-sm" @click="addCalculationRange(item)">+ 구간</button>
+                      <button v-if="!editorDisabled" type="button" class="btn btn-ghost btn-sm" @click="addCalculationRange(item)">+ 구간</button>
                     </div>
                   </template>
                 </div>
               </div>
 
-              <button v-if="!isReadOnly" class="btn btn-ghost btn-sm add-child-btn" @click="addChild(grp, 'item', 'items')">+ 항목</button>
+              <button v-if="!editorDisabled" class="btn btn-ghost btn-sm add-child-btn" @click="addChild(grp, 'item', 'items')">+ 항목</button>
             </div>
 
-            <button v-if="!isReadOnly" class="btn btn-ghost btn-sm add-child-btn" @click="addChild(sub, 'group', 'groups')">+ 그룹</button>
+            <button v-if="!editorDisabled" class="btn btn-ghost btn-sm add-child-btn" @click="addChild(sub, 'group', 'groups')">+ 그룹</button>
           </div>
 
-          <button v-if="!isReadOnly" class="btn btn-ghost btn-sm add-child-btn" @click="addChild(currentCategory, 'subcategory', 'subcategories')">+ 소분류</button>
+          <button v-if="!editorDisabled" class="btn btn-ghost btn-sm add-child-btn" @click="addChild(currentCategory, 'subcategory', 'subcategories')">+ 소분류</button>
         </div>
       </div>
     </template>
@@ -1030,7 +1045,7 @@ function goBack() {
             <option value="formula-competition">경기진행규정</option>
           </select>
           <input class="node-name-input" v-model="ruleQuery" maxlength="200" placeholder="문구, 인용 또는 rule_key 검색" />
-          <button class="btn btn-primary btn-sm" type="submit" :disabled="ruleSearching">검색</button>
+          <button class="btn btn-primary btn-sm" type="submit" :disabled="editorDisabled || ruleSearching">검색</button>
         </div>
         <div class="rule-results" aria-live="polite">
           <span v-if="ruleSearching" class="rule-empty">검색 중…</span>
@@ -1049,9 +1064,9 @@ function goBack() {
           <span v-for="ruleKey in selectedRuleKeys" :key="ruleKey">{{ selectedRulePreview(ruleKey) }}</span>
         </div>
         <div class="rule-dialog-actions">
-          <button type="button" class="btn btn-ghost btn-sm" @click="saveRuleStatus('needs_review')">연결 지우기</button>
-          <button type="button" class="btn btn-ghost btn-sm" @click="saveRuleStatus('no_direct_rule')">직접 대응 규정 없음</button>
-          <button type="button" class="btn btn-primary btn-sm" :disabled="!selectedRuleKeys.length" @click="saveRuleStatus('verified')">선택 규정 저장</button>
+          <button type="button" class="btn btn-ghost btn-sm" :disabled="editorDisabled" @click="saveRuleStatus('needs_review')">연결 지우기</button>
+          <button type="button" class="btn btn-ghost btn-sm" :disabled="editorDisabled" @click="saveRuleStatus('no_direct_rule')">직접 대응 규정 없음</button>
+          <button type="button" class="btn btn-primary btn-sm" :disabled="editorDisabled || !selectedRuleKeys.length" @click="saveRuleStatus('verified')">선택 규정 저장</button>
         </div>
       </form>
     </dialog>
