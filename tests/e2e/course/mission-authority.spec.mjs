@@ -33,7 +33,7 @@ test.describe("Mission authority UI integration", () => {
     courseId = (await courseResponse.json()).id;
 
     const coneResponse = await page.request.post(`/course/api/courses/${courseId}/cones`, {
-      data: { lat: 37.50005, lng: 127.00005, side: "left" },
+      data: { lat: 37.50001, lng: 127.00001, side: "left" },
     });
     expect(coneResponse.ok()).toBeTruthy();
     const cone = await coneResponse.json();
