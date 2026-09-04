@@ -10157,7 +10157,9 @@
     "name": "우천",
     "remarks": "",
     "pdf_include": 0,
-    "excluded_types": [],
+    "excluded_types": [
+      "C-Formula"
+    ],
     "subcategories": [
       {
         "name": "특이사항",
