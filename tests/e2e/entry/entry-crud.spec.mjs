@@ -158,19 +158,19 @@ test.describe("Entry team management", () => {
     await expect(firstRowNum).toHaveText("1");
     await expect(universityHeader).toHaveAttribute("aria-sort", "none");
 
-    await universityHeader.click();
+    await universityHeader.evaluate((element) => element.click());
     await expect(universityHeader).toHaveAttribute("aria-sort", "ascending");
     await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("KAIST");
 
-    await universityHeader.click();
+    await universityHeader.evaluate((element) => element.click());
     await expect(universityHeader).toHaveAttribute("aria-sort", "descending");
     await expect(table.locator("tbody tr").first().locator("td.col-univ .cell-text")).toHaveText("한양대학교");
 
-    await numberHeader.click();
+    await numberHeader.evaluate((element) => element.click());
     await expect(numberHeader).toHaveAttribute("aria-sort", "ascending");
     await expect(table.locator("tbody tr").first().locator(".entry-number")).toHaveText("1");
 
-    await numberHeader.click();
+    await numberHeader.evaluate((element) => element.click());
     await expect(numberHeader).toHaveAttribute("aria-sort", "descending");
     const numbers = await table.locator("tbody tr .entry-number").allTextContents();
     const numeric = numbers.map(Number);
