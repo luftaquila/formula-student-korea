@@ -41,7 +41,7 @@ jobs:
         with:
           node-version: 22
 
-      - uses: pnpm/setup@v2
+      - uses: pnpm/setup@v2.1.0
         with:
           install: false
 
@@ -561,7 +561,7 @@ jobs:
         with:
           node-version: 22
 
-      - uses: pnpm/setup@v2
+      - uses: pnpm/setup@v2.1.0
         with:
           install: false
 
@@ -582,6 +582,7 @@ jobs:
           key: playwright-${{ runner.os }}-chromium-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright browsers
+        id: playwright-install
         run: pnpm exec playwright install chromium
         if: steps.playwright-cache.outputs.cache-hit != 'true'
 
@@ -593,7 +594,7 @@ jobs:
 
       - name: Save Playwright cache
         uses: actions/cache/save@v5
-        if: always() && steps.playwright-cache.outputs.cache-hit != 'true'
+        if: always() && steps.playwright-install.outcome == 'success' && steps.playwright-cache.outputs.cache-hit != 'true'
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-chromium-${{ steps.playwright-version.outputs.version }}

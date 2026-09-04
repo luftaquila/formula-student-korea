@@ -61,8 +61,8 @@ describe("CI workflow operational contracts", () => {
 
   it("pins pnpm and installs the shared workspace lockfile in CI", () => {
     assert.equal(packageManifest.packageManager, "pnpm@11.25.0");
-    assert.equal((testWorkflow.match(/uses: pnpm\/setup@v2/g) || []).length, 2);
-    assert.doesNotMatch(testWorkflow, /uses: pnpm\/setup@v2[\s\S]+?cache: true/);
+    assert.equal((testWorkflow.match(/uses: pnpm\/setup@v2\.1\.0/g) || []).length, 2);
+    assert.doesNotMatch(testWorkflow, /uses: pnpm\/setup@v2\.1\.0[\s\S]+?cache: true/);
     assert.match(testWorkflow, /run: pnpm install --frozen-lockfile/);
     assert.doesNotMatch(testWorkflow, /package-lock\.json|\bnpm ci\b/);
   });
@@ -81,6 +81,10 @@ describe("CI workflow operational contracts", () => {
     assert.doesNotMatch(testWorkflow, /key: playwright-[^\n]+hashFiles\('pnpm-lock\.yaml'\)/);
     assert.match(testWorkflow, /run: pnpm exec playwright install chromium/);
     assert.doesNotMatch(testWorkflow, /playwright install --with-deps/);
+    assert.match(
+      testWorkflow,
+      /if: always\(\) && steps\.playwright-install\.outcome == 'success' && steps\.playwright-cache\.outputs\.cache-hit != 'true'/,
+    );
   });
 
   it("imports service-scoped main caches without exporting shard caches", () => {
