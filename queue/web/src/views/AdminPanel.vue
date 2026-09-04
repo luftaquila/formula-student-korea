@@ -1394,15 +1394,14 @@ function goToInspection(num) {
 }
 
 .booth-cards {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
   padding: 0.875rem 1rem;
-  overflow-x: auto;
 }
 
 .booth-card {
-  flex: 1;
-  min-width: 200px;
+  min-width: 0;
   border: 1px solid var(--border-color);
   border-radius: 8px;
   padding: 0.75rem;
@@ -1532,6 +1531,12 @@ function goToInspection(num) {
   flex: 1;
 }
 
+@media (max-width: 1280px) {
+  .booth-cards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 1024px) {
   .admin-grid {
     grid-template-columns: 1fr;
@@ -1573,11 +1578,7 @@ function goToInspection(num) {
   }
 
   .booth-cards {
-    flex-direction: column;
-  }
-
-  .booth-card {
-    min-width: unset;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .queue-item {

@@ -56,3 +56,14 @@ test("occupied booth controls can pause and resume the shared inspection timer",
   assert.match(timerSource, /booth\.timer_paused_at/);
   assert.match(timerFormatSource, /booth\.timer_paused_ms/);
 });
+
+test("inspection booth cards wrap at four columns without horizontal scrolling", async () => {
+  const source = await readFile(new URL("../../queue/web/src/views/AdminPanel.vue", import.meta.url), "utf8");
+  const boothCardsRule = source.match(/\.booth-cards\s*\{([^}]*)\}/)?.[1] || "";
+  const boothCardRule = source.match(/\.booth-card\s*\{([^}]*)\}/)?.[1] || "";
+
+  assert.match(boothCardsRule, /display:\s*grid/);
+  assert.match(boothCardsRule, /grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\)/);
+  assert.doesNotMatch(boothCardsRule, /overflow-x:\s*auto/);
+  assert.match(boothCardRule, /min-width:\s*0/);
+});
