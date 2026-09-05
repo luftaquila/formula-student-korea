@@ -6,6 +6,7 @@ import {
   fetchEntries,
   fetchAllInspections,
   fetchInspectionQueue,
+  fetchInspectionSummary,
   toggleInspectionActive,
   toggleInspectionVisibility,
   cancelFromQueue,
@@ -29,15 +30,18 @@ import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { displayPhone } from "@shared/format-phone.js";
 import { permissionComputed } from "@shared/officialsStore.js";
+import { findInspectionCategory } from "../inspection-category.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
 const canManage = permissionComputed("queue.manage");
+const canInspect = permissionComputed("inspection.operate");
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, lastEntriesUpdate, reconnected } = useSSE();
 
 const entries = ref({});
 const inspections = ref([]);
+const inspectionSummary = ref(null);
 const currentQueue = ref([]);
 const currentTab = ref("");
 const smsEnabled = ref(false);
@@ -103,6 +107,11 @@ watch(reconnected, () => {
   if (penaltyModalOpen.value) refreshPenaltyList();
 });
 
+watch(canInspect, (allowed) => {
+  if (allowed && !inspectionSummary.value) loadInspectionSummary();
+  if (!allowed) inspectionSummary.value = null;
+});
+
 // Re-sync timers when tab changes
 watch(currentTab, () => {
   syncElapsedTimers();
@@ -136,6 +145,7 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
+    if (canInspect.value) await loadInspectionSummary();
     if (canManage.value) {
       const sms = await fetchSmsSettings();
       smsEnabled.value = sms.value;
@@ -173,6 +183,32 @@ async function refreshQueue(type) {
   } catch (e) {
     error("대기열을 가져올 수 없습니다.");
   }
+}
+
+async function loadInspectionSummary() {
+  try {
+    inspectionSummary.value = await fetchInspectionSummary(currentCompetitionYear());
+  } catch {
+    inspectionSummary.value = null;
+  }
+}
+
+function inspectionCategoryFor(num) {
+  if (!canInspect.value || !inspectionSummary.value) return null;
+  const inspection = inspections.value.find((item) => item.type === currentTab.value)
+    || activeInspections.value.find((item) => item.type === currentTab.value);
+  return findInspectionCategory(
+    inspectionSummary.value.categories,
+    inspection?.name,
+    entries.value[num]?.type,
+  );
+}
+
+function previousInspectorsFor(item) {
+  const category = inspectionCategoryFor(item.num);
+  if (!category) return [];
+  const names = inspectionSummary.value?.teams?.[item.num]?.inspectors?.[category.id];
+  return Array.isArray(names) ? names : [];
 }
 
 function selectTab(type) {
@@ -470,10 +506,12 @@ function formatPenaltyRemaining(timestamp) {
 }
 
 function goToInspection(num) {
+  const category = inspectionCategoryFor(num);
+  if (!category) return;
   // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
   // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
   const base = import.meta.env.PROD ? "/inspection" : "";
-  window.location.href = `${base}/${currentCompetitionYear()}/${num}`;
+  window.location.href = `${base}/${currentCompetitionYear()}/${num}?category=${encodeURIComponent(category.id)}`;
 }
 
 </script>
@@ -603,7 +641,11 @@ function goToInspection(num) {
                       >
                         {{ booth.timer_paused_at ? "재개" : "중단" }}
                       </button>
-                      <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
+                      <button
+                        v-if="inspectionCategoryFor(booth.occupied_by)"
+                        class="btn btn-primary btn-sm"
+                        @click="goToInspection(booth.occupied_by)"
+                      >
                         검차
                       </button>
                     </div>
@@ -648,13 +690,32 @@ function goToInspection(num) {
                     <a :href="`tel:${item.phone}`" class="entry-phone">{{ displayPhone(item.phone) }}</a>
                     <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
                     <div class="queue-item-tags">
+                      <span class="badge badge-primary">전체 {{ item.rank }}위</span>
                       <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
                       <span v-else class="badge badge-success">초검</span>
+                      <span class="badge badge-muted">{{ item.group_rank }}위 / {{ item.group_total }}팀</span>
                       <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
                     </div>
                   </div>
+                  <div
+                    v-if="item.is_reinspection && inspectionCategoryFor(item.num)"
+                    class="previous-inspectors"
+                  >
+                    <span class="previous-inspectors-label">기존 검차관</span>
+                    <span v-if="previousInspectorsFor(item).length">{{ previousInspectorsFor(item).join(", ") }}</span>
+                    <span v-else>기존 검차관 정보 없음</span>
+                  </div>
                 </div>
                 <div class="action-buttons">
+                  <button
+                    v-if="inspectionCategoryFor(item.num)"
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    title="인스펙션 시트 열기"
+                    @click="goToInspection(item.num)"
+                  >
+                    검차표
+                  </button>
                   <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
                       <line x1="18" y1="6" x2="6" y2="18" />
@@ -731,7 +792,7 @@ function goToInspection(num) {
                     class="btn-toggle-visibility"
                     :class="{ hidden: item.hidden_from_register }"
                     @click="toggleVisibility(item.type, item.hidden_from_register)"
-                    :title="item.hidden_from_register ? '등록 페이지에 표시' : '등록 페이지에서 숨김'"
+                    :title="item.hidden_from_register ? '공개 조회·검차 등록 화면에 표시' : '공개 조회·검차 등록 화면에서 숨김'"
                   >
                     <svg v-if="!item.hidden_from_register" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
@@ -1135,6 +1196,20 @@ function goToInspection(num) {
   display: flex;
   align-items: center;
   gap: 0.375rem;
+}
+
+.previous-inspectors {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.previous-inspectors-label {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-weight: 600;
 }
 
 .entry-num {
@@ -1610,6 +1685,11 @@ function goToInspection(num) {
 
   .queue-item-tags {
     flex-basis: 100%;
+  }
+
+  .previous-inspectors {
+    flex-direction: column;
+    gap: 0.125rem;
   }
 
   .entry-phone {

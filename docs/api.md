@@ -12,7 +12,7 @@ This is the maintained HTTP contract. Auth, email, course, and calendar expose t
 | Score | `/competition/api/v1/score` |
 | Documents | `/competition/api/v1/documents` |
 
-Teams table paths are relative to `/competition/api/v1` because Teams, vehicle types, and meta are flat resources. Other module table paths are relative to their listed module prefix. For example, Queue's `/health` row means `/competition/api/v1/queue/health`. API and SSE clients must use these versioned prefixes. The stable browser UI paths remain `/entry`, `/queue`, `/registration`, `/inspection`, `/traffic`, `/score`, and `/documents`.
+Teams table paths are relative to `/competition/api/v1` because Teams, vehicle types, and meta are flat resources. Other module table paths are relative to their listed module prefix. For example, Queue's `/health` row means `/competition/api/v1/queue/health`. API and SSE clients must use these versioned prefixes. The participant queue UI is `/queue`; `/registration/` redirects there, while Registration operations remain at `/registration/manage` and `/registration/register`.
 
 Former standalone, nested `/{module}/api/*`, lifecycle, finalize, snapshot, and version routes are not compatibility APIs and return `404`.
 
@@ -62,8 +62,8 @@ Queue and Inspection are deliberately separate. `queue.manage` implies only
 ### Rate Limiting
 
 - **Auth**: OAuth login/callback — 20 requests/minute per IP
-- **Queue**: Public endpoints (`POST /api/state/:num`) — 30 requests/minute per IP
-- **Registration**: Public credential lookup (`POST /lookup`) — 60 requests/minute per IP
+- **Queue**: Public entry state (`GET /state/:num`) — 30 requests/minute per IP
+- **Registration**: Public entry lookup (`GET /lookup/:num`) — 60 requests/minute per IP
 - **Kiosk registration**: 30 submissions/minute per device and IP
 - **Kiosk pairing**: 10 attempts/minute per IP
 
@@ -194,7 +194,8 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/active` | public | — | `[{ type, name, length, active, ... }]` | Active inspection types |
-| POST | `/state/:num` | public | `{ phone }` | `{ queue, rank, queues: [{ type, name, rank, total }] }` | Check queue position (rate-limited, phone verification); structured rows use the stable inspection key |
+| GET | `/state/:num` | public | — | `{ year, queues: [{ type, name, isReinspection, rank, total, groupRank, groupTotal }] }` | Check every inspection wait for one entry number; ranks include the full queue and the initial/reinspection cohort |
+| GET | `/public/queues` | public | — | `{ year, queues: [{ type, name, total, firstInspectionTotal, reinspectionTotal, entries: [{ teamId, number, university, name, isReinspection, rank, groupRank, groupTotal }] }] }` | Full team lists for active inspection types visible on the public Queue screen; never includes phone, priority, or timestamps |
 | GET | `/booths/all` | public | — | `{ type: [{ booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms }] }` | All booth statuses |
 | GET | `/booths/:type` | public | — | `[{ booth_num, active, occupied_by, entered_at, timer_paused_at, timer_paused_ms }]` | Booth status for inspection type |
 
@@ -203,9 +204,9 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/admin/all` | `queue.operate` | — | `[{ type, name, length, active, ignore_priority, ... }]` | All inspection types (including inactive) |
-| GET | `/admin/inspection/:type` | `queue.operate` | — | `[{ num, phone, timestamp, is_reinspection, priority }]` | Queue listing for inspection type (sorted) |
+| GET | `/admin/inspection/:type` | `queue.operate` | — | `[{ num, phone, timestamp, is_reinspection, priority, rank, total, group_rank, group_total }]` | Queue listing with full-queue and initial/reinspection cohort ranks (sorted) |
 | PATCH | `/admin/inspection/:type` | `queue.manage` | `{ active: bool }` | 200 | Toggle inspection active status |
-| PATCH | `/admin/inspection/:type/visibility` | `queue.manage` | `{ hidden: bool }` | 200 | Toggle inspection visibility on register page |
+| PATCH | `/admin/inspection/:type/visibility` | `queue.manage` | `{ hidden: bool }` | 200 | Toggle inspection visibility on the public Queue screen and register page |
 | PUT | `/admin/inspection/:type/ignore` | `queue.manage` | `{ field, value }` | 200 | Set ignore_priority or ignore_reinspection |
 
 ### Queue Registration
@@ -279,7 +280,7 @@ Registration rows use `competition_team.id` as their only team identity. Number 
 |--------|------|------|---------|----------|-------------|
 | GET | `/events` | public | `?year=` | SSE stream | `init` and `registration`: `{ year, open, waiting }`; `entries`: year-scoped canonical-roster invalidation |
 | GET | `/status` | public | `?year=` | `{ year, open, waiting }` | Public queue summary without other teams' call state |
-| POST | `/lookup` | public | `{ year, num, phone }` | `{ teamId, number, university, name, status, position, waitingTotal, ... }` | Credentialed active-queue lookup; phone is normalized but never returned |
+| GET | `/lookup/:num` | public | `?year=` | `{ year, teamId, number, university, name, status, position, waitingTotal }` | Active registration-queue lookup by entry number; notification phone and registration timestamp are never returned |
 
 ### Kiosk and operations
 

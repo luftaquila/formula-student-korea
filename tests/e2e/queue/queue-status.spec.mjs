@@ -17,10 +17,10 @@ test.describe("Queue public status page", () => {
   });
 
   test("renders its empty state and gives immediate entry feedback", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: /실시간 대기 순번/ })).toBeVisible();
-    await expect(page.locator(".result-display")).toContainText("-");
+    await expect(page.getByRole("heading", { name: /내 대기 현황/ })).toBeVisible();
+    await expect(page.locator(".result-card")).toContainText("-");
 
-    const entryInput = page.getByPlaceholder("번호");
+    const entryInput = page.getByLabel("엔트리 번호");
     await entryInput.fill("1");
     await expect(page.locator(".team-badge").first()).toContainText("서울대학교");
 
@@ -32,8 +32,7 @@ test.describe("Queue public status page", () => {
     await page.getByRole("button", { name: "조회" }).click();
     await expectNotification(page, "error", "엔트리 번호를 입력하세요");
 
-    await page.getByPlaceholder("번호").fill("999");
-    await page.getByPlaceholder("010-0000-0000").fill("01012345678");
+    await page.getByLabel("엔트리 번호").fill("999");
     await expectNotificationAfter(
       page,
       "error",
@@ -43,18 +42,21 @@ test.describe("Queue public status page", () => {
   });
 
   test("shows the exact no-queue result for a valid unregistered team", async ({ page }) => {
-    await page.getByPlaceholder("번호").fill(String(NO_QUEUE_ENTRY));
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "REGISTRATION_NOT_FOUND", message: "대기 중인 등록 내역이 없습니다." }),
+    }));
+    await page.getByLabel("엔트리 번호").fill(String(NO_QUEUE_ENTRY));
     await expect(page.locator(".team-badge").first()).toContainText("부산대학교");
-    await page.getByPlaceholder("010-0000-0000").fill("01012345678");
 
     const stateResponse = page.waitForResponse(
       (response) =>
         response.url().includes(`/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`) &&
-        response.request().method() === "POST",
+        response.request().method() === "GET",
     );
     await page.getByRole("button", { name: "조회" }).click();
     expect((await stateResponse).status()).toBe(200);
-    await expectNotification(page, "error", "대기중인 검차가 없습니다");
-    await expect(page.locator(".result-display")).toContainText("-");
+    await expect(page.locator(".result-card")).toContainText("현재 등록 또는 검차 대기가 없습니다.");
   });
 });

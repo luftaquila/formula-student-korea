@@ -32,11 +32,11 @@ Competition years are interpreted in `Asia/Seoul`. Reads may select any valid ye
 
 Teams are created individually or imported once into an empty current or next year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Registration/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current or next year.
 
-Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting row. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
+Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting row. The phone submitted at registration is used for advance SMS notification, not as a public lookup credential. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
 
 ## Runtime communication
 
-The stable UI locations are `/entry`, `/queue`, `/registration`, `/inspection`, `/traffic`, `/score`, and `/documents`. The only Competition API namespace is `/competition/api/v1`: Teams and vehicle types are flat resources, while the other domains use `/competition/api/v1/{module}/...`. Nested `/{module}/api/...`, standalone module APIs, and internal team lifecycle routes are absent and return `404`.
+The participant queue hub is `/queue`, which combines Registration and Inspection position lookup and publishes the visible Inspection queues. `/registration/` redirects to that hub; Registration operations remain at `/registration/manage` and `/registration/register`. The other stable UI locations are `/entry`, `/inspection`, `/traffic`, `/score`, and `/documents`. The only Competition API namespace is `/competition/api/v1`: Teams and vehicle types are flat resources, while the other domains use `/competition/api/v1/{module}/...`. Nested `/{module}/api/...`, standalone module APIs, and internal team lifecycle routes are absent and return `404`.
 
 Modules share one SQLite connection and one authentication validator. Successful Team and vehicle-type mutations emit only a year-scoped `entries` invalidation signal, without roster payloads, copied rosters, or direct live-state propagation. Score invalidates its derived caches; Queue, Registration, Inspection, and Traffic forward the signal over module-local SSE, and their SPAs re-query canonical team data for that year.
 
@@ -94,6 +94,10 @@ the authoritative effective-permission snapshot, account real name, and an acces
 revision; services revalidate it and fail closed, and stale access edits are rejected
 by revision. Inspection records that authoritative real name for inspector history
 and answer/memo editor labels instead of the Google account name carried by the JWT.
+The Queue operations UI exposes Inspection sheet links and accumulated inspector
+names only when the same user also has `inspection.operate`; Queue rank data itself
+continues to require only `queue.operate`.
+
 During the schema cutover, retired `staff`, `chief`, and `master` accounts become
 Officials with no grants; access must be assigned explicitly after migration.
 

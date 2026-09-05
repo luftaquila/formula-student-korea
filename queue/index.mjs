@@ -119,6 +119,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     if (/^\/(admin|stats)/.test(req.path)) return access.permission("queue.operate");
     if (req.path === "/api/events") return null;
     if (req.path === "/api/active") return null;
+    if (req.path === "/api/public/queues") return null;
     if (req.path.startsWith("/api/booths/")) return null;
     if (req.path.startsWith("/api/state/")) return null;
     if (req.path.startsWith("/api/")) return access.permission("queue.operate"); // API 기본값: default-close
@@ -620,43 +621,59 @@ function validatePriority(priority) {
  */
 const inspectionMetaStmt = db.prepare("SELECT ignore_priority, ignore_reinspection FROM inspection WHERE type = ?");
 const queueStmtCache = new Map();
-const queueRankStmtCache = new Map();
 
 function getQueueOrderFlags(inspection) {
   const meta = inspectionMetaStmt.get(inspection);
   return { ignoreReinspection: !!meta?.ignore_reinspection, ignorePriority: !!meta?.ignore_priority };
 }
 
-function buildQueueQuery({ ignoreReinspection, ignorePriority }) {
-  const orderClauses = [];
-  if (!ignoreReinspection) orderClauses.push("is_reinspection ASC");
-  if (!ignorePriority) orderClauses.push("priority ASC");
-  orderClauses.push("t.timestamp ASC");
+function buildQueueQuery({ ignoreReinspection, ignorePriority }, variant) {
+  const overallOrderClauses = [];
+  if (!ignoreReinspection) overallOrderClauses.push("is_reinspection ASC");
+  if (!ignorePriority) overallOrderClauses.push("priority ASC");
+  overallOrderClauses.push("timestamp ASC", "num ASC");
+
+  const groupOrderClauses = [];
+  if (!ignorePriority) groupOrderClauses.push("priority ASC");
+  groupOrderClauses.push("timestamp ASC", "num ASC");
 
   return `
-    SELECT t.*,
-      CASE WHEN EXISTS (
-        SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ? AND h.year = ?
-      ) THEN 1 ELSE 0 END AS is_reinspection,
-      COALESCE(p.priority, 999) AS priority
-    FROM inspection_queue AS t
-    LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
-    WHERE t.inspection = ? AND t.year = ?
-      AND NOT EXISTS (
-        SELECT 1 FROM competition_inactive_team s
-        WHERE s.year = t.year AND s.team_num = t.num
-      )
-    ORDER BY ${orderClauses.join(", ")}
+    WITH queue_base AS (
+      SELECT t.*,
+        CASE WHEN EXISTS (
+          SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ? AND h.year = ?
+        ) THEN 1 ELSE 0 END AS is_reinspection,
+        COALESCE(p.priority, 999) AS priority
+      FROM inspection_queue AS t
+      LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
+      WHERE t.inspection = ? AND t.year = ?
+        AND NOT EXISTS (
+          SELECT 1 FROM competition_inactive_team s
+          WHERE s.year = t.year AND s.team_num = t.num
+        )
+    ), ranked_queue AS (
+      SELECT queue_base.*,
+        ROW_NUMBER() OVER (ORDER BY ${overallOrderClauses.join(", ")}) AS rank,
+        COUNT(*) OVER () AS total,
+        ROW_NUMBER() OVER (
+          PARTITION BY is_reinspection
+          ORDER BY ${groupOrderClauses.join(", ")}
+        ) AS group_rank,
+        COUNT(*) OVER (PARTITION BY is_reinspection) AS group_total
+      FROM queue_base
+    )
+    SELECT * FROM ranked_queue
+    ${variant === "rank" ? "WHERE num = ?" : "ORDER BY rank"}
   `;
 }
 
-// variant: "list"(전체 목록) | "offset"(LIMIT 1 OFFSET ? 추가 — 순번 단건 조회)
+// variant: "list"(전체 목록) | "offset"(순번 단건) | "rank"(엔트리 단건)
 function getQueueStmt(inspection, variant = "list") {
   const flags = getQueueOrderFlags(inspection);
   const key = `${flags.ignoreReinspection}|${flags.ignorePriority}|${variant}`;
   let stmt = queueStmtCache.get(key);
   if (!stmt) {
-    stmt = db.prepare(buildQueueQuery(flags) + (variant === "offset" ? " LIMIT 1 OFFSET ?" : ""));
+    stmt = db.prepare(buildQueueQuery(flags, variant) + (variant === "offset" ? " LIMIT 1 OFFSET ?" : ""));
     queueStmtCache.set(key, stmt);
   }
   return stmt;
@@ -666,49 +683,8 @@ function getQueueParams(inspection, year) {
   return [inspection, year, inspection, year, inspection, year];
 }
 
-/**
- * 특정 엔트리의 대기열 순위 조회
- */
-function getQueueRank(inspection, num, year) {
-  const { ignoreReinspection, ignorePriority } = getQueueOrderFlags(inspection);
-
-  const key = `${ignoreReinspection}|${ignorePriority}`;
-  let stmt = queueRankStmtCache.get(key);
-  if (!stmt) {
-    const orderClauses = [];
-    if (!ignoreReinspection) orderClauses.push(`CASE WHEN EXISTS (
-              SELECT 1 FROM inspection_history h WHERE h.num = t.num AND h.inspection = ? AND h.year = ?
-            ) THEN 1 ELSE 0 END ASC`);
-    if (!ignorePriority) orderClauses.push("COALESCE(p.priority, 999) ASC");
-    orderClauses.push("t.timestamp ASC");
-
-    stmt = db.prepare(`
-    SELECT sub.rank FROM (
-      SELECT t.num,
-        ROW_NUMBER() OVER (
-          ORDER BY ${orderClauses.join(", ")}
-        ) AS rank
-      FROM inspection_queue AS t
-      LEFT JOIN team_priority AS p ON t.num = p.num AND p.inspection = ? AND p.year = ?
-      WHERE t.inspection = ? AND t.year = ?
-        AND NOT EXISTS (
-          SELECT 1 FROM competition_inactive_team s
-          WHERE s.year = t.year AND s.team_num = t.num
-        )
-    ) AS sub WHERE sub.num = ?
-  `);
-    queueRankStmtCache.set(key, stmt);
-  }
-
-  const params = [];
-  if (!ignoreReinspection) params.push(inspection, year);
-  params.push(inspection, year); // for LEFT JOIN team_priority
-  params.push(inspection, year); // for WHERE t.inspection = ? AND t.year = ?
-  params.push(num); // for WHERE sub.num = ?
-
-  const result = stmt.get(...params);
-
-  return result ? result.rank : null;
+function getQueueRankRow(inspection, num, year) {
+  return getQueueStmt(inspection, "rank").get(...getQueueParams(inspection, year), num);
 }
 
 /* ============================================
@@ -726,8 +702,8 @@ app.get("/api/active", (req, res) => {
   res.json(result.result);
 });
 
-// POST /api/state/:num - 대기열 상태 조회 (전화번호 검증 필요)
-app.post("/api/state/:num", rateLimit, async (req, res) => {
+// GET /api/state/:num - 엔트리 번호로 모든 검차 대기 순번 조회
+app.get("/api/state/:num", rateLimit, async (req, res) => {
   const numValidation = validateEntryNum(req.params.num);
   if (!numValidation.valid) {
     return res.status(400).send(numValidation.error);
@@ -751,43 +727,81 @@ app.post("/api/state/:num", rateLimit, async (req, res) => {
     const entry = getCurrentEntry(num, year);
 
     if (!entry) {
-      return { queue: undefined, rank: -1, queues: [] };
+      return { year, queues: [] };
     }
 
-    if (typeof req.body.phone !== "string") {
-      throw { status: 400, message: "전화번호 형식이 올바르지 않습니다." };
-    }
-    if (entry.phone !== req.body.phone) {
-      throw { status: 400, message: "전화번호가 일치하지 않습니다." };
-    }
-
-    const queues = entry.inspections.map((type) => ({
-      type,
-      name: inspections[type],
-      rank: getQueueRank(type, num, year),
-      total: db.prepare(`
-        SELECT COUNT(*) AS count FROM inspection_queue
-        WHERE inspection = ? AND year = ?
-      `).get(type, year).count,
-    }));
-    return {
-      // 기존 소비자를 위한 표시 문자열은 유지하되, 화면은 안정 키와 같은 응답에서
-      // 계산된 합계를 담은 queues를 사용한다. 이름 변경·비활성화와 무관하게 짝이 맞는다.
-      queue: queues.length === 1 ? queues[0].name : queues.map((item) => item.name).join(", "),
-      rank: queues.length === 1 ? queues[0].rank : queues.map((item) => item.rank).join(", "),
-      queues,
-    };
+    const queues = entry.inspections.flatMap((type) => {
+      const ranked = getQueueRankRow(type, num, year);
+      if (!ranked) return [];
+      return [{
+        type,
+        name: inspections[type],
+        isReinspection: ranked.is_reinspection === 1,
+        rank: ranked.rank,
+        total: ranked.total,
+        groupRank: ranked.group_rank,
+        groupTotal: ranked.group_total,
+      }];
+    });
+    return { year, queues };
   });
 
   if (!result.success) {
-    // 전화번호 불일치는 인증 실패에 준하는 보안 이벤트 — 무차별 대입 시도를 추적 가능하게 남긴다.
-    if (result.error === "전화번호가 일치하지 않습니다.") {
-      logger.warn(req, "queue.state_verify", { error: "전화번호 불일치" }, `#${num}`);
-    }
     return res.status(result.status).send(result.error);
   }
 
   res.json(result.result);
+});
+
+// GET /api/public/queues - 활성 검차의 전체 공개 대기열
+app.get("/api/public/queues", async (req, res) => {
+  const year = currentYear();
+  let entries;
+  try {
+    entries = await getEntries();
+  } catch (error) {
+    logger.warn(req, "queue.public_queues", { error: error.message, year });
+    return res.status(500).send("엔트리를 조회할 수 없습니다.");
+  }
+
+  const result = dbRun(() => ({
+    year,
+    queues: getActiveInspections(year)
+      .filter((inspection) => !inspection.hidden_from_register)
+      .map(({ type, name }) => {
+        const ranked = getQueueStmt(type).all(...getQueueParams(type, year));
+        return {
+          type,
+          name,
+          total: ranked.length,
+          firstInspectionTotal: ranked.filter((row) => row.is_reinspection === 0).length,
+          reinspectionTotal: ranked.filter((row) => row.is_reinspection === 1).length,
+          entries: ranked.map((row) => {
+            const team = entries[row.num];
+            if (!team) throw new Error(`canonical team missing for public queue entry ${row.num}`);
+            return {
+              teamId: team.id,
+              number: row.num,
+              university: team.univ,
+              name: team.team,
+              isReinspection: row.is_reinspection === 1,
+              rank: row.rank,
+              groupRank: row.group_rank,
+              groupTotal: row.group_total,
+            };
+          }),
+        };
+      }),
+  }));
+
+  if (!result.success) {
+    logger.warn(req, "queue.public_queues", {
+      error: result.internalError || result.error,
+      year,
+    });
+    return res.status(result.status).send(result.error);
+  }
+  return res.json(result.result);
 });
 
 // GET /api/booths/:type - 공개 부스 상태 조회

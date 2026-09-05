@@ -78,9 +78,6 @@ function isActive(href) {
 
   // Registration queue
   if (props.currentPath.startsWith("/registration")) {
-    if (href === "/registration") {
-      return props.currentPath === "/registration" || props.currentPath === "/registration/";
-    }
     if (href === "/registration/manage") {
       return props.currentPath === "/registration/manage" || props.currentPath === "/registration/register";
     }

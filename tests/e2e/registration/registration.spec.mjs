@@ -83,18 +83,19 @@ test.describe("Registration queue", () => {
       await publicPage.goto("/registration");
       await waitForPageReady(publicPage);
       await publicSse;
-      await expect(publicPage.locator("#lookup-phone")).toHaveValue("010");
-      await publicPage.locator("#lookup-number").fill(String(ENTRY_NUMBER));
+      await expect(publicPage).toHaveURL(/\/queue\/?$/);
+      await expect(publicPage.getByLabel("전화번호")).toHaveCount(0);
+      await publicPage.getByLabel("엔트리 번호").fill(String(ENTRY_NUMBER));
       await expect(publicPage.locator(".query-card .team-badge")).toContainText("PNU Racing");
-      await publicPage.locator("#lookup-phone").fill(PHONE);
       const lookedUp = publicPage.waitForResponse((response) =>
-        response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");
+        response.url().includes(`${PREFIX}/lookup/${ENTRY_NUMBER}`) && response.request().method() === "GET");
       await publicPage.getByRole("button", { name: "조회", exact: true }).click();
       expect((await lookedUp).status()).toBe(200);
-      await expect(publicPage.locator(".result-card")).toContainText("1번째");
+      const publicRegistrationRow = publicPage.locator(".result-row-detailed").filter({ hasText: "등록 대기" });
+      await expect(publicRegistrationRow.locator(".result-rank")).toHaveText("1");
+      await expect(publicRegistrationRow.locator(".result-suffix")).toHaveText("번");
       await expect(publicPage.locator(".result-card .result-total")).toContainText("1팀");
       await expect(publicPage.locator(".result-card")).not.toContainText("PNU Racing");
-      await expect(publicPage.locator(".queue-total")).toHaveCount(0);
 
       const officialSse = officialPage.waitForResponse((response) => response.url().includes(`${PREFIX}/events`));
       await officialPage.goto("/registration/manage");
@@ -104,15 +105,14 @@ test.describe("Registration queue", () => {
       await expect(waitingRow).toContainText("010-2468-1357");
 
       const refreshedLookup = publicPage.waitForResponse((response) =>
-        response.url().endsWith(`${PREFIX}/lookup`) && response.request().method() === "POST");
+        response.url().includes(`${PREFIX}/lookup/${ENTRY_NUMBER}`) && response.request().method() === "GET");
       const completed = officialPage.waitForResponse((response) =>
         response.url().includes(`${PREFIX}/queue/`) && response.url().endsWith("/done"));
       await waitingRow.getByRole("button", { name: "완료", exact: true }).click();
       expect((await completed).status()).toBe(200);
       await expect(officialPage.locator(".summary-card").filter({ hasText: "오늘 완료" })).toContainText(/[1-9]\d*/);
       expect((await refreshedLookup).status()).toBe(404);
-      await expect(publicPage.locator(".result-card")).toContainText("대기 중인 등록 내역이 없습니다.");
-      await expect(publicPage.locator(".query-card")).not.toContainText("대기 중인 등록 내역이 없습니다.");
+      await expect(publicPage.locator(".result-card")).toContainText("현재 등록 또는 검차 대기가 없습니다.");
     } finally {
       await Promise.all([managerContext.close(), publicContext.close(), officialContext.close()]);
     }
@@ -177,7 +177,7 @@ test.describe("Registration queue", () => {
     }
   });
 
-  test("does not reveal a queue record when the public phone credential is wrong", async ({ request }) => {
+  test("looks up by entry number without returning the notification phone", async ({ request }) => {
     const teams = await request.get(`/competition/api/v1/teams?year=${YEAR}`);
     const team = (await teams.json()).find((item) => item.number === ENTRY_NUMBER);
     const create = await registrationRequest(request, "operationsManager", "POST", "/queue", {
@@ -186,14 +186,12 @@ test.describe("Registration queue", () => {
     });
     expect(create.status()).toBe(201);
 
-    const lookup = await request.post(`${PREFIX}/lookup`, {
-      data: { year: YEAR, num: ENTRY_NUMBER, phone: "01000000000" },
-    });
-    expect(lookup.status()).toBe(404);
+    const lookup = await request.get(`${PREFIX}/lookup/${ENTRY_NUMBER}?year=${YEAR}`);
+    expect(lookup.status()).toBe(200);
     const body = await lookup.json();
-    expect(body).toEqual({
-      code: "REGISTRATION_NOT_FOUND",
-      message: "대기 중인 등록 내역이 없습니다.",
-    });
+    expect(body.number).toBe(ENTRY_NUMBER);
+    expect(body.position).toBe(1);
+    expect(body).not.toHaveProperty("phone");
+    expect(body).not.toHaveProperty("registeredAt");
   });
 });
