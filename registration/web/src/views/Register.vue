@@ -124,7 +124,7 @@ onMounted(async () => {
               >
             </div>
             <div class="input-col flex-1">
-              <label for="register-phone">전화번호</label>
+              <label for="register-phone">알림 받을 전화번호</label>
               <input
                 id="register-phone"
                 class="kiosk-input mono"
@@ -157,7 +157,7 @@ onMounted(async () => {
             <span>
               <strong>개인정보 수집·이용 동의 (필수)</strong>
               <small>항목: 엔트리 번호·휴대전화번호</small>
-              <small>목적: 등록 대기·순번 조회·사전 순번 안내</small>
+              <small>목적: 등록 대기 사전 순번 문자 알림</small>
               <small>보유: 운영 이력과 함께 별도 삭제 전까지 보관</small>
               <small>미동의 시 등록 대기 신청 불가</small>
             </span>

@@ -242,7 +242,7 @@ function resetForm() {
               />
             </div>
             <div class="input-col flex-1">
-              <label>전화번호</label>
+              <label>알림 받을 전화번호</label>
               <input
                 :value="phone"
                 type="tel"
@@ -280,7 +280,7 @@ function resetForm() {
             </span>
             <span class="agreement-text">
               <strong>개인정보 수집 및 이용에 동의합니다</strong>
-              <small>전화번호는 대기 순번 안내에만 사용되며, 입장 시 삭제됩니다.</small>
+              <small>전화번호는 검차 대기 순번 문자 알림에만 사용되며, 입장 시 삭제됩니다.</small>
             </span>
           </button>
         </div>
@@ -295,8 +295,8 @@ function resetForm() {
         <div v-if="qrDataUrl" class="qr-card">
           <img class="qr-image" :src="qrDataUrl" alt="대기열 조회 QR 코드" />
           <div class="qr-text">
-            <strong>내 순번 조회</strong>
-            <small>QR을 스캔하면 휴대폰에서 실시간 대기 현황을 볼 수 있습니다.</small>
+            <strong>통합 대기 조회</strong>
+            <small>엔트리 번호로 등록·검차 순번과 전체 검차 대기열을 확인할 수 있습니다.</small>
           </div>
         </div>
       </div>

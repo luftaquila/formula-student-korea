@@ -4,8 +4,7 @@ export const services = [
   // Shown to any student — including those without an assigned team; the
   // documents page itself explains "팀이 배정되지 않았습니다" on entry.
   { name: "서류 제출", href: "/documents", icon: "documents", studentOnly: true },
-  { name: "검차 대기열", href: "/queue", icon: "queue" },
-  { name: "등록 대기열", href: "/registration", icon: "registration" },
+  { name: "대기열 조회", href: "/queue", icon: "queue" },
 ];
 
 // Reference links. Internal entries stay in-tab; external ones open a new tab.
