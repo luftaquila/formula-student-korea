@@ -115,8 +115,8 @@ export function createCompetitionApp(options = {}) {
     // One SENS client per process: Queue owns it, Registration borrows it, so the
     // credentials are held once and the Email config endpoint is polled once.
     smsClient: queue.smsClient,
-    // Registration's guard classifies POST /lookup as a credentialed read and
-    // resolves every known mutation from its explicit or stored team year.
+    // Registration's guard lets the retired POST /lookup fall through to 404 and
+    // resolves every supported mutation from its explicit or stored team year.
     mutationGuard: guarded("registration"),
     smsRequest: options.smsRequest,
     smsConfig: options.smsConfig,
@@ -206,6 +206,8 @@ export function createCompetitionApp(options = {}) {
   for (const name of UI_MODULES) {
     app.use(`/${name}/api`, (req, res) => res.status(404).json({ code: "NOT_FOUND" }));
   }
+
+  app.get(["/registration", "/registration/"], (_req, res) => res.redirect("/queue/"));
 
   mountUi(app, "/entry", staticRoots.entry, teams.app);
   for (const name of ["queue", "registration", "inspection", "traffic", "score", "documents"]) {

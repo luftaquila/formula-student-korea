@@ -125,6 +125,8 @@ function addTrafficYears(req, years) {
 
 function addRegistrationYears(req, db, years) {
   const path = normalizedPath(req);
+  // The retired POST lookup is deliberately allowed through the mutation guard
+  // so the module can return 404 instead of inventing a compatibility contract.
   if (path === "/api/lookup") return true;
   if (path === "/api/queue") {
     addStoredYear(

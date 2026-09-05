@@ -10,20 +10,20 @@ import {
 import { ROLE_SORT_ORDER } from "../../shared/constants.js";
 import { ACCESS_CONTROL_DEFINITIONS, PERMISSION_KEYS } from "../../shared/access-control.js";
 
-test("registration navigation has distinct entries for participants and operators", () => {
-  const registration = services.find((item) => item.href === "/registration");
+test("participant navigation has one queue lookup while registration operations stay separate", () => {
+  const queue = services.find((item) => item.href === "/queue");
   const registrationAdmin = operations.find((item) => item.href === "/registration/manage");
 
-  assert.equal(registration?.name, "등록 대기열");
+  assert.equal(queue?.name, "대기열 조회");
+  assert.equal(services.some((item) => item.href === "/registration"), false);
   assert.equal(registrationAdmin?.name, "등록 대기 관리");
-  assert.equal(getIcon(registration?.icon), "🎫");
+  assert.equal(getIcon(queue?.icon), "🔧");
   assert.equal(getIcon(registrationAdmin?.icon), "🎛️");
 
   const menuItems = [...services, ...resources, ...operations, ...administration];
   const otherIcons = menuItems
-    .filter((item) => item !== registration && item !== registrationAdmin)
+    .filter((item) => item !== registrationAdmin)
     .map((item) => getIcon(item.icon));
-  assert.equal(otherIcons.includes(getIcon(registration.icon)), false);
   assert.equal(otherIcons.includes(getIcon(registrationAdmin.icon)), false);
 });
 

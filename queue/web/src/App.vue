@@ -9,7 +9,7 @@ const route = useRoute();
 const isKiosk = computed(() => route.path === "/register" && device.value?.scope === "kiosk.queue.register");
 
 const pageInfo = {
-  "/": { title: "검차 대기열" },
+  "/": { title: "대기열 조회" },
   "/admin": { title: "검차 대기 관리" },
   "/register": { title: "검차 대기열 등록" },
   "/priority": { title: "검차 우선순위 관리" },
@@ -17,7 +17,7 @@ const pageInfo = {
 };
 
 function getPageTitle() {
-  return pageInfo[route.path]?.title || "검차 대기열";
+  return pageInfo[route.path]?.title || "대기열 조회";
 }
 
 watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { immediate: true });

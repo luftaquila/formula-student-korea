@@ -1,8 +1,10 @@
 import { test, expect } from "@playwright/test";
+import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 const INSPECTION_TYPE = "battery";
+const YEAR = currentCompetitionYear();
 
 async function apiRegister(num, type = INSPECTION_TYPE) {
   const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/register/${type}`, {
@@ -159,6 +161,50 @@ test.describe("Queue booth management", () => {
 
     // Verify entry 1 appears in queue
     await expect(page.locator(".entry-num", { hasText: "1" })).toBeVisible({ timeout: 5000 });
+  });
+
+  test("shows queue ranks, prior inspectors, and a category-specific sheet link", async ({ page }) => {
+    let categoryId;
+    await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const category = body.categories.find((item) => item.name === "전기 검차");
+      categoryId = category.id;
+      body.teams[1] ||= { inspectors: {}, results: {} };
+      body.teams[1].inspectors[category.id] = ["김검차", "이검차"];
+      await route.fulfill({ response, json: body });
+    });
+    await page.route("**/competition/api/v1/queue/admin/inspection/electric", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{
+        inspection: "electric",
+        num: 1,
+        phone: "01000000000",
+        timestamp: Date.now(),
+        year: YEAR,
+        is_reinspection: 1,
+        priority: 999,
+        rank: 4,
+        total: 8,
+        group_rank: 2,
+        group_total: 3,
+      }]),
+    }));
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await page.locator(".tab", { hasText: "전기" }).click();
+
+    const row = page.locator(".queue-item").filter({ hasText: "SNU Racing" });
+    await expect(row).toContainText("전체 4위");
+    await expect(row).toContainText("재검");
+    await expect(row).toContainText("2위 / 3팀");
+    await expect(row).toContainText("기존 검차관");
+    await expect(row).toContainText("김검차, 이검차");
+
+    await row.getByRole("button", { name: "검차표" }).click();
+    await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/1\\?category=${categoryId}$`));
   });
 
   test("enter team into booth via admin UI", async ({ page }) => {

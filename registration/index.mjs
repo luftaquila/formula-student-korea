@@ -73,6 +73,7 @@ export function createRegistrationApp(options = {}) {
     options,
     authRoleFn: (req) => {
       if (["/api/health", "/api/status", "/api/lookup", "/api/events"].includes(req.path)) return null;
+      if (/^\/api\/lookup\/[^/]+$/.test(req.path)) return null;
       if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
       if (req.path === "/api/queue" && req.method === "POST") {
         return access.anyOf(access.permission("registration.manage"), access.device("kiosk.registration.register"));
@@ -276,25 +277,22 @@ export function createRegistrationApp(options = {}) {
     }
   });
 
-  app.post("/api/lookup", lookupRateLimit, (req, res) => {
+  app.get("/api/lookup/:num", lookupRateLimit, (req, res) => {
     let year;
     let number;
     try {
-      year = parseCompetitionYear(req.body?.year);
-      number = parsePositiveInteger(req.body?.num, "엔트리 번호");
-      const phone = normalizePhone(req.body?.phone);
-      if (!phone) throw Object.assign(new Error("올바르지 않은 전화번호입니다."), { status: 400, code: "INVALID_PHONE" });
+      year = parseCompetitionYear(req.query.year);
+      number = parsePositiveInteger(req.params.num, "엔트리 번호");
 
       const row = db.prepare(`
-        SELECT q.id, q.team_id, q.registered_at,
+        SELECT q.id, q.team_id,
                t.num, t.univ, t.name
         FROM registration_queue q JOIN competition_team t ON t.id = q.team_id
-        WHERE t.year = ? AND t.num = ? AND q.phone = ?
-          AND q.status = 'waiting'
-      `).get(year, number, phone);
+        WHERE t.year = ? AND t.num = ? AND q.status = 'waiting'
+      `).get(year, number);
       if (!row) {
         logger.warn(req, "registration.lookup", {
-          reason: "not_found", year, number, phone,
+          reason: "not_found", year, number,
         }, `${year}#${number}`);
         return res.status(404).json({ code: "REGISTRATION_NOT_FOUND", message: "대기 중인 등록 내역이 없습니다." });
       }
@@ -311,6 +309,7 @@ export function createRegistrationApp(options = {}) {
       `).get(year, row.id).count;
 
       return res.json({
+        year,
         teamId: row.team_id,
         number: row.num,
         university: row.univ,
@@ -318,7 +317,6 @@ export function createRegistrationApp(options = {}) {
         status: "waiting",
         position,
         waitingTotal,
-        registeredAt: row.registered_at,
       });
     } catch (error) {
       logger.warn(req, "registration.lookup", {
@@ -717,6 +715,8 @@ export function createRegistrationApp(options = {}) {
     broadcast("entries", { year: data.year }, (meta) => meta.year === data.year);
     broadcastChange(data.year);
   }
+
+  app.get("/", (_req, res) => res.redirect("/queue/"));
 
   if (!options.skipSpaFallback) addSpaFallback(app);
 

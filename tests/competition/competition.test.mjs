@@ -947,7 +947,9 @@ describe("Competition modular monolith", () => {
       assert.equal((await get("/documents/", documentsOperator)).status, 302);
       assert.equal((await get("/documents/admin", documentsOperator)).status, 200);
       assert.equal((await get("/queue/")).status, 200);
-      assert.equal((await get("/registration/")).status, 200);
+      const registrationRoot = await get("/registration/");
+      assert.equal(registrationRoot.status, 302);
+      assert.equal(registrationRoot.headers.get("location"), "/queue/");
       assert.equal((await get("/registration/manage", student)).status, 302);
       assert.equal((await get("/registration/manage", official)).status, 302);
       assert.equal((await get("/registration/manage", registrationOperator)).status, 200);

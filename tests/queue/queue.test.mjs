@@ -408,43 +408,21 @@ describe('GET /api/booths/:type', () => {
   });
 });
 
-describe('POST /api/state/:num', () => {
-  // First register an entry so we can test state
-  it('returns queue state for non-registered entry (no phone check needed)', async () => {
-    const res = await client.post('/api/state/1', {
-      body: { phone: '01012345678' },
-    });
+describe('GET /api/state/:num', () => {
+  it('returns an empty current-year state for an entry without waits', async () => {
+    const res = await client.get('/api/state/1');
     assert.equal(res.status, 200);
     const data = await res.json();
-    // Not registered, so queue is undefined
-    assert.equal(data.queue, undefined);
-    assert.equal(data.rank, -1);
-    assert.deepEqual(data.queues, []);
+    assert.deepEqual(data, { year: CURRENT_YEAR, queues: [] });
   });
 
-  it('rejects invalid phone format', async () => {
-    // Register entry 1 to battery first so phone check triggers
-    await client.post('/api/admin/register/battery', {
-      body: { num: 1, phone: '01012345678' },
-      cookie: chiefCookie,
-    });
-    const res = await client.post('/api/state/1', {
-      body: { phone: '010-invalid' },
-    });
-    assert.equal(res.status, 400);
-    // Cancel to clean up
-    await client.post('/api/admin/cancel/battery', {
-      body: { num: 1 },
-      cookie: officialCookie,
-    });
-    // Wait for penalty to expire by removing it directly
-    db.prepare("DELETE FROM cancel_penalty WHERE num = 1").run();
+  it('does not retain the retired phone-credential POST contract', async () => {
+    const res = await client.post('/api/state/1', { body: { phone: '01012345678' } });
+    assert.equal(res.status, 404);
   });
 
   it('rejects non-existent entry', async () => {
-    const res = await client.post('/api/state/999', {
-      body: { phone: '01012345678' },
-    });
+    const res = await client.get('/api/state/999');
     assert.equal(res.status, 400);
   });
 });
@@ -568,6 +546,8 @@ describe('PATCH /api/admin/inspection/:type', () => {
     const data = await active.json();
     assert.equal(data.length, 7);
     assert.ok(!data.some(d => d.type === 'rain'));
+    const publicQueues = await (await client.get('/api/public/queues')).json();
+    assert.equal(publicQueues.queues.some((queue) => queue.type === 'rain'), false);
   });
 
   it('toggles active state back to true', async () => {
@@ -594,6 +574,8 @@ describe('PATCH /api/admin/inspection/:type/visibility', () => {
     const data = await all.json();
     const rain = data.find(d => d.type === 'rain');
     assert.equal(rain.hidden_from_register, 1);
+    const publicQueues = await (await client.get('/api/public/queues')).json();
+    assert.equal(publicQueues.queues.some((queue) => queue.type === 'rain'), false);
   });
 
   it('toggles hidden_from_register back to false', async () => {
@@ -1495,9 +1477,10 @@ describe('Queue sorting', () => {
   });
 
   it('sorts queue: first inspection > reinspection, higher priority > lower, FIFO', async () => {
-    // Entry 2 has battery history (reinspection)
-    // Entry 1 has no battery history (first inspection, was cleared)
-    // Entry 3 has no battery history (first inspection)
+    db.prepare(`
+      INSERT OR IGNORE INTO inspection_history (num, inspection, timestamp, year)
+      VALUES (2, 'battery', 500, ?)
+    `).run(CURRENT_YEAR);
 
     // Register entry 2 first (reinspection because of history)
     await client.post('/api/admin/register/battery', {
@@ -1547,6 +1530,47 @@ describe('Queue sorting', () => {
     assert.equal(data[0].num, 3, 'first should be entry 3 (first inspection, priority 1)');
     assert.equal(data[1].num, 1, 'second should be entry 1 (first inspection, priority 2)');
     assert.equal(data[2].num, 2, 'third should be entry 2 (reinspection)');
+    assert.deepEqual(data.map(({ rank, total, group_rank, group_total }) => ({ rank, total, group_rank, group_total })), [
+      { rank: 1, total: 3, group_rank: 1, group_total: 2 },
+      { rank: 2, total: 3, group_rank: 2, group_total: 2 },
+      { rank: 3, total: 3, group_rank: 1, group_total: 1 },
+    ]);
+
+    const publicResponse = await client.get('/api/public/queues');
+    assert.equal(publicResponse.status, 200);
+    const publicData = await publicResponse.json();
+    assert.equal(publicData.year, CURRENT_YEAR);
+    const battery = publicData.queues.find((item) => item.type === 'battery');
+    assert.deepEqual({
+      total: battery.total,
+      firstInspectionTotal: battery.firstInspectionTotal,
+      reinspectionTotal: battery.reinspectionTotal,
+    }, { total: 3, firstInspectionTotal: 2, reinspectionTotal: 1 });
+    assert.deepEqual(battery.entries.map((item) => ({
+      number: item.number,
+      university: item.university,
+      name: item.name,
+      isReinspection: item.isReinspection,
+      rank: item.rank,
+      groupRank: item.groupRank,
+      groupTotal: item.groupTotal,
+    })), [
+      { number: 3, university: '연세대', name: '팀C', isReinspection: false, rank: 1, groupRank: 1, groupTotal: 2 },
+      { number: 1, university: '서울대', name: '팀A', isReinspection: false, rank: 2, groupRank: 2, groupTotal: 2 },
+      { number: 2, university: '카이스트', name: '팀B', isReinspection: true, rank: 3, groupRank: 1, groupTotal: 1 },
+    ]);
+    assert.equal(battery.entries.some((item) => Object.hasOwn(item, 'phone')), false);
+
+    const ownState = await (await client.get('/api/state/2')).json();
+    assert.deepEqual(ownState.queues.find((item) => item.type === 'battery'), {
+      type: 'battery',
+      name: INSPECTIONS.battery,
+      isReinspection: true,
+      rank: 3,
+      total: 3,
+      groupRank: 1,
+      groupTotal: 1,
+    });
   });
 });
 
@@ -1795,8 +1819,8 @@ describe('Validation edge cases', () => {
   });
 });
 
-// ─── POST /api/state with registered entry ──────────────────────────────
-describe('POST /api/state/:num (with registered entry)', () => {
+// ─── GET /api/state with registered entry ───────────────────────────────
+describe('GET /api/state/:num (with registered entry)', () => {
   before(async () => {
     // Ensure entry 1 is registered in battery (may have been cleared by earlier tests)
     const queue = await client.get('/api/admin/inspection/battery', { cookie: officialCookie });
@@ -1817,30 +1841,24 @@ describe('POST /api/state/:num (with registered entry)', () => {
     }
   });
 
-  it('returns queue rank when phone matches', async () => {
-    const res = await client.post('/api/state/1', {
-      body: { phone: '01012345678' },
-    });
+  it('returns overall and cohort ranks using only the entry number', async () => {
+    const res = await client.get('/api/state/1');
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.ok(data.queue);
-    assert.ok(data.rank);
+    assert.equal(data.year, CURRENT_YEAR);
     assert.equal(data.queues.length, 1);
-    assert.deepEqual(data.queues[0], {
-      type: 'battery',
-      name: INSPECTIONS.battery,
-      rank: data.rank,
-      total: data.queues[0].total,
-    });
-    assert.ok(data.queues[0].total >= 1);
+    assert.equal(data.queues[0].type, 'battery');
+    assert.equal(data.queues[0].name, INSPECTIONS.battery);
+    assert.equal(typeof data.queues[0].isReinspection, 'boolean');
+    for (const field of ['rank', 'total', 'groupRank', 'groupTotal']) {
+      assert.ok(Number.isInteger(data.queues[0][field]), `${field} should be an integer`);
+    }
   });
 
   it('keeps the stable type and total when its inspection display is inactive', async () => {
     db.prepare("UPDATE inspection SET active = FALSE WHERE type = 'battery'").run();
     try {
-      const res = await client.post('/api/state/1', {
-        body: { phone: '01012345678' },
-      });
+      const res = await client.get('/api/state/1');
       assert.equal(res.status, 200);
       const data = await res.json();
       assert.equal(data.queues[0].type, 'battery');
@@ -1851,14 +1869,7 @@ describe('POST /api/state/:num (with registered entry)', () => {
     }
   });
 
-  it('rejects mismatched phone', async () => {
-    const res = await client.post('/api/state/1', {
-      body: { phone: '01099999999' },
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('returns comma-separated queue names and ranks for multi-registered entry', async () => {
+  it('returns every inspection wait independently for a multi-registered entry', async () => {
     // Clean up entry 3 state
     db.prepare("DELETE FROM current_inspection WHERE num = 3").run();
     db.prepare("DELETE FROM cancel_penalty WHERE num = 3").run();
@@ -1873,17 +1884,15 @@ describe('POST /api/state/:num (with registered entry)', () => {
       body: { num: 3, phone: '01033333333' },
     });
 
-    const res = await client.post('/api/state/3', {
-      body: { phone: '01033333333' },
-    });
+    const res = await client.get('/api/state/3');
     assert.equal(res.status, 200);
     const data = await res.json();
-    // Should have comma-separated queue and rank
-    assert.ok(data.queue.includes(','), 'queue should be comma-separated for multiple inspections');
-    assert.ok(String(data.rank).includes(','), 'rank should be comma-separated');
     assert.deepEqual(data.queues.map((item) => item.type), ['battery', 'report']);
     assert.deepEqual(data.queues.map((item) => item.name), [INSPECTIONS.battery, INSPECTIONS.report]);
-    assert.ok(data.queues.every((item) => Number.isInteger(item.rank) && Number.isInteger(item.total)));
+    assert.ok(data.queues.every((item) => ['rank', 'total', 'groupRank', 'groupTotal']
+      .every((field) => Number.isInteger(item[field]))));
+    assert.equal(Object.hasOwn(data, 'queue'), false);
+    assert.equal(Object.hasOwn(data, 'rank'), false);
   });
 });
 
@@ -1937,7 +1946,7 @@ describe('Public endpoint rate limiting', () => {
   it('returns 429 after 30 requests to /api/state/:num', async () => {
     let lastStatus;
     for (let i = 0; i < 35; i++) {
-      const res = await client.post('/api/state/1', { body: { phone: '01011111111' } });
+      const res = await client.get('/api/state/1');
       lastStatus = res.status;
       if (lastStatus === 429) break;
     }

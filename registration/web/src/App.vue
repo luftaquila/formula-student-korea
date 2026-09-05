@@ -9,13 +9,12 @@ const route = useRoute();
 const isKiosk = computed(() => route.path === "/register" && device.value?.scope === "kiosk.registration.register");
 
 const pageInfo = {
-  "/": { title: "등록 대기열" },
   "/manage": { title: "등록 대기 관리" },
   "/register": { title: "등록 대기열 등록" },
 };
 
 function getPageTitle() {
-  return pageInfo[route.path]?.title || "등록 대기열";
+  return pageInfo[route.path]?.title || "등록 대기 관리";
 }
 
 watch(
