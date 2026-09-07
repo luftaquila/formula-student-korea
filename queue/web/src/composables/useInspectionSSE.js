@@ -16,6 +16,6 @@ on("inspector", (event) => {
 });
 
 export function useInspectionSSE(enabled = true) {
-  if (typeof enabled === "object" ? enabled.value : enabled) useConnection();
+  useConnection(enabled);
   return { lastInspectorUpdate, reconnected };
 }
