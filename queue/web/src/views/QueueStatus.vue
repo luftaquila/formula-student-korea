@@ -232,19 +232,30 @@ onUnmounted(() => refreshScheduler.stop());
           <p v-if="lookupError" class="result-message">{{ lookupError }}</p>
           <div v-if="hasQueried && hasAnyWait" class="result-display">
             <div v-if="registrationWait" class="result-row result-row-detailed">
-              <span class="result-name">등록 대기</span>
-              <strong class="result-rank">{{ registrationWait.position }}</strong>
-              <span class="result-suffix">번</span>
-              <span class="result-total">/ {{ registrationWait.waitingTotal }}팀</span>
+              <span class="result-name">등록</span>
+              <span class="rank-stack">
+                <span class="rank-line">
+                  <strong class="result-rank">{{ registrationWait.position }}</strong>
+                  <span class="result-suffix">번</span>
+                  <span class="result-total">/ {{ registrationWait.waitingTotal }}팀</span>
+                </span>
+              </span>
             </div>
             <div v-for="queue in queueEntries" :key="queue.type" class="result-row result-row-detailed">
               <span class="result-name">{{ queue.name }}</span>
-              <span class="overall-rank-label">전체</span>
-              <strong class="result-rank">{{ queue.rank }}</strong>
-              <span class="result-suffix">번</span>
-              <span class="result-total">/ {{ queue.total }}팀</span>
-              <span class="cohort-rank">
-                {{ queue.isReinspection ? "재검" : "초검" }} {{ queue.groupRank }}위 / {{ queue.groupTotal }}팀
+              <span class="rank-stack">
+                <span class="rank-line">
+                  <span class="overall-rank-label">전체</span>
+                  <strong class="result-rank">{{ queue.rank }}</strong>
+                  <span class="result-suffix">번</span>
+                  <span class="result-total">/ {{ queue.total }}팀</span>
+                </span>
+                <span class="cohort-rank rank-line">
+                  <span class="overall-rank-label">{{ queue.isReinspection ? "재검" : "초검" }}</span>
+                  <strong class="result-rank">{{ queue.groupRank }}</strong>
+                  <span class="result-suffix">번</span>
+                  <span class="result-total">/ {{ queue.groupTotal }}팀</span>
+                </span>
               </span>
             </div>
           </div>
@@ -311,31 +322,26 @@ onUnmounted(() => refreshScheduler.stop());
                 <span>대기 목록</span>
                 <span class="public-queue-count">{{ publicQueueFor(item.type).total }}팀</span>
               </summary>
-              <div v-if="publicQueueFor(item.type).entries.length" class="public-queue-table-wrap">
-                <table class="public-queue-table">
-                  <thead>
-                    <tr>
-                      <th scope="col">전체 순위</th>
-                      <th scope="col">초검/재검 순위</th>
-                      <th scope="col">엔트리</th>
-                      <th scope="col">학교 / 팀</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="queuedTeam in publicQueueFor(item.type).entries" :key="queuedTeam.teamId">
-                      <td class="mono">{{ queuedTeam.rank }}위</td>
-                      <td>
-                        <span class="badge" :class="queuedTeam.isReinspection ? 'badge-warning' : 'badge-success'">
-                          {{ queuedTeam.isReinspection ? "재검" : "초검" }}
-                        </span>
-                        <span class="cohort-cell mono">{{ queuedTeam.groupRank }}위 / {{ queuedTeam.groupTotal }}팀</span>
-                      </td>
-                      <td class="mono">#{{ queuedTeam.number }}</td>
-                      <td>{{ queuedTeam.university }} / {{ queuedTeam.name }}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+              <ol v-if="publicQueueFor(item.type).entries.length" class="public-queue-list">
+                <li
+                  v-for="queuedTeam in publicQueueFor(item.type).entries"
+                  :key="queuedTeam.teamId"
+                  class="public-queue-row"
+                >
+                  <div class="public-team-line" :title="`${queuedTeam.university} / ${queuedTeam.name}`">
+                    <strong class="public-entry-number mono">#{{ queuedTeam.number }}</strong>
+                    <span class="public-university">{{ queuedTeam.university }}</span>
+                    <span class="public-team-name">{{ queuedTeam.name }}</span>
+                  </div>
+                  <div class="public-ranks">
+                    <span>전체 <strong>{{ queuedTeam.rank }}번</strong></span>
+                    <span aria-hidden="true">·</span>
+                    <span :class="queuedTeam.isReinspection ? 'rank-reinspection' : 'rank-initial'">
+                      {{ queuedTeam.isReinspection ? "재검" : "초검" }} <strong>{{ queuedTeam.groupRank }}번</strong>
+                    </span>
+                  </div>
+                </li>
+              </ol>
               <p v-else class="public-queue-empty">현재 대기 중인 팀이 없습니다.</p>
             </details>
           </section>
@@ -343,11 +349,6 @@ onUnmounted(() => refreshScheduler.stop());
       </div>
     </section>
 
-    <div class="tips">
-      <p>엔트리 번호만 입력하면 등록 및 검차 대기 순번을 한 번에 확인할 수 있습니다.</p>
-      <p>전화번호는 등록 대기·검차 대기 신청 시 문자 알림을 받을 번호로만 수집합니다.</p>
-      <p>내 순번과 공개 검차 대기열은 대기열 변동 시 자동으로 업데이트됩니다.</p>
-    </div>
   </div>
 </template>
 
@@ -372,34 +373,41 @@ onUnmounted(() => refreshScheduler.stop());
 }
 
 .result-row-detailed {
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: min(100%, 24rem);
+  align-items: center;
+  gap: 0.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.4;
 }
 
-.cohort-rank {
-  flex-basis: 100%;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-  text-align: center;
+.result-row-detailed .result-name,
+.result-row-detailed .result-rank,
+.result-row-detailed .result-suffix,
+.result-row-detailed .result-total,
+.result-row-detailed .overall-rank-label,
+.result-row-detailed .cohort-rank {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.rank-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.rank-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.25rem;
+  white-space: nowrap;
 }
 
 .overall-rank-label {
   color: var(--text-secondary);
-  font-size: 0.8125rem;
   font-weight: 600;
-}
-
-.tips {
-  padding: 1rem 1.25rem;
-  background: var(--bg-secondary);
-  border-left: 4px solid var(--accent-primary);
-  border-radius: 12px;
-}
-
-.tips p {
-  margin: 0.25rem 0;
-  color: var(--text-secondary);
-  font-size: 0.875rem;
 }
 
 .booth-sections {
@@ -519,33 +527,69 @@ onUnmounted(() => refreshScheduler.stop());
   font-size: 0.8125rem;
 }
 
-.public-queue-table-wrap {
-  overflow-x: auto;
+.public-queue-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
   border-top: 1px solid var(--border-color);
 }
 
-.public-queue-table {
-  width: 100%;
-  border-collapse: collapse;
+.public-queue-row {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.125rem;
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
   font-size: 0.8125rem;
-}
-
-.public-queue-table th,
-.public-queue-table td {
-  padding: 0.625rem 0.75rem;
-  text-align: left;
-  white-space: nowrap;
   border-bottom: 1px solid var(--border-color);
 }
 
-.public-queue-table th {
-  color: var(--text-secondary);
-  background: var(--bg-secondary);
-  font-weight: 600;
+.public-queue-row:last-child { border-bottom: 0; }
+
+.public-team-line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  min-width: 0;
+  white-space: nowrap;
 }
 
-.public-queue-table tbody tr:last-child td { border-bottom: 0; }
-.cohort-cell { margin-left: 0.375rem; }
+.public-entry-number {
+  flex-shrink: 0;
+}
+.public-team-name,
+.public-university {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.public-team-name {
+  flex: 1;
+  font-weight: 600;
+}
+.public-university {
+  flex: 0 1 auto;
+  max-width: 50%;
+}
+
+.public-ranks {
+  display: flex;
+  align-items: baseline;
+  gap: 0.375rem;
+  color: var(--text-secondary);
+  font-size: inherit;
+  white-space: nowrap;
+}
+
+.public-ranks strong { color: var(--text-primary); }
+.public-ranks .rank-initial { color: var(--accent-success); }
+.public-ranks .rank-reinspection { color: var(--accent-warning, #f59e0b); }
+.public-ranks .rank-initial strong,
+.public-ranks .rank-reinspection strong { color: inherit; }
+
 .public-queue-empty {
   padding: 1rem;
   color: var(--text-secondary);
@@ -555,5 +599,8 @@ onUnmounted(() => refreshScheduler.stop());
 
 @media (max-width: 640px) {
   .booth-grid { grid-template-columns: repeat(2, 1fr); }
+  .public-queue-row {
+    padding: 0.4375rem 0.625rem;
+  }
 }
 </style>

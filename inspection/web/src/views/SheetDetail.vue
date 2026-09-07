@@ -1321,26 +1321,28 @@ watch(reconnected, async () => {
                                   :key="rule.rule_key"
                                   class="rule-help-clause"
                                 >
-                                  <strong>{{ ruleDocumentLabel(rule.document) }} {{ rule.citation }}</strong>
+                                  <div class="rule-help-clause-header">
+                                    <strong>{{ ruleDocumentLabel(rule.document) }} {{ rule.citation }}</strong>
+                                    <a
+                                      class="rule-source-link"
+                                      :href="sheetRuleLink(item.id, rule.referenceIndex)"
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                    >
+                                      원문
+                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                                        <path d="M14 3h7v7" />
+                                        <path d="M10 14 21 3" />
+                                        <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
+                                      </svg>
+                                    </a>
+                                  </div>
                                   <div
                                     class="rule-source-content"
                                     role="document"
                                     :aria-label="`${rule.citation} 규정 원문`"
                                     v-html="rule.contentHtml"
                                   ></div>
-                                  <a
-                                    class="rule-source-link"
-                                    :href="sheetRuleLink(item.id, rule.referenceIndex)"
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  >
-                                    원문
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-                                      <path d="M14 3h7v7" />
-                                      <path d="M10 14 21 3" />
-                                      <path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" />
-                                    </svg>
-                                  </a>
                                 </article>
                               </template>
                             </div>
@@ -1969,7 +1971,15 @@ watch(reconnected, async () => {
   border-top: 1px solid var(--border-color);
 }
 
-.rule-help-clause strong {
+.rule-help-clause-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 0.75rem;
+}
+
+.rule-help-clause-header strong {
   color: var(--text-primary);
   font-size: 0.8125rem;
 }
@@ -2034,7 +2044,7 @@ watch(reconnected, async () => {
 .rule-source-link {
   display: inline-flex;
   align-items: center;
-  align-self: flex-end;
+  flex-shrink: 0;
   gap: 0.25rem;
   color: var(--accent-primary);
   font-size: 0.75rem;

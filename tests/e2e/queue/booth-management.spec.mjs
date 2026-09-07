@@ -163,17 +163,20 @@ test.describe("Queue booth management", () => {
     await expect(page.locator(".entry-num", { hasText: "1" })).toBeVisible({ timeout: 5000 });
   });
 
-  test("shows queue ranks, prior inspectors, and a category-specific sheet link", async ({ page }) => {
-    let categoryId;
-    await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      const category = body.categories.find((item) => item.name === "전기 검차");
-      categoryId = category.id;
-      body.teams[1] ||= { inspectors: {}, results: {} };
-      body.teams[1].inspectors[category.id] = ["김검차", "이검차"];
-      await route.fulfill({ response, json: body });
-    });
+  test("shows ranks before linked inspector names and vertically centers cancel", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
+    const categoryId = 9001;
+    await page.route("**/competition/api/v1/inspection/sheet/summary?*", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        year: YEAR,
+        categories: [{ id: categoryId, name: "전기 검차", excluded_types: [] }],
+        teams: {
+          1: { inspectors: { [categoryId]: ["김검차", "이검차"] }, results: {} },
+        },
+      }),
+    }));
     await page.route("**/competition/api/v1/queue/admin/inspection/electric", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -194,16 +197,47 @@ test.describe("Queue booth management", () => {
 
     await page.goto("/queue/admin");
     await waitForPageReady(page);
+    const electricQueueLoaded = page.waitForResponse((response) =>
+      response.url().endsWith("/competition/api/v1/queue/admin/inspection/electric")
+      && response.status() === 200,
+    );
     await page.locator(".tab", { hasText: "전기" }).click();
+    await electricQueueLoaded;
 
     const row = page.locator(".queue-item").filter({ hasText: "SNU Racing" });
-    await expect(row).toContainText("전체 4위");
-    await expect(row).toContainText("재검");
-    await expect(row).toContainText("2위 / 3팀");
-    await expect(row).toContainText("기존 검차관");
+    await expect(row).toContainText("전체 4번");
+    await expect(row).toContainText("재검 2번");
+    await expect(row).not.toContainText("기존 검차관");
     await expect(row).toContainText("김검차, 이검차");
+    await expect(row.getByRole("button", { name: "검차표", exact: true })).toHaveCount(0);
+    const layout = await row.evaluate((element) => {
+      const rowRect = element.getBoundingClientRect();
+      const metaRect = element.querySelector(".queue-item-meta").getBoundingClientRect();
+      const tagsRect = element.querySelector(".queue-item-tags").getBoundingClientRect();
+      const inspectorsRect = element.querySelector(".previous-inspector-link").getBoundingClientRect();
+      const cancelRect = element.querySelector(".queue-cancel-button").getBoundingClientRect();
+      return {
+        detailColor: getComputedStyle(element.querySelector(".entry-detail")).color,
+        phoneColor: getComputedStyle(element.querySelector(".entry-phone")).color,
+        timeColor: getComputedStyle(element.querySelector(".entry-time")).color,
+        metaTop: metaRect.top,
+        tagsTop: tagsRect.top,
+        tagsLeft: tagsRect.left,
+        inspectorsLeft: inspectorsRect.left,
+        rowCenter: rowRect.top + rowRect.height / 2,
+        cancelCenter: cancelRect.top + cancelRect.height / 2,
+      };
+    });
+    expect(layout.tagsTop).toBeGreaterThan(layout.metaTop);
+    expect(layout.inspectorsLeft).toBeGreaterThan(layout.tagsLeft);
+    expect(Math.abs(layout.cancelCenter - layout.rowCenter)).toBeLessThanOrEqual(1);
+    expect(layout.phoneColor).toBe(layout.detailColor);
+    expect(layout.timeColor).toBe(layout.detailColor);
+    expect(await page.evaluate(() =>
+      document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+    )).toBe(true);
 
-    await row.getByRole("button", { name: "검차표" }).click();
+    await row.getByRole("button", { name: "김검차, 이검차" }).click();
     await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/1\\?category=${categoryId}$`));
   });
 
@@ -337,7 +371,7 @@ test.describe("Queue booth management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("button", { name: "검차 등록" })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "검차 등록", exact: true })).not.toBeVisible();
     await expect(page.getByRole("button", { name: "우선순위" })).not.toBeVisible();
     await expect(page.getByRole("button", { name: "통계" })).toBeVisible();
     await expect(page.getByRole("button", { name: "페널티", exact: true })).toBeVisible();
@@ -349,8 +383,9 @@ test.describe("Queue booth management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("button", { name: "검차 등록" })).toBeVisible();
-    await page.getByRole("button", { name: "검차 등록" }).click();
+    const registerButton = page.getByRole("button", { name: "검차 등록", exact: true });
+    await expect(registerButton).toBeVisible();
+    await registerButton.click();
     await expect(page).toHaveURL(/\/queue\/register/);
     await expect(page.getByText("검차 종류 선택")).toBeVisible();
     await context.close();

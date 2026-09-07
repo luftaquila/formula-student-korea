@@ -678,7 +678,7 @@ function goToInspection(num) {
               <span class="booth-section-title">대기열</span>
             </div>
             <div v-if="currentQueue.length > 0" class="queue-list">
-              <div v-for="(item, index) in currentQueue" :key="item.num" class="queue-item">
+              <div v-for="item in currentQueue" :key="item.num" class="queue-item">
                 <div class="queue-item-content">
                   <div class="queue-item-header">
                     <div class="queue-item-left">
@@ -689,40 +689,38 @@ function goToInspection(num) {
                   <div class="queue-item-meta">
                     <a :href="`tel:${item.phone}`" class="entry-phone">{{ displayPhone(item.phone) }}</a>
                     <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
+                  </div>
+                  <div class="queue-item-rank-row">
                     <div class="queue-item-tags">
-                      <span class="badge badge-primary">전체 {{ item.rank }}위</span>
-                      <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
-                      <span v-else class="badge badge-success">초검</span>
-                      <span class="badge badge-muted">{{ item.group_rank }}위 / {{ item.group_total }}팀</span>
-                      <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
+                      <span class="badge badge-primary">전체 {{ item.rank }}번</span>
+                      <span class="badge" :class="item.is_reinspection ? 'badge-warning' : 'badge-success'">
+                        {{ item.is_reinspection ? "재검" : "초검" }} {{ item.group_rank }}번
+                      </span>
+                      <span v-if="item.priority < 999" class="badge badge-primary">우선 {{ item.priority }}</span>
                     </div>
-                  </div>
-                  <div
-                    v-if="item.is_reinspection && inspectionCategoryFor(item.num)"
-                    class="previous-inspectors"
-                  >
-                    <span class="previous-inspectors-label">기존 검차관</span>
-                    <span v-if="previousInspectorsFor(item).length">{{ previousInspectorsFor(item).join(", ") }}</span>
-                    <span v-else>기존 검차관 정보 없음</span>
+                    <button
+                      v-if="item.is_reinspection && inspectionCategoryFor(item.num) && previousInspectorsFor(item).length"
+                      class="previous-inspector-link"
+                      type="button"
+                      title="검차표 열기"
+                      @click="goToInspection(item.num)"
+                    >
+                      {{ previousInspectorsFor(item).join(", ") }}
+                    </button>
                   </div>
                 </div>
-                <div class="action-buttons">
-                  <button
-                    v-if="inspectionCategoryFor(item.num)"
-                    class="btn btn-primary btn-sm"
-                    type="button"
-                    title="인스펙션 시트 열기"
-                    @click="goToInspection(item.num)"
-                  >
-                    검차표
-                  </button>
-                  <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
-                </div>
+                <button
+                  class="btn btn-danger btn-icon btn-sm queue-cancel-button"
+                  type="button"
+                  :aria-label="`${item.num}번 대기 취소`"
+                  title="취소"
+                  @click="cancelEntry(item.num)"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
               </div>
             </div>
             <div v-else class="empty-state">대기중인 엔트리가 없습니다.</div>
@@ -1153,10 +1151,11 @@ function goToInspection(num) {
 }
 
 .queue-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1rem;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -1165,7 +1164,6 @@ function goToInspection(num) {
 }
 
 .queue-item-content {
-  flex: 1;
   min-width: 0;
 }
 
@@ -1173,13 +1171,14 @@ function goToInspection(num) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
 }
 
 .queue-item-left {
   display: flex;
   align-items: center;
+  flex: 1;
   gap: 0.5rem;
   min-width: 0;
 }
@@ -1189,28 +1188,42 @@ function goToInspection(num) {
 .queue-item-meta {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.25rem 0.625rem;
+}
+
+.queue-item-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin-top: 0.25rem;
 }
 
 .queue-item-tags {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
-}
-
-.previous-inspectors {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-  color: var(--text-secondary);
-  font-size: 0.8125rem;
-}
-
-.previous-inspectors-label {
   flex-shrink: 0;
-  color: var(--text-tertiary);
-  font-weight: 600;
+  gap: 0.25rem;
 }
+
+.previous-inspector-link {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: var(--accent-primary);
+  background: none;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.previous-inspector-link:hover { text-decoration: underline; }
 
 .entry-num {
   font-size: 1.125rem;
@@ -1227,7 +1240,7 @@ function goToInspection(num) {
 
 .entry-phone {
   font-size: 0.8125rem;
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
   text-decoration: none;
 }
@@ -1239,7 +1252,7 @@ function goToInspection(num) {
 
 .entry-time {
   font-size: 0.8125rem;
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
 }
 
@@ -1278,12 +1291,6 @@ function goToInspection(num) {
 
 .setting-section {
   margin-top: 0.5rem;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 0.375rem;
-  flex-shrink: 0;
 }
 
 .setting-input {
@@ -1659,11 +1666,7 @@ function goToInspection(num) {
   }
 
   .queue-item {
-    padding: 0.75rem;
-  }
-
-  .queue-item-header {
-    flex-wrap: wrap;
+    padding: 0.5rem 0.625rem;
   }
 
   .queue-item-left {
@@ -1679,20 +1682,22 @@ function goToInspection(num) {
   }
 
   .queue-item-meta {
-    flex-wrap: wrap;
-    gap: 0.5rem 0.75rem;
+    gap: 0.25rem 0.5rem;
   }
 
-  .queue-item-tags {
-    flex-basis: 100%;
+  .queue-item-tags .badge {
+    padding: 0.1875rem 0.375rem;
+    font-size: 0.6875rem;
   }
 
-  .previous-inspectors {
-    flex-direction: column;
-    gap: 0.125rem;
+  .queue-cancel-button {
+    width: 30px;
+    height: 30px;
+    padding: 0;
   }
 
-  .entry-phone {
+  .entry-phone,
+  .entry-time {
     font-size: 0.75rem;
   }
 }

@@ -91,7 +91,7 @@ test.describe("Registration queue", () => {
         response.url().includes(`${PREFIX}/lookup/${ENTRY_NUMBER}`) && response.request().method() === "GET");
       await publicPage.getByRole("button", { name: "조회", exact: true }).click();
       expect((await lookedUp).status()).toBe(200);
-      const publicRegistrationRow = publicPage.locator(".result-row-detailed").filter({ hasText: "등록 대기" });
+      const publicRegistrationRow = publicPage.locator(".result-row-detailed").filter({ hasText: "등록" });
       await expect(publicRegistrationRow.locator(".result-rank")).toHaveText("1");
       await expect(publicRegistrationRow.locator(".result-suffix")).toHaveText("번");
       await expect(publicPage.locator(".result-card .result-total")).toContainText("1팀");

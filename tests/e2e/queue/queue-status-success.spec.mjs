@@ -41,15 +41,20 @@ test.describe("Unified public queue lookup", () => {
       await expect(page.locator(".team-badge").first()).toContainText("E2E Queue Status");
       await page.getByRole("button", { name: "조회" }).click();
 
-      const registrationRow = page.locator(".result-row-detailed").filter({ hasText: "등록 대기" });
+      const registrationRow = page.locator(".result-row-detailed").filter({ hasText: "등록" });
       await expect(registrationRow.locator(".result-rank")).toHaveText("4");
       await expect(registrationRow.locator(".result-suffix")).toHaveText("번");
       await expect(registrationRow).toContainText("7팀");
 
       const inspectionRow = page.locator(".result-row-detailed").filter({ hasText: "틸팅" });
-      await expect(inspectionRow.locator(".result-rank")).toHaveText(/\d+/);
-      await expect(inspectionRow.locator(".result-total")).toContainText(/^\/ \d+팀$/);
-      await expect(inspectionRow.locator(".cohort-rank")).toContainText(/(초검|재검) \d+위 \/ \d+팀/);
+      const rankLines = inspectionRow.locator(".rank-line");
+      await expect(rankLines).toHaveCount(2);
+      await expect(rankLines.nth(0)).toContainText(/전체\s*\d+번\s*\/\s*\d+팀/);
+      await expect(rankLines.nth(1)).toContainText(/(초검|재검)\s*\d+번\s*\/\s*\d+팀/);
+      const rankFontSizes = await inspectionRow.locator(
+        ".result-name, .overall-rank-label, .result-rank, .result-suffix, .result-total",
+      ).evaluateAll((elements) => elements.map((element) => getComputedStyle(element).fontSize));
+      expect(new Set(rankFontSizes).size).toBe(1);
     } finally {
       await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },
@@ -59,6 +64,7 @@ test.describe("Unified public queue lookup", () => {
   });
 
   test("reveals the public team queue in the existing booth status section", async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 812 });
     const registered = await page.request.post(`/competition/api/v1/queue/admin/register/${TYPE}`, {
       data: { num: ENTRY_NUM, phone: PHONE },
     });
@@ -71,10 +77,30 @@ test.describe("Unified public queue lookup", () => {
       const section = page.locator(".booth-type-section").filter({ hasText: "틸팅" });
       const disclosure = section.locator(".public-queue-disclosure");
       await disclosure.locator("summary").click();
-      const teamRow = disclosure.locator("tbody tr").filter({ hasText: `#${ENTRY_NUM}` });
-      await expect(teamRow).toContainText("E2E Queue Status / Queue Status");
-      await expect(teamRow).toContainText(/\d+위/);
-      await expect(teamRow).toContainText(/초검|재검/);
+      const teamRow = disclosure.locator("li").filter({ hasText: `#${ENTRY_NUM}` });
+      const identityLine = teamRow.locator(".public-team-line");
+      await expect(identityLine).toContainText(`#${ENTRY_NUM}`);
+      await expect(identityLine).toContainText("E2E Queue Status");
+      await expect(identityLine).toContainText("Queue Status");
+      const rankLine = teamRow.locator(".public-ranks");
+      await expect(rankLine).toContainText(/전체 \d+번/);
+      await expect(rankLine).toContainText(/(초검|재검) \d+번/);
+      const visualStyles = await teamRow.evaluate((row) => {
+        const university = row.querySelector(".public-university");
+        const teamName = row.querySelector(".public-team-name");
+        const ranks = row.querySelector(".public-ranks");
+        return {
+          universityColor: getComputedStyle(university).color,
+          teamNameColor: getComputedStyle(teamName).color,
+          identityFontSize: getComputedStyle(teamName).fontSize,
+          rankFontSize: getComputedStyle(ranks).fontSize,
+        };
+      });
+      expect(visualStyles.universityColor).toBe(visualStyles.teamNameColor);
+      expect(visualStyles.rankFontSize).toBe(visualStyles.identityFontSize);
+      expect(await page.evaluate(() =>
+        document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+      )).toBe(true);
     } finally {
       await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },
