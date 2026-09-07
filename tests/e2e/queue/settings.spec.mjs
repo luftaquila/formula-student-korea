@@ -138,7 +138,7 @@ test.describe("Queue settings management", () => {
     await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
     // Find the inspection setting cards on the settings page.
     const inspectionGroups = page.locator(".inspection-setting-group");
@@ -174,7 +174,7 @@ test.describe("Queue settings management", () => {
     await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
     // Find the first booth count input
     const boothInput = page.locator(".booth-setting input[type='number']").first();
@@ -196,7 +196,7 @@ test.describe("Queue settings management", () => {
     await page.reload();
     await settingsLoaded;
     await waitForPageReady(page);
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
     const updatedInput = page.locator(".booth-setting input[type='number']").first();
     await expect(updatedInput).toHaveValue(newValue);
@@ -292,7 +292,7 @@ test.describe("Queue settings management", () => {
     await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
     // Each inspection setting group should have a booth count input
     const boothInputs = page.locator(".booth-setting input[type='number']");
