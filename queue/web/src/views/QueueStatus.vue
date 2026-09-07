@@ -13,7 +13,7 @@ import { useRegistrationSSE } from "../composables/useRegistrationSSE";
 import { useSSE } from "../composables/useSSE";
 import { createCoalescedRefresh } from "../coalesced-refresh.js";
 import { createLookupRefreshScheduler } from "../lookup-refresh.js";
-import { isLookupEntryAvailable, isTerminalLookupError } from "../lookup-state.js";
+import { createLookupLoader, isLookupEntryAvailable } from "../lookup-state.js";
 
 const year = currentCompetitionYear();
 const { error } = useNotification();
@@ -44,6 +44,10 @@ const hasQueried = ref(false);
 const registrationWait = ref(null);
 const queueEntries = ref([]);
 const lookupError = ref("");
+const lookupLoader = createLookupLoader({
+  fetchQueue: fetchQueueState,
+  fetchRegistration: (num) => fetchRegistrationLookup(year, num),
+});
 
 const team = computed(() => {
   const num = String(entryNum.value).trim();
@@ -95,6 +99,7 @@ function requestPublicQueues({ notify = false } = {}) {
 }
 
 function clearLookupState(message = "") {
+  lookupLoader.invalidate();
   registrationWait.value = null;
   queueEntries.value = [];
   hasQueried.value = false;
@@ -105,27 +110,28 @@ function clearLookupState(message = "") {
 }
 
 async function loadLookup(num, { notify = false } = {}) {
-  const [queueResult, registrationResult] = await Promise.allSettled([
-    fetchQueueState(num),
-    fetchRegistrationLookup(year, num),
-  ]);
+  const result = await lookupLoader.load(num);
+  if (!result) return false;
 
-  if (queueResult.status === "rejected") {
-    const message = queueResult.reason?.message || "검차 대기 순번을 새로고침할 수 없습니다.";
-    if (isTerminalLookupError(queueResult.reason)) clearLookupState(message);
-    else lookupError.value = "검차 대기 순번을 새로고침할 수 없습니다.";
-    if (notify) error(queueResult.reason?.message || "대기 순번을 조회할 수 없습니다.");
+  if (result.terminalError) {
+    const message = result.terminalError.message || "검차 대기 순번을 새로고침할 수 없습니다.";
+    clearLookupState(message);
+    if (notify) error(result.terminalError.message || "대기 순번을 조회할 수 없습니다.");
     return false;
   }
 
-  queueEntries.value = queueResult.value.queues || [];
-  registrationWait.value = registrationResult.status === "fulfilled" ? registrationResult.value : null;
-  lookupError.value = registrationResult.status === "rejected" && registrationResult.reason?.status !== 404
-    ? "등록 대기 순번을 새로고침할 수 없습니다."
-    : "";
+  const failures = [];
+  if (result.queue.apply) queueEntries.value = result.queue.value;
+  else failures.push("검차 대기 순번을 새로고침할 수 없습니다.");
+  if (result.registration.apply) registrationWait.value = result.registration.value;
+  else failures.push("등록 대기 순번을 새로고침할 수 없습니다.");
+  lookupError.value = failures.join(" ");
   hasQueried.value = true;
   lastQueryNum.value = num;
   sessionStorage.setItem("queue_entry", num);
+  if (notify && !result.queue.apply) {
+    error(result.queue.error?.message || "대기 순번을 조회할 수 없습니다.");
+  }
   return true;
 }
 
@@ -219,6 +225,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  lookupLoader.invalidate();
   refreshScheduler.stop();
   publicQueueRefresh.stop();
 });

@@ -108,4 +108,63 @@ test.describe("Queue public status page", () => {
     await expect(inspectionRow).toHaveCount(0);
     expect(await page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBeNull();
   });
+
+  test("shows a successful registration lookup when the Queue service fails", async ({ page }) => {
+    await page.route(`**/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`, (route) => route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "Queue unavailable" }),
+    }));
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ position: 3, waitingTotal: 8 }),
+    }));
+
+    await page.getByLabel("엔트리 번호").fill(String(NO_QUEUE_ENTRY));
+    await page.getByRole("button", { name: "조회" }).click();
+
+    const registrationRow = page.locator(".result-row-detailed").filter({ hasText: "등록" });
+    await expect(registrationRow.locator(".result-rank")).toHaveText("3");
+    await expect(registrationRow).toContainText("8팀");
+    await expect(page.locator(".result-card")).toContainText("검차 대기 순번을 새로고침할 수 없습니다.");
+  });
+
+  test("does not restore a stale result after the entry input changes", async ({ page }) => {
+    let releaseQueue;
+    const queueStarted = new Promise((resolve) => {
+      releaseQueue = resolve;
+    });
+    let allowQueueResponse;
+    const queueResponseAllowed = new Promise((resolve) => {
+      allowQueueResponse = resolve;
+    });
+    await page.route(`**/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`, async (route) => {
+      releaseQueue();
+      await queueResponseAllowed;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          queues: [{ type: "tilting", name: "틸팅", rank: 9, total: 9, groupRank: 9, groupTotal: 9 }],
+        }),
+      });
+    });
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "REGISTRATION_NOT_FOUND" }),
+    }));
+
+    const entryInput = page.getByLabel("엔트리 번호");
+    await entryInput.fill(String(NO_QUEUE_ENTRY));
+    await page.getByRole("button", { name: "조회" }).click({ noWaitAfter: true });
+    await queueStarted;
+    await entryInput.fill("31");
+    allowQueueResponse();
+
+    await expect(page.getByRole("button", { name: "조회" })).toBeEnabled();
+    await expect(page.locator(".result-row-detailed")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBeNull();
+  });
 });
