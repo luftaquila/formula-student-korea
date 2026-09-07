@@ -26,11 +26,14 @@ import {
   setCancelPenaltySettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
+import { useInspectionSSE } from "../composables/useInspectionSSE";
 import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { displayPhone } from "@shared/format-phone.js";
 import { permissionComputed } from "@shared/officialsStore.js";
+import { createCoalescedRefresh } from "../coalesced-refresh.js";
 import { findInspectionCategory } from "../inspection-category.js";
+import { inspectionSheetPath } from "../inspection-sheet-path.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
@@ -38,6 +41,10 @@ const canManage = permissionComputed("queue.manage");
 const canInspect = permissionComputed("inspection.operate");
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, lastEntriesUpdate, reconnected } = useSSE();
+const {
+  lastInspectorUpdate,
+  reconnected: inspectionReconnected,
+} = useInspectionSSE(canInspect);
 
 const entries = ref({});
 const inspections = ref([]);
@@ -76,6 +83,13 @@ const currentBooths = computed(() => {
 
 const activePenalties = computed(() => penalties.value.filter((penalty) => penalty.until > penaltyClock.value));
 
+const inspectionSummaryRefresh = createCoalescedRefresh({ refresh: loadInspectionSummary });
+
+function requestInspectionSummary() {
+  if (!canInspect.value) return Promise.resolve(false);
+  return inspectionSummaryRefresh.request();
+}
+
 // Watch for queue updates from SSE
 watch(lastQueueUpdate, async (update) => {
   // type == null은 전 탭에 영향을 주는 변경(팀 삭제·번호변경 등)이다. 특정 탭을 보는 중이면
@@ -99,16 +113,28 @@ watch(lastPenaltyUpdate, () => {
 });
 
 watch(lastEntriesUpdate, async () => {
-  try { entries.value = await fetchEntries(); }
+  try {
+    entries.value = await fetchEntries();
+    await requestInspectionSummary();
+  }
   catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
 });
 
 watch(reconnected, () => {
   if (penaltyModalOpen.value) refreshPenaltyList();
+  requestInspectionSummary();
+});
+
+watch(lastInspectorUpdate, (update) => {
+  if (update?.year === currentCompetitionYear()) requestInspectionSummary();
+});
+
+watch(inspectionReconnected, () => {
+  requestInspectionSummary();
 });
 
 watch(canInspect, (allowed) => {
-  if (allowed && !inspectionSummary.value) loadInspectionSummary();
+  if (allowed && !inspectionSummary.value) requestInspectionSummary();
   if (!allowed) inspectionSummary.value = null;
 });
 
@@ -145,7 +171,7 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
-    if (canInspect.value) await loadInspectionSummary();
+    if (canInspect.value) await requestInspectionSummary();
     if (canManage.value) {
       const sms = await fetchSmsSettings();
       smsEnabled.value = sms.value;
@@ -174,6 +200,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.clearInterval(penaltyClockTimer);
   clearAllTimers();
+  inspectionSummaryRefresh.stop();
 });
 
 async function refreshQueue(type) {
@@ -187,7 +214,8 @@ async function refreshQueue(type) {
 
 async function loadInspectionSummary() {
   try {
-    inspectionSummary.value = await fetchInspectionSummary(currentCompetitionYear());
+    const nextSummary = await fetchInspectionSummary(currentCompetitionYear());
+    if (canInspect.value) inspectionSummary.value = nextSummary;
   } catch {
     inspectionSummary.value = null;
   }
@@ -507,11 +535,15 @@ function formatPenaltyRemaining(timestamp) {
 
 function goToInspection(num) {
   const category = inspectionCategoryFor(num);
-  if (!category) return;
   // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
   // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
   const base = import.meta.env.PROD ? "/inspection" : "";
-  window.location.href = `${base}/${currentCompetitionYear()}/${num}?category=${encodeURIComponent(category.id)}`;
+  window.location.href = inspectionSheetPath({
+    base,
+    year: currentCompetitionYear(),
+    num,
+    categoryId: category?.id,
+  });
 }
 
 </script>
@@ -642,7 +674,7 @@ function goToInspection(num) {
                         {{ booth.timer_paused_at ? "재개" : "중단" }}
                       </button>
                       <button
-                        v-if="inspectionCategoryFor(booth.occupied_by)"
+                        v-if="canInspect"
                         class="btn btn-primary btn-sm"
                         @click="goToInspection(booth.occupied_by)"
                       >

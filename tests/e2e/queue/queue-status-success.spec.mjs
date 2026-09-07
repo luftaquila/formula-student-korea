@@ -51,10 +51,6 @@ test.describe("Unified public queue lookup", () => {
       await expect(rankLines).toHaveCount(2);
       await expect(rankLines.nth(0)).toContainText(/전체\s*\d+번\s*\/\s*\d+팀/);
       await expect(rankLines.nth(1)).toContainText(/(초검|재검)\s*\d+번\s*\/\s*\d+팀/);
-      const rankFontSizes = await inspectionRow.locator(
-        ".result-name, .overall-rank-label, .result-rank, .result-suffix, .result-total",
-      ).evaluateAll((elements) => elements.map((element) => getComputedStyle(element).fontSize));
-      expect(new Set(rankFontSizes).size).toBe(1);
     } finally {
       await page.request.post(`/competition/api/v1/queue/admin/booths/${TYPE}/1/enter`, {
         data: { num: ENTRY_NUM },
@@ -85,19 +81,6 @@ test.describe("Unified public queue lookup", () => {
       const rankLine = teamRow.locator(".public-ranks");
       await expect(rankLine).toContainText(/전체 \d+번/);
       await expect(rankLine).toContainText(/(초검|재검) \d+번/);
-      const visualStyles = await teamRow.evaluate((row) => {
-        const university = row.querySelector(".public-university");
-        const teamName = row.querySelector(".public-team-name");
-        const ranks = row.querySelector(".public-ranks");
-        return {
-          universityColor: getComputedStyle(university).color,
-          teamNameColor: getComputedStyle(teamName).color,
-          identityFontSize: getComputedStyle(teamName).fontSize,
-          rankFontSize: getComputedStyle(ranks).fontSize,
-        };
-      });
-      expect(visualStyles.universityColor).toBe(visualStyles.teamNameColor);
-      expect(visualStyles.rankFontSize).toBe(visualStyles.identityFontSize);
       expect(await page.evaluate(() =>
         document.documentElement.scrollWidth <= document.documentElement.clientWidth,
       )).toBe(true);

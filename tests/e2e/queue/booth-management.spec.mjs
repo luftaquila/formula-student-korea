@@ -163,9 +163,34 @@ test.describe("Queue booth management", () => {
     await expect(page.locator(".entry-num", { hasText: "1" })).toBeVisible({ timeout: 5000 });
   });
 
-  test("shows ranks before linked inspector names and vertically centers cancel", async ({ page }) => {
+  test("shows queue ranks and keeps linked inspector names live", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     const categoryId = 9001;
+    let inspectors = ["김검차", "이검차"];
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      const inspectionSources = [];
+      function RoutedEventSource(url, options) {
+        if (!String(url).includes("/inspection/sheet/events")) {
+          return new NativeEventSource(url, options);
+        }
+        const source = new EventTarget();
+        source.url = String(url);
+        source.readyState = NativeEventSource.OPEN;
+        source.close = () => {};
+        inspectionSources.push(source);
+        return source;
+      }
+      RoutedEventSource.CONNECTING = NativeEventSource.CONNECTING;
+      RoutedEventSource.OPEN = NativeEventSource.OPEN;
+      RoutedEventSource.CLOSED = NativeEventSource.CLOSED;
+      window.EventSource = RoutedEventSource;
+      window.__emitInspectionInspector = (data) => {
+        for (const source of inspectionSources) {
+          source.dispatchEvent(new MessageEvent("inspector", { data: JSON.stringify(data) }));
+        }
+      };
+    });
     await page.route("**/competition/api/v1/inspection/sheet/summary?*", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -173,7 +198,7 @@ test.describe("Queue booth management", () => {
         year: YEAR,
         categories: [{ id: categoryId, name: "전기 검차", excluded_types: [] }],
         teams: {
-          1: { inspectors: { [categoryId]: ["김검차", "이검차"] }, results: {} },
+          1: { inspectors: { [categoryId]: inspectors }, results: {} },
         },
       }),
     }));
@@ -210,35 +235,43 @@ test.describe("Queue booth management", () => {
     await expect(row).not.toContainText("기존 검차관");
     await expect(row).toContainText("김검차, 이검차");
     await expect(row.getByRole("button", { name: "검차표", exact: true })).toHaveCount(0);
-    const layout = await row.evaluate((element) => {
-      const rowRect = element.getBoundingClientRect();
-      const metaRect = element.querySelector(".queue-item-meta").getBoundingClientRect();
-      const tagsRect = element.querySelector(".queue-item-tags").getBoundingClientRect();
-      const inspectorsRect = element.querySelector(".previous-inspector-link").getBoundingClientRect();
-      const cancelRect = element.querySelector(".queue-cancel-button").getBoundingClientRect();
-      return {
-        detailColor: getComputedStyle(element.querySelector(".entry-detail")).color,
-        phoneColor: getComputedStyle(element.querySelector(".entry-phone")).color,
-        timeColor: getComputedStyle(element.querySelector(".entry-time")).color,
-        metaTop: metaRect.top,
-        tagsTop: tagsRect.top,
-        tagsLeft: tagsRect.left,
-        inspectorsLeft: inspectorsRect.left,
-        rowCenter: rowRect.top + rowRect.height / 2,
-        cancelCenter: cancelRect.top + cancelRect.height / 2,
-      };
-    });
-    expect(layout.tagsTop).toBeGreaterThan(layout.metaTop);
-    expect(layout.inspectorsLeft).toBeGreaterThan(layout.tagsLeft);
-    expect(Math.abs(layout.cancelCenter - layout.rowCenter)).toBeLessThanOrEqual(1);
-    expect(layout.phoneColor).toBe(layout.detailColor);
-    expect(layout.timeColor).toBe(layout.detailColor);
+    await expect(row.getByRole("link", { name: "010-0000-0000" })).toBeVisible();
+    await expect(row.locator(".entry-time")).toBeVisible();
+    await expect(row.getByRole("button", { name: "1번 대기 취소" })).toBeVisible();
     expect(await page.evaluate(() =>
       document.documentElement.scrollWidth <= document.documentElement.clientWidth,
     )).toBe(true);
 
-    await row.getByRole("button", { name: "김검차, 이검차" }).click();
+    inspectors = ["박검차"];
+    await page.evaluate(({ year, id }) => {
+      window.__emitInspectionInspector({ year, team_num: 1, category_id: id, inspectors: ["박검차"] });
+    }, { year: YEAR, id: categoryId });
+    const inspectorLink = row.getByRole("button", { name: "박검차" });
+    await expect(inspectorLink).toBeVisible();
+    await inspectorLink.click();
     await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/1\\?category=${categoryId}$`));
+  });
+
+  test("occupied booth keeps its inspection link without a category match", async ({ page }) => {
+    await page.route("**/competition/api/v1/inspection/sheet/summary?*", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ year: YEAR, categories: [], teams: {} }),
+    }));
+    expect((await apiRegister(2)).status).toBe(201);
+    expect((await apiEnterBooth(INSPECTION_TYPE, 1, 2)).status).toBe(200);
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await page.locator(".tab", { hasText: "축전지" }).click();
+
+    const booth = page.locator(".booth-card").filter({
+      has: page.locator(".booth-team-num", { hasText: "2" }),
+    });
+    const inspectionLink = booth.getByRole("button", { name: "검차", exact: true });
+    await expect(inspectionLink).toBeVisible();
+    await inspectionLink.click();
+    await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/2$`));
   });
 
   test("enter team into booth via admin UI", async ({ page }) => {

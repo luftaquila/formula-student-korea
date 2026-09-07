@@ -59,4 +59,53 @@ test.describe("Queue public status page", () => {
     expect((await stateResponse).status()).toBe(200);
     await expect(page.locator(".result-card")).toContainText("현재 등록 또는 검차 대기가 없습니다.");
   });
+
+  test("clears a saved lookup when the entry becomes invalid", async ({ page }) => {
+    let queueRequests = 0;
+    await page.route(`**/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`, (route) => {
+      queueRequests += 1;
+      if (queueRequests === 1) {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            year: 2026,
+            queues: [{
+              type: "tilting",
+              name: "틸팅",
+              isReinspection: false,
+              rank: 4,
+              total: 6,
+              groupRank: 3,
+              groupTotal: 5,
+            }],
+          }),
+        });
+      }
+      return route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "존재하지 않는 엔트리 번호입니다." }),
+      });
+    });
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "REGISTRATION_NOT_FOUND", message: "대기 중인 등록 내역이 없습니다." }),
+    }));
+
+    await page.getByLabel("엔트리 번호").fill(String(NO_QUEUE_ENTRY));
+    await page.getByRole("button", { name: "조회" }).click();
+    const inspectionRow = page.locator(".result-row-detailed").filter({ hasText: "틸팅" });
+    const overallRank = inspectionRow.locator(".rank-line").first();
+    await expect(overallRank.locator(".overall-rank-label")).toHaveText("전체");
+    await expect(overallRank.locator(".result-rank")).toHaveText("4");
+    await expect(overallRank.locator(".result-suffix")).toHaveText("번");
+    expect(await page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBe(String(NO_QUEUE_ENTRY));
+
+    await page.getByRole("button", { name: "조회" }).click();
+    await expect(page.locator(".result-card")).toContainText("존재하지 않는 엔트리 번호입니다.");
+    await expect(inspectionRow).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBeNull();
+  });
 });

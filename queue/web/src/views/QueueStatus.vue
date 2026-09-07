@@ -11,7 +11,9 @@ import {
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { useRegistrationSSE } from "../composables/useRegistrationSSE";
 import { useSSE } from "../composables/useSSE";
+import { createCoalescedRefresh } from "../coalesced-refresh.js";
 import { createLookupRefreshScheduler } from "../lookup-refresh.js";
+import { isLookupEntryAvailable, isTerminalLookupError } from "../lookup-state.js";
 
 const year = currentCompetitionYear();
 const { error } = useNotification();
@@ -43,7 +45,10 @@ const registrationWait = ref(null);
 const queueEntries = ref([]);
 const lookupError = ref("");
 
-const team = computed(() => entries.value[String(entryNum.value).trim()] || null);
+const team = computed(() => {
+  const num = String(entryNum.value).trim();
+  return isLookupEntryAvailable(entries.value, num) ? entries.value[num] : null;
+});
 const hasAnyWait = computed(() => Boolean(registrationWait.value) || queueEntries.value.length > 0);
 
 function publicQueueFor(type) {
@@ -59,8 +64,10 @@ function syncAllTimers() {
 async function loadEntries({ notify = false } = {}) {
   try {
     entries.value = await fetchEntries();
+    return true;
   } catch {
     if (notify) error("엔트리 정보를 가져올 수 없습니다.");
+    return false;
   }
 }
 
@@ -73,6 +80,30 @@ async function loadPublicQueues({ notify = false } = {}) {
   }
 }
 
+let notifyPublicQueueFailure = false;
+const publicQueueRefresh = createCoalescedRefresh({
+  refresh: () => {
+    const notify = notifyPublicQueueFailure;
+    notifyPublicQueueFailure = false;
+    return loadPublicQueues({ notify });
+  },
+});
+
+function requestPublicQueues({ notify = false } = {}) {
+  notifyPublicQueueFailure ||= notify;
+  return publicQueueRefresh.request();
+}
+
+function clearLookupState(message = "") {
+  registrationWait.value = null;
+  queueEntries.value = [];
+  hasQueried.value = false;
+  lastQueryNum.value = "";
+  lookupError.value = message;
+  sessionStorage.removeItem("queue_entry");
+  refreshScheduler.markRefreshed();
+}
+
 async function loadLookup(num, { notify = false } = {}) {
   const [queueResult, registrationResult] = await Promise.allSettled([
     fetchQueueState(num),
@@ -80,7 +111,9 @@ async function loadLookup(num, { notify = false } = {}) {
   ]);
 
   if (queueResult.status === "rejected") {
-    lookupError.value = "검차 대기 순번을 새로고침할 수 없습니다.";
+    const message = queueResult.reason?.message || "검차 대기 순번을 새로고침할 수 없습니다.";
+    if (isTerminalLookupError(queueResult.reason)) clearLookupState(message);
+    else lookupError.value = "검차 대기 순번을 새로고침할 수 없습니다.";
     if (notify) error(queueResult.reason?.message || "대기 순번을 조회할 수 없습니다.");
     return false;
   }
@@ -113,7 +146,7 @@ async function query() {
     error("엔트리 번호를 입력하세요.");
     return;
   }
-  if (!entries.value[num]) {
+  if (!isLookupEntryAvailable(entries.value, num)) {
     error("존재하지 않는 엔트리 번호입니다.");
     return;
   }
@@ -130,12 +163,7 @@ async function query() {
 
 function onEntryInput() {
   if (String(entryNum.value).trim() === lastQueryNum.value) return;
-  hasQueried.value = false;
-  registrationWait.value = null;
-  queueEntries.value = [];
-  lookupError.value = "";
-  lastQueryNum.value = "";
-  sessionStorage.removeItem("queue_entry");
+  clearLookupState();
 }
 
 function removeRetiredLookupCredentials() {
@@ -149,19 +177,24 @@ function removeRetiredLookupCredentials() {
 watch(lastBoothUpdate, syncAllTimers);
 watch(allBooths, syncAllTimers, { deep: true });
 watch(lastQueueUpdate, () => {
-  loadPublicQueues();
+  requestPublicQueues();
   if (lastQueryNum.value) refreshScheduler.request();
 });
-watch(activeInspections, () => loadPublicQueues());
+watch(activeInspections, () => requestPublicQueues());
 watch(registrationRevision, () => {
   if (lastQueryNum.value) refreshScheduler.request();
 });
-watch(lastEntriesUpdate, () => {
-  loadEntries();
-  loadPublicQueues();
+watch(lastEntriesUpdate, async () => {
+  const queriedNum = lastQueryNum.value;
+  const loaded = await loadEntries();
+  requestPublicQueues();
+  if (loaded && queriedNum && queriedNum === lastQueryNum.value
+    && !isLookupEntryAvailable(entries.value, queriedNum)) {
+    clearLookupState("엔트리 정보가 변경되어 이전 조회 결과를 지웠습니다.");
+  }
 });
 watch(queueReconnected, () => {
-  loadPublicQueues();
+  requestPublicQueues();
   if (lastQueryNum.value) refreshScheduler.request({ force: true });
 });
 watch(registrationReconnected, () => {
@@ -172,7 +205,7 @@ onMounted(async () => {
   removeRetiredLookupCredentials();
   await Promise.allSettled([
     loadEntries({ notify: true }),
-    loadPublicQueues({ notify: true }),
+    requestPublicQueues({ notify: true }),
   ]);
 
   const savedEntry = sessionStorage.getItem("queue_entry");
@@ -185,7 +218,10 @@ onMounted(async () => {
   syncAllTimers();
 });
 
-onUnmounted(() => refreshScheduler.stop());
+onUnmounted(() => {
+  refreshScheduler.stop();
+  publicQueueRefresh.stop();
+});
 </script>
 
 <template>
