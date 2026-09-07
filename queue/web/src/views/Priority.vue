@@ -5,6 +5,10 @@ import {
   fetchEntries,
   fetchVehicleTypes,
   fetchAllInspections,
+  toggleInspectionActive,
+  toggleInspectionVisibility,
+  updateBoothConfig,
+  setInspectionSettings,
   fetchPriorities,
   setPriority,
   removePriority,
@@ -20,7 +24,7 @@ import { useTableHeadBand } from "@shared/useTableHeadBand.js";
 
 const { success, error } = useNotification();
 const router = useRouter();
-const { lastEntriesUpdate } = useSSE();
+const { allBooths, lastEntriesUpdate } = useSSE();
 
 const tableRef = ref(null);
 const scrollerRef = ref(null);
@@ -31,6 +35,7 @@ const entries = ref({});
 const inspections = ref([]);
 const allPriorities = ref({}); // { inspectionType: { num: priority, ... }, ... }
 const reinspectionStatus = ref({}); // { inspectionType: [num, ...], ... }
+const settingsDrafts = ref({});
 const loading = ref(true);
 const searchQuery = ref("");
 const typeColorMap = ref({});
@@ -90,6 +95,11 @@ onMounted(async () => {
     entries.value = entryData;
     typeColorMap.value = Object.fromEntries(vehicleTypeData.map((type) => [type.name, type.color]));
     inspections.value = await fetchAllInspections();
+    settingsDrafts.value = Object.fromEntries(inspections.value.map((inspection) => [inspection.type, {
+      sms: inspection.sms === 1 || inspection.sms === true,
+      smsRank: inspection.sms_rank,
+      cancelPenalty: inspection.cancel_penalty,
+    }]));
 
     // Fetch priorities and reinspection status for all inspection types
     await Promise.all([refreshAllPriorities(), refreshReinspectionStatus()]);
@@ -219,6 +229,94 @@ async function toggleIgnore(type, field, currentValue) {
   }
 }
 
+async function toggleActive(inspection) {
+  const active = !inspection.active;
+  try {
+    await toggleInspectionActive(inspection.type, active);
+    inspection.active = active ? 1 : 0;
+    success(`${inspection.name} 대기열을 ${active ? "활성화" : "비활성화"}했습니다.`);
+  } catch (e) {
+    error(e.message || "활성화 상태를 변경할 수 없습니다.");
+  }
+}
+
+async function toggleVisibility(inspection) {
+  const hidden = !inspection.hidden_from_register;
+  try {
+    await toggleInspectionVisibility(inspection.type, hidden);
+    inspection.hidden_from_register = hidden ? 1 : 0;
+    success(`${inspection.name} 공개 화면 ${hidden ? "숨김" : "표시"} 설정을 저장했습니다.`);
+  } catch (e) {
+    error(e.message || "표시 상태를 변경할 수 없습니다.");
+  }
+}
+
+function applyInspectionSettings(inspection, updated) {
+  inspection.sms = updated.sms ? 1 : 0;
+  inspection.sms_rank = updated.smsRank;
+  inspection.cancel_penalty = updated.cancelPenalty;
+  Object.assign(settingsDrafts.value[inspection.type], updated);
+}
+
+async function toggleSms(inspection, event) {
+  const enabled = event.target.checked;
+  try {
+    const updated = await setInspectionSettings(inspection.type, { sms: enabled });
+    applyInspectionSettings(inspection, updated);
+    success(`${inspection.name} SMS 알림을 ${enabled ? "활성화" : "비활성화"}했습니다.`);
+  } catch (e) {
+    event.target.checked = settingsDrafts.value[inspection.type].sms;
+    error(e.message);
+  }
+}
+
+async function updateSmsRank(inspection, event) {
+  const value = Number(event.target.value);
+  if (!Number.isInteger(value) || value < 1 || value > 10) {
+    settingsDrafts.value[inspection.type].smsRank = inspection.sms_rank;
+    return;
+  }
+  try {
+    const updated = await setInspectionSettings(inspection.type, { smsRank: value });
+    applyInspectionSettings(inspection, updated);
+    success(`${inspection.name} SMS 알림 순번을 ${value}번으로 변경했습니다.`);
+  } catch (e) {
+    settingsDrafts.value[inspection.type].smsRank = inspection.sms_rank;
+    error(e.message);
+  }
+}
+
+async function updateCancelPenalty(inspection, event) {
+  const value = Number(event.target.value);
+  if (!Number.isInteger(value) || value < 0 || value > 60) {
+    settingsDrafts.value[inspection.type].cancelPenalty = inspection.cancel_penalty;
+    return;
+  }
+  try {
+    const updated = await setInspectionSettings(inspection.type, { cancelPenalty: value });
+    applyInspectionSettings(inspection, updated);
+    success(`${inspection.name} 취소 페널티를 ${value}분으로 변경했습니다.`);
+  } catch (e) {
+    settingsDrafts.value[inspection.type].cancelPenalty = inspection.cancel_penalty;
+    error(e.message);
+  }
+}
+
+async function updateBoothCount(inspection, event) {
+  const value = Number(event.target.value);
+  if (!Number.isInteger(value) || value < 1) {
+    event.target.value = allBooths.value[inspection.type]?.length || 1;
+    return;
+  }
+  try {
+    await updateBoothConfig(inspection.type, value);
+    success(`${inspection.name} 부스 수를 ${value}개로 변경했습니다.`);
+  } catch (e) {
+    event.target.value = allBooths.value[inspection.type]?.length || 1;
+    error(e.message);
+  }
+}
+
 // 키보드 방향키 네비게이션 (내구 입력과 동일)
 function handleKeyNav(e) {
   if (!["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)) return;
@@ -282,6 +380,135 @@ function goBack() {
       </svg>
       돌아가기
     </button>
+
+    <section class="card inspection-settings-section">
+      <div class="card-header settings-section-header">
+        <div>
+          <h2>검차별 설정</h2>
+          <p>대기열 운영, 공개 범위, 알림과 페널티를 검차별로 설정합니다.</p>
+        </div>
+      </div>
+      <div class="card-body settings-section-body">
+        <div v-if="loading" class="loading">
+          <div class="loading-spinner"></div>
+        </div>
+        <div v-else class="inspection-settings-grid">
+          <article
+            v-for="inspection in inspections"
+            :key="inspection.type"
+            class="inspection-setting-group"
+            :data-inspection="inspection.type"
+          >
+            <header class="inspection-setting-header">
+              <div>
+                <h3>{{ inspection.name }}</h3>
+                <span class="inspection-code">{{ inspection.type }}</span>
+              </div>
+              <span class="inspection-status" :class="{ active: inspection.active }">
+                {{ inspection.active ? "운영 중" : "운영 중지" }}
+              </span>
+            </header>
+
+            <div class="inspection-buttons">
+              <button
+                type="button"
+                class="inspection-state-button"
+                :class="{ enabled: inspection.active }"
+                :aria-pressed="Boolean(inspection.active)"
+                @click="toggleActive(inspection)"
+              >
+                <span class="state-indicator"></span>
+                <span class="state-copy">
+                  <strong>대기열</strong>
+                  <small>{{ inspection.active ? "사용 중" : "사용 안 함" }}</small>
+                </span>
+              </button>
+              <button
+                type="button"
+                class="inspection-state-button"
+                :class="{ enabled: !inspection.hidden_from_register }"
+                :aria-pressed="!inspection.hidden_from_register"
+                @click="toggleVisibility(inspection)"
+              >
+                <span class="state-indicator"></span>
+                <span class="state-copy">
+                  <strong>공개 화면</strong>
+                  <small>{{ inspection.hidden_from_register ? "숨김" : "표시" }}</small>
+                </span>
+              </button>
+            </div>
+
+            <div class="inspection-setting-fields">
+              <div class="setting-item">
+                <div class="setting-copy">
+                  <span class="setting-label">SMS 알림</span>
+                  <small>대기 순번 안내</small>
+                </div>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    :aria-label="`${inspection.name} SMS 알림`"
+                    :checked="settingsDrafts[inspection.type].sms"
+                    @change="toggleSms(inspection, $event)"
+                  />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+
+              <label class="setting-item">
+                <span class="setting-copy">
+                  <span class="setting-label">SMS 알림 순번</span>
+                  <small>1~10번</small>
+                </span>
+                <span class="setting-input">
+                  <input
+                    v-model="settingsDrafts[inspection.type].smsRank"
+                    type="number"
+                    min="1"
+                    max="10"
+                    @change="updateSmsRank(inspection, $event)"
+                  />
+                  <span>번</span>
+                </span>
+              </label>
+
+              <label class="setting-item">
+                <span class="setting-copy">
+                  <span class="setting-label">취소 페널티</span>
+                  <small>0~60분</small>
+                </span>
+                <span class="setting-input">
+                  <input
+                    v-model="settingsDrafts[inspection.type].cancelPenalty"
+                    type="number"
+                    min="0"
+                    max="60"
+                    @change="updateCancelPenalty(inspection, $event)"
+                  />
+                  <span>분</span>
+                </span>
+              </label>
+
+              <label class="setting-item booth-setting">
+                <span class="setting-copy">
+                  <span class="setting-label">운영 부스</span>
+                  <small>최소 1개</small>
+                </span>
+                <span class="setting-input">
+                  <input
+                    type="number"
+                    :value="allBooths[inspection.type]?.length || 1"
+                    min="1"
+                    @change="updateBoothCount(inspection, $event)"
+                  />
+                  <span>개</span>
+                </span>
+              </label>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
 
     <!-- Rules -->
     <div class="rules-banner">
@@ -465,6 +692,198 @@ function goBack() {
 
 .back-btn {
   align-self: flex-start;
+}
+
+/* Inspection Settings */
+.settings-section-header h2 {
+  margin: 0;
+  font-size: 1.125rem;
+}
+
+.settings-section-header p {
+  margin: 0.25rem 0 0;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+}
+
+.settings-section-body {
+  padding: 1rem;
+}
+
+.inspection-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.inspection-setting-group {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+}
+
+.inspection-setting-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.inspection-setting-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 1rem;
+}
+
+.inspection-code {
+  display: block;
+  margin-top: 0.125rem;
+  color: var(--text-tertiary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6875rem;
+}
+
+.inspection-status {
+  flex: none;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  background: var(--bg-primary);
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.inspection-status.active {
+  background: rgba(34, 197, 94, 0.14);
+  color: var(--accent-success);
+}
+
+.inspection-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.inspection-state-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.inspection-state-button:hover {
+  border-color: var(--accent-primary);
+}
+
+.state-indicator {
+  width: 0.625rem;
+  height: 0.625rem;
+  flex: none;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+.inspection-state-button.enabled .state-indicator {
+  background: var(--accent-success);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+}
+
+.state-copy,
+.setting-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.state-copy strong {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+}
+
+.state-copy small,
+.setting-copy small {
+  color: var(--text-tertiary);
+  font-size: 0.6875rem;
+}
+
+.inspection-setting-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+
+.setting-item {
+  display: flex;
+  min-width: 0;
+  min-height: 3.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.625rem;
+  padding: 0.625rem 0.75rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.setting-item:nth-child(odd) {
+  border-right: 1px solid var(--border-color);
+}
+
+.setting-item:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.setting-label {
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.setting-input {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0.375rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.setting-input input {
+  width: 3.25rem;
+  padding: 0.375rem 0.25rem;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+.setting-input input:focus {
+  outline: none;
+  border-color: var(--accent-primary);
+  box-shadow: 0 0 0 2px rgba(94, 106, 210, 0.12);
+}
+
+.setting-input input::-webkit-outer-spin-button,
+.setting-input input::-webkit-inner-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
 }
 
 /* Rules Banner */
@@ -778,6 +1197,10 @@ function goBack() {
 
 /* Responsive */
 @media (max-width: 768px) {
+  .inspection-settings-grid {
+    grid-template-columns: 1fr;
+  }
+
   .rules-list {
     flex-direction: column;
     gap: 0.5rem;
@@ -795,6 +1218,24 @@ function goBack() {
     width: 50px;
     padding: 0.25rem 0.375rem;
     font-size: 0.875rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .settings-section-body {
+    padding: 0.75rem;
+  }
+
+  .inspection-setting-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .setting-item:nth-child(odd) {
+    border-right: 0;
+  }
+
+  .setting-item:nth-last-child(2) {
+    border-bottom: 1px solid var(--border-color);
   }
 }
 </style>

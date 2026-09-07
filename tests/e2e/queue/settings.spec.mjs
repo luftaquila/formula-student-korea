@@ -56,12 +56,25 @@ test.describe("Queue settings management", () => {
     }
   });
 
-  test("admin page shows settings panel with queue.manage", async ({ page }) => {
+  test("admin settings button opens per-inspection settings above priorities", async ({ page }) => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // A queue manager should see the settings panel.
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".top-actions .btn")).toHaveText([
+      "검차 등록",
+      "페널티",
+      "통계",
+      "설정",
+    ]);
+    await page.getByRole("button", { name: "설정", exact: true }).click();
+    await expect(page).toHaveURL(/\/queue\/settings/);
+
+    const settingsHeading = page.getByRole("heading", { name: "검차별 설정", exact: true });
+    const priorityHeading = page.getByRole("heading", { name: "우선순위 설정", exact: true });
+    await expect(settingsHeading).toBeVisible({ timeout: 10000 });
+    await expect(priorityHeading).toBeVisible();
+    const headings = await page.getByRole("heading").allTextContents();
+    expect(headings.indexOf("검차별 설정")).toBeLessThan(headings.indexOf("우선순위 설정"));
 
     const batterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
     await expect(batterySettings.getByText("취소 페널티")).toBeVisible();
@@ -70,10 +83,10 @@ test.describe("Queue settings management", () => {
   });
 
   test("change cancel penalty setting", async ({ page }) => {
-    await page.goto("/queue/admin");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    // Wait for settings panel to load
+    // Wait for the per-inspection settings to load.
     const batterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
     await expect(batterySettings.getByText("취소 페널티")).toBeVisible({ timeout: 10000 });
 
@@ -101,9 +114,6 @@ test.describe("Queue settings management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Wait for settings to load
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
-
     // The noise inspection tab should not be visible in the active tabs
     // (only active inspections show as tabs)
     const tabs = page.locator(".tab");
@@ -124,13 +134,13 @@ test.describe("Queue settings management", () => {
     expect(updatedTabTexts).toContain("소음");
   });
 
-  test("inspection active/inactive toggle button in settings panel", async ({ page }) => {
-    await page.goto("/queue/admin");
+  test("inspection active/inactive toggle button in settings page", async ({ page }) => {
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
 
-    // Find the inspection setting items in the settings panel
+    // Find the inspection setting cards on the settings page.
     const inspectionGroups = page.locator(".inspection-setting-group");
     await expect(inspectionGroups.first()).toBeVisible();
     const count = await inspectionGroups.count();
@@ -143,24 +153,25 @@ test.describe("Queue settings management", () => {
     expect(btnCount).toBe(2); // visibility + active toggle
   });
 
-  test("settings panel not visible for official role", async ({ browser }) => {
+  test("settings navigation is unavailable to an official role", async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
 
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Official should see the queue panel but NOT the settings panel
+    // Official should see the queue panel but not the management-only settings entry.
     await expect(page.getByRole("heading", { name: /검차 대기열/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: "설정", exact: true })).not.toBeVisible();
 
-    // Settings panel should not be visible
-    await expect(page.locator(".settings-panel")).not.toBeVisible();
+    await page.goto("/queue/settings");
+    await expect(page).not.toHaveURL(/\/queue\/settings/);
 
     await context.close();
   });
 
   test("change booth count and verify persistence", async ({ page }) => {
-    await page.goto("/queue/admin");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
@@ -238,7 +249,7 @@ test.describe("Queue settings management", () => {
   });
 
   test("change SMS rank setting", async ({ page }) => {
-    await page.goto("/queue/admin");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
     const batterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
     await expect(batterySettings.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
@@ -277,8 +288,8 @@ test.describe("Queue settings management", () => {
     }
   });
 
-  test("booth count setting is shown in settings panel", async ({ page }) => {
-    await page.goto("/queue/admin");
+  test("booth count setting is shown in each inspection card", async ({ page }) => {
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });

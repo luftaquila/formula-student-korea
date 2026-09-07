@@ -71,6 +71,7 @@ function isActive(href) {
       return (
         props.currentPath === "/queue/admin" ||
         props.currentPath === "/queue/register" ||
+        props.currentPath === "/queue/settings" ||
         props.currentPath === "/queue/priority"
       );
     }

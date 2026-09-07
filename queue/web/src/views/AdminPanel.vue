@@ -8,8 +8,6 @@ import {
   fetchInspectionQueue,
   fetchInspectionSummary,
   sendLastCall,
-  toggleInspectionActive,
-  toggleInspectionVisibility,
   cancelFromQueue,
   fetchActivePenalties,
   clearActivePenalty,
@@ -17,9 +15,7 @@ import {
   enterBooth,
   exitBooth,
   setBoothTimerPaused,
-  updateBoothConfig,
   toggleBooth,
-  setInspectionSettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useInspectionSSE } from "../composables/useInspectionSSE";
@@ -48,7 +44,6 @@ const inspections = ref([]);
 const inspectionSummary = ref(null);
 const currentQueue = ref([]);
 const currentTab = ref("");
-const settingsDrafts = ref({});
 const loading = ref(true);
 const boothSelectedTeam = ref({});
 const penalties = ref([]);
@@ -171,11 +166,6 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
-    settingsDrafts.value = Object.fromEntries(inspections.value.map((item) => [item.type, {
-      sms: item.sms === 1 || item.sms === true,
-      smsRank: item.sms_rank,
-      cancelPenalty: item.cancel_penalty,
-    }]));
     if (canInspect.value) await requestInspectionSummary();
 
     // Restore saved tab
@@ -240,26 +230,6 @@ function selectTab(type) {
   currentTab.value = type;
   localStorage.setItem("admin_tab", type);
   refreshQueue(type);
-}
-
-async function toggleActive(type, currentActive) {
-  try {
-    await toggleInspectionActive(type, !currentActive);
-    const item = inspections.value.find(i => i.type === type);
-    if (item) item.active = !currentActive;
-  } catch (e) {
-    error("활성화 상태를 변경할 수 없습니다.");
-  }
-}
-
-async function toggleVisibility(type, currentHidden) {
-  try {
-    await toggleInspectionVisibility(type, !currentHidden);
-    const item = inspections.value.find(i => i.type === type);
-    if (item) item.hidden_from_register = !currentHidden ? 1 : 0;
-  } catch (e) {
-    error("표시 상태를 변경할 수 없습니다.");
-  }
 }
 
 async function enterBoothAction(boothNum) {
@@ -350,73 +320,6 @@ function isLastCallPending(num) {
   return pendingLastCallKeys.value.has(`${currentTab.value}-${num}`);
 }
 
-function applyInspectionSettings(item, updated) {
-  item.sms = updated.sms ? 1 : 0;
-  item.sms_rank = updated.smsRank;
-  item.cancel_penalty = updated.cancelPenalty;
-  Object.assign(settingsDrafts.value[item.type], updated);
-}
-
-async function toggleSms(item, event) {
-  const enabled = event.target.checked;
-  try {
-    const updated = await setInspectionSettings(item.type, { sms: enabled });
-    applyInspectionSettings(item, updated);
-    success(`${item.name} SMS 알림을 ${enabled ? "활성화" : "비활성화"}했습니다.`);
-  } catch (e) {
-    event.target.checked = settingsDrafts.value[item.type].sms;
-    error(e.message);
-  }
-}
-
-async function updateSmsRank(item, e) {
-  const value = parseInt(e.target.value, 10);
-  if (isNaN(value) || value < 1 || value > 10) {
-    settingsDrafts.value[item.type].smsRank = item.sms_rank;
-    return;
-  }
-
-  try {
-    const updated = await setInspectionSettings(item.type, { smsRank: value });
-    applyInspectionSettings(item, updated);
-    success(`${item.name} SMS 알림 순번을 ${value}번으로 변경했습니다.`);
-  } catch (e) {
-    settingsDrafts.value[item.type].smsRank = item.sms_rank;
-    error(e.message);
-  }
-}
-
-async function updateCancelPenalty(item, e) {
-  const value = parseInt(e.target.value, 10);
-  if (isNaN(value) || value < 0 || value > 60) {
-    settingsDrafts.value[item.type].cancelPenalty = item.cancel_penalty;
-    return;
-  }
-
-  try {
-    const updated = await setInspectionSettings(item.type, { cancelPenalty: value });
-    applyInspectionSettings(item, updated);
-    success(`${item.name} 취소 페널티를 ${value}분으로 변경했습니다.`);
-  } catch (e) {
-    settingsDrafts.value[item.type].cancelPenalty = item.cancel_penalty;
-    error(e.message);
-  }
-}
-
-async function updateBoothCount(type, ev) {
-  const value = parseInt(ev.target.value, 10);
-  if (isNaN(value) || value < 1) return;
-  try {
-    await updateBoothConfig(type, value);
-    success(`부스 수를 ${value}개로 변경했습니다.`);
-  } catch (err) {
-    error(err.message);
-    // Revert input to current booth count
-    const booths = allBooths.value[type];
-    if (booths) ev.target.value = booths.length;
-  }
-}
-
 async function toggleBoothActive(type, boothNum, currentActive, ev) {
   try {
     await toggleBooth(type, boothNum, !currentActive);
@@ -437,8 +340,8 @@ function goToRegister() {
   router.push("/register");
 }
 
-function goToPriority() {
-  router.push("/priority");
+function goToSettings() {
+  router.push("/settings");
 }
 
 function goToStats() {
@@ -564,22 +467,6 @@ function goToInspection(num) {
         </svg>
         검차 등록
       </button>
-      <button v-if="canManage" class="btn btn-ghost" @click="goToPriority">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-          <polygon
-            points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
-          />
-        </svg>
-        우선순위
-      </button>
-      <button class="btn btn-ghost" @click="goToStats">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-          <path d="M18 20V10" />
-          <path d="M12 20V4" />
-          <path d="M6 20v-6" />
-        </svg>
-        통계
-      </button>
       <button
         ref="penaltyButton"
         class="btn btn-ghost"
@@ -595,9 +482,24 @@ function goToInspection(num) {
         </svg>
         페널티
       </button>
+      <button class="btn btn-ghost" @click="goToStats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <path d="M18 20V10" />
+          <path d="M12 20V4" />
+          <path d="M6 20v-6" />
+        </svg>
+        통계
+      </button>
+      <button v-if="canManage" class="btn btn-ghost" @click="goToSettings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.07 14H3v-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.07V3h4v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.93 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15z" />
+        </svg>
+        설정
+      </button>
     </div>
 
-    <div class="admin-grid" :class="{ 'no-settings': !canManage }">
+    <div class="admin-grid">
       <!-- Queue Panel -->
       <div class="card queue-panel">
         <div class="card-header">
@@ -743,7 +645,7 @@ function goToInspection(num) {
                       title="검차표 열기"
                       @click="goToInspection(item.num)"
                     >
-                      {{ previousInspectorsFor(item).join(", ") }}
+                      {{ previousInspectorsFor(item).join(" ") }}
                     </button>
                   </div>
                 </div>
@@ -783,106 +685,6 @@ function goToInspection(num) {
         </div>
       </div>
 
-      <!-- Settings Panel -->
-      <div v-if="canManage" class="card settings-panel">
-        <div class="card-header">
-          <h3>⚙️ 설정</h3>
-        </div>
-        <div class="card-body">
-          <div class="setting-section">
-            <div v-for="item in inspections" :key="item.type" class="inspection-setting-group">
-              <div class="inspection-setting-header">
-                <h4>{{ item.name }}</h4>
-                <div class="inspection-buttons">
-                  <button
-                    class="btn-toggle-visibility"
-                    :class="{ hidden: item.hidden_from_register }"
-                    @click="toggleVisibility(item.type, item.hidden_from_register)"
-                    :title="item.hidden_from_register ? '공개 조회·검차 등록 화면에 표시' : '공개 조회·검차 등록 화면에서 숨김'"
-                  >
-                    <svg v-if="!item.hidden_from_register" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                      <circle cx="12" cy="12" r="3" />
-                    </svg>
-                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                    </svg>
-                  </button>
-                  <button
-                    class="btn-toggle-active"
-                    :class="{ active: item.active }"
-                    @click="toggleActive(item.type, item.active)"
-                    :title="item.active ? '비활성화' : '활성화'"
-                  >
-                    <svg v-if="item.active" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-                    </svg>
-                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              <div class="setting-item compact-setting">
-                <span class="setting-label">SMS 알림</span>
-                <label class="toggle">
-                  <input
-                    type="checkbox"
-                    :checked="settingsDrafts[item.type].sms"
-                    @change="toggleSms(item, $event)"
-                  />
-                  <span class="toggle-slider"></span>
-                </label>
-              </div>
-
-              <div class="setting-item compact-setting">
-                <span class="setting-label">SMS 알림 순번</span>
-                <div class="setting-input">
-                  <input
-                    v-model="settingsDrafts[item.type].smsRank"
-                    type="number"
-                    min="1"
-                    max="10"
-                    @change="updateSmsRank(item, $event)"
-                  />
-                  <span>번</span>
-                </div>
-              </div>
-
-              <div class="setting-item compact-setting">
-                <span class="setting-label">취소 페널티</span>
-                <div class="setting-input">
-                  <input
-                    v-model="settingsDrafts[item.type].cancelPenalty"
-                    type="number"
-                    min="0"
-                    max="60"
-                    @change="updateCancelPenalty(item, $event)"
-                  />
-                  <span>분</span>
-                </div>
-              </div>
-
-              <div class="setting-item compact-setting booth-setting">
-                <span class="setting-label">부스 수</span>
-                <div class="setting-input">
-                  <input
-                    type="number"
-                    :value="allBooths[item.type]?.length || 1"
-                    min="1"
-                    @change="updateBoothCount(item.type, $event)"
-                  />
-                  <span>개</span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
 
     <Teleport to="body">
@@ -1169,12 +971,8 @@ function goToInspection(num) {
 
 .admin-grid {
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 1.5rem;
-}
-
-.admin-grid.no-settings {
   grid-template-columns: 1fr;
+  gap: 1.5rem;
 }
 
 .queue-panel .card-header {
@@ -1333,159 +1131,6 @@ function goToInspection(num) {
 
 .empty-state {
   padding: 3rem;
-}
-
-/* Settings Panel */
-.setting-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem 0;
-}
-
-.setting-label {
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.setting-section {
-  margin-top: 0;
-}
-
-.setting-input {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.setting-input input {
-  width: 60px;
-  padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  text-align: center;
-  font-size: 0.875rem;
-  font-family: "JetBrains Mono", monospace;
-  background: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.setting-input input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-}
-
-.setting-input input::-webkit-outer-spin-button,
-.setting-input input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.setting-input span {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-}
-
-.inspection-setting-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin-bottom: 0.25rem;
-}
-
-.inspection-setting-header h4 {
-  margin: 0;
-  font-size: 0.9375rem;
-}
-
-.compact-setting {
-  min-height: 2.25rem;
-  padding: 0.25rem 0;
-}
-
-/* Booth Settings */
-.inspection-setting-group {
-  border-bottom: 1px solid var(--border-color);
-  padding: 0.75rem 0;
-}
-
-.inspection-setting-group:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-}
-
-.inspection-buttons {
-  display: flex;
-  gap: 0.375rem;
-}
-
-/* 표시/숨김 버튼 */
-.btn-toggle-visibility {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--accent-primary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-toggle-visibility svg {
-  width: 18px;
-  height: 18px;
-}
-
-.btn-toggle-visibility:hover {
-  background: var(--bg-hover);
-}
-
-.btn-toggle-visibility.hidden {
-  color: var(--text-tertiary);
-  border-color: var(--border-color);
-}
-
-/* 활성화 토글 버튼 */
-.btn-toggle-active {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-toggle-active svg {
-  width: 18px;
-  height: 18px;
-}
-
-.btn-toggle-active:hover {
-  background: var(--bg-hover);
-  color: var(--accent-success);
-  border-color: var(--accent-success);
-}
-
-.btn-toggle-active.active {
-  background: var(--accent-success);
-  color: white;
-  border-color: var(--accent-success);
-}
-
-.btn-toggle-active.active:hover {
-  background: var(--accent-danger);
-  border-color: var(--accent-danger);
 }
 
 .toggle.toggle-sm {

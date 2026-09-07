@@ -438,11 +438,11 @@ watch(lastEntriesUpdate, (update) => {
                       >
                         <summary
                           class="inspector-name"
-                          :title="getInspectorDisplay(entry.num, cat.id).names.join(', ')"
+                          :title="getInspectorDisplay(entry.num, cat.id).names.join(' ')"
                           :aria-label="`${cat.name} 검차관 ${getInspectors(entry.num, cat.id).length}명 전체 목록`"
                         >
                           <span class="inspector-preview">{{ getInspectorDisplay(entry.num, cat.id).preview }}</span>
-                          <span class="inspector-more">외 {{ getInspectorDisplay(entry.num, cat.id).remaining }}명</span>
+                          <span class="inspector-more">외 {{ getInspectorDisplay(entry.num, cat.id).remaining }}</span>
                         </summary>
                         <div class="inspector-list" :aria-label="`${cat.name} 전체 검차관`">
                           <span v-for="name in getInspectors(entry.num, cat.id)" :key="name" class="inspector-person">{{ name }}</span>
@@ -451,7 +451,7 @@ watch(lastEntriesUpdate, (update) => {
                       <span
                         v-else-if="getInspectors(entry.num, cat.id).length"
                         class="inspector-name"
-                        :title="getInspectorDisplay(entry.num, cat.id).names.join(', ')"
+                        :title="getInspectorDisplay(entry.num, cat.id).names.join(' ')"
                       >{{ getInspectorDisplay(entry.num, cat.id).preview }}</span>
                     </template>
                   </td>

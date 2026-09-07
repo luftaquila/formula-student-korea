@@ -13,7 +13,7 @@ const pageInfo = {
   "/": { title: "대기열 조회" },
   "/admin": { title: "검차 대기 관리" },
   "/register": { title: "검차 대기열 등록" },
-  "/priority": { title: "검차 우선순위 관리" },
+  "/settings": { title: "검차 대기 설정" },
   "/stats": { title: "검차 통계" },
 };
 

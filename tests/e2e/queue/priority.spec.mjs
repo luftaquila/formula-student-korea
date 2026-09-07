@@ -22,8 +22,8 @@ test.describe("Queue priority management", () => {
     await apiResetPriorities();
   });
 
-  test("loads /queue/priority page with team table", async ({ page }) => {
-    await page.goto("/queue/priority");
+  test("loads priorities below the settings on /queue/settings", async ({ page }) => {
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     // Should show the priority rules section
@@ -37,7 +37,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("shows entries in priority table", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     // Wait for the table to load
@@ -52,7 +52,7 @@ test.describe("Queue priority management", () => {
 
   test("uses the compact mobile identity column and persistent type filter", async ({ page }) => {
     await page.setViewportSize({ width: 360, height: 600 });
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     const table = page.locator(".priority-table:not([data-table-head-copy])");
@@ -76,7 +76,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("set team priority via input", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     // Wait for table to load
@@ -103,7 +103,7 @@ test.describe("Queue priority management", () => {
       body: JSON.stringify({ num: 2, priority: 1 }),
     });
 
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
@@ -125,7 +125,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("search filters entries in the table", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
@@ -141,7 +141,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("back button navigates to admin page", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     await page.getByRole("button", { name: "돌아가기" }).click();
@@ -161,7 +161,7 @@ test.describe("Queue priority management", () => {
       body: JSON.stringify({ num: 2, priority: 2 }),
     });
 
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
     await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
@@ -194,7 +194,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("reset inspection history via button", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     // Accept the confirmation dialog
@@ -210,7 +210,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("arrow keys move focus between priority inputs", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
     await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
@@ -240,7 +240,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("shows inspection config toggles in table header", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     // Should show toggle controls in the table column headers
@@ -256,7 +256,7 @@ test.describe("Queue priority management", () => {
   });
 
   test("toggle sort rule (ignore priority/reinspection)", async ({ page }) => {
-    await page.goto("/queue/priority");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
     // Wait for toggle buttons in table headers to load
