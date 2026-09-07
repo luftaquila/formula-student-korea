@@ -7,6 +7,7 @@ import { validateEntryNum, validateYear } from "../shared/validation.mjs";
 import { competitionYearBounds, currentCompetitionYear } from "../shared/competition-year.mjs";
 import { ensureInactiveTeamView } from "../shared/team-status.mjs";
 import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
+import { inspectionLastCallSms, inspectionQueueRankSms } from "../shared/sms-template.mjs";
 import { access } from "../shared/access-control.js";
 
 // 키 순서가 곧 모든 화면의 검차 표시 순서다(withInspectionLengths 에서 이 순서로 정렬).
@@ -871,6 +872,75 @@ app.get("/api/admin/inspection/:type", (req, res) => {
   }
 
   res.json(result.result);
+});
+
+// POST /api/admin/inspection/:type/:num/last-call - 대기 팀에 즉시 입차 문자 발송
+app.post("/api/admin/inspection/:type/:num/last-call", async (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) {
+    return res.status(400).send(typeValidation.error);
+  }
+  const numValidation = validateEntryNum(req.params.num);
+  if (!numValidation.valid) {
+    return res.status(400).send(numValidation.error);
+  }
+
+  const type = typeValidation.value;
+  const num = numValidation.value;
+  const year = currentYear();
+  const lookup = dbRun(() => getQueueRankRow(type, num, year));
+  if (!lookup.success) {
+    logger.warn(req, "queue.last_call", {
+      error: lookup.internalError || lookup.error,
+      phase: "queue_lookup",
+      year,
+      team_num: num,
+      inspection: type,
+    }, `#${num}`);
+    return res.status(lookup.status).send(lookup.error);
+  }
+  if (!lookup.result) {
+    logger.warn(req, "queue.last_call", {
+      error: "queue_entry_not_found",
+      year,
+      team_num: num,
+      inspection: type,
+    }, `#${num}`);
+    return res.status(404).send("대기 중인 엔트리가 아닙니다.");
+  }
+  if (!smsClient.isAvailable()) {
+    logger.warn(req, "queue.last_call", {
+      error: "sms_configuration_unavailable",
+      year,
+      team_num: num,
+      inspection: type,
+    }, `#${num}`);
+    return res.status(503).send("SMS 설정을 사용할 수 없습니다.");
+  }
+
+  try {
+    const { response, status } = await smsClient.send(
+      lookup.result.phone,
+      inspectionLastCallSms({ year, num, inspection: inspections[type] }),
+    );
+    logger.log(req, "queue.last_call", {
+      year,
+      inspection: type,
+      status,
+      response,
+    }, `#${num}`);
+    return res.status(200).send();
+  } catch (error) {
+    logger.warn(req, "queue.last_call", {
+      error: error?.response || error?.message || String(error),
+      code: error?.code,
+      status: error?.status,
+      year,
+      team_num: num,
+      inspection: type,
+    }, `#${num}`);
+    return res.status(502).send("문자 발송에 실패했습니다.");
+  }
 });
 
 // PATCH /api/admin/inspection/:type - 검차 활성화 상태 변경
@@ -2396,7 +2466,12 @@ function sendSmsNotification(type, prev) {
       }
       smsClient.send(
         target.phone,
-        `[FSK ${currentCompetitionYear()}]\n엔트리 ${target.num}번 ${inspections[type]} 검차 대기 순서 ${smsRank}번입니다.\n차량과 함께 검차장으로 오세요.`,
+        inspectionQueueRankSms({
+          year: currentCompetitionYear(),
+          num: target.num,
+          inspection: inspections[type],
+          rank: smsRank,
+        }),
       ).then(
         ({ response, status }) => logger.log(null, "sms.send", {
           response, status, num: target.num, type,

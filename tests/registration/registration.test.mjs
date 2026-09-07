@@ -512,6 +512,7 @@ describe("Registration queue", () => {
 
     assert.equal(f.smsClient.messages.length, 1);
     const advanceMessage = f.smsClient.messages[0];
+    assert.match(advanceMessage.content, new RegExp(`^\\[FSK ${YEAR}\\]\\n`));
     assert.match(advanceMessage.content, /등록 대기 2번째/);
     assert.equal(advanceMessage.phone, "01033333333");
     assert.equal(f.smsClient.messages.some((message) => ["01011111111", "01022222222"].includes(message.phone)), false);

@@ -60,6 +60,44 @@ const inspectionManagerCookie = makeAuthCookie({
   email: 'inspection-manager@test.com', name: 'Inspection Manager', role: 'official', permissions: ['inspection.manage'],
 });
 
+const SMS_CONFIG = {
+  naver_cloud_access_key: 'access',
+  naver_cloud_secret_key: 'secret',
+  naver_cloud_sms_service_id: 'service',
+  phone_number_sms_sender: '01000000000',
+};
+
+function successfulSmsTransport() {
+  const requests = [];
+  let nextResponse = { status: 202, body: 'accepted' };
+  return {
+    requests,
+    failNext() {
+      nextResponse = { status: 500, body: 'provider rejected request' };
+    },
+    request(options, callback) {
+      let body = '';
+      const request = new EventEmitter();
+      request.setTimeout = () => request;
+      request.write = (chunk) => { body += chunk; };
+      request.destroy = () => {};
+      request.end = () => {
+        const responseData = nextResponse;
+        nextResponse = { status: 202, body: 'accepted' };
+        requests.push({ options, body: JSON.parse(body) });
+        const response = new EventEmitter();
+        response.statusCode = responseData.status;
+        callback(response);
+        queueMicrotask(() => {
+          response.emit('data', responseData.body);
+          response.emit('end');
+        });
+      };
+      return request;
+    },
+  };
+}
+
 const validateDevice = async (token) => {
   if (token === 'queue-device-token') {
     return { valid: true, id: 'queue-tablet', name: 'Queue Tablet', scope: 'kiosk.queue.register' };
@@ -692,6 +730,146 @@ describe('POST /api/admin/register/:type', () => {
     assert.equal(res.status, 403);
     // Clean up penalty for future tests
     db.prepare("DELETE FROM cancel_penalty WHERE num = 2").run();
+  });
+});
+
+describe('POST /api/admin/inspection/:type/:num/last-call', () => {
+  it('sends an immediate-entry SMS within the provider byte limit and audits outcomes', async () => {
+    const isolatedPath = tmpDbPath();
+    const transport = successfulSmsTransport();
+    const created = createQueueApp({
+      dbPath: isolatedPath,
+      validateUser: TRUST_JWT,
+      teamStore,
+      smsConfig: SMS_CONFIG,
+      smsRequest: transport.request,
+    });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      const registered = await isolated.post('/api/admin/register/electric', {
+        body: { num: 2, phone: '01022223333' },
+        cookie: queueManagerCookie,
+      });
+      assert.equal(registered.status, 201, await registered.clone().text());
+
+      const response = await isolated.post('/api/admin/inspection/electric/2/last-call', {
+        cookie: queueOperatorCookie,
+      });
+      assert.equal(response.status, 200, await response.clone().text());
+      assert.equal(transport.requests.length, 1);
+      assert.equal(transport.requests[0].body.type, 'SMS');
+      assert.deepEqual(transport.requests[0].body.messages, [{ to: '01022223333' }]);
+      assert.equal(
+        transport.requests[0].body.content,
+        `[FSK ${CURRENT_YEAR}]\n2번 전기 검차 지금 즉시 입차하세요.\n미입차시 취소 페널티가 부여됩니다.`,
+      );
+
+      const log = created.db.prepare(`
+        SELECT level, action, actor_name, target, detail
+        FROM logs WHERE action = 'queue.last_call' ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(log.level, 'info');
+      assert.equal(log.actor_name, 'Queue Operator');
+      assert.equal(log.target, '#2');
+      assert.deepEqual(JSON.parse(log.detail), {
+        team: {
+          id: 2,
+          year: CURRENT_YEAR,
+          number: 2,
+          university: '카이스트',
+          name: '팀B',
+          active: true,
+        },
+        year: CURRENT_YEAR,
+        inspection: 'electric',
+        status: 202,
+        response: 'accepted',
+      });
+
+      transport.failNext();
+      const failed = await isolated.post('/api/admin/inspection/electric/2/last-call', {
+        cookie: queueOperatorCookie,
+      });
+      assert.equal(failed.status, 502);
+      assert.equal(await failed.text(), '문자 발송에 실패했습니다.');
+      assert.equal(transport.requests.length, 2);
+      const failedLog = created.db.prepare(`
+        SELECT level, target, detail FROM logs
+        WHERE action = 'queue.last_call' ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(failedLog.level, 'warn');
+      assert.equal(failedLog.target, '#2');
+      assert.deepEqual(JSON.parse(failedLog.detail), {
+        team: {
+          id: 2,
+          year: CURRENT_YEAR,
+          number: 2,
+          university: '카이스트',
+          name: '팀B',
+          active: true,
+        },
+        error: 'provider rejected request',
+        code: 'SMS_SEND_FAILED',
+        status: 500,
+        year: CURRENT_YEAR,
+        team_num: 2,
+        inspection: 'electric',
+      });
+    } finally {
+      for (const timer of created.timers || []) clearInterval(timer);
+      created.closeSse?.();
+      await stopServer(started.server);
+      created.db.close();
+      cleanup(isolatedPath);
+    }
+  });
+
+  it('fails closed and audits when SMS configuration is unavailable', async () => {
+    const isolatedPath = tmpDbPath();
+    const created = createQueueApp({ dbPath: isolatedPath, validateUser: TRUST_JWT, teamStore });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      const registered = await isolated.post('/api/admin/register/chassis', {
+        body: { num: 3, phone: '01033334444' },
+        cookie: queueManagerCookie,
+      });
+      assert.equal(registered.status, 201, await registered.clone().text());
+
+      const response = await isolated.post('/api/admin/inspection/chassis/3/last-call', {
+        cookie: queueOperatorCookie,
+      });
+      assert.equal(response.status, 503);
+      assert.equal(await response.text(), 'SMS 설정을 사용할 수 없습니다.');
+
+      const log = created.db.prepare(`
+        SELECT level, target, detail FROM logs
+        WHERE action = 'queue.last_call' ORDER BY id DESC LIMIT 1
+      `).get();
+      assert.equal(log.level, 'warn');
+      assert.equal(log.target, '#3');
+      assert.deepEqual(JSON.parse(log.detail), {
+        team: {
+          id: 3,
+          year: CURRENT_YEAR,
+          number: 3,
+          university: '연세대',
+          name: '팀C',
+          active: true,
+        },
+        error: 'sms_configuration_unavailable',
+        year: CURRENT_YEAR,
+        team_num: 3,
+        inspection: 'chassis',
+      });
+    } finally {
+      for (const timer of created.timers || []) clearInterval(timer);
+      created.closeSse?.();
+      await stopServer(started.server);
+      created.db.close();
+      cleanup(isolatedPath);
+    }
   });
 });
 
