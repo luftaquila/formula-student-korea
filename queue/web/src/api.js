@@ -1,14 +1,30 @@
 import { createApiClient } from "@shared/api-base.js";
 
 const { request, fetchEntries, fetchEntryYears, fetchVehicleTypes } = createApiClient("/competition/api/v1/queue");
+const registrationClient = createApiClient("/competition/api/v1/registration");
+const inspectionClient = createApiClient("/competition/api/v1/inspection");
 
 export { fetchEntries, fetchEntryYears, fetchVehicleTypes };
 
-export async function fetchQueueState(num, phone) {
-  const res = await request(`/api/state/${num}`, {
-    method: "POST",
-    body: JSON.stringify({ phone }),
-  });
+export async function fetchQueueState(num) {
+  const res = await request(`/api/state/${encodeURIComponent(num)}`);
+  return res.json();
+}
+
+export async function fetchPublicQueues() {
+  const res = await request("/api/public/queues");
+  return res.json();
+}
+
+export async function fetchRegistrationLookup(year, num) {
+  const res = await registrationClient.request(
+    `/api/lookup/${encodeURIComponent(num)}?year=${encodeURIComponent(year)}`,
+  );
+  return res.json();
+}
+
+export async function fetchInspectionSummary(year) {
+  const res = await inspectionClient.request(`/api/sheet/summary?year=${encodeURIComponent(year)}`);
   return res.json();
 }
 

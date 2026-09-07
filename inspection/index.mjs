@@ -17,7 +17,7 @@ import {
   validateCalculationGraph,
 } from "./lib/calculations.mjs";
 import { getInspectionItemState } from "./lib/item-status.mjs";
-import { access } from "../shared/access-control.js";
+import { access, authorizePrincipal } from "../shared/access-control.js";
 import {
   DEFAULT_RULES_BASE_URL,
   EMPTY_RULE_REFS,
@@ -480,15 +480,59 @@ function getCategoryCompletion(year, teamNum, categoryId) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
+const {
+  broadcast: broadcastSSEEvent,
+  handler: sseHandler,
+  close: closeSse,
+  revalidate: revalidateSse,
+} = createSSEManager(200, { logger });
 
 function broadcastEvent(event, data) {
   broadcastSSEEvent(event, data);
   options.onEvent?.(event, data);
 }
 
-// SSE 엔드포인트
-app.get("/api/sheet/events", sseHandler());
+async function revalidateSsePermission(meta) {
+  if (!meta.email) return null;
+  let result;
+  try {
+    result = await app.validateUser(meta.email, meta);
+  } catch (error) {
+    logger.warn(null, "sse.revalidate", {
+      reason: "auth_error",
+      error: error?.message || String(error),
+    }, meta.email, meta);
+    return null;
+  }
+  if (!result?.valid) {
+    logger.warn(null, "sse.revalidate", {
+      reason: result?.transient ? "auth_unavailable" : "invalid_user",
+    }, meta.email, meta);
+    return null;
+  }
+
+  const role = result.role ?? meta.role;
+  const permissions = Array.isArray(result.permissions) ? result.permissions : meta.permissions || [];
+  const principal = { kind: "human", role, permissions };
+  if (!authorizePrincipal(principal, access.permission("inspection.operate"))) {
+    logger.warn(null, "sse.revalidate", {
+      reason: "permission_revoked",
+      permission: "inspection.operate",
+    }, meta.email, { ...meta, role });
+    return null;
+  }
+  return { ...meta, role, permissions };
+}
+
+// 클라이언트의 반응형 연결 해제와 별개로, 열린 스트림도 최신 권한을 주기적으로 재검증한다.
+app.get("/api/sheet/events", sseHandler(null, {
+  meta: (req) => ({
+    email: req.user?.email,
+    role: req.user?.role,
+    permissions: req.user?.permissions || [],
+  }),
+  revalidate: revalidateSsePermission,
+}));
 
 /* ============================================
    API 라우트: 검차 시트
@@ -2020,6 +2064,7 @@ return {
   app,
   db,
   closeSse,
+  revalidateSse,
   sourceEvent: broadcastSSEEvent,
   queries: { templateTree: getTemplateTree, summary: getInspectionSummary, bulkAnswers: getBulkAnswers },
 };

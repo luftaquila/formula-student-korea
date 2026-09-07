@@ -201,18 +201,18 @@ test.describe("Queue booth occupancy + public scoping", () => {
     expect(bad.status()).toBe(400);
   });
 
-  test("state lookup rejects a non-string phone with 400", async ({ request }) => {
-    // The phone check only fires once the entry is actually queued.
+  test("state lookup is entry-only and the retired phone POST stays unavailable", async ({ request }) => {
     const reg = await register(STATE_NUM);
     expect(reg.status).toBe(201);
 
-    // This spec stays well below the 30/minute limiter and owns the queued entry,
-    // so the validation contract must be observed exactly.
-    const res = await request.post(`/competition/api/v1/queue/state/${STATE_NUM}`, {
+    const state = await request.get(`/competition/api/v1/queue/state/${STATE_NUM}`);
+    expect(state.status()).toBe(200);
+    expect((await state.json()).queues.length).toBeGreaterThan(0);
+
+    const retired = await request.post(`/competition/api/v1/queue/state/${STATE_NUM}`, {
       data: { phone: 1234567890 },
     });
-    expect(res.status()).toBe(400);
-    expect(await res.text()).toBe("전화번호 형식이 올바르지 않습니다.");
+    expect(retired.status()).toBe(404);
   });
 
   // NOTE: the /api/state/:num rate-limit (429) path is intentionally NOT tested

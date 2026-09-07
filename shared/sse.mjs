@@ -73,24 +73,37 @@ export function createSSEManager(maxClients = 200, { logger = null } = {}) {
   // 루프는 의도적으로 직렬이다. app.validateUser의 5초 캐시 + in-flight 병합 덕에 같은
   // 이메일은 왕복 한 번으로 합쳐지고, 직렬 순회는 auth로의 동시 요청을 1개로 묶는다 —
   // 병렬화하면 auth가 느려진 바로 그 순간(재검증이 오래 걸리는 순간)에 herd를 되살린다.
-  const revalidationTimer = setInterval(async () => {
-    for (const client of clients) {
-      if (closed) break;
-      if (!client.revalidate) continue;
-      let next;
-      try {
-        next = await client.revalidate(client.meta);
-      } catch {
-        continue; // 일시 오류 → 연결 유지
+  let revalidationPromise = null;
+  async function revalidateClients() {
+    if (revalidationPromise) return revalidationPromise;
+    revalidationPromise = (async () => {
+      for (const client of clients) {
+        if (closed) break;
+        if (!client.revalidate) continue;
+        let next;
+        try {
+          next = await client.revalidate(client.meta);
+        } catch {
+          continue; // 일시 오류 → 연결 유지
+        }
+        if (closed) break;
+        if (next == null) {
+          try { client.res.end(); } catch {}
+          removeClient(client);
+        } else {
+          client.meta = next;
+        }
       }
-      if (closed) break;
-      if (next == null) {
-        try { client.res.end(); } catch {}
-        removeClient(client);
-      } else {
-        client.meta = next;
-      }
+    })();
+    try {
+      await revalidationPromise;
+    } finally {
+      revalidationPromise = null;
     }
+  }
+
+  const revalidationTimer = setInterval(() => {
+    void revalidateClients();
   }, 30000);
   revalidationTimer.unref();
 
@@ -160,7 +173,7 @@ export function createSSEManager(maxClients = 200, { logger = null } = {}) {
     }
   }
 
-  return { broadcast, handler, close };
+  return { broadcast, handler, close, revalidate: revalidateClients };
 }
 
 function clientIp(req) {

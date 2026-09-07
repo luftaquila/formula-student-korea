@@ -1,4 +1,4 @@
-import { ref, onMounted, onUnmounted } from "vue";
+import { isRef, ref, onMounted, onUnmounted, watch } from "vue";
 
 export function createSSEConnection(endpointUrl) {
   const connected = ref(false);
@@ -65,17 +65,30 @@ export function createSSEConnection(endpointUrl) {
     if (subscribers > 0) connect();
   }
 
-  function useSSE() {
+  function useSSE(enabled = true) {
+    let subscribed = false;
+    let stopEnabledWatch = null;
+
+    function syncSubscription(shouldEnable) {
+      if (shouldEnable && !subscribed) {
+        subscribed = true;
+        subscribers++;
+        connect();
+      } else if (!shouldEnable && subscribed) {
+        subscribed = false;
+        subscribers--;
+        if (subscribers === 0) disconnect();
+      }
+    }
+
     onMounted(() => {
-      subscribers++;
-      connect();
+      syncSubscription(isRef(enabled) ? enabled.value : enabled);
+      if (isRef(enabled)) stopEnabledWatch = watch(enabled, syncSubscription);
     });
 
     onUnmounted(() => {
-      subscribers--;
-      if (subscribers === 0) {
-        disconnect();
-      }
+      stopEnabledWatch?.();
+      syncSubscription(false);
     });
 
     return { connected };

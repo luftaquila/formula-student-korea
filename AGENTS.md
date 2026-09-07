@@ -31,10 +31,15 @@ instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - `/srv/k3s` manages independent `lufthafen` test and `luftwolke` live clusters.
   Treat their manifests, deployment actions, and verification as separate scopes.
+- At the event venue, clients are not placed behind a shared venue NAT; nearly all
+  requests reach the services from distinct mobile-carrier IPs. Do not assume one
+  venue-wide source IP when assessing per-IP limits without contrary evidence.
 - When repository paths or deployed-image ownership change, update the CI build map,
   `/srv/k3s` deployment contract and script, and both environment manifests together.
 - `competition_team.id` is the stable team identity, and `competition_team` is the
   only team source of truth.
+- Competition entries do not change while an event is in progress. Do not require
+  event-day clients to refresh the entry roster solely to recover from a reconnect.
 - Interpret competition years in `Asia/Seoul`. Reads may target any valid year;
   team, vehicle-type, and Inspection mutations may target the current or next KST
   year, while other operational mutations are limited to the current year. Do not

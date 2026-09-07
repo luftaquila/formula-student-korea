@@ -17,10 +17,10 @@ test.describe("Queue public status page", () => {
   });
 
   test("renders its empty state and gives immediate entry feedback", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: /실시간 대기 순번/ })).toBeVisible();
-    await expect(page.locator(".result-display")).toContainText("-");
+    await expect(page.getByRole("heading", { name: /내 대기 현황/ })).toBeVisible();
+    await expect(page.locator(".result-card")).toContainText("-");
 
-    const entryInput = page.getByPlaceholder("번호");
+    const entryInput = page.getByLabel("엔트리 번호");
     await entryInput.fill("1");
     await expect(page.locator(".team-badge").first()).toContainText("서울대학교");
 
@@ -32,8 +32,7 @@ test.describe("Queue public status page", () => {
     await page.getByRole("button", { name: "조회" }).click();
     await expectNotification(page, "error", "엔트리 번호를 입력하세요");
 
-    await page.getByPlaceholder("번호").fill("999");
-    await page.getByPlaceholder("010-0000-0000").fill("01012345678");
+    await page.getByLabel("엔트리 번호").fill("999");
     await expectNotificationAfter(
       page,
       "error",
@@ -43,18 +42,129 @@ test.describe("Queue public status page", () => {
   });
 
   test("shows the exact no-queue result for a valid unregistered team", async ({ page }) => {
-    await page.getByPlaceholder("번호").fill(String(NO_QUEUE_ENTRY));
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "REGISTRATION_NOT_FOUND", message: "대기 중인 등록 내역이 없습니다." }),
+    }));
+    await page.getByLabel("엔트리 번호").fill(String(NO_QUEUE_ENTRY));
     await expect(page.locator(".team-badge").first()).toContainText("부산대학교");
-    await page.getByPlaceholder("010-0000-0000").fill("01012345678");
 
     const stateResponse = page.waitForResponse(
       (response) =>
         response.url().includes(`/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`) &&
-        response.request().method() === "POST",
+        response.request().method() === "GET",
     );
     await page.getByRole("button", { name: "조회" }).click();
     expect((await stateResponse).status()).toBe(200);
-    await expectNotification(page, "error", "대기중인 검차가 없습니다");
-    await expect(page.locator(".result-display")).toContainText("-");
+    await expect(page.locator(".result-card")).toContainText("현재 등록 또는 검차 대기가 없습니다.");
+  });
+
+  test("clears a saved lookup when the entry becomes invalid", async ({ page }) => {
+    let queueRequests = 0;
+    await page.route(`**/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`, (route) => {
+      queueRequests += 1;
+      if (queueRequests === 1) {
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            year: 2026,
+            queues: [{
+              type: "tilting",
+              name: "틸팅",
+              isReinspection: false,
+              rank: 4,
+              total: 6,
+              groupRank: 3,
+              groupTotal: 5,
+            }],
+          }),
+        });
+      }
+      return route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ message: "존재하지 않는 엔트리 번호입니다." }),
+      });
+    });
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "REGISTRATION_NOT_FOUND", message: "대기 중인 등록 내역이 없습니다." }),
+    }));
+
+    await page.getByLabel("엔트리 번호").fill(String(NO_QUEUE_ENTRY));
+    await page.getByRole("button", { name: "조회" }).click();
+    const inspectionRow = page.locator(".result-row-detailed").filter({ hasText: "틸팅" });
+    const overallRank = inspectionRow.locator(".rank-line").first();
+    await expect(overallRank.locator(".overall-rank-label")).toHaveText("전체");
+    await expect(overallRank.locator(".result-rank")).toHaveText("4");
+    await expect(overallRank.locator(".result-suffix")).toHaveText("번");
+    expect(await page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBe(String(NO_QUEUE_ENTRY));
+
+    await page.getByRole("button", { name: "조회" }).click();
+    await expect(page.locator(".result-card")).toContainText("존재하지 않는 엔트리 번호입니다.");
+    await expect(inspectionRow).toHaveCount(0);
+    expect(await page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBeNull();
+  });
+
+  test("shows a successful registration lookup when the Queue service fails", async ({ page }) => {
+    await page.route(`**/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`, (route) => route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ message: "Queue unavailable" }),
+    }));
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ position: 3, waitingTotal: 8 }),
+    }));
+
+    await page.getByLabel("엔트리 번호").fill(String(NO_QUEUE_ENTRY));
+    await page.getByRole("button", { name: "조회" }).click();
+
+    const registrationRow = page.locator(".result-row-detailed").filter({ hasText: "등록" });
+    await expect(registrationRow.locator(".result-rank")).toHaveText("3");
+    await expect(registrationRow).toContainText("8팀");
+    await expect(page.locator(".result-card")).toContainText("검차 대기 순번을 새로고침할 수 없습니다.");
+  });
+
+  test("does not restore a stale result after the entry input changes", async ({ page }) => {
+    let releaseQueue;
+    const queueStarted = new Promise((resolve) => {
+      releaseQueue = resolve;
+    });
+    let allowQueueResponse;
+    const queueResponseAllowed = new Promise((resolve) => {
+      allowQueueResponse = resolve;
+    });
+    await page.route(`**/competition/api/v1/queue/state/${NO_QUEUE_ENTRY}`, async (route) => {
+      releaseQueue();
+      await queueResponseAllowed;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          queues: [{ type: "tilting", name: "틸팅", rank: 9, total: 9, groupRank: 9, groupTotal: 9 }],
+        }),
+      });
+    });
+    await page.route(`**/competition/api/v1/registration/lookup/${NO_QUEUE_ENTRY}?*`, (route) => route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ code: "REGISTRATION_NOT_FOUND" }),
+    }));
+
+    const entryInput = page.getByLabel("엔트리 번호");
+    await entryInput.fill(String(NO_QUEUE_ENTRY));
+    await page.getByRole("button", { name: "조회" }).click({ noWaitAfter: true });
+    await queueStarted;
+    await entryInput.fill("31");
+    allowQueueResponse();
+
+    await expect(page.getByRole("button", { name: "조회" })).toBeEnabled();
+    await expect(page.locator(".result-row-detailed")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => sessionStorage.getItem("queue_entry"))).toBeNull();
   });
 });

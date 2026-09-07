@@ -48,7 +48,6 @@ test.describe("Queue registration", () => {
     const qrImage = page.locator(".qr-card .qr-image");
     await expect(qrImage).toBeVisible({ timeout: 10000 });
     await expect(qrImage).toHaveAttribute("src", /^data:image\//);
-    await expect(page.getByText("내 순번 조회")).toBeVisible();
 
     const inspectionButtons = page.locator(".inspection-btn");
     expect(await inspectionButtons.count()).toBeGreaterThan(0);

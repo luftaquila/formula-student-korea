@@ -304,7 +304,7 @@ describe("Registration queue", () => {
     assert.equal(response.status, 200);
   });
 
-  it("verifies public lookups with year, entry number, and phone without exposing phone data", async () => {
+  it("looks up a waiting registration by year and entry number without exposing phone data", async () => {
     const f = await fixture();
     const first = f.team(21);
     const second = f.team(22);
@@ -312,19 +312,17 @@ describe("Registration queue", () => {
     await register(f, first, "01011112222");
     await register(f, second, "01033334444");
 
-    let response = await f.client.post("/api/lookup", {
-      body: { year: YEAR, num: first.number, phone: "010-1111-2222" },
-    });
+    let response = await f.client.get(`/api/lookup/${first.number}?year=${YEAR}`);
     await assertStatus(response, 200);
     const result = await response.json();
+    assert.equal(result.year, YEAR);
     assert.equal(result.teamId, first.id);
     assert.equal(result.position, 1);
     assert.equal(result.waitingTotal, 2);
     assert.equal(Object.hasOwn(result, "phone"), false);
+    assert.equal(Object.hasOwn(result, "registeredAt"), false);
 
-    response = await f.client.post("/api/lookup", {
-      body: { year: YEAR, num: first.number, phone: "01099999999" },
-    });
+    response = await f.client.get(`/api/lookup/999?year=${YEAR}`);
     assert.equal(response.status, 404);
     assert.equal((await response.json()).code, "REGISTRATION_NOT_FOUND");
 
@@ -334,15 +332,8 @@ describe("Registration queue", () => {
       ORDER BY id DESC LIMIT 1
     `).get();
     const warningDetail = JSON.parse(warning.detail);
-    assert.equal(warningDetail.phone, "01099999999");
-    assert.deepEqual(warningDetail.team, {
-      id: first.id,
-      year: YEAR,
-      number: first.number,
-      university: first.university,
-      name: first.name,
-      active: true,
-    });
+    assert.equal(Object.hasOwn(warningDetail, "phone"), false);
+    assert.equal(warningDetail.number, 999);
   });
 
   it("logs only the first rejected lookup in each rate-limit window", async () => {
@@ -353,9 +344,8 @@ describe("Registration queue", () => {
 
     const statuses = [];
     for (let i = 0; i < 62; i += 1) {
-      const response = await f.client.post("/api/lookup", {
+      const response = await f.client.get(`/api/lookup/${team.number}?year=${YEAR}`, {
         headers: { "X-Real-IP": "192.0.2.23" },
-        body: { year: YEAR, num: team.number, phone: "01023232323" },
       });
       statuses.push(response.status);
     }
@@ -384,9 +374,7 @@ describe("Registration queue", () => {
 
     const changed = f.teamStore.updateTeam(team.id, { number: 131 });
     assert.equal(changed.after.id, team.id);
-    let response = await f.client.post("/api/lookup", {
-      body: { year: YEAR, num: 131, phone: "01055556666" },
-    });
+    let response = await f.client.get(`/api/lookup/131?year=${YEAR}`);
     await assertStatus(response, 200);
     assert.equal((await response.json()).teamId, team.id);
 
@@ -430,9 +418,7 @@ describe("Registration queue", () => {
       INSERT INTO registration_queue (team_id, phone) VALUES (?, '01012121212')
     `).run(oldTeamId).lastInsertRowid);
 
-    let response = await f.client.post("/api/lookup", {
-      body: { year: oldYear, num: 51, phone: "01012121212" },
-    });
+    let response = await f.client.get(`/api/lookup/51?year=${oldYear}`);
     await assertStatus(response, 200);
 
     response = await f.client.post("/api/queue", {
@@ -450,7 +436,7 @@ describe("Registration queue", () => {
     assert.equal(response.status, 409);
   });
 
-  it("classifies the credentialed POST lookup explicitly and fails closed for unknown mutations", async () => {
+  it("lets the retired POST lookup fall through and fails closed for unknown mutations", async () => {
     const f = await fixture();
     for (const path of ["/api/lookup", "/api/lookup/", "/API/LOOKUP/"]) {
       assert.deepEqual(f.guard({ path, body: { year: YEAR - 1 } }), {
@@ -458,10 +444,21 @@ describe("Registration queue", () => {
         years: [],
       });
     }
+    const retiredLookup = await f.client.post("/api/lookup", {
+      body: { year: YEAR, num: 1, phone: "01012345678" },
+    });
+    assert.equal(retiredLookup.status, 404);
     assert.throws(
       () => f.guard({ path: "/api/future-mutation", body: { year: YEAR } }),
       (error) => error.code === "UNKNOWN_REGISTRATION_MUTATION" && error.status === 500,
     );
+  });
+
+  it("redirects the retired public registration root to the unified queue view", async () => {
+    const f = await fixture();
+    const response = await fetch(`${f.baseUrl}/`, { redirect: "manual" });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("location"), "/queue/");
   });
 
   it("resolves concurrent transitions with one success and one auditable conflict", async () => {

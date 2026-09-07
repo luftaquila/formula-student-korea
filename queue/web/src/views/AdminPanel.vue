@@ -6,6 +6,7 @@ import {
   fetchEntries,
   fetchAllInspections,
   fetchInspectionQueue,
+  fetchInspectionSummary,
   toggleInspectionActive,
   toggleInspectionVisibility,
   cancelFromQueue,
@@ -25,19 +26,29 @@ import {
   setCancelPenaltySettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
+import { useInspectionSSE } from "../composables/useInspectionSSE";
 import { useNotification } from "@shared/useNotification.js";
 import { useBoothTimers } from "../composables/useBoothTimers";
 import { displayPhone } from "@shared/format-phone.js";
 import { permissionComputed } from "@shared/officialsStore.js";
+import { createCoalescedRefresh } from "../coalesced-refresh.js";
+import { findInspectionCategory } from "../inspection-category.js";
+import { inspectionSheetPath } from "../inspection-sheet-path.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
 const canManage = permissionComputed("queue.manage");
+const canInspect = permissionComputed("inspection.operate");
 
 const { activeInspections, lastQueueUpdate, allBooths, lastBoothUpdate, lastPenaltyUpdate, lastEntriesUpdate, reconnected } = useSSE();
+const {
+  lastInspectorUpdate,
+  reconnected: inspectionReconnected,
+} = useInspectionSSE(canInspect);
 
 const entries = ref({});
 const inspections = ref([]);
+const inspectionSummary = ref(null);
 const currentQueue = ref([]);
 const currentTab = ref("");
 const smsEnabled = ref(false);
@@ -72,6 +83,13 @@ const currentBooths = computed(() => {
 
 const activePenalties = computed(() => penalties.value.filter((penalty) => penalty.until > penaltyClock.value));
 
+const inspectionSummaryRefresh = createCoalescedRefresh({ refresh: loadInspectionSummary });
+
+function requestInspectionSummary() {
+  if (!canInspect.value) return Promise.resolve(false);
+  return inspectionSummaryRefresh.request();
+}
+
 // Watch for queue updates from SSE
 watch(lastQueueUpdate, async (update) => {
   // type == null은 전 탭에 영향을 주는 변경(팀 삭제·번호변경 등)이다. 특정 탭을 보는 중이면
@@ -95,12 +113,29 @@ watch(lastPenaltyUpdate, () => {
 });
 
 watch(lastEntriesUpdate, async () => {
-  try { entries.value = await fetchEntries(); }
+  try {
+    entries.value = await fetchEntries();
+    await requestInspectionSummary();
+  }
   catch { error("엔트리 정보를 새로고침할 수 없습니다."); }
 });
 
 watch(reconnected, () => {
   if (penaltyModalOpen.value) refreshPenaltyList();
+  requestInspectionSummary();
+});
+
+watch(lastInspectorUpdate, (update) => {
+  if (update?.year === currentCompetitionYear()) requestInspectionSummary();
+});
+
+watch(inspectionReconnected, () => {
+  requestInspectionSummary();
+});
+
+watch(canInspect, (allowed) => {
+  if (allowed && !inspectionSummary.value) requestInspectionSummary();
+  if (!allowed) inspectionSummary.value = null;
 });
 
 // Re-sync timers when tab changes
@@ -136,6 +171,7 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
+    if (canInspect.value) await requestInspectionSummary();
     if (canManage.value) {
       const sms = await fetchSmsSettings();
       smsEnabled.value = sms.value;
@@ -164,6 +200,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.clearInterval(penaltyClockTimer);
   clearAllTimers();
+  inspectionSummaryRefresh.stop();
 });
 
 async function refreshQueue(type) {
@@ -173,6 +210,33 @@ async function refreshQueue(type) {
   } catch (e) {
     error("대기열을 가져올 수 없습니다.");
   }
+}
+
+async function loadInspectionSummary() {
+  try {
+    const nextSummary = await fetchInspectionSummary(currentCompetitionYear());
+    if (canInspect.value) inspectionSummary.value = nextSummary;
+  } catch {
+    inspectionSummary.value = null;
+  }
+}
+
+function inspectionCategoryFor(num) {
+  if (!canInspect.value || !inspectionSummary.value) return null;
+  const inspection = inspections.value.find((item) => item.type === currentTab.value)
+    || activeInspections.value.find((item) => item.type === currentTab.value);
+  return findInspectionCategory(
+    inspectionSummary.value.categories,
+    inspection?.name,
+    entries.value[num]?.type,
+  );
+}
+
+function previousInspectorsFor(item) {
+  const category = inspectionCategoryFor(item.num);
+  if (!category) return [];
+  const names = inspectionSummary.value?.teams?.[item.num]?.inspectors?.[category.id];
+  return Array.isArray(names) ? names : [];
 }
 
 function selectTab(type) {
@@ -470,10 +534,16 @@ function formatPenaltyRemaining(timestamp) {
 }
 
 function goToInspection(num) {
+  const category = inspectionCategoryFor(num);
   // 큐는 항상 현재 연도의 엔트리를 다루므로(getEntries → entry 기본 연도),
   // 인스펙션 시트 경로 /:year/:num 의 year 는 현재 연도로 이동한다.
   const base = import.meta.env.PROD ? "/inspection" : "";
-  window.location.href = `${base}/${currentCompetitionYear()}/${num}`;
+  window.location.href = inspectionSheetPath({
+    base,
+    year: currentCompetitionYear(),
+    num,
+    categoryId: category?.id,
+  });
 }
 
 </script>
@@ -603,7 +673,11 @@ function goToInspection(num) {
                       >
                         {{ booth.timer_paused_at ? "재개" : "중단" }}
                       </button>
-                      <button class="btn btn-primary btn-sm" @click="goToInspection(booth.occupied_by)">
+                      <button
+                        v-if="canInspect"
+                        class="btn btn-primary btn-sm"
+                        @click="goToInspection(booth.occupied_by)"
+                      >
                         검차
                       </button>
                     </div>
@@ -636,7 +710,7 @@ function goToInspection(num) {
               <span class="booth-section-title">대기열</span>
             </div>
             <div v-if="currentQueue.length > 0" class="queue-list">
-              <div v-for="(item, index) in currentQueue" :key="item.num" class="queue-item">
+              <div v-for="item in currentQueue" :key="item.num" class="queue-item">
                 <div class="queue-item-content">
                   <div class="queue-item-header">
                     <div class="queue-item-left">
@@ -647,21 +721,38 @@ function goToInspection(num) {
                   <div class="queue-item-meta">
                     <a :href="`tel:${item.phone}`" class="entry-phone">{{ displayPhone(item.phone) }}</a>
                     <span class="entry-time">{{ formatTime(item.timestamp) }}</span>
+                  </div>
+                  <div class="queue-item-rank-row">
                     <div class="queue-item-tags">
-                      <span v-if="item.is_reinspection" class="badge badge-warning">재검</span>
-                      <span v-else class="badge badge-success">초검</span>
-                      <span v-if="item.priority < 999" class="badge badge-primary">{{ item.priority }}순위</span>
+                      <span class="badge badge-primary">전체 {{ item.rank }}번</span>
+                      <span class="badge" :class="item.is_reinspection ? 'badge-warning' : 'badge-success'">
+                        {{ item.is_reinspection ? "재검" : "초검" }} {{ item.group_rank }}번
+                      </span>
+                      <span v-if="item.priority < 999" class="badge badge-primary">우선 {{ item.priority }}</span>
                     </div>
+                    <button
+                      v-if="item.is_reinspection && inspectionCategoryFor(item.num) && previousInspectorsFor(item).length"
+                      class="previous-inspector-link"
+                      type="button"
+                      title="검차표 열기"
+                      @click="goToInspection(item.num)"
+                    >
+                      {{ previousInspectorsFor(item).join(", ") }}
+                    </button>
                   </div>
                 </div>
-                <div class="action-buttons">
-                  <button class="btn btn-danger btn-icon btn-sm" @click="cancelEntry(item.num)" title="취소">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16">
-                      <line x1="18" y1="6" x2="6" y2="18" />
-                      <line x1="6" y1="6" x2="18" y2="18" />
-                    </svg>
-                  </button>
-                </div>
+                <button
+                  class="btn btn-danger btn-icon btn-sm queue-cancel-button"
+                  type="button"
+                  :aria-label="`${item.num}번 대기 취소`"
+                  title="취소"
+                  @click="cancelEntry(item.num)"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
+                    <line x1="18" y1="6" x2="6" y2="18" />
+                    <line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
               </div>
             </div>
             <div v-else class="empty-state">대기중인 엔트리가 없습니다.</div>
@@ -731,7 +822,7 @@ function goToInspection(num) {
                     class="btn-toggle-visibility"
                     :class="{ hidden: item.hidden_from_register }"
                     @click="toggleVisibility(item.type, item.hidden_from_register)"
-                    :title="item.hidden_from_register ? '등록 페이지에 표시' : '등록 페이지에서 숨김'"
+                    :title="item.hidden_from_register ? '공개 조회·검차 등록 화면에 표시' : '공개 조회·검차 등록 화면에서 숨김'"
                   >
                     <svg v-if="!item.hidden_from_register" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
@@ -1092,10 +1183,11 @@ function goToInspection(num) {
 }
 
 .queue-item {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 0.75rem;
-  padding: 0.875rem 1rem;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
   border-bottom: 1px solid var(--border-color);
 }
 
@@ -1104,7 +1196,6 @@ function goToInspection(num) {
 }
 
 .queue-item-content {
-  flex: 1;
   min-width: 0;
 }
 
@@ -1112,13 +1203,14 @@ function goToInspection(num) {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 0.5rem;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
 }
 
 .queue-item-left {
   display: flex;
   align-items: center;
+  flex: 1;
   gap: 0.5rem;
   min-width: 0;
 }
@@ -1128,14 +1220,42 @@ function goToInspection(num) {
 .queue-item-meta {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.25rem 0.625rem;
+}
+
+.queue-item-rank-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  margin-top: 0.25rem;
 }
 
 .queue-item-tags {
   display: flex;
   align-items: center;
-  gap: 0.375rem;
+  flex-shrink: 0;
+  gap: 0.25rem;
 }
+
+.previous-inspector-link {
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  color: var(--accent-primary);
+  background: none;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.previous-inspector-link:hover { text-decoration: underline; }
 
 .entry-num {
   font-size: 1.125rem;
@@ -1152,7 +1272,7 @@ function goToInspection(num) {
 
 .entry-phone {
   font-size: 0.8125rem;
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
   text-decoration: none;
 }
@@ -1164,7 +1284,7 @@ function goToInspection(num) {
 
 .entry-time {
   font-size: 0.8125rem;
-  color: var(--text-tertiary);
+  color: var(--text-primary);
   font-family: "JetBrains Mono", monospace;
 }
 
@@ -1203,12 +1323,6 @@ function goToInspection(num) {
 
 .setting-section {
   margin-top: 0.5rem;
-}
-
-.action-buttons {
-  display: flex;
-  gap: 0.375rem;
-  flex-shrink: 0;
 }
 
 .setting-input {
@@ -1584,11 +1698,7 @@ function goToInspection(num) {
   }
 
   .queue-item {
-    padding: 0.75rem;
-  }
-
-  .queue-item-header {
-    flex-wrap: wrap;
+    padding: 0.5rem 0.625rem;
   }
 
   .queue-item-left {
@@ -1604,15 +1714,22 @@ function goToInspection(num) {
   }
 
   .queue-item-meta {
-    flex-wrap: wrap;
-    gap: 0.5rem 0.75rem;
+    gap: 0.25rem 0.5rem;
   }
 
-  .queue-item-tags {
-    flex-basis: 100%;
+  .queue-item-tags .badge {
+    padding: 0.1875rem 0.375rem;
+    font-size: 0.6875rem;
   }
 
-  .entry-phone {
+  .queue-cancel-button {
+    width: 30px;
+    height: 30px;
+    padding: 0;
+  }
+
+  .entry-phone,
+  .entry-time {
     font-size: 0.75rem;
   }
 }

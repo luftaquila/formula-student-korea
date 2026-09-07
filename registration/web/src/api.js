@@ -14,7 +14,6 @@ const body = (value) => ({
 
 export const fetchStatus = (year) => json(`/api/status?year=${year}`);
 export const fetchTeams = (year) => fetchEntries(year);
-export const lookupRegistration = (data) => json("/api/lookup", { method: "POST", ...body(data) });
 export const fetchQueue = (year) => json(`/api/queue?year=${year}`);
 export const createRegistration = (data) => json("/api/queue", { method: "POST", ...body(data) });
 export const completeRegistration = (id) => json(`/api/queue/${id}/done`, { method: "POST" });
