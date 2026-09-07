@@ -65,6 +65,7 @@ test.describe("Registration queue", () => {
       await managerPage.goto("/registration/register");
       await waitForPageReady(managerPage);
       await managerStatus;
+      await expect(managerPage.getByRole("button", { name: "전체화면", exact: true })).toBeVisible();
 
       await managerPage.locator("#register-number").fill(String(ENTRY_NUMBER));
       await expect(managerPage.locator(".team-badge")).toContainText("부산대학교 PNU Racing");

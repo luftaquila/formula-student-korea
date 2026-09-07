@@ -3,6 +3,7 @@ import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
+import FullscreenButton from "@shared/FullscreenButton.vue";
 import { device } from "@shared/deviceStore.js";
 
 const route = useRoute();
@@ -32,9 +33,10 @@ watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { i
           <span class="logo-icon">🔧</span>
           <h1>FSK {{ getPageTitle() }}</h1>
         </a>
-        <div v-if="isKiosk" class="device-badge" title="접수 전용 장비">📱 {{ device.name }}</div>
-        <div v-else class="header-actions">
-          <NavMenu :currentPath="'/queue' + route.path" />
+        <div class="header-actions">
+          <FullscreenButton v-if="route.path === '/register'" />
+          <div v-if="isKiosk" class="device-badge" title="접수 전용 장비">📱 {{ device.name }}</div>
+          <NavMenu v-else :currentPath="'/queue' + route.path" />
         </div>
       </div>
     </header>
