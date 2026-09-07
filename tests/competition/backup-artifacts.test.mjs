@@ -187,6 +187,57 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function restoreQueueSettingsPreview(dbPath, canonical) {
+  const writer = new Database(dbPath);
+  if (canonical) {
+    const rows = writer.prepare(`
+      SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register
+      FROM inspection
+      ORDER BY rowid
+    `).all();
+    writer.transaction(() => {
+      writer.exec(`
+        DROP TABLE inspection;
+        CREATE TABLE IF NOT EXISTS inspection (
+          type TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          active BOOLEAN NOT NULL DEFAULT TRUE,
+          ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+          ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE,
+          hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE,
+          sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1)),
+          sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10),
+          cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)
+        );
+      `);
+      const insert = writer.prepare(`
+        INSERT INTO inspection
+          (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of rows) insert.run(
+        row.type,
+        row.name,
+        row.active,
+        row.ignore_priority,
+        row.ignore_reinspection,
+        row.hidden_from_register,
+      );
+    })();
+  } else {
+    writer.exec(`
+      ALTER TABLE inspection ADD COLUMN sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1));
+      ALTER TABLE inspection ADD COLUMN sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10);
+      ALTER TABLE inspection ADD COLUMN cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60);
+    `);
+  }
+  writer.exec(`
+    UPDATE inspection SET sms = TRUE, sms_rank = 8, cancel_penalty = 6 WHERE type = 'battery';
+    DROP TABLE settings;
+  `);
+  writer.close();
+}
+
 function restoreRetiredCalledStatus(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
@@ -985,54 +1036,58 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
-  it("repairs an earlier Queue settings preview before rollback validation", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-queue-settings-preview-repair-"));
-    roots.push(root);
-    const dbPath = path.join(root, "competition.db");
-    const uploads = path.join(root, "uploads");
-    createCompetitionUnit(dbPath, uploads);
+  it("validates and repairs completed or interrupted Queue settings previews", () => {
+    for (const canonical of [true, false]) {
+      const variant = canonical ? "canonical" : "altered";
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `fsk-queue-settings-preview-${variant}-`));
+      roots.push(root);
+      const dbPath = path.join(root, "competition.db");
+      const uploads = path.join(root, "uploads");
+      createCompetitionUnit(dbPath, uploads);
+      restoreQueueSettingsPreview(dbPath, canonical);
 
-    const preview = new Database(dbPath);
-    preview.exec(`
-      ALTER TABLE inspection ADD COLUMN sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1));
-      ALTER TABLE inspection ADD COLUMN sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10);
-      ALTER TABLE inspection ADD COLUMN cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60);
-      UPDATE inspection SET sms = TRUE, sms_rank = 8, cancel_penalty = 6 WHERE type = 'battery';
-      DROP TABLE settings;
-    `);
-    preview.close();
-    const rejectedPreview = validateDatabase(dbPath);
-    assert.notEqual(rejectedPreview.status, 0);
-    assert.match(rejectedPreview.stderr, /complete-schema<contract:/);
-
-    const repaired = createCompetitionApp({
-      dbPath,
-      uploadRoot: uploads,
-      skipStaticValidation: true,
-      validateUser: TRUST_JWT,
-    });
-    repaired.close();
-
-    const reader = new Database(dbPath, { readonly: true });
-    try {
-      assert.deepEqual(
-        reader.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
-        ["type", "name", "active", "ignore_priority", "ignore_reinspection", "hidden_from_register"],
+      const before = new Database(dbPath, { readonly: true });
+      const beforeContract = competitionSchemaContractDigest(captureCompetitionSchemaContract(before));
+      before.close();
+      const predecessor = validateDatabase(dbPath);
+      assert.equal(predecessor.status, 0, `${variant}: ${predecessor.stderr}`);
+      const unchanged = new Database(dbPath, { readonly: true });
+      assert.equal(
+        competitionSchemaContractDigest(captureCompetitionSchemaContract(unchanged)),
+        beforeContract,
+        `${variant} predecessor validation must remain read-only`,
       );
-      assert.deepEqual(Object.fromEntries(reader.prepare(`
-        SELECT key, value FROM settings
-        WHERE key LIKE 'inspection:battery:%'
-        ORDER BY key
-      `).all().map(({ key, value }) => [key.slice("inspection:battery:".length), value])), {
-        cancel_penalty: "6",
-        sms: "TRUE",
-        sms_rank: "8",
+      unchanged.close();
+
+      const repaired = createCompetitionApp({
+        dbPath,
+        uploadRoot: uploads,
+        skipStaticValidation: true,
+        validateUser: TRUST_JWT,
       });
-    } finally {
-      reader.close();
+      repaired.close();
+
+      const reader = new Database(dbPath, { readonly: true });
+      try {
+        assert.deepEqual(
+          reader.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
+          ["type", "name", "active", "ignore_priority", "ignore_reinspection", "hidden_from_register"],
+        );
+        assert.deepEqual(Object.fromEntries(reader.prepare(`
+          SELECT key, value FROM settings
+          WHERE key LIKE 'inspection:battery:%'
+          ORDER BY key
+        `).all().map(({ key, value }) => [key.slice("inspection:battery:".length), value])), {
+          cancel_penalty: "6",
+          sms: "TRUE",
+          sms_rank: "8",
+        });
+      } finally {
+        reader.close();
+      }
+      const result = validateDatabase(dbPath);
+      assert.equal(result.status, 0, result.stderr);
     }
-    const result = validateDatabase(dbPath);
-    assert.equal(result.status, 0, result.stderr);
   });
 
   it("validates the exact pre-rule-reference database read-only and upgrades it without replacing template rows", () => {
