@@ -39,6 +39,7 @@ test.describe("Queue registration", () => {
   });
 
   test("renders the complete form and keeps selection, entry feedback, QR, and reset in sync", async ({ page }) => {
+    await expect(page.getByRole("button", { name: "전체화면", exact: true })).toBeVisible();
     await expect(page.getByText("검차 종류 선택")).toBeVisible();
     await expect(page.locator("label", { hasText: "엔트리" })).toBeVisible();
     await expect(page.locator("label", { hasText: "전화번호" })).toBeVisible();

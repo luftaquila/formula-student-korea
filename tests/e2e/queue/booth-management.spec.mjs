@@ -238,6 +238,7 @@ test.describe("Queue booth management", () => {
     await expect(row.getByRole("link", { name: "010-0000-0000" })).toBeVisible();
     await expect(row.locator(".entry-time")).toBeVisible();
     await expect(row.getByRole("button", { name: "1번 대기 취소" })).toBeVisible();
+    await expect(row.getByRole("button", { name: "1번 라스트콜 문자 발송" })).toBeVisible();
     expect(await page.evaluate(() =>
       document.documentElement.scrollWidth <= document.documentElement.clientWidth,
     )).toBe(true);
@@ -398,6 +399,95 @@ test.describe("Queue booth management", () => {
 
     // Should show warning notification for cancel
     await expect(page.locator("[data-sonner-toast]").first()).toBeVisible({ timeout: 5000 });
+  });
+
+  test("stacks queue actions and confirms before sending a last call", async ({ page }) => {
+    expect((await apiRegister(1)).status).toBe(201);
+    let requestMethod = null;
+    await page.route(
+      "**/competition/api/v1/queue/admin/inspection/battery/1/last-call",
+      async (route) => {
+        requestMethod = route.request().method();
+        await route.fulfill({ status: 200, body: "" });
+      },
+    );
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await page.locator(".tab", { hasText: "축전지" }).click();
+
+    const row = page.locator(".queue-item").filter({ has: page.locator(".entry-num", { hasText: /^1$/ }) });
+    const cancelButton = row.getByRole("button", { name: "1번 대기 취소" });
+    const lastCallButton = row.getByRole("button", { name: "1번 라스트콜 문자 발송" });
+    await expect(cancelButton).toBeVisible();
+    await expect(lastCallButton).toBeVisible();
+    await expect(cancelButton).toHaveText("");
+    await expect(lastCallButton).toHaveText("");
+    await expect(cancelButton.locator("svg")).toHaveCount(1);
+    await expect(lastCallButton.locator("svg")).toHaveCount(1);
+    const [cancelBox, lastCallBox] = await Promise.all([cancelButton.boundingBox(), lastCallButton.boundingBox()]);
+    expect(cancelBox).not.toBeNull();
+    expect(lastCallBox).not.toBeNull();
+    expect(lastCallBox.y).toBeGreaterThan(cancelBox.y + cancelBox.height - 1);
+
+    await clickAndAcceptConfirm(page, lastCallButton, "엔트리 1번에 라스트콜 문자를 발송하시겠습니까?");
+    expect(requestMethod).toBe("POST");
+    await expectNotification(page, "success", "엔트리 1번에 라스트콜 문자를 발송했습니다");
+  });
+
+  test("keeps overlapping last calls pending per entry", async ({ page }) => {
+    expect((await apiRegister(1)).status).toBe(201);
+    expect((await apiRegister(2)).status).toBe(201);
+
+    const requestCounts = new Map();
+    const gates = new Map();
+    const releases = new Map();
+    for (const num of [1, 2]) {
+      gates.set(num, new Promise((resolve) => releases.set(num, resolve)));
+    }
+    await page.route("**/competition/api/v1/queue/admin/inspection/battery/*/last-call", async (route) => {
+      const match = route.request().url().match(/\/battery\/(\d+)\/last-call$/);
+      const num = Number(match?.[1]);
+      requestCounts.set(num, (requestCounts.get(num) || 0) + 1);
+      await gates.get(num);
+      await route.fulfill({ status: 200, body: "" });
+    });
+
+    await page.goto("/queue/admin");
+    await waitForPageReady(page);
+    await page.locator(".tab", { hasText: "축전지" }).click();
+
+    const rowFor = (num) => page.locator(".queue-item").filter({
+      has: page.locator(".entry-num", { hasText: new RegExp(`^${num}$`) }),
+    });
+    const firstCancel = rowFor(1).getByRole("button", { name: "1번 대기 취소" });
+    const firstLastCall = rowFor(1).getByRole("button", { name: "1번 라스트콜 문자 발송" });
+    const secondCancel = rowFor(2).getByRole("button", { name: "2번 대기 취소" });
+    const secondLastCall = rowFor(2).getByRole("button", { name: "2번 라스트콜 문자 발송" });
+
+    try {
+      await clickAndAcceptConfirm(page, firstLastCall, "엔트리 1번에 라스트콜 문자를 발송하시겠습니까?");
+      await clickAndAcceptConfirm(page, secondLastCall, "엔트리 2번에 라스트콜 문자를 발송하시겠습니까?");
+      await expect.poll(() => requestCounts.get(1) || 0).toBe(1);
+      await expect.poll(() => requestCounts.get(2) || 0).toBe(1);
+      await expect(firstCancel).toBeDisabled();
+      await expect(firstLastCall).toBeDisabled();
+      await expect(secondCancel).toBeDisabled();
+      await expect(secondLastCall).toBeDisabled();
+
+      releases.get(1)();
+      await expect(firstLastCall).toBeEnabled();
+      await expect(firstCancel).toBeEnabled();
+      await expect(secondLastCall).toBeDisabled();
+      await expect(secondCancel).toBeDisabled();
+
+      releases.get(2)();
+      await expect(secondLastCall).toBeEnabled();
+      await expect(secondCancel).toBeEnabled();
+    } finally {
+      releases.get(1)();
+      releases.get(2)();
+    }
   });
 
   test("official sees operational buttons without registration", async ({ page }) => {

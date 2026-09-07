@@ -210,8 +210,8 @@ test.describe("Inspection summary dashboard", () => {
     });
   });
 
-  test("collapses five or more inspectors without hiding the full list", async ({ page }) => {
-    const inspectors = ["김검차", "이검차", "박검차", "최검차", "정검차"];
+  test("summarizes inspectors after two names without a leading marker", async ({ page }) => {
+    const inspectors = ["김검차", "이검차", "박검차"];
     await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
       const response = await route.fetch();
       const body = await response.json();
@@ -230,14 +230,16 @@ test.describe("Inspection summary dashboard", () => {
 
     await expect(toggle).toBeVisible();
     await expect(toggle.locator(".inspector-preview")).toHaveText("김검차, 이검차");
-    await expect(toggle.locator(".inspector-more")).toHaveText("외 3명");
+    await expect(toggle.locator(".inspector-more")).toHaveText("외 1명");
     await expect(toggle).toHaveAttribute("title", inspectors.join(", "));
+    expect(await toggle.evaluate(element => getComputedStyle(element).listStyleType)).toBe("none");
+    expect(await toggle.evaluate(element => getComputedStyle(element, "::before").content)).toBe("none");
 
     await toggle.click();
     await expect(disclosure).toHaveAttribute("open", "");
-    await expect(disclosure.locator(".inspector-person")).toHaveCount(5);
+    await expect(disclosure.locator(".inspector-person")).toHaveCount(3);
     await expect(disclosure.locator(".inspector-person").last()).toBeVisible();
-    await expect(disclosure.locator(".inspector-list")).toContainText("정검차");
+    await expect(disclosure.locator(".inspector-list")).toContainText("박검차");
     await expect(page).toHaveURL(/\/inspection\/?$/);
   });
 

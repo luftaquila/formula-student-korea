@@ -7,6 +7,7 @@ import {
   fetchAllInspections,
   fetchInspectionQueue,
   fetchInspectionSummary,
+  sendLastCall,
   toggleInspectionActive,
   toggleInspectionVisibility,
   cancelFromQueue,
@@ -34,6 +35,7 @@ import { permissionComputed } from "@shared/officialsStore.js";
 import { createCoalescedRefresh } from "../coalesced-refresh.js";
 import { findInspectionCategory } from "../inspection-category.js";
 import { inspectionSheetPath } from "../inspection-sheet-path.js";
+import { addPendingKey, removePendingKey } from "../pending-last-calls.js";
 
 const { success, error, warning } = useNotification();
 const router = useRouter();
@@ -62,6 +64,7 @@ const penaltiesLoading = ref(false);
 const pendingPenaltyKey = ref("");
 const pendingPenaltyAction = ref("");
 const pendingBoothTimerKey = ref("");
+const pendingLastCallKeys = ref(new Set());
 const penaltyClock = ref(Date.now());
 const penaltyButton = ref(null);
 const penaltyCloseButton = ref(null);
@@ -325,6 +328,32 @@ async function cancelEntry(num) {
   } catch (e) {
     error(e.message);
   }
+}
+
+async function lastCallEntry(num) {
+  const key = `${currentTab.value}-${num}`;
+  if (pendingLastCallKeys.value.has(key)) return;
+
+  const entry = entries.value[num];
+  if (!confirm(
+    `엔트리 ${num}번에 라스트콜 문자를 발송하시겠습니까?\n`
+    + `${currentTabName.value} 검차장으로 지금 즉시 입차하도록 안내합니다.\n`
+    + `${entry?.univ ?? ""} ${entry?.team ?? ""}`,
+  )) return;
+
+  pendingLastCallKeys.value = addPendingKey(pendingLastCallKeys.value, key);
+  try {
+    await sendLastCall(currentTab.value, num);
+    success(`엔트리 ${num}번에 라스트콜 문자를 발송했습니다.`);
+  } catch (e) {
+    error(e.message);
+  } finally {
+    pendingLastCallKeys.value = removePendingKey(pendingLastCallKeys.value, key);
+  }
+}
+
+function isLastCallPending(num) {
+  return pendingLastCallKeys.value.has(`${currentTab.value}-${num}`);
 }
 
 async function toggleSms() {
@@ -741,18 +770,35 @@ function goToInspection(num) {
                     </button>
                   </div>
                 </div>
-                <button
-                  class="btn btn-danger btn-icon btn-sm queue-cancel-button"
-                  type="button"
-                  :aria-label="`${item.num}번 대기 취소`"
-                  title="취소"
-                  @click="cancelEntry(item.num)"
-                >
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
-                    <line x1="18" y1="6" x2="6" y2="18" />
-                    <line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
+                <div class="queue-item-actions">
+                  <button
+                    class="btn btn-danger btn-icon btn-sm queue-action-button"
+                    type="button"
+                    :aria-label="`${item.num}번 대기 취소`"
+                    title="취소"
+                    :disabled="isLastCallPending(item.num)"
+                    @click="cancelEntry(item.num)"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
+                      <line x1="18" y1="6" x2="6" y2="18" />
+                      <line x1="6" y1="6" x2="18" y2="18" />
+                    </svg>
+                  </button>
+                  <button
+                    class="btn btn-primary btn-icon btn-sm queue-action-button"
+                    type="button"
+                    :aria-label="`${item.num}번 라스트콜 문자 발송`"
+                    title="라스트콜"
+                    :aria-busy="isLastCallPending(item.num)"
+                    :disabled="isLastCallPending(item.num)"
+                    @click="lastCallEntry(item.num)"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16" aria-hidden="true">
+                      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                      <path d="M10 21h4" />
+                    </svg>
+                  </button>
+                </div>
               </div>
             </div>
             <div v-else class="empty-state">대기중인 엔트리가 없습니다.</div>
@@ -1197,6 +1243,16 @@ function goToInspection(num) {
 
 .queue-item-content {
   min-width: 0;
+}
+
+.queue-item-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.queue-action-button {
+  flex: none;
 }
 
 .queue-item-header {
@@ -1722,7 +1778,7 @@ function goToInspection(num) {
     font-size: 0.6875rem;
   }
 
-  .queue-cancel-button {
+  .queue-action-button {
     width: 30px;
     height: 30px;
     padding: 0;

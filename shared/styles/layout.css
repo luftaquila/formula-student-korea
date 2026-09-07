@@ -59,6 +59,37 @@
   padding: 1.5rem 2rem;
 }
 
+/* Registration kiosks size themselves from the remaining fullscreen viewport.
+   Their normal min-height uses 100vh, which otherwise adds the header and page
+   padding on top and produces a small document scrollbar. */
+body.kiosk-fullscreen {
+  height: 100vh;
+  overflow: hidden;
+}
+
+body.kiosk-fullscreen .app-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.kiosk-fullscreen .app-container > .header {
+  flex: none;
+}
+
+body.kiosk-fullscreen .app-container > .main-content {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  overflow: auto;
+}
+
+body.kiosk-fullscreen .kiosk-register {
+  min-height: 100%;
+}
+
 /* Team tables scroll horizontally inside the page while their header remains
    attached to the viewport. overflow: clip avoids creating a nested vertical
    scroll container, unlike overflow: hidden/auto. */

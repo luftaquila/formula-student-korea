@@ -9,6 +9,7 @@ import {
   sendYearError,
 } from "../shared/competition-year.mjs";
 import { createSmsClient, createThrottledSkipWarning } from "../shared/sms-client.mjs";
+import { registrationQueueRankSms, smsPrefix } from "../shared/sms-template.mjs";
 import { access } from "../shared/access-control.js";
 
 // 대기열에 남아 있는 유일한 상태. 'called' 는 운영 흐름에서 제거됐다(완료/취소만 쓴다).
@@ -27,7 +28,6 @@ const QUEUE_TABLE_SQL = `CREATE TABLE IF NOT EXISTS registration_queue (
       registered_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       finished_at TEXT
     );`;
-const SMS_PREFIX = (year) => `[FSK ${year}]`;
 const DEFAULT_SETTINGS = Object.freeze({ open: false, sms: false, notifyRank: 3 });
 
 function parsePositiveInteger(value, label) {
@@ -211,7 +211,7 @@ export function createRegistrationApp(options = {}) {
       sms: row ? row.sms === 1 : DEFAULT_SETTINGS.sms,
       notifyRank: row ? row.notify_rank : DEFAULT_SETTINGS.notifyRank,
       smsAvailable: smsClient.isAvailable(),
-      smsPrefix: SMS_PREFIX(year),
+      smsPrefix: smsPrefix(year).trimEnd(),
       updatedAt: row?.updated_at || null,
     };
   }
@@ -456,7 +456,11 @@ export function createRegistrationApp(options = {}) {
         team,
         registrationId: target.id,
         phone: target.phone,
-        content: `${SMS_PREFIX(year)} 엔트리 ${target.num}번 등록 대기 ${settings.notifyRank}번째입니다. 등록 데스크 근처에서 대기하세요.`,
+        content: registrationQueueRankSms({
+          year,
+          num: target.num,
+          rank: settings.notifyRank,
+        }),
         onSuccess: () => finishAdvanceNotification(target.id, team, true, claimToken),
         onFailure: () => finishAdvanceNotification(target.id, team, false, claimToken),
       });

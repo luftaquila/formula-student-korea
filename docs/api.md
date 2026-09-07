@@ -215,6 +215,9 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 |--------|------|------|---------|----------|-------------|
 | POST | `/admin/register/:type` | `queue.manage` or `kiosk.queue.register` | `{ num, phone }` | 201 | Register team in queue (validates entry, penalty, concurrent rules) |
 | POST | `/admin/cancel/:type` | `queue.operate` | `{ num }` | 200 | Cancel registration (applies time penalty) |
+| POST | `/admin/inspection/:type/:num/last-call` | `queue.operate` | — | 200 | Send the queued phone an immediate-entry last-call SMS; returns 503 when SMS configuration is unavailable and 502 when delivery fails |
+
+Last-call delivery is an explicit operator action and therefore does not depend on the automatic SMS notification toggle. The target must still be waiting in the selected inspection queue, and usable SENS configuration is required.
 
 ### Active Cancel Penalties
 

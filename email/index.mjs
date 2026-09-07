@@ -7,6 +7,8 @@ import { requireInternalRequest, createSecretChecker } from "../shared/express-s
 import { createServiceSkeleton, addSpaFallback, runIfDirect } from "../shared/service-bootstrap.mjs";
 import { serviceUrl } from "../shared/services.mjs";
 import { access } from "../shared/access-control.js";
+import { currentCompetitionYear } from "../shared/competition-year.mjs";
+import { smsTestMessage } from "../shared/sms-template.mjs";
 
 const BREVO_API_BASE = "https://api.brevo.com/v3";
 
@@ -650,7 +652,7 @@ app.post("/api/test-sms", async (req, res) => {
   const body = JSON.stringify({
     type: "SMS",
     from: sender,
-    content: `[FSK] SMS 전송 테스트입니다.`,
+    content: smsTestMessage(currentCompetitionYear()),
     messages: [{ to: recipient }],
   });
 

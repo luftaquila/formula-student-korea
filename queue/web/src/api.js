@@ -41,6 +41,12 @@ export async function fetchInspectionQueue(type) {
   return res.json();
 }
 
+export async function sendLastCall(type, num) {
+  await request(`/api/admin/inspection/${encodeURIComponent(type)}/${encodeURIComponent(num)}/last-call`, {
+    method: "POST",
+  });
+}
+
 export async function toggleInspectionActive(type, active) {
   await request(`/api/admin/inspection/${type}`, {
     method: "PATCH",
