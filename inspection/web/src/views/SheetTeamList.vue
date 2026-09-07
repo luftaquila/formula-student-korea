@@ -6,6 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { currentCompetitionYear, isCompetitionPreparationYear } from "@shared/competition-year.mjs";
 import { permissionComputed } from "@shared/officialsStore.js";
+import { inspectorDisplay } from "../utils/inspector-display.js";
 
 const tableRef = ref(null);
 const { error } = useNotification();
@@ -45,7 +46,6 @@ const stickyHeaderMetrics = ref({ width: 0, height: 0, columnWidths: [] });
 let lifecycleRefreshTimer = null;
 let dataLoadSeq = 0;
 let stickyHeaderResizeObserver = null;
-const INSPECTOR_COLLAPSE_THRESHOLD = 5;
 
 const isReadOnly = computed(() => !isCompetitionPreparationYear(selectedYear.value));
 const stickyHeaderHostStyle = computed(() => {
@@ -234,12 +234,8 @@ function getInspectors(num, catId) {
   return Array.isArray(inspectors) ? inspectors : [];
 }
 
-function getInspectorTitle(num, catId) {
-  return getInspectors(num, catId).join(", ");
-}
-
-function isInspectorListCollapsed(num, catId) {
-  return getInspectors(num, catId).length >= INSPECTOR_COLLAPSE_THRESHOLD;
+function getInspectorDisplay(num, catId) {
+  return inspectorDisplay(getInspectors(num, catId));
 }
 
 // 카테고리 열은 여러 유형이 섞인 목록에서 공유되므로 열 자체는 남기고,
@@ -436,17 +432,17 @@ watch(lastEntriesUpdate, (update) => {
                       >{{ getResult(entry.num, cat.id) }}</span>
                       <span v-else class="badge badge-empty">-</span>
                       <details
-                        v-if="isInspectorListCollapsed(entry.num, cat.id)"
+                        v-if="getInspectorDisplay(entry.num, cat.id).expandable"
                         class="inspector-disclosure"
                         @click.stop
                       >
                         <summary
                           class="inspector-name"
-                          :title="getInspectorTitle(entry.num, cat.id)"
+                          :title="getInspectorDisplay(entry.num, cat.id).names.join(', ')"
                           :aria-label="`${cat.name} 검차관 ${getInspectors(entry.num, cat.id).length}명 전체 목록`"
                         >
-                          <span class="inspector-preview">{{ getInspectors(entry.num, cat.id).slice(0, 2).join(", ") }}</span>
-                          <span class="inspector-more">외 {{ getInspectors(entry.num, cat.id).length - 2 }}명</span>
+                          <span class="inspector-preview">{{ getInspectorDisplay(entry.num, cat.id).preview }}</span>
+                          <span class="inspector-more">외 {{ getInspectorDisplay(entry.num, cat.id).remaining }}명</span>
                         </summary>
                         <div class="inspector-list" :aria-label="`${cat.name} 전체 검차관`">
                           <span v-for="name in getInspectors(entry.num, cat.id)" :key="name" class="inspector-person">{{ name }}</span>
@@ -455,8 +451,8 @@ watch(lastEntriesUpdate, (update) => {
                       <span
                         v-else-if="getInspectors(entry.num, cat.id).length"
                         class="inspector-name"
-                        :title="getInspectorTitle(entry.num, cat.id)"
-                      >({{ getInspectorTitle(entry.num, cat.id) }})</span>
+                        :title="getInspectorDisplay(entry.num, cat.id).names.join(', ')"
+                      >{{ getInspectorDisplay(entry.num, cat.id).preview }}</span>
                     </template>
                   </td>
                 </template>
@@ -730,17 +726,12 @@ watch(lastEntriesUpdate, (update) => {
   gap: 0.25rem;
   margin-top: 0;
   cursor: pointer;
+  list-style: none;
   white-space: nowrap;
 }
 
-.inspector-disclosure .inspector-name::before {
-  content: "▸";
-  flex: none;
-  color: var(--text-tertiary);
-}
-
-.inspector-disclosure[open] .inspector-name::before {
-  content: "▾";
+.inspector-disclosure .inspector-name::-webkit-details-marker {
+  display: none;
 }
 
 .inspector-preview {
