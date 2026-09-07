@@ -187,50 +187,6 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
-function restoreGlobalQueueSettings(dbPath) {
-  // Reproduce the exact previous main schema so the read-only validator tests
-  // real deployable predecessor contracts, including SQLite's ALTER-added comma.
-  const writer = new Database(dbPath);
-  const inspections = writer.prepare(`
-    SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register
-    FROM inspection
-    ORDER BY rowid
-  `).all();
-  writer.transaction(() => {
-    writer.exec(`
-      DROP TABLE inspection;
-      CREATE TABLE inspection (
-        type TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        active BOOLEAN NOT NULL DEFAULT TRUE,
-        ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
-        ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
-      , hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE);
-      CREATE TABLE settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      INSERT INTO settings VALUES ('sms', 'FALSE');
-      INSERT INTO settings VALUES ('sms_rank', '3');
-      INSERT INTO settings VALUES ('cancel_penalty', '10');
-    `);
-    const insert = writer.prepare(`
-      INSERT INTO inspection
-        (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-    for (const row of inspections) insert.run(
-      row.type,
-      row.name,
-      row.active,
-      row.ignore_priority,
-      row.ignore_reinspection,
-      row.hidden_from_register,
-    );
-  })();
-  writer.close();
-}
-
 function restoreRetiredCalledStatus(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
@@ -910,7 +866,6 @@ describe("Competition backup/restore artifact validation", () => {
     let created = boot();
     created.teams.createTeam(currentCompetitionYear(), { number: 41, university: "Upgrade University", name: "Upgrade Team" });
     created.close();
-    restoreGlobalQueueSettings(dbPath);
     restoreRetiredCalledStatus(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
@@ -999,13 +954,93 @@ describe("Competition backup/restore artifact validation", () => {
     assert.match(result.stderr, /runtime schema/);
   });
 
+  it("keeps per-inspection Queue settings inside the rollback-compatible schema", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-queue-settings-schema-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    createCompetitionUnit(dbPath, path.join(root, "uploads"));
+
+    const reader = new Database(dbPath, { readonly: true });
+    try {
+      assert.ok(reader.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'",
+      ).get());
+      assert.deepEqual(
+        reader.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
+        ["type", "name", "active", "ignore_priority", "ignore_reinspection", "hidden_from_register"],
+      );
+      assert.equal(reader.prepare(
+        "SELECT COUNT(*) AS count FROM settings WHERE key LIKE 'inspection:%'",
+      ).get().count, 24);
+      const contract = captureCompetitionSchemaContract(reader);
+      assert.equal(contract.length, 131);
+      assert.equal(
+        competitionSchemaContractDigest(contract),
+        "6ea17b5f529d947108915839bb104a90c27089eb639d3d67f7149376bc904e64",
+      );
+    } finally {
+      reader.close();
+    }
+    const result = validateDatabase(dbPath);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("repairs an earlier Queue settings preview before rollback validation", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-queue-settings-preview-repair-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+
+    const preview = new Database(dbPath);
+    preview.exec(`
+      ALTER TABLE inspection ADD COLUMN sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1));
+      ALTER TABLE inspection ADD COLUMN sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10);
+      ALTER TABLE inspection ADD COLUMN cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60);
+      UPDATE inspection SET sms = TRUE, sms_rank = 8, cancel_penalty = 6 WHERE type = 'battery';
+      DROP TABLE settings;
+    `);
+    preview.close();
+    const rejectedPreview = validateDatabase(dbPath);
+    assert.notEqual(rejectedPreview.status, 0);
+    assert.match(rejectedPreview.stderr, /complete-schema<contract:/);
+
+    const repaired = createCompetitionApp({
+      dbPath,
+      uploadRoot: uploads,
+      skipStaticValidation: true,
+      validateUser: TRUST_JWT,
+    });
+    repaired.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    try {
+      assert.deepEqual(
+        reader.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
+        ["type", "name", "active", "ignore_priority", "ignore_reinspection", "hidden_from_register"],
+      );
+      assert.deepEqual(Object.fromEntries(reader.prepare(`
+        SELECT key, value FROM settings
+        WHERE key LIKE 'inspection:battery:%'
+        ORDER BY key
+      `).all().map(({ key, value }) => [key.slice("inspection:battery:".length), value])), {
+        cancel_penalty: "6",
+        sms: "TRUE",
+        sms_rank: "8",
+      });
+    } finally {
+      reader.close();
+    }
+    const result = validateDatabase(dbPath);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
   it("validates the exact pre-rule-reference database read-only and upgrades it without replacing template rows", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-rule-reference-schema-upgrade-"));
     roots.push(root);
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
-    restoreGlobalQueueSettings(dbPath);
     const predecessor = new Database(dbPath);
     const itemId = predecessor.prepare(`INSERT INTO sheet_template
       (year, level, name, answer_type, field_key, calculation)
@@ -1042,7 +1077,6 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
-    restoreGlobalQueueSettings(dbPath);
     removeBoothTimerState(dbPath);
 
     const predecessorResult = validateDatabase(dbPath);
@@ -1079,7 +1113,6 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
-    restoreGlobalQueueSettings(dbPath);
     removeBoothTimerState(dbPath);
     const predecessor = new Database(dbPath);
     predecessor.exec("ALTER TABLE sheet_template DROP COLUMN rule_refs");
@@ -1128,7 +1161,6 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.db.prepare("INSERT INTO score_endurance (year, team_num, driver1_time) VALUES (?, 1, 123456)")
       .run(CURRENT_YEAR);
     seeded.close();
-    restoreGlobalQueueSettings(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
 
@@ -1171,7 +1203,6 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
-    restoreGlobalQueueSettings(dbPath);
     removeRegistrationSchema(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
@@ -1208,7 +1239,6 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
-    restoreGlobalQueueSettings(dbPath);
     removeRegistrationSchema(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
@@ -1268,7 +1298,6 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.db.prepare("INSERT INTO score_endurance (year, team_num, qualified) VALUES (?, 1, 1)")
       .run(CURRENT_YEAR);
     seeded.close();
-    restoreGlobalQueueSettings(dbPath);
     removeRegistrationSchema(dbPath);
     removeQualifiedCheckConstraint(dbPath);
     removeEnduranceDriverNames(dbPath);

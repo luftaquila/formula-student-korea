@@ -27,18 +27,40 @@ export function createQueueApp(options = {}) {
 const inspections = INSPECTIONS;
 const QUEUE_LOG_MAX_ROWS = 100000;
 const BOOTH_LOG_MAX_ROWS = 100000;
-const INSPECTION_TABLE_SQL = `CREATE TABLE IF NOT EXISTS inspection (
+const INSPECTION_SETTING_DEFAULTS = Object.freeze({
+  sms: "FALSE",
+  sms_rank: "3",
+  cancel_penalty: "10",
+});
+const INSPECTION_SETTING_FIELDS = Object.freeze(Object.keys(INSPECTION_SETTING_DEFAULTS));
+// This is the exact post-addColumn shape produced by main. Preview builds that
+// used inspection columns are folded back into this rollback-compatible DDL.
+const CANONICAL_INSPECTION_TABLE_SQL = `CREATE TABLE inspection (
   type TEXT PRIMARY KEY,
   name TEXT NOT NULL,
   active BOOLEAN NOT NULL DEFAULT TRUE,
   ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
-  ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE,
-  hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE,
-  sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1)),
-  sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10),
-  cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)
-)`;
-let inspectionSettingsSchemaNeedsRebuild = false;
+  ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
+, hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE)`;
+
+function inspectionSettingKey(type, field) {
+  return `inspection:${type}:${field}`;
+}
+
+function normalizeInspectionSetting(field, value) {
+  if (field === "sms") {
+    return value === true || value === 1 || String(value).toUpperCase() === "TRUE" ? "TRUE" : "FALSE";
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (field === "sms_rank") {
+    return Number.isInteger(parsed) && parsed >= 1 && parsed <= 10
+      ? String(parsed)
+      : INSPECTION_SETTING_DEFAULTS[field];
+  }
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 60
+    ? String(parsed)
+    : INSPECTION_SETTING_DEFAULTS[field];
+}
 
 function primaryKeyColumns(db, table) {
   if (!tableExists(db, table)) return [];
@@ -128,7 +150,7 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
       ...access.anyOf(access.permission("queue.manage"), access.device("kiosk.queue.register")),
       unauthenticatedRedirect: "/auth/device",
     };
-    if (/^\/priority(?:\/|$)/.test(req.path)) return access.permission("queue.manage");
+    if (/^\/(?:priority|settings)(?:\/|$)/.test(req.path)) return access.permission("queue.manage");
     if (/^\/(admin|stats)/.test(req.path)) return access.permission("queue.operate");
     if (req.path === "/api/events") return null;
     if (req.path === "/api/active") return null;
@@ -147,15 +169,30 @@ ensureInactiveTeamView(db);
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
-  db.exec(INSPECTION_TABLE_SQL);
+  db.exec(`CREATE TABLE IF NOT EXISTS inspection (
+    type TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    active BOOLEAN NOT NULL DEFAULT TRUE,
+    ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+    ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
+  );`);
 
   // 마이그레이션: 기존 테이블에 컬럼 추가
   addColumn(db, "inspection", "ignore_priority BOOLEAN NOT NULL DEFAULT FALSE");
   addColumn(db, "inspection", "ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE");
   addColumn(db, "inspection", "hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE");
+  const inspectionColumnsBeforeNormalization = tableColumns(db, "inspection");
+  const previewSettingColumns = INSPECTION_SETTING_FIELDS.filter((field) => (
+    inspectionColumnsBeforeNormalization.has(field)
+  ));
+  // A previous PR preview persisted these settings as inspection columns. Hold
+  // the rows in memory so the same transaction can restore the main-compatible
+  // table and preserve every per-inspection value.
+  const previewInspectionRows = previewSettingColumns.length > 0
+    ? db.prepare("SELECT * FROM inspection ORDER BY rowid").all()
+    : [];
   {
-    const cols = db.prepare("PRAGMA table_info(inspection)").all().map((c) => c.name);
-    if (cols.includes("length")) {
+    if (inspectionColumnsBeforeNormalization.has("length")) {
       db.transaction(() => {
         db.exec(`CREATE TABLE inspection_new (
           type TEXT PRIMARY KEY,
@@ -172,11 +209,6 @@ db.transaction(() => {
       })();
     }
   }
-  inspectionSettingsSchemaNeedsRebuild = !["sms", "sms_rank", "cancel_penalty"]
-    .every((column) => tableColumns(db, "inspection").has(column));
-  addColumn(db, "inspection", "sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1))");
-  addColumn(db, "inspection", "sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10)");
-  addColumn(db, "inspection", "cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)");
 
   // 팀별 검차별 우선순위 테이블 (0이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (
@@ -215,6 +247,71 @@ db.transaction(() => {
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_iq_year_insp_ts
     ON inspection_queue(year, inspection, timestamp, num)`);
+
+  // Keep the exact main schema so its read-only deployment validator remains a
+  // supported rollback path. Per-inspection values live under namespaced keys.
+  const settingsTableExisted = tableExists(db, "settings");
+  db.exec(`CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );`);
+  const insertSetting = db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
+  const hadNamespacedSettings = db.prepare(
+    "SELECT 1 FROM settings WHERE key LIKE 'inspection:%' LIMIT 1",
+  ).get() != null;
+
+  // Recover the legacy global value from the earlier preview schema when every
+  // inspection still agrees. Normal production rollout retains these rows, so
+  // this compatibility path is only needed for already-created PR previews.
+  for (const field of previewSettingColumns) {
+    const values = new Set(previewInspectionRows.map((row) => normalizeInspectionSetting(field, row[field])));
+    if (values.size === 1) insertSetting.run(field, values.values().next().value);
+  }
+  for (const [field, fallback] of Object.entries(INSPECTION_SETTING_DEFAULTS)) {
+    insertSetting.run(field, fallback);
+  }
+  const globalSettings = Object.fromEntries(INSPECTION_SETTING_FIELDS.map((field) => [
+    field,
+    normalizeInspectionSetting(field, db.prepare("SELECT value FROM settings WHERE key = ?").get(field)?.value),
+  ]));
+
+  for (const row of previewInspectionRows) {
+    for (const field of INSPECTION_SETTING_FIELDS) {
+      const source = previewSettingColumns.includes(field) ? row[field] : globalSettings[field];
+      insertSetting.run(inspectionSettingKey(row.type, field), normalizeInspectionSetting(field, source));
+    }
+  }
+  const seedFromGlobal = previewSettingColumns.length === 0
+    || (settingsTableExisted && !hadNamespacedSettings);
+  runMigrationOnce(db, "queue-per-inspection-settings", () => {
+    if (!seedFromGlobal) return;
+    const setSetting = db.prepare(`
+      INSERT INTO settings (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `);
+    for (const { type } of db.prepare("SELECT type FROM inspection").all()) {
+      for (const field of INSPECTION_SETTING_FIELDS) {
+        setSetting.run(inspectionSettingKey(type, field), globalSettings[field]);
+      }
+    }
+  });
+  if (previewInspectionRows.length > 0) {
+    db.exec("DROP TABLE inspection");
+    db.exec(CANONICAL_INSPECTION_TABLE_SQL);
+    const insertInspection = db.prepare(`
+      INSERT INTO inspection
+        (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const row of previewInspectionRows) insertInspection.run(
+      row.type,
+      row.name,
+      row.active,
+      row.ignore_priority,
+      row.ignore_reinspection,
+      row.hidden_from_register,
+    );
+  }
 
   // 취소 페널티 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS cancel_penalty (
@@ -276,6 +373,9 @@ db.transaction(() => {
     // 부스 기본 설정: 검차 종류당 1개 부스
     db.prepare(`INSERT OR IGNORE INTO booth_config (inspection, count) VALUES (?, 1)`).run(k);
     db.prepare(`INSERT OR IGNORE INTO booth (inspection, booth_num) VALUES (?, 1)`).run(k);
+    for (const field of INSPECTION_SETTING_FIELDS) {
+      insertSetting.run(inspectionSettingKey(k, field), globalSettings[field]);
+    }
   }
 
   // SMS 설정은 이메일 서비스에서 가져오거나 환경변수로 폴백
@@ -285,59 +385,6 @@ db.transaction(() => {
   setupRowCapRetention(db, "queue_log", QUEUE_LOG_MAX_ROWS);
   setupRowCapRetention(db, "booth_log", BOOTH_LOG_MAX_ROWS);
 })();
-
-// 기존 전역 설정을 각 검차의 초기값으로 한 번 복제한다. 레거시 마이그레이터도 소스
-// settings 테이블을 사본에 가져온 뒤 schema_migrations를 비우고 이 정규화를 다시 실행한다.
-if (tableExists(db, "settings")) {
-  const migrated = runMigrationOnce(db, "queue-per-inspection-settings", () => {
-    const legacyValue = (key, fallback) => db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? fallback;
-    const legacySms = String(legacyValue("sms", "FALSE")).toUpperCase() === "TRUE" ? 1 : 0;
-    const parsedRank = Number.parseInt(legacyValue("sms_rank", "3"), 10);
-    const parsedPenalty = Number.parseInt(legacyValue("cancel_penalty", "10"), 10);
-    const legacyRank = Number.isInteger(parsedRank) && parsedRank >= 1 && parsedRank <= 10 ? parsedRank : 3;
-    const legacyPenalty = Number.isInteger(parsedPenalty) && parsedPenalty >= 0 && parsedPenalty <= 60 ? parsedPenalty : 10;
-    db.prepare(`
-      UPDATE inspection
-      SET sms = ?, sms_rank = ?, cancel_penalty = ?
-    `).run(legacySms, legacyRank, legacyPenalty);
-    db.exec("DROP TABLE settings");
-  });
-  // 구버전 롤백이 전역 테이블을 다시 만들었더라도 이미 분리된 검차별 값을 역으로
-  // 덮어쓰지 않는다. 재배포 시 구버전 테이블만 제거해 정규 스키마로 돌아간다.
-  if (!migrated) db.exec("DROP TABLE settings");
-}
-
-// ALTER TABLE ADD COLUMN으로 업그레이드한 SQLite DDL도 신규 DB와 정확히 같아야 다음
-// read-only 배포 검증을 통과한다. 값 이전을 마친 뒤 작은 메타 테이블만 정규 스키마로 재구성한다.
-if (inspectionSettingsSchemaNeedsRebuild) {
-  const rows = db.prepare(`
-    SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register,
-           sms, sms_rank, cancel_penalty
-    FROM inspection
-    ORDER BY rowid
-  `).all();
-  db.transaction(() => {
-    db.exec("DROP TABLE inspection");
-    db.exec(INSPECTION_TABLE_SQL);
-    const insert = db.prepare(`
-      INSERT INTO inspection
-        (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register,
-         sms, sms_rank, cancel_penalty)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const row of rows) insert.run(
-      row.type,
-      row.name,
-      row.active,
-      row.ignore_priority,
-      row.ignore_reinspection,
-      row.hidden_from_register,
-      row.sms,
-      row.sms_rank,
-      row.cancel_penalty,
-    );
-  })();
-}
 
 // 연도 컬럼 마이그레이션 (기존 스키마 생성과 분리)
 {
@@ -518,19 +565,30 @@ function getActiveInspections(year = currentYear()) {
 }
 
 function getAllInspections(year = currentYear()) {
-  return withInspectionLengths(db.prepare("SELECT * FROM inspection").all(), year);
+  return withInspectionLengths(db.prepare("SELECT * FROM inspection").all(), year).map((inspection) => {
+    const settings = getInspectionSettings(inspection.type);
+    return {
+      ...inspection,
+      sms: settings.sms ? 1 : 0,
+      sms_rank: settings.smsRank,
+      cancel_penalty: settings.cancelPenalty,
+    };
+  });
 }
 
 function getInspectionSettings(type) {
-  const row = db.prepare(`
-    SELECT sms, sms_rank, cancel_penalty
-    FROM inspection
-    WHERE type = ?
-  `).get(type);
-  return row && {
-    sms: row.sms === 1,
-    smsRank: row.sms_rank,
-    cancelPenalty: row.cancel_penalty,
+  if (!Object.hasOwn(inspections, type)) return null;
+  const values = Object.fromEntries(INSPECTION_SETTING_FIELDS.map((field) => [
+    field,
+    normalizeInspectionSetting(
+      field,
+      db.prepare("SELECT value FROM settings WHERE key = ?").get(inspectionSettingKey(type, field))?.value,
+    ),
+  ]));
+  return {
+    sms: values.sms === "TRUE",
+    smsRank: Number(values.sms_rank),
+    cancelPenalty: Number(values.cancel_penalty),
   };
 }
 
@@ -1181,8 +1239,8 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       let appliedPenalty = null;
       // SMS 대상 조회도 취소 mutation의 preflight다. 실패하면 삭제를 시작하지
       // 않고 동일한 audited boundary에서 응답한다.
-      const settings = db.prepare("SELECT sms_rank, cancel_penalty FROM inspection WHERE type = ?").get(type);
-      const smsRank = settings.sms_rank;
+      const settings = getInspectionSettings(type);
+      const smsRank = settings.smsRank;
       const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
       const queueEntry = getQueueRow(type, num, year);
       if (!queueEntry) {
@@ -1191,7 +1249,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       deleteQueueRow(type, num, year);
 
       // 페널티 적용
-      const penaltyMinutes = settings.cancel_penalty;
+      const penaltyMinutes = settings.cancelPenalty;
       if (penaltyMinutes > 0) {
         const until = Date.now() + penaltyMinutes * 60 * 1000;
         appliedPenalty = { minutes: penaltyMinutes, until };
@@ -1795,7 +1853,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      const smsRank = db.prepare("SELECT sms_rank FROM inspection WHERE type = ?").get(type).sms_rank;
+      const smsRank = getInspectionSettings(type).smsRank;
       const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
       // 대기열에 팀이 있는지 확인
       const queueEntry = getQueueRow(type, num, year);
@@ -2443,11 +2501,10 @@ app.patch("/api/admin/settings/:type", (req, res) => {
       smsRank: Object.hasOwn(body, "smsRank") ? body.smsRank : before.smsRank,
       cancelPenalty: Object.hasOwn(body, "cancelPenalty") ? body.cancelPenalty : before.cancelPenalty,
     };
-    db.prepare(`
-      UPDATE inspection
-      SET sms = ?, sms_rank = ?, cancel_penalty = ?
-      WHERE type = ?
-    `).run(after.sms ? 1 : 0, after.smsRank, after.cancelPenalty, type);
+    const update = db.prepare("UPDATE settings SET value = ? WHERE key = ?");
+    update.run(after.sms ? "TRUE" : "FALSE", inspectionSettingKey(type, "sms"));
+    update.run(String(after.smsRank), inspectionSettingKey(type, "sms_rank"));
+    update.run(String(after.cancelPenalty), inspectionSettingKey(type, "cancel_penalty"));
     return { before, after };
   })());
 
@@ -2489,11 +2546,11 @@ const warnSmsSkipThrottled = createThrottledSkipWarning(logger, "sms.skip");
 function sendSmsNotification(type, prev) {
   let target;
   try {
-    const settings = db.prepare("SELECT sms, sms_rank FROM inspection WHERE type = ?").get(type);
+    const settings = getInspectionSettings(type);
     if (!settings?.sms) return;
 
     const year = currentYear();
-    const smsRank = settings.sms_rank;
+    const smsRank = settings.smsRank;
     target = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {

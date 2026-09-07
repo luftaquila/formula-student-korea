@@ -203,6 +203,19 @@ describe('Explicit Queue permissions and kiosk scope', () => {
     });
     assert.equal(kioskCannotOperate.status, 403);
   });
+
+  it('protects the settings SPA route at the server boundary', async () => {
+    const anonymous = await fetch(`${baseUrl}/settings`, { redirect: 'manual' });
+    assert.equal(anonymous.status, 302);
+    assert.equal(anonymous.headers.get('location'), '/');
+
+    const operator = await fetch(`${baseUrl}/settings`, {
+      headers: { Cookie: queueOperatorCookie },
+      redirect: 'manual',
+    });
+    assert.equal(operator.status, 302);
+    assert.equal(operator.headers.get('location'), '/');
+  });
 });
 
 describe('TeamStore activity failure auditing', () => {
@@ -283,7 +296,7 @@ describe('Queue mutation database preflight auditing', () => {
     const started = await startServer(created.app);
     const isolated = createClient(started.baseUrl);
     try {
-      failingLookup = "SELECT sms_rank, cancel_penalty FROM inspection";
+      failingLookup = "SELECT value FROM settings WHERE key = ?";
       const cancel = await isolated.post('/api/admin/cancel/battery', {
         body: { num: 2 }, cookie: officialCookie,
       });
@@ -297,7 +310,7 @@ describe('Queue mutation database preflight auditing', () => {
       assert.equal(priority.status, 500);
       assert.equal(await priority.text(), '서버 오류가 발생했습니다.');
 
-      failingLookup = "SELECT sms_rank FROM inspection";
+      failingLookup = "SELECT value FROM settings WHERE key = ?";
       const booth = await isolated.post('/api/admin/booths/battery/1/enter', {
         body: { num: 2 }, cookie: officialCookie,
       });
@@ -1587,12 +1600,12 @@ describe('Per-inspection queue settings', () => {
   // 회귀: 제공자 설정 조회 실패가 검차별 sms 값을 덮어쓰면 안 된다. 예전에는 실패 경로에서
   // sms=FALSE를 영속화해서 email 부팅 레이스 한 번에 관리자가 켠 SMS가 조용히 꺼졌다.
   it('a failing loadSmsConfig must not overwrite per-inspection SMS settings', async () => {
-    db.prepare("UPDATE inspection SET sms = TRUE WHERE type = 'battery'").run();
+    db.prepare("UPDATE settings SET value = 'TRUE' WHERE key = 'inspection:battery:sms'").run();
     // EMAIL_SERVER 미지정 → 컨테이너 DNS(http://email:9900)로 나가 연결 실패(transient)
     await loadSmsConfig();
-    const value = db.prepare("SELECT sms FROM inspection WHERE type = 'battery'").get().sms;
-    assert.equal(value, 1, 'fetch failure must not flip the setting off');
-    db.prepare("UPDATE inspection SET sms = FALSE WHERE type = 'battery'").run();
+    const value = db.prepare("SELECT value FROM settings WHERE key = 'inspection:battery:sms'").get().value;
+    assert.equal(value, 'TRUE', 'fetch failure must not flip the setting off');
+    db.prepare("UPDATE settings SET value = 'FALSE' WHERE key = 'inspection:battery:sms'").run();
   });
 
   it('updates SMS rank and cancel penalty independently for each inspection', async () => {
@@ -1662,7 +1675,10 @@ describe('Per-inspection queue settings', () => {
     assert.ok(batteryPenalty.until > Date.now());
     assert.equal(electricPenalty, undefined);
 
-    db.prepare("UPDATE inspection SET cancel_penalty = 10 WHERE type IN ('battery', 'electric')").run();
+    db.prepare(`
+      UPDATE settings SET value = '10'
+      WHERE key IN ('inspection:battery:cancel_penalty', 'inspection:electric:cancel_penalty')
+    `).run();
     db.prepare("DELETE FROM cancel_penalty WHERE num = 1 AND inspection = 'battery' AND year = ?").run(CURRENT_YEAR);
   });
 });
@@ -2225,11 +2241,13 @@ describe('Queue legacy → normalized migration', () => {
     // `length` cache column removed from inspection meta
     const insCols = migDb.prepare("PRAGMA table_info(inspection)").all().map((c) => c.name);
     assert.ok(!insCols.includes('length'), 'length cache column removed');
-    assert.deepEqual(
-      migDb.prepare("SELECT sms, sms_rank, cancel_penalty FROM inspection WHERE type = 'battery'").get(),
-      { sms: 1, sms_rank: 8, cancel_penalty: 6 },
-      'legacy global settings become every inspection\'s initial settings',
-    );
+    assert.deepEqual(Object.fromEntries(migDb.prepare(`
+      SELECT key, value FROM settings WHERE key LIKE 'inspection:battery:%' ORDER BY key
+    `).all().map(({ key, value }) => [key.slice('inspection:battery:'.length), value])), {
+      cancel_penalty: '6',
+      sms: 'TRUE',
+      sms_rank: '8',
+    }, 'legacy global settings become every inspection\'s initial settings');
 
     // inspection_history PK is now year-scoped and the legacy row survived
     const pk = migDb.prepare("PRAGMA table_info(inspection_history)").all().filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
@@ -2247,26 +2265,85 @@ describe('Queue legacy → normalized migration', () => {
     const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);
     assert.equal(has('current'), false, 'legacy current consumed');
     assert.equal(has('battery'), false, 'legacy per-inspection table dropped');
-    assert.equal(has('settings'), false, 'legacy global settings consumed');
+    assert.equal(has('settings'), true, 'rollback-compatible settings table retained');
 
     assert.equal(has('current_legacy'), false, 'legacy current compatibility table is not retained');
   });
 
   it('is idempotent — re-opening the migrated DB makes no further changes and does not error', () => {
-    migDb.prepare("UPDATE inspection SET cancel_penalty = 4 WHERE type = 'battery'").run();
-    migDb.exec(`
-      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      INSERT INTO settings VALUES ('sms', 'FALSE');
-      INSERT INTO settings VALUES ('sms_rank', '3');
-      INSERT INTO settings VALUES ('cancel_penalty', '10');
-    `);
+    migDb.prepare("UPDATE settings SET value = '4' WHERE key = 'inspection:battery:cancel_penalty'").run();
+    migDb.prepare("UPDATE settings SET value = '10' WHERE key = 'cancel_penalty'").run();
     migDb.close();
     migDb = createQueueApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE num = 1").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = 'battery'").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5").get().c, 1);
-    assert.equal(migDb.prepare("SELECT cancel_penalty FROM inspection WHERE type = 'battery'").get().cancel_penalty, 4);
-    assert.equal(migDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get(), undefined);
+    assert.equal(
+      migDb.prepare("SELECT value FROM settings WHERE key = 'inspection:battery:cancel_penalty'").get().value,
+      '4',
+    );
+    assert.ok(migDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get());
+  });
+
+  it('converges an interrupted preview schema to rollback-compatible settings rows', () => {
+    const previewPath = tmpDbPath();
+    const seed = new Database(previewPath);
+    seed.exec(`
+      CREATE TABLE inspection (
+        type TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+        ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE,
+        hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE,
+        sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1)),
+        sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10),
+        cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)
+      );
+      INSERT INTO inspection
+        (type, name, sms, sms_rank, cancel_penalty)
+      VALUES ('battery', '축전지', TRUE, 8, 6);
+    `);
+    seed.close();
+
+    let created;
+    try {
+      created = createQueueApp({ dbPath: previewPath, validateUser: TRUST_JWT });
+      assert.deepEqual(
+        created.db.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
+        ['type', 'name', 'active', 'ignore_priority', 'ignore_reinspection', 'hidden_from_register'],
+      );
+      assert.deepEqual(Object.fromEntries(created.db.prepare(`
+        SELECT key, value FROM settings
+        WHERE key LIKE 'inspection:battery:%'
+        ORDER BY key
+      `).all().map(({ key, value }) => [key.slice('inspection:battery:'.length), value])), {
+        cancel_penalty: '6',
+        sms: 'TRUE',
+        sms_rank: '8',
+      });
+      const normalizedSql = created.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'inspection'",
+      ).get().sql;
+      assert.doesNotMatch(normalizedSql, /sms|cancel_penalty/);
+
+      for (const timer of created.timers || []) clearInterval(timer);
+      created.closeSse?.();
+      created.db.close();
+      created = createQueueApp({ dbPath: previewPath, validateUser: TRUST_JWT });
+      assert.equal(
+        created.db.prepare("SELECT value FROM settings WHERE key = 'inspection:battery:cancel_penalty'").get().value,
+        '6',
+      );
+      assert.equal(created.db.prepare(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'inspection'",
+      ).get().sql, normalizedSql);
+    } finally {
+      for (const timer of created?.timers || []) clearInterval(timer);
+      created?.closeSse?.();
+      if (created?.db?.open) created.db.close();
+      cleanup(previewPath);
+    }
   });
 
   it('removes an old compatibility table even when the original current table is already absent', () => {
@@ -2438,7 +2515,8 @@ describe('Queue logging audit', () => {
     const started = await startServer(created.app);
     const isolated = createClient(started.baseUrl);
     try {
-      created.db.prepare("UPDATE inspection SET sms = TRUE, sms_rank = 1 WHERE type = 'battery'").run();
+      created.db.prepare("UPDATE settings SET value = 'TRUE' WHERE key = 'inspection:battery:sms'").run();
+      created.db.prepare("UPDATE settings SET value = '1' WHERE key = 'inspection:battery:sms_rank'").run();
       for (const [num, phone] of [[1, '01011112222'], [2, '01022223333']]) {
         const registered = await isolated.post('/api/admin/register/battery', {
           body: { num, phone }, cookie: chiefCookie,
