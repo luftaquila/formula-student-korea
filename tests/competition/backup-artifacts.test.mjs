@@ -187,9 +187,9 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
-function restoreQueueSettingsPreview(dbPath, canonical) {
+function restoreQueueSettingsPreview(dbPath, variant) {
   const writer = new Database(dbPath);
-  if (canonical) {
+  if (variant === "canonical") {
     const rows = writer.prepare(`
       SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register
       FROM inspection
@@ -231,10 +231,20 @@ function restoreQueueSettingsPreview(dbPath, canonical) {
       ALTER TABLE inspection ADD COLUMN cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60);
     `);
   }
-  writer.exec(`
-    UPDATE inspection SET sms = TRUE, sms_rank = 8, cancel_penalty = 6 WHERE type = 'battery';
-    DROP TABLE settings;
-  `);
+  if (variant === "altered-with-settings") {
+    writer.exec(`
+      DELETE FROM settings WHERE key LIKE 'inspection:%';
+      UPDATE settings SET value = 'TRUE' WHERE key = 'sms';
+      UPDATE settings SET value = '8' WHERE key = 'sms_rank';
+      UPDATE settings SET value = '6' WHERE key = 'cancel_penalty';
+      DELETE FROM schema_migrations WHERE name = 'queue-per-inspection-settings';
+    `);
+  } else {
+    writer.exec(`
+      UPDATE inspection SET sms = TRUE, sms_rank = 8, cancel_penalty = 6 WHERE type = 'battery';
+      DROP TABLE settings;
+    `);
+  }
   writer.close();
 }
 
@@ -1036,19 +1046,24 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
-  it("validates and repairs completed or interrupted Queue settings previews", () => {
-    for (const canonical of [true, false]) {
-      const variant = canonical ? "canonical" : "altered";
+  it("validates and repairs every committed Queue settings preview state", () => {
+    const contracts = {
+      canonical: "a2ed2c23c3f94119b6a474b95cc92634fe61646110bc02318478a2fde40e24e2",
+      altered: "3fd0e14f8e72cdc703c71371ccb972c79eb243976eebc60207097b617cb2001d",
+      "altered-with-settings": "0c08e93ebc8febb9baf5fee65fd693246e53ac4604ed100f3f012ff66016f2ff",
+    };
+    for (const [variant, expectedContract] of Object.entries(contracts)) {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), `fsk-queue-settings-preview-${variant}-`));
       roots.push(root);
       const dbPath = path.join(root, "competition.db");
       const uploads = path.join(root, "uploads");
       createCompetitionUnit(dbPath, uploads);
-      restoreQueueSettingsPreview(dbPath, canonical);
+      restoreQueueSettingsPreview(dbPath, variant);
 
       const before = new Database(dbPath, { readonly: true });
       const beforeContract = competitionSchemaContractDigest(captureCompetitionSchemaContract(before));
       before.close();
+      assert.equal(beforeContract, expectedContract, `${variant} fixture must match its deployed contract`);
       const predecessor = validateDatabase(dbPath);
       assert.equal(predecessor.status, 0, `${variant}: ${predecessor.stderr}`);
       const unchanged = new Database(dbPath, { readonly: true });

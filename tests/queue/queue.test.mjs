@@ -1630,6 +1630,12 @@ describe('Per-inspection queue settings', () => {
   it('rejects unknown inspection types, fields, and out-of-range values', async () => {
     const unknown = await client.get('/api/admin/settings/unknown', { cookie: officialCookie });
     assert.equal(unknown.status, 400);
+    const inherited = await client.get('/api/admin/settings/constructor', { cookie: officialCookie });
+    assert.equal(inherited.status, 400);
+    const inheritedPatch = await client.patch('/api/admin/settings/constructor', {
+      body: { sms: false, smsRank: 3, cancelPenalty: 10 }, cookie: chiefCookie,
+    });
+    assert.equal(inheritedPatch.status, 400);
     const unknownField = await client.patch('/api/admin/settings/battery', {
       body: { smsRank: 4, global: true }, cookie: chiefCookie,
     });
@@ -1644,6 +1650,40 @@ describe('Per-inspection queue settings', () => {
       cookie: chiefCookie,
     });
     assert.equal(res2.status, 400);
+  });
+
+  it('audits every rejected settings update with its request and reason', async () => {
+    const beforeId = db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM logs').get().id;
+    const cases = [
+      ['/api/admin/settings/constructor', { sms: false, smsRank: 3, cancelPenalty: 10 }, 'invalid_inspection'],
+      ['/api/admin/settings/battery', { smsRank: 4, global: true }, 'unknown_fields'],
+      ['/api/admin/settings/battery', {}, 'empty_update'],
+      ['/api/admin/settings/battery', { sms: 'TRUE' }, 'invalid_sms'],
+      ['/api/admin/settings/battery', { smsRank: 11 }, 'invalid_sms_rank'],
+      ['/api/admin/settings/battery', { cancelPenalty: 61 }, 'invalid_cancel_penalty'],
+    ];
+    for (const [path, body] of cases) {
+      const response = await client.patch(path, { body, cookie: chiefCookie });
+      assert.equal(response.status, 400);
+    }
+
+    const warnings = db.prepare(`
+      SELECT target, detail FROM logs
+      WHERE id > ? AND level = 'warn' AND action = 'settings.update'
+      ORDER BY id
+    `).all(beforeId);
+    assert.equal(warnings.length, cases.length);
+    for (let index = 0; index < cases.length; index += 1) {
+      const [path, requested, reason] = cases[index];
+      const inspection = path.slice(path.lastIndexOf('/') + 1);
+      assert.equal(warnings[index].target, inspection);
+      assert.deepEqual(JSON.parse(warnings[index].detail), {
+        error: 'settings_validation_failed',
+        reason,
+        inspection,
+        requested,
+      });
+    }
   });
 
   it('applies the configured cancel penalty only to the matching inspection', async () => {

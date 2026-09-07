@@ -723,7 +723,7 @@ function validatePhone(phone) {
 }
 
 function validateInspection(type) {
-  if (!inspections[type]) {
+  if (!Object.hasOwn(inspections, type)) {
     return { valid: false, error: "검차 종류가 올바르지 않습니다." };
   }
   return { valid: true, value: type };
@@ -2465,24 +2465,33 @@ app.get("/api/admin/settings/:type", (req, res) => {
 
 // PATCH /api/admin/settings/:type - 검차별 SMS/취소 페널티 설정 변경
 app.patch("/api/admin/settings/:type", (req, res) => {
-  const typeValidation = validateInspection(req.params.type);
-  if (!typeValidation.valid) return res.status(400).send(typeValidation.error);
-
-  const type = typeValidation.value;
+  const type = req.params.type;
   const body = req.body || {};
+  const rejectUpdate = (reason, message) => {
+    logger.warn(req, "settings.update", {
+      error: "settings_validation_failed",
+      reason,
+      inspection: type,
+      requested: body,
+    }, type);
+    return res.status(400).send(message);
+  };
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) return rejectUpdate("invalid_inspection", typeValidation.error);
+
   const allowedFields = new Set(["sms", "smsRank", "cancelPenalty"]);
   const unknownFields = Object.keys(body).filter((field) => !allowedFields.has(field));
-  if (unknownFields.length > 0) return res.status(400).send("알 수 없는 설정 항목입니다.");
+  if (unknownFields.length > 0) return rejectUpdate("unknown_fields", "알 수 없는 설정 항목입니다.");
   const fields = [...allowedFields].filter((field) => Object.hasOwn(body, field));
-  if (fields.length === 0) return res.status(400).send("변경할 설정이 없습니다.");
+  if (fields.length === 0) return rejectUpdate("empty_update", "변경할 설정이 없습니다.");
   if (Object.hasOwn(body, "sms") && typeof body.sms !== "boolean") {
-    return res.status(400).send("SMS 설정은 불리언이어야 합니다.");
+    return rejectUpdate("invalid_sms", "SMS 설정은 불리언이어야 합니다.");
   }
   if (Object.hasOwn(body, "smsRank") && (!Number.isInteger(body.smsRank) || body.smsRank < 1 || body.smsRank > 10)) {
-    return res.status(400).send("알림 순번은 1~10 사이의 정수여야 합니다.");
+    return rejectUpdate("invalid_sms_rank", "알림 순번은 1~10 사이의 정수여야 합니다.");
   }
   if (Object.hasOwn(body, "cancelPenalty") && (!Number.isInteger(body.cancelPenalty) || body.cancelPenalty < 0 || body.cancelPenalty > 60)) {
-    return res.status(400).send("페널티 시간은 0~60분 사이의 정수여야 합니다.");
+    return rejectUpdate("invalid_cancel_penalty", "페널티 시간은 0~60분 사이의 정수여야 합니다.");
   }
   if (body.sms === true && !smsClient.isAvailable()) {
     logger.warn(req, "settings.sms", {
