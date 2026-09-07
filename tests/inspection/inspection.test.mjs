@@ -1938,6 +1938,99 @@ describe('SSE broadcast on data changes', () => {
       reader.releaseLock();
     }
   });
+
+  it('terminates an established SSE stream after Inspection permission is revoked', async () => {
+    const isolatedPath = tmpDbPath();
+    let allowed = true;
+    const created = createInspectionApp({
+      dbPath: isolatedPath,
+      validateUserCacheTtl: 0,
+      validateUser: async () => ({
+        valid: true,
+        role: 'official',
+        permissions: allowed ? ['inspection.operate'] : [],
+      }),
+    });
+    const isolatedServer = await startServer(created.app);
+    const controller = new AbortController();
+    let reader;
+    try {
+      const response = await fetch(`${isolatedServer.baseUrl}/api/sheet/events`, {
+        headers: { Cookie: inspectionOperatorCookie },
+        signal: controller.signal,
+      });
+      assert.equal(response.status, 200);
+      reader = response.body.getReader();
+      const initial = await reader.read();
+      assert.match(new TextDecoder().decode(initial.value), /event: init/);
+
+      allowed = false;
+      await created.revalidateSse();
+      const closed = await reader.read();
+      assert.equal(closed.done, true);
+    } finally {
+      controller.abort();
+      try { reader?.releaseLock(); } catch {}
+      created.closeSse();
+      await stopServer(isolatedServer.server);
+      created.db.close();
+      cleanup(isolatedPath);
+    }
+  });
+
+  for (const [label, failedValidation, expectedReason] of [
+    ['returns a transient failure', { valid: false, transient: true }, 'auth_unavailable'],
+    ['throws', new Error('Auth unavailable'), 'auth_error'],
+  ]) {
+    it(`terminates an established SSE stream when Auth ${label}`, async () => {
+      const isolatedPath = tmpDbPath();
+      let validation = {
+        valid: true,
+        role: 'official',
+        permissions: ['inspection.operate'],
+      };
+      const created = createInspectionApp({
+        dbPath: isolatedPath,
+        validateUserCacheTtl: 0,
+        validateUser: async () => {
+          if (validation instanceof Error) throw validation;
+          return validation;
+        },
+      });
+      const isolatedServer = await startServer(created.app);
+      const controller = new AbortController();
+      let reader;
+      try {
+        const response = await fetch(`${isolatedServer.baseUrl}/api/sheet/events`, {
+          headers: { Cookie: inspectionOperatorCookie },
+          signal: controller.signal,
+        });
+        assert.equal(response.status, 200);
+        reader = response.body.getReader();
+        const initial = await reader.read();
+        assert.match(new TextDecoder().decode(initial.value), /event: init/);
+
+        validation = failedValidation;
+        await created.revalidateSse();
+        created.sourceEvent('answer', { year: CURRENT_YEAR, team_num: 50 });
+        const next = await reader.read();
+        assert.equal(next.done, true, 'protected data must not be delivered without successful Auth revalidation');
+        const audit = created.db.prepare(`
+          SELECT detail FROM logs
+          WHERE module = 'inspection' AND action = 'sse.revalidate'
+          ORDER BY id DESC LIMIT 1
+        `).get();
+        assert.equal(JSON.parse(audit.detail).reason, expectedReason);
+      } finally {
+        controller.abort();
+        try { reader?.releaseLock(); } catch {}
+        created.closeSse();
+        await stopServer(isolatedServer.server);
+        created.db.close();
+        cleanup(isolatedPath);
+      }
+    });
+  }
 });
 
 // ─── Auth Enforcement ───────────────────────────────────────────────────
