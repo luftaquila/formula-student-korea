@@ -217,38 +217,10 @@ export async function getTeamStats(num, params = {}) {
 /* ============================================
    Settings API
    ============================================ */
-export async function fetchSmsSettings() {
-  const res = await request("/api/admin/settings/sms");
-  return res.json();
-}
-
-export async function setSmsSettings(value) {
-  await request("/api/admin/settings/sms", {
+export async function setInspectionSettings(type, settings) {
+  const res = await request(`/api/admin/settings/${type}`, {
     method: "PATCH",
-    body: JSON.stringify({ value }),
+    body: JSON.stringify(settings),
   });
-}
-
-export async function fetchSmsRankSettings() {
-  const res = await request("/api/admin/settings/sms-rank");
   return res.json();
-}
-
-export async function setSmsRankSettings(value) {
-  await request("/api/admin/settings/sms-rank", {
-    method: "PATCH",
-    body: JSON.stringify({ value }),
-  });
-}
-
-export async function fetchCancelPenaltySettings() {
-  const res = await request("/api/admin/settings/cancel-penalty");
-  return res.json();
-}
-
-export async function setCancelPenaltySettings(value) {
-  await request("/api/admin/settings/cancel-penalty", {
-    method: "PATCH",
-    body: JSON.stringify({ value }),
-  });
 }

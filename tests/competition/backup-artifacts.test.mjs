@@ -187,6 +187,50 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function restoreGlobalQueueSettings(dbPath) {
+  // Reproduce the exact previous main schema so the read-only validator tests
+  // real deployable predecessor contracts, including SQLite's ALTER-added comma.
+  const writer = new Database(dbPath);
+  const inspections = writer.prepare(`
+    SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register
+    FROM inspection
+    ORDER BY rowid
+  `).all();
+  writer.transaction(() => {
+    writer.exec(`
+      DROP TABLE inspection;
+      CREATE TABLE inspection (
+        type TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+        ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
+      , hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE);
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      INSERT INTO settings VALUES ('sms', 'FALSE');
+      INSERT INTO settings VALUES ('sms_rank', '3');
+      INSERT INTO settings VALUES ('cancel_penalty', '10');
+    `);
+    const insert = writer.prepare(`
+      INSERT INTO inspection
+        (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    for (const row of inspections) insert.run(
+      row.type,
+      row.name,
+      row.active,
+      row.ignore_priority,
+      row.ignore_reinspection,
+      row.hidden_from_register,
+    );
+  })();
+  writer.close();
+}
+
 function restoreRetiredCalledStatus(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
@@ -866,6 +910,7 @@ describe("Competition backup/restore artifact validation", () => {
     let created = boot();
     created.teams.createTeam(currentCompetitionYear(), { number: 41, university: "Upgrade University", name: "Upgrade Team" });
     created.close();
+    restoreGlobalQueueSettings(dbPath);
     restoreRetiredCalledStatus(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
@@ -960,6 +1005,7 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    restoreGlobalQueueSettings(dbPath);
     const predecessor = new Database(dbPath);
     const itemId = predecessor.prepare(`INSERT INTO sheet_template
       (year, level, name, answer_type, field_key, calculation)
@@ -996,6 +1042,7 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    restoreGlobalQueueSettings(dbPath);
     removeBoothTimerState(dbPath);
 
     const predecessorResult = validateDatabase(dbPath);
@@ -1032,6 +1079,7 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    restoreGlobalQueueSettings(dbPath);
     removeBoothTimerState(dbPath);
     const predecessor = new Database(dbPath);
     predecessor.exec("ALTER TABLE sheet_template DROP COLUMN rule_refs");
@@ -1080,6 +1128,7 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.db.prepare("INSERT INTO score_endurance (year, team_num, driver1_time) VALUES (?, 1, 123456)")
       .run(CURRENT_YEAR);
     seeded.close();
+    restoreGlobalQueueSettings(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
 
@@ -1122,6 +1171,7 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    restoreGlobalQueueSettings(dbPath);
     removeRegistrationSchema(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
@@ -1158,6 +1208,7 @@ describe("Competition backup/restore artifact validation", () => {
     const dbPath = path.join(root, "competition.db");
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
+    restoreGlobalQueueSettings(dbPath);
     removeRegistrationSchema(dbPath);
     removeEnduranceDriverNames(dbPath);
     removeBoothTimerState(dbPath);
@@ -1217,6 +1268,7 @@ describe("Competition backup/restore artifact validation", () => {
     seeded.db.prepare("INSERT INTO score_endurance (year, team_num, qualified) VALUES (?, 1, 1)")
       .run(CURRENT_YEAR);
     seeded.close();
+    restoreGlobalQueueSettings(dbPath);
     removeRegistrationSchema(dbPath);
     removeQualifiedCheckConstraint(dbPath);
     removeEnduranceDriverNames(dbPath);

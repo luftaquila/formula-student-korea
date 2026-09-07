@@ -1,6 +1,6 @@
 import express from "express";
 import Database from "better-sqlite3";
-import { addColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
+import { addColumn, runMigrationOnce, setupRowCapRetention } from "../shared/db-setup.mjs";
 import { createServiceSkeleton, addSpaFallback } from "../shared/service-bootstrap.mjs";
 import { createSSEManager } from "../shared/sse.mjs";
 import { validateEntryNum, validateYear } from "../shared/validation.mjs";
@@ -27,6 +27,18 @@ export function createQueueApp(options = {}) {
 const inspections = INSPECTIONS;
 const QUEUE_LOG_MAX_ROWS = 100000;
 const BOOTH_LOG_MAX_ROWS = 100000;
+const INSPECTION_TABLE_SQL = `CREATE TABLE IF NOT EXISTS inspection (
+  type TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  active BOOLEAN NOT NULL DEFAULT TRUE,
+  ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+  ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE,
+  hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE,
+  sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1)),
+  sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10),
+  cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)
+)`;
+let inspectionSettingsSchemaNeedsRebuild = false;
 
 function primaryKeyColumns(db, table) {
   if (!tableExists(db, table)) return [];
@@ -135,13 +147,7 @@ ensureInactiveTeamView(db);
 
 db.transaction(() => {
   // 검차 종류 메타 테이블
-  db.exec(`CREATE TABLE IF NOT EXISTS inspection (
-    type TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    active BOOLEAN NOT NULL DEFAULT TRUE,
-    ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
-    ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE
-  );`);
+  db.exec(INSPECTION_TABLE_SQL);
 
   // 마이그레이션: 기존 테이블에 컬럼 추가
   addColumn(db, "inspection", "ignore_priority BOOLEAN NOT NULL DEFAULT FALSE");
@@ -166,6 +172,11 @@ db.transaction(() => {
       })();
     }
   }
+  inspectionSettingsSchemaNeedsRebuild = !["sms", "sms_rank", "cancel_penalty"]
+    .every((column) => tableColumns(db, "inspection").has(column));
+  addColumn(db, "inspection", "sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1))");
+  addColumn(db, "inspection", "sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10)");
+  addColumn(db, "inspection", "cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)");
 
   // 팀별 검차별 우선순위 테이블 (0이 가장 높음, 숫자가 클수록 낮음)
   db.exec(`CREATE TABLE IF NOT EXISTS team_priority (
@@ -204,12 +215,6 @@ db.transaction(() => {
   );`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_iq_year_insp_ts
     ON inspection_queue(year, inspection, timestamp, num)`);
-
-  // 설정 테이블
-  db.exec(`CREATE TABLE IF NOT EXISTS settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );`);
 
   // 취소 페널티 테이블
   db.exec(`CREATE TABLE IF NOT EXISTS cancel_penalty (
@@ -273,10 +278,6 @@ db.transaction(() => {
     db.prepare(`INSERT OR IGNORE INTO booth (inspection, booth_num) VALUES (?, 1)`).run(k);
   }
 
-  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run("sms", "FALSE");
-  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run("sms_rank", "3");
-  db.prepare(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`).run("cancel_penalty", "10");
-
   // SMS 설정은 이메일 서비스에서 가져오거나 환경변수로 폴백
   // loadSmsConfig()에서 비동기로 확인 후 활성화
 
@@ -284,6 +285,59 @@ db.transaction(() => {
   setupRowCapRetention(db, "queue_log", QUEUE_LOG_MAX_ROWS);
   setupRowCapRetention(db, "booth_log", BOOTH_LOG_MAX_ROWS);
 })();
+
+// 기존 전역 설정을 각 검차의 초기값으로 한 번 복제한다. 레거시 마이그레이터도 소스
+// settings 테이블을 사본에 가져온 뒤 schema_migrations를 비우고 이 정규화를 다시 실행한다.
+if (tableExists(db, "settings")) {
+  const migrated = runMigrationOnce(db, "queue-per-inspection-settings", () => {
+    const legacyValue = (key, fallback) => db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? fallback;
+    const legacySms = String(legacyValue("sms", "FALSE")).toUpperCase() === "TRUE" ? 1 : 0;
+    const parsedRank = Number.parseInt(legacyValue("sms_rank", "3"), 10);
+    const parsedPenalty = Number.parseInt(legacyValue("cancel_penalty", "10"), 10);
+    const legacyRank = Number.isInteger(parsedRank) && parsedRank >= 1 && parsedRank <= 10 ? parsedRank : 3;
+    const legacyPenalty = Number.isInteger(parsedPenalty) && parsedPenalty >= 0 && parsedPenalty <= 60 ? parsedPenalty : 10;
+    db.prepare(`
+      UPDATE inspection
+      SET sms = ?, sms_rank = ?, cancel_penalty = ?
+    `).run(legacySms, legacyRank, legacyPenalty);
+    db.exec("DROP TABLE settings");
+  });
+  // 구버전 롤백이 전역 테이블을 다시 만들었더라도 이미 분리된 검차별 값을 역으로
+  // 덮어쓰지 않는다. 재배포 시 구버전 테이블만 제거해 정규 스키마로 돌아간다.
+  if (!migrated) db.exec("DROP TABLE settings");
+}
+
+// ALTER TABLE ADD COLUMN으로 업그레이드한 SQLite DDL도 신규 DB와 정확히 같아야 다음
+// read-only 배포 검증을 통과한다. 값 이전을 마친 뒤 작은 메타 테이블만 정규 스키마로 재구성한다.
+if (inspectionSettingsSchemaNeedsRebuild) {
+  const rows = db.prepare(`
+    SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register,
+           sms, sms_rank, cancel_penalty
+    FROM inspection
+    ORDER BY rowid
+  `).all();
+  db.transaction(() => {
+    db.exec("DROP TABLE inspection");
+    db.exec(INSPECTION_TABLE_SQL);
+    const insert = db.prepare(`
+      INSERT INTO inspection
+        (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register,
+         sms, sms_rank, cancel_penalty)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const row of rows) insert.run(
+      row.type,
+      row.name,
+      row.active,
+      row.ignore_priority,
+      row.ignore_reinspection,
+      row.hidden_from_register,
+      row.sms,
+      row.sms_rank,
+      row.cancel_penalty,
+    );
+  })();
+}
 
 // 연도 컬럼 마이그레이션 (기존 스키마 생성과 분리)
 {
@@ -456,11 +510,28 @@ function withInspectionLengths(rows, year = currentYear()) {
 }
 
 function getActiveInspections(year = currentYear()) {
-  return withInspectionLengths(db.prepare("SELECT * FROM inspection WHERE active = TRUE").all(), year);
+  return withInspectionLengths(db.prepare(`
+    SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register
+    FROM inspection
+    WHERE active = TRUE
+  `).all(), year);
 }
 
 function getAllInspections(year = currentYear()) {
   return withInspectionLengths(db.prepare("SELECT * FROM inspection").all(), year);
+}
+
+function getInspectionSettings(type) {
+  const row = db.prepare(`
+    SELECT sms, sms_rank, cancel_penalty
+    FROM inspection
+    WHERE type = ?
+  `).get(type);
+  return row && {
+    sms: row.sms === 1,
+    smsRank: row.sms_rank,
+    cancelPenalty: row.cancel_penalty,
+  };
 }
 
 function getCurrentEntry(num, year) {
@@ -1110,7 +1181,8 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       let appliedPenalty = null;
       // SMS 대상 조회도 취소 mutation의 preflight다. 실패하면 삭제를 시작하지
       // 않고 동일한 audited boundary에서 응답한다.
-      const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+      const settings = db.prepare("SELECT sms_rank, cancel_penalty FROM inspection WHERE type = ?").get(type);
+      const smsRank = settings.sms_rank;
       const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
       const queueEntry = getQueueRow(type, num, year);
       if (!queueEntry) {
@@ -1119,10 +1191,7 @@ app.post("/api/admin/cancel/:type", (req, res) => {
       deleteQueueRow(type, num, year);
 
       // 페널티 적용
-      const penaltyMinutes = parseInt(
-        db.prepare(`SELECT value FROM settings WHERE key = 'cancel_penalty'`).get()?.value || "10",
-        10,
-      );
+      const penaltyMinutes = settings.cancel_penalty;
       if (penaltyMinutes > 0) {
         const until = Date.now() + penaltyMinutes * 60 * 1000;
         appliedPenalty = { minutes: penaltyMinutes, until };
@@ -1726,7 +1795,7 @@ app.post("/api/admin/booths/:type/:boothNum/enter", (req, res) => {
 
   const result = dbRun(() => {
     return db.transaction(() => {
-      const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+      const smsRank = db.prepare("SELECT sms_rank FROM inspection WHERE type = ?").get(type).sms_rank;
       const prev = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
       // 대기열에 팀이 있는지 확인
       const queueEntry = getQueueRow(type, num, year);
@@ -2326,101 +2395,73 @@ app.get("/api/admin/stats/:num", (req, res) => {
    API 라우트: 설정
    ============================================ */
 
-// GET /api/admin/settings/sms - SMS 설정 조회
-app.get("/api/admin/settings/sms", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT value FROM settings WHERE key = ?").get("sms"));
+// GET /api/admin/settings/:type - 검차별 SMS/취소 페널티 설정 조회
+app.get("/api/admin/settings/:type", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) return res.status(400).send(typeValidation.error);
 
-  if (!result.success) {
-    return res.status(result.status).send(result.error);
-  }
-
-  res.json({ value: result.result.value === "TRUE" });
+  const result = dbRun(() => getInspectionSettings(typeValidation.value));
+  if (!result.success) return res.status(result.status).send(result.error);
+  res.json(result.result);
 });
 
-// PATCH /api/admin/settings/sms - SMS 설정 변경
-app.patch("/api/admin/settings/sms", (req, res) => {
-  if (req.body.value === true) {
-    if (!smsClient.isAvailable()) {
-      logger.warn(req, "settings.sms", {
-        error: "sms_configuration_unavailable",
-        reason: "sms_configuration_unavailable",
-        requested_enabled: true,
-      }, "sms");
-      return res.status(400).send("SMS 설정이 되어 있지 않습니다. 이메일/SMS 서비스에서 설정해 주세요.");
-    }
+// PATCH /api/admin/settings/:type - 검차별 SMS/취소 페널티 설정 변경
+app.patch("/api/admin/settings/:type", (req, res) => {
+  const typeValidation = validateInspection(req.params.type);
+  if (!typeValidation.valid) return res.status(400).send(typeValidation.error);
+
+  const type = typeValidation.value;
+  const body = req.body || {};
+  const allowedFields = new Set(["sms", "smsRank", "cancelPenalty"]);
+  const unknownFields = Object.keys(body).filter((field) => !allowedFields.has(field));
+  if (unknownFields.length > 0) return res.status(400).send("알 수 없는 설정 항목입니다.");
+  const fields = [...allowedFields].filter((field) => Object.hasOwn(body, field));
+  if (fields.length === 0) return res.status(400).send("변경할 설정이 없습니다.");
+  if (Object.hasOwn(body, "sms") && typeof body.sms !== "boolean") {
+    return res.status(400).send("SMS 설정은 불리언이어야 합니다.");
+  }
+  if (Object.hasOwn(body, "smsRank") && (!Number.isInteger(body.smsRank) || body.smsRank < 1 || body.smsRank > 10)) {
+    return res.status(400).send("알림 순번은 1~10 사이의 정수여야 합니다.");
+  }
+  if (Object.hasOwn(body, "cancelPenalty") && (!Number.isInteger(body.cancelPenalty) || body.cancelPenalty < 0 || body.cancelPenalty > 60)) {
+    return res.status(400).send("페널티 시간은 0~60분 사이의 정수여야 합니다.");
+  }
+  if (body.sms === true && !smsClient.isAvailable()) {
+    logger.warn(req, "settings.sms", {
+      error: "sms_configuration_unavailable",
+      reason: "sms_configuration_unavailable",
+      requested_enabled: true,
+      inspection: type,
+    }, type);
+    return res.status(400).send("SMS 설정이 되어 있지 않습니다. 이메일/SMS 서비스에서 설정해 주세요.");
   }
 
-  const result = dbRun(() =>
-    db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(req.body.value === true ? "TRUE" : "FALSE", "sms"),
-  );
+  const result = dbRun(() => db.transaction(() => {
+    const before = getInspectionSettings(type);
+    const after = {
+      sms: Object.hasOwn(body, "sms") ? body.sms : before.sms,
+      smsRank: Object.hasOwn(body, "smsRank") ? body.smsRank : before.smsRank,
+      cancelPenalty: Object.hasOwn(body, "cancelPenalty") ? body.cancelPenalty : before.cancelPenalty,
+    };
+    db.prepare(`
+      UPDATE inspection
+      SET sms = ?, sms_rank = ?, cancel_penalty = ?
+      WHERE type = ?
+    `).run(after.sms ? 1 : 0, after.smsRank, after.cancelPenalty, type);
+    return { before, after };
+  })());
 
   if (!result.success) {
-    logger.warn(req, "settings.sms", { error: result.internalError || result.error });
+    logger.warn(req, "settings.update", {
+      error: result.internalError || result.error,
+      inspection: type,
+      requested: Object.fromEntries(fields.map((field) => [field, body[field]])),
+    }, type);
     return res.status(result.status).send(result.error);
   }
 
-  logger.log(req, "settings.sms", { enabled: req.body.value === true });
-  res.status(200).send();
-});
-
-// GET /api/admin/settings/sms-rank - SMS 알림 순번 조회
-app.get("/api/admin/settings/sms-rank", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT value FROM settings WHERE key = ?").get("sms_rank"));
-
-  if (!result.success) {
-    return res.status(result.status).send(result.error);
-  }
-
-  res.json({ value: parseInt(result.result?.value || "3", 10) });
-});
-
-// PATCH /api/admin/settings/sms-rank - SMS 알림 순번 변경
-app.patch("/api/admin/settings/sms-rank", (req, res) => {
-  const rank = parseInt(req.body.value, 10);
-  if (isNaN(rank) || rank < 1 || rank > 10) {
-    return res.status(400).send("알림 순번은 1~10 사이의 값이어야 합니다.");
-  }
-
-  const result = dbRun(() => db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(String(rank), "sms_rank"));
-
-  if (!result.success) {
-    logger.warn(req, "settings.sms_rank", { error: result.internalError || result.error });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "settings.sms_rank", { rank });
-  res.status(200).send();
-});
-
-// GET /api/admin/settings/cancel-penalty - 취소 페널티 시간 조회
-app.get("/api/admin/settings/cancel-penalty", (req, res) => {
-  const result = dbRun(() => db.prepare("SELECT value FROM settings WHERE key = ?").get("cancel_penalty"));
-
-  if (!result.success) {
-    return res.status(result.status).send(result.error);
-  }
-
-  res.json({ value: parseInt(result.result?.value || "10", 10) });
-});
-
-// PATCH /api/admin/settings/cancel-penalty - 취소 페널티 시간 변경
-app.patch("/api/admin/settings/cancel-penalty", (req, res) => {
-  const minutes = parseInt(req.body.value, 10);
-  if (isNaN(minutes) || minutes < 0 || minutes > 60) {
-    return res.status(400).send("페널티 시간은 0~60분 사이의 값이어야 합니다.");
-  }
-
-  const result = dbRun(() =>
-    db.prepare("UPDATE settings SET value = ? WHERE key = ?").run(String(minutes), "cancel_penalty"),
-  );
-
-  if (!result.success) {
-    logger.warn(req, "settings.cancel_penalty", { error: result.internalError || result.error });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "settings.cancel_penalty", { minutes });
-  res.status(200).send();
+  logger.log(req, "settings.update", result.result, type);
+  res.json(result.result.after);
 });
 
 /* ============================================
@@ -2448,12 +2489,11 @@ const warnSmsSkipThrottled = createThrottledSkipWarning(logger, "sms.skip");
 function sendSmsNotification(type, prev) {
   let target;
   try {
-    if (db.prepare(`SELECT value FROM settings WHERE key = 'sms'`).get()?.value !== "TRUE") {
-      return;
-    }
+    const settings = db.prepare("SELECT sms, sms_rank FROM inspection WHERE type = ?").get(type);
+    if (!settings?.sms) return;
 
     const year = currentYear();
-    const smsRank = parseInt(db.prepare(`SELECT value FROM settings WHERE key = 'sms_rank'`).get()?.value || "3", 10);
+    const smsRank = settings.sms_rank;
     target = getQueueStmt(type, "offset").get(...getQueueParams(type, year), smsRank - 1);
 
     if (target && (!prev || target.num !== prev.num)) {

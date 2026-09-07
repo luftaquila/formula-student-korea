@@ -10,7 +10,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 //   - POST  /api/admin/booths/:type/:boothNum/exit    -> queue.operate
 //   - GET   /api/booths/all, /api/booths/:type        -> public (null)
 //   - POST  /api/state/:num                           -> public (null), rateLimit (>30/min -> 429)
-//   - GET   /api/admin/settings/{sms,sms-rank,cancel-penalty} -> queue.operate
+//   - GET   /api/admin/settings/:type                    -> queue.operate
 //
 // This file owns two entries on the tilting queue. The only sibling spec using
 // that queue scopes its cleanup to entry 95, so it cannot register or drain the
@@ -107,25 +107,25 @@ test.describe("Queue booth occupancy + public scoping", () => {
 
   test.beforeAll(async () => {
     // Drop cancel penalty to 0 so register/enter churn never trips a penalty.
-    // (Several queue specs do the same; they all converge on 0 during the run.)
-    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    // This spec changes only the tilting inspection setting.
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${TYPE}`, {
       headers: { Cookie: getAuthCookie("operationsManager") },
     });
-    originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    originalPenalty = (await res.json()).cancelPenalty;
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${TYPE}`, {
       method: "PATCH",
       headers: managerHeaders(),
-      body: JSON.stringify({ value: 0 }),
+      body: JSON.stringify({ cancelPenalty: 0 }),
     });
   });
 
   test.afterAll(async () => {
     await releaseMyNums();
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${TYPE}`, {
         method: "PATCH",
         headers: managerHeaders(),
-        body: JSON.stringify({ value: originalPenalty }),
+        body: JSON.stringify({ cancelPenalty: originalPenalty }),
       });
     }
   });
@@ -221,22 +221,17 @@ test.describe("Queue booth occupancy + public scoping", () => {
   // project and spuriously 429 the public-status specs running on the other
   // worker. Not worth the cross-file flake for a P3 path.
 
-  test("settings GET endpoints are readable by official (200)", async ({ browser }) => {
+  test("per-inspection settings are readable by official (200)", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     try {
       const request = ctx.request;
 
-      const sms = await request.get("/competition/api/v1/queue/admin/settings/sms");
-      expect(sms.status()).toBe(200);
-      expect(typeof (await sms.json()).value).toBe("boolean");
-
-      const smsRank = await request.get("/competition/api/v1/queue/admin/settings/sms-rank");
-      expect(smsRank.status()).toBe(200);
-      expect(typeof (await smsRank.json()).value).toBe("number");
-
-      const penalty = await request.get("/competition/api/v1/queue/admin/settings/cancel-penalty");
-      expect(penalty.status()).toBe(200);
-      expect(typeof (await penalty.json()).value).toBe("number");
+      const response = await request.get(`/competition/api/v1/queue/admin/settings/${TYPE}`);
+      expect(response.status()).toBe(200);
+      const settings = await response.json();
+      expect(typeof settings.sms).toBe("boolean");
+      expect(typeof settings.smsRank).toBe("number");
+      expect(typeof settings.cancelPenalty).toBe("number");
     } finally {
       await ctx.close();
     }

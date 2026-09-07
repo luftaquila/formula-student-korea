@@ -181,7 +181,11 @@ describe("legacy database migration", () => {
       name: "Fixture Team",
       active: 0,
     });
-    assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'sms_rank'").get().value, "8");
+    assert.equal(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get(), undefined);
+    assert.deepEqual(
+      db.prepare("SELECT DISTINCT sms, sms_rank, cancel_penalty FROM inspection").all(),
+      [{ sms: 0, sms_rank: 8, cancel_penalty: 10 }],
+    );
     const modules = db.prepare("SELECT module, COUNT(*) AS count FROM logs GROUP BY module ORDER BY module").all();
     assert.equal(modules.length, 6);
     assert.ok(modules.every((row) => row.count >= 1));

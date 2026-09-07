@@ -62,14 +62,14 @@ test.describe("Queue SSE real-time sync", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/report`, {
       headers: { Cookie: getAuthCookie("operationsManager") },
     });
-    originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    originalPenalty = (await res.json()).cancelPenalty;
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/report`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: 0 }),
+      body: JSON.stringify({ cancelPenalty: 0 }),
     });
     await apiClearQueue("report");
   });
@@ -80,10 +80,10 @@ test.describe("Queue SSE real-time sync", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/report`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-        body: JSON.stringify({ value: originalPenalty }),
+        body: JSON.stringify({ cancelPenalty: originalPenalty }),
       });
     }
   });
@@ -152,10 +152,10 @@ test.describe("Queue SSE real-time sync", () => {
       headers: { Cookie: getAuthCookie("operationsOperator") },
     });
     await apiClearQueue("report");
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/report`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: 10 }),
+      body: JSON.stringify({ cancelPenalty: 10 }),
     });
 
     const adminContext = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
@@ -190,10 +190,10 @@ test.describe("Queue SSE real-time sync", () => {
       await expect(penaltyItem).toHaveCount(0, { timeout: 10000 });
     } finally {
       await adminContext.close();
-      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/report`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-        body: JSON.stringify({ value: 0 }),
+        body: JSON.stringify({ cancelPenalty: 0 }),
       });
       await fetch(penaltyUrl, {
         method: "DELETE",

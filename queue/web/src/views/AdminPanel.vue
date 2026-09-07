@@ -19,12 +19,7 @@ import {
   setBoothTimerPaused,
   updateBoothConfig,
   toggleBooth,
-  fetchSmsSettings,
-  setSmsSettings,
-  fetchSmsRankSettings,
-  setSmsRankSettings,
-  fetchCancelPenaltySettings,
-  setCancelPenaltySettings,
+  setInspectionSettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useInspectionSSE } from "../composables/useInspectionSSE";
@@ -53,9 +48,7 @@ const inspections = ref([]);
 const inspectionSummary = ref(null);
 const currentQueue = ref([]);
 const currentTab = ref("");
-const smsEnabled = ref(false);
-const smsRank = ref(3);
-const cancelPenalty = ref(10);
+const settingsDrafts = ref({});
 const loading = ref(true);
 const boothSelectedTeam = ref({});
 const penalties = ref([]);
@@ -78,6 +71,10 @@ const currentTabName = computed(() => {
   const item = activeInspections.value.find((i) => i.type === currentTab.value);
   return item ? item.name : "";
 });
+
+const currentCancelPenalty = computed(() => (
+  inspections.value.find((item) => item.type === currentTab.value)?.cancel_penalty ?? 10
+));
 
 const currentBooths = computed(() => {
   if (!currentTab.value || !allBooths.value[currentTab.value]) return [];
@@ -174,15 +171,12 @@ onMounted(async () => {
   try {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
+    settingsDrafts.value = Object.fromEntries(inspections.value.map((item) => [item.type, {
+      sms: item.sms === 1 || item.sms === true,
+      smsRank: item.sms_rank,
+      cancelPenalty: item.cancel_penalty,
+    }]));
     if (canInspect.value) await requestInspectionSummary();
-    if (canManage.value) {
-      const sms = await fetchSmsSettings();
-      smsEnabled.value = sms.value;
-      const smsRankData = await fetchSmsRankSettings();
-      smsRank.value = smsRankData.value;
-    }
-    const penaltyData = await fetchCancelPenaltySettings();
-    cancelPenalty.value = penaltyData.value;
 
     // Restore saved tab
     const savedTab = localStorage.getItem("admin_tab");
@@ -319,11 +313,11 @@ function syncElapsedTimers() {
 }
 
 async function cancelEntry(num) {
-  if (!confirm(`엔트리 ${num}번을 취소하시겠습니까?\n${cancelPenalty.value}분간 페널티가 적용됩니다.`)) return;
+  if (!confirm(`엔트리 ${num}번을 취소하시겠습니까?\n${currentCancelPenalty.value}분간 페널티가 적용됩니다.`)) return;
 
   try {
     await cancelFromQueue(currentTab.value, num);
-    warning(`엔트리 ${num}번 취소 (${cancelPenalty.value}분 페널티)`);
+    warning(`엔트리 ${num}번 취소 (${currentCancelPenalty.value}분 페널티)`);
     await refreshQueue(currentTab.value);
   } catch (e) {
     error(e.message);
@@ -356,73 +350,56 @@ function isLastCallPending(num) {
   return pendingLastCallKeys.value.has(`${currentTab.value}-${num}`);
 }
 
-async function toggleSms() {
+function applyInspectionSettings(item, updated) {
+  item.sms = updated.sms ? 1 : 0;
+  item.sms_rank = updated.smsRank;
+  item.cancel_penalty = updated.cancelPenalty;
+  Object.assign(settingsDrafts.value[item.type], updated);
+}
+
+async function toggleSms(item, event) {
+  const enabled = event.target.checked;
   try {
-    await setSmsSettings(!smsEnabled.value);
-    const sms = await fetchSmsSettings();
-    smsEnabled.value = sms.value;
-    success("SMS 설정을 변경했습니다.");
+    const updated = await setInspectionSettings(item.type, { sms: enabled });
+    applyInspectionSettings(item, updated);
+    success(`${item.name} SMS 알림을 ${enabled ? "활성화" : "비활성화"}했습니다.`);
   } catch (e) {
+    event.target.checked = settingsDrafts.value[item.type].sms;
     error(e.message);
   }
 }
 
-async function updateSmsRank(e) {
+async function updateSmsRank(item, e) {
   const value = parseInt(e.target.value, 10);
-  if (isNaN(value) || value < 1 || value > 10) return;
-
-  try {
-    await setSmsRankSettings(value);
-    smsRank.value = value;
-    success(`SMS 알림 순번을 ${value}번으로 변경했습니다.`);
-  } catch (e) {
-    error(e.message);
-  }
-}
-
-// AdminPanel은 1초마다 penaltyClock을 갱신하고 SSE도 여러 종류 구독한다. Vue 3는 `value`를
-// 리렌더링마다 DOM에 다시 쓰므로, 편집 버퍼가 없으면 입력한 값이 1초 안에 반드시 되돌아간다
-// (경쟁 조건이 아니라 결정론적). 게다가 아래 저장 핸들러엔 "값이 같으면 스킵"이 없어서,
-// 되돌아간 값으로 저장 요청이 나가고 "변경했습니다" 알림까지 뜬다 — 바뀌지 않았는데
-// 바뀌었다고 알리는 게 조용히 사라지는 것보다 나쁘다.
-const editingCancelPenalty = ref(null);
-let cancelPenaltySaving = false;
-
-function handleCancelPenaltyFocus(e) {
-  editingCancelPenalty.value = e.target.value;
-}
-
-function handleCancelPenaltyInput(e) {
-  if (editingCancelPenalty.value !== null) editingCancelPenalty.value = e.target.value;
-}
-
-// change는 blur보다 먼저 발생한다. 저장이 시작됐으면 blur가 버퍼를 먼저 비우지 못하게 해
-// 요청이 도는 동안 화면이 옛 값으로 되돌아가는 깜빡임을 막는다. 값이 그대로면 change 자체가
-// 안 나므로 그때는 blur가 정리한다.
-function handleCancelPenaltyBlur() {
-  if (!cancelPenaltySaving) editingCancelPenalty.value = null;
-}
-
-async function updateCancelPenalty(e) {
-  cancelPenaltySaving = true;
-  const raw = e.target.value;
-  const value = parseInt(raw, 10);
-  if (isNaN(value) || value < 0 || value > 60) {
-    cancelPenaltySaving = false;
-    editingCancelPenalty.value = null;
+  if (isNaN(value) || value < 1 || value > 10) {
+    settingsDrafts.value[item.type].smsRank = item.sms_rank;
     return;
   }
 
   try {
-    await setCancelPenaltySettings(value);
-    cancelPenalty.value = value;
-    success(`취소 페널티를 ${value}분으로 변경했습니다.`);
+    const updated = await setInspectionSettings(item.type, { smsRank: value });
+    applyInspectionSettings(item, updated);
+    success(`${item.name} SMS 알림 순번을 ${value}번으로 변경했습니다.`);
   } catch (e) {
+    settingsDrafts.value[item.type].smsRank = item.sms_rank;
     error(e.message);
-  } finally {
-    // 스토어(cancelPenalty)가 갱신된 뒤에 버퍼를 놓는다.
-    cancelPenaltySaving = false;
-    editingCancelPenalty.value = null;
+  }
+}
+
+async function updateCancelPenalty(item, e) {
+  const value = parseInt(e.target.value, 10);
+  if (isNaN(value) || value < 0 || value > 60) {
+    settingsDrafts.value[item.type].cancelPenalty = item.cancel_penalty;
+    return;
+  }
+
+  try {
+    const updated = await setInspectionSettings(item.type, { cancelPenalty: value });
+    applyInspectionSettings(item, updated);
+    success(`${item.name} 취소 페널티를 ${value}분으로 변경했습니다.`);
+  } catch (e) {
+    settingsDrafts.value[item.type].cancelPenalty = item.cancel_penalty;
+    error(e.message);
   }
 }
 
@@ -812,57 +789,10 @@ function goToInspection(num) {
           <h3>⚙️ 설정</h3>
         </div>
         <div class="card-body">
-          <!-- SMS Setting -->
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">SMS 알림 활성화</span>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" :checked="smsEnabled" @change="toggleSms" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <!-- SMS Rank Setting -->
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">SMS 알림 순번</span>
-            </div>
-            <div class="setting-input">
-              <input type="number" :value="smsRank" min="1" max="10" @change="updateSmsRank" />
-              <span>번</span>
-            </div>
-          </div>
-
-          <!-- Cancel Penalty Setting -->
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">취소 페널티</span>
-            </div>
-            <div class="setting-input">
-              <input type="number" :value="editingCancelPenalty ?? cancelPenalty" min="0" max="60" @focus="handleCancelPenaltyFocus" @input="handleCancelPenaltyInput" @change="updateCancelPenalty" @blur="handleCancelPenaltyBlur" />
-              <span>분</span>
-            </div>
-          </div>
-
-          <hr class="divider" />
-
-          <!-- Active Inspections -->
           <div class="setting-section">
             <div v-for="item in inspections" :key="item.type" class="inspection-setting-group">
-              <div class="setting-item inspection-setting">
-                <div class="setting-info-left">
-                  <span class="setting-label">{{ item.name }}</span>
-                  <div class="setting-input">
-                    <input
-                      type="number"
-                      :value="allBooths[item.type]?.length || 1"
-                      min="1"
-                      @change="updateBoothCount(item.type, $event)"
-                    />
-                    <span>부스</span>
-                  </div>
-                </div>
+              <div class="inspection-setting-header">
+                <h4>{{ item.name }}</h4>
                 <div class="inspection-buttons">
                   <button
                     class="btn-toggle-visibility"
@@ -894,6 +824,59 @@ function goToInspection(num) {
                       <path d="M7 11V7a5 5 0 0 1 10 0v4" />
                     </svg>
                   </button>
+                </div>
+              </div>
+
+              <div class="setting-item compact-setting">
+                <span class="setting-label">SMS 알림</span>
+                <label class="toggle">
+                  <input
+                    type="checkbox"
+                    :checked="settingsDrafts[item.type].sms"
+                    @change="toggleSms(item, $event)"
+                  />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+
+              <div class="setting-item compact-setting">
+                <span class="setting-label">SMS 알림 순번</span>
+                <div class="setting-input">
+                  <input
+                    v-model="settingsDrafts[item.type].smsRank"
+                    type="number"
+                    min="1"
+                    max="10"
+                    @change="updateSmsRank(item, $event)"
+                  />
+                  <span>번</span>
+                </div>
+              </div>
+
+              <div class="setting-item compact-setting">
+                <span class="setting-label">취소 페널티</span>
+                <div class="setting-input">
+                  <input
+                    v-model="settingsDrafts[item.type].cancelPenalty"
+                    type="number"
+                    min="0"
+                    max="60"
+                    @change="updateCancelPenalty(item, $event)"
+                  />
+                  <span>분</span>
+                </div>
+              </div>
+
+              <div class="setting-item compact-setting booth-setting">
+                <span class="setting-label">부스 수</span>
+                <div class="setting-input">
+                  <input
+                    type="number"
+                    :value="allBooths[item.type]?.length || 1"
+                    min="1"
+                    @change="updateBoothCount(item.type, $event)"
+                  />
+                  <span>개</span>
                 </div>
               </div>
             </div>
@@ -1360,25 +1343,13 @@ function goToInspection(num) {
   padding: 0.75rem 0;
 }
 
-.setting-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-}
-
 .setting-label {
   font-weight: 500;
   font-size: 0.875rem;
 }
 
-.divider {
-  border: none;
-  border-top: 1px solid var(--border-color);
-  margin: 0.5rem 0;
-}
-
 .setting-section {
-  margin-top: 0.5rem;
+  margin-top: 0;
 }
 
 .setting-input {
@@ -1415,36 +1386,33 @@ function goToInspection(num) {
   color: var(--text-secondary);
 }
 
-.inspection-setting {
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.setting-info-left {
+.inspection-setting-header {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
 }
 
-.setting-info-left .setting-label {
-  min-width: 3.5em;
+.inspection-setting-header h4 {
+  margin: 0;
+  font-size: 0.9375rem;
 }
 
-.inspection-setting .setting-input input {
-  width: 40px;
+.compact-setting {
+  min-height: 2.25rem;
+  padding: 0.25rem 0;
 }
 
 /* Booth Settings */
 .inspection-setting-group {
   border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0.5rem;
-  margin-bottom: 0.5rem;
+  padding: 0.75rem 0;
 }
 
 .inspection-setting-group:last-child {
   border-bottom: none;
   padding-bottom: 0;
-  margin-bottom: 0;
 }
 
 .inspection-buttons {

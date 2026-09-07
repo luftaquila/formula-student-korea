@@ -283,7 +283,7 @@ describe('Queue mutation database preflight auditing', () => {
     const started = await startServer(created.app);
     const isolated = createClient(started.baseUrl);
     try {
-      failingLookup = "SELECT value FROM settings WHERE key = 'sms_rank'";
+      failingLookup = "SELECT sms_rank, cancel_penalty FROM inspection";
       const cancel = await isolated.post('/api/admin/cancel/battery', {
         body: { num: 2 }, cookie: officialCookie,
       });
@@ -297,7 +297,7 @@ describe('Queue mutation database preflight auditing', () => {
       assert.equal(priority.status, 500);
       assert.equal(await priority.text(), '서버 오류가 발생했습니다.');
 
-      failingLookup = "SELECT value FROM settings WHERE key = 'sms_rank'";
+      failingLookup = "SELECT sms_rank FROM inspection";
       const booth = await isolated.post('/api/admin/booths/battery/1/enter', {
         body: { num: 2 }, cookie: officialCookie,
       });
@@ -347,8 +347,8 @@ describe('Queue business rejection auditing', () => {
     });
     assert.equal(booth.status, 409);
 
-    const sms = await client.patch('/api/admin/settings/sms', {
-      body: { value: true },
+    const sms = await client.patch('/api/admin/settings/battery', {
+      body: { sms: true },
       cookie: chiefCookie,
     });
     assert.equal(sms.status, 400);
@@ -383,6 +383,7 @@ describe('Queue business rejection auditing', () => {
       error: 'sms_configuration_unavailable',
       reason: 'sms_configuration_unavailable',
       requested_enabled: true,
+      inspection: 'battery',
     });
   });
 });
@@ -401,6 +402,11 @@ describe('GET /api/active', () => {
     const data = await res.json();
     assert.deepEqual(data.map((row) => row.type), Object.keys(INSPECTIONS));
     assert.deepEqual(data.map((row) => row.name), Object.values(INSPECTIONS));
+    for (const row of data) {
+      assert.equal(Object.hasOwn(row, 'sms'), false);
+      assert.equal(Object.hasOwn(row, 'sms_rank'), false);
+      assert.equal(Object.hasOwn(row, 'cancel_penalty'), false);
+    }
   });
 
   it('does not expose inspection rows outside the canonical type list', async () => {
@@ -525,8 +531,8 @@ describe('Auth enforcement', () => {
   });
 
   it('official is rejected from chief-level settings (403)', async () => {
-    const res = await client.patch('/api/admin/settings/cancel-penalty', {
-      body: { minutes: 10 },
+    const res = await client.patch('/api/admin/settings/battery', {
+      body: { cancelPenalty: 10 },
       cookie: officialCookie,
     });
     assert.equal(res.status, 403);
@@ -1530,107 +1536,134 @@ describe('Statistics', () => {
 });
 
 // ─── Settings ───────────────────────────────────────────────────────────
-describe('SMS settings', () => {
-  it('GET /api/admin/settings/sms returns SMS status (FALSE)', async () => {
-    const res = await client.get('/api/admin/settings/sms', { cookie: officialCookie });
+describe('Per-inspection queue settings', () => {
+  it('GET /api/admin/settings/:type returns defaults for that inspection', async () => {
+    const res = await client.get('/api/admin/settings/battery', { cookie: officialCookie });
     assert.equal(res.status, 200);
     const data = await res.json();
-    assert.equal(data.value, false);
+    assert.deepEqual(data, { sms: false, smsRank: 3, cancelPenalty: 10 });
   });
 
-  it('PATCH /api/admin/settings/sms rejects enable without env vars', async () => {
-    const res = await client.patch('/api/admin/settings/sms', {
-      body: { value: true },
+  it('PATCH /api/admin/settings/:type rejects SMS enable without provider config', async () => {
+    const res = await client.patch('/api/admin/settings/battery', {
+      body: { sms: true },
       cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
   });
 
-  // 회귀: 설정 조회 실패가 settings의 sms 값을 덮어쓰면 안 된다. 예전에는 실패 경로에서
+  it('enables SMS only for the selected inspection when provider config is available', async () => {
+    const isolatedPath = tmpDbPath();
+    const created = createQueueApp({
+      dbPath: isolatedPath,
+      validateUser: TRUST_JWT,
+      teamStore,
+      smsConfig: {
+        naver_cloud_access_key: 'access',
+        naver_cloud_secret_key: 'secret',
+        naver_cloud_sms_service_id: 'service',
+        phone_number_sms_sender: '01000000000',
+      },
+    });
+    const started = await startServer(created.app);
+    const isolated = createClient(started.baseUrl);
+    try {
+      const updated = await isolated.patch('/api/admin/settings/battery', {
+        body: { sms: true }, cookie: chiefCookie,
+      });
+      assert.equal(updated.status, 200);
+      assert.deepEqual(await updated.json(), { sms: true, smsRank: 3, cancelPenalty: 10 });
+      const electric = await isolated.get('/api/admin/settings/electric', { cookie: officialCookie });
+      assert.deepEqual(await electric.json(), { sms: false, smsRank: 3, cancelPenalty: 10 });
+    } finally {
+      for (const timer of created.timers || []) clearInterval(timer);
+      await stopServer(started.server);
+      created.closeSse?.();
+      created.db.close();
+      cleanup(isolatedPath);
+    }
+  });
+
+  // 회귀: 제공자 설정 조회 실패가 검차별 sms 값을 덮어쓰면 안 된다. 예전에는 실패 경로에서
   // sms=FALSE를 영속화해서 email 부팅 레이스 한 번에 관리자가 켠 SMS가 조용히 꺼졌다.
-  it('a failing loadSmsConfig must not overwrite the admin-controlled sms setting', async () => {
-    db.prepare("UPDATE settings SET value = 'TRUE' WHERE key = 'sms'").run();
+  it('a failing loadSmsConfig must not overwrite per-inspection SMS settings', async () => {
+    db.prepare("UPDATE inspection SET sms = TRUE WHERE type = 'battery'").run();
     // EMAIL_SERVER 미지정 → 컨테이너 DNS(http://email:9900)로 나가 연결 실패(transient)
     await loadSmsConfig();
-    const value = db.prepare("SELECT value FROM settings WHERE key = 'sms'").get().value;
-    assert.equal(value, 'TRUE', 'fetch failure must not flip the setting off');
-    db.prepare("UPDATE settings SET value = 'FALSE' WHERE key = 'sms'").run();
-  });
-});
-
-describe('SMS rank settings', () => {
-  it('GET /api/admin/settings/sms-rank returns rank (default 3)', async () => {
-    const res = await client.get('/api/admin/settings/sms-rank', { cookie: officialCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.value, 3);
+    const value = db.prepare("SELECT sms FROM inspection WHERE type = 'battery'").get().sms;
+    assert.equal(value, 1, 'fetch failure must not flip the setting off');
+    db.prepare("UPDATE inspection SET sms = FALSE WHERE type = 'battery'").run();
   });
 
-  it('PATCH /api/admin/settings/sms-rank updates rank', async () => {
-    const res = await client.patch('/api/admin/settings/sms-rank', {
-      body: { value: 5 },
+  it('updates SMS rank and cancel penalty independently for each inspection', async () => {
+    const res = await client.patch('/api/admin/settings/battery', {
+      body: { smsRank: 5, cancelPenalty: 7 },
       cookie: chiefCookie,
     });
     assert.equal(res.status, 200);
-    const check = await client.get('/api/admin/settings/sms-rank', { cookie: officialCookie });
-    const data = await check.json();
-    assert.equal(data.value, 5);
-    // Reset
-    await client.patch('/api/admin/settings/sms-rank', {
-      body: { value: 3 },
+    assert.deepEqual(await res.json(), { sms: false, smsRank: 5, cancelPenalty: 7 });
+
+    const battery = await client.get('/api/admin/settings/battery', { cookie: officialCookie });
+    const electric = await client.get('/api/admin/settings/electric', { cookie: officialCookie });
+    assert.deepEqual(await battery.json(), { sms: false, smsRank: 5, cancelPenalty: 7 });
+    assert.deepEqual(await electric.json(), { sms: false, smsRank: 3, cancelPenalty: 10 });
+
+    await client.patch('/api/admin/settings/battery', {
+      body: { smsRank: 3, cancelPenalty: 10 },
       cookie: chiefCookie,
     });
   });
 
-  it('PATCH /api/admin/settings/sms-rank rejects out of range', async () => {
-    const res = await client.patch('/api/admin/settings/sms-rank', {
-      body: { value: 11 },
+  it('rejects unknown inspection types, fields, and out-of-range values', async () => {
+    const unknown = await client.get('/api/admin/settings/unknown', { cookie: officialCookie });
+    assert.equal(unknown.status, 400);
+    const unknownField = await client.patch('/api/admin/settings/battery', {
+      body: { smsRank: 4, global: true }, cookie: chiefCookie,
+    });
+    assert.equal(unknownField.status, 400);
+    const res = await client.patch('/api/admin/settings/battery', {
+      body: { smsRank: 11 },
       cookie: chiefCookie,
     });
     assert.equal(res.status, 400);
-    const res2 = await client.patch('/api/admin/settings/sms-rank', {
-      body: { value: 0 },
+    const res2 = await client.patch('/api/admin/settings/battery', {
+      body: { cancelPenalty: 61 },
       cookie: chiefCookie,
     });
     assert.equal(res2.status, 400);
   });
-});
 
-describe('Cancel penalty settings', () => {
-  it('GET /api/admin/settings/cancel-penalty returns penalty (default 10)', async () => {
-    const res = await client.get('/api/admin/settings/cancel-penalty', { cookie: officialCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.equal(data.value, 10);
-  });
+  it('applies the configured cancel penalty only to the matching inspection', async () => {
+    await client.patch('/api/admin/settings/battery', {
+      body: { cancelPenalty: 1 }, cookie: chiefCookie,
+    });
+    await client.patch('/api/admin/settings/electric', {
+      body: { cancelPenalty: 0 }, cookie: chiefCookie,
+    });
+    for (const [type, num] of [['battery', 1], ['electric', 2]]) {
+      db.prepare('DELETE FROM cancel_penalty WHERE num = ? AND inspection = ? AND year = ?')
+        .run(num, type, CURRENT_YEAR);
+      const registered = await client.post(`/api/admin/register/${type}`, {
+        body: { num, phone: `0100000000${num}` }, cookie: chiefCookie,
+      });
+      assert.equal(registered.status, 201, await registered.clone().text());
+      const cancelled = await client.post(`/api/admin/cancel/${type}`, {
+        body: { num }, cookie: officialCookie,
+      });
+      assert.equal(cancelled.status, 200, await cancelled.clone().text());
+    }
 
-  it('PATCH /api/admin/settings/cancel-penalty updates penalty', async () => {
-    const res = await client.patch('/api/admin/settings/cancel-penalty', {
-      body: { value: 5 },
-      cookie: chiefCookie,
-    });
-    assert.equal(res.status, 200);
-    const check = await client.get('/api/admin/settings/cancel-penalty', { cookie: officialCookie });
-    const data = await check.json();
-    assert.equal(data.value, 5);
-    // Reset
-    await client.patch('/api/admin/settings/cancel-penalty', {
-      body: { value: 10 },
-      cookie: chiefCookie,
-    });
-  });
+    const batteryPenalty = db.prepare(`
+      SELECT until FROM cancel_penalty WHERE num = 1 AND inspection = 'battery' AND year = ?
+    `).get(CURRENT_YEAR);
+    const electricPenalty = db.prepare(`
+      SELECT until FROM cancel_penalty WHERE num = 2 AND inspection = 'electric' AND year = ?
+    `).get(CURRENT_YEAR);
+    assert.ok(batteryPenalty.until > Date.now());
+    assert.equal(electricPenalty, undefined);
 
-  it('PATCH /api/admin/settings/cancel-penalty rejects out of range', async () => {
-    const res = await client.patch('/api/admin/settings/cancel-penalty', {
-      body: { value: 61 },
-      cookie: chiefCookie,
-    });
-    assert.equal(res.status, 400);
-    const res2 = await client.patch('/api/admin/settings/cancel-penalty', {
-      body: { value: -1 },
-      cookie: chiefCookie,
-    });
-    assert.equal(res2.status, 400);
+    db.prepare("UPDATE inspection SET cancel_penalty = 10 WHERE type IN ('battery', 'electric')").run();
+    db.prepare("DELETE FROM cancel_penalty WHERE num = 1 AND inspection = 'battery' AND year = ?").run(CURRENT_YEAR);
   });
 });
 
@@ -2144,6 +2177,12 @@ describe('Queue legacy → normalized migration', () => {
     // legacy inspection meta WITH the removed `length` cache column
     seed.exec(`CREATE TABLE inspection (type TEXT PRIMARY KEY, name TEXT NOT NULL, active BOOLEAN NOT NULL DEFAULT TRUE, length INTEGER NOT NULL DEFAULT 0)`);
     seed.prepare("INSERT INTO inspection (type, name, active, length) VALUES (?, ?, ?, ?)").run('battery', '축전지', 1, 7);
+    seed.exec(`
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO settings VALUES ('sms', 'TRUE');
+      INSERT INTO settings VALUES ('sms_rank', '8');
+      INSERT INTO settings VALUES ('cancel_penalty', '6');
+    `);
     // legacy `current` (no year column); inspection is a comma list incl. an invalid type
     seed.exec(`CREATE TABLE current (num INTEGER PRIMARY KEY, phone TEXT, inspection TEXT)`);
     seed.prepare("INSERT INTO current (num, phone, inspection) VALUES (?, ?, ?)").run(1, '01011112222', 'battery,braking,bogus');
@@ -2186,6 +2225,11 @@ describe('Queue legacy → normalized migration', () => {
     // `length` cache column removed from inspection meta
     const insCols = migDb.prepare("PRAGMA table_info(inspection)").all().map((c) => c.name);
     assert.ok(!insCols.includes('length'), 'length cache column removed');
+    assert.deepEqual(
+      migDb.prepare("SELECT sms, sms_rank, cancel_penalty FROM inspection WHERE type = 'battery'").get(),
+      { sms: 1, sms_rank: 8, cancel_penalty: 6 },
+      'legacy global settings become every inspection\'s initial settings',
+    );
 
     // inspection_history PK is now year-scoped and the legacy row survived
     const pk = migDb.prepare("PRAGMA table_info(inspection_history)").all().filter((c) => c.pk > 0).sort((a, b) => a.pk - b.pk).map((c) => c.name);
@@ -2203,16 +2247,26 @@ describe('Queue legacy → normalized migration', () => {
     const has = (t) => !!migDb.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?").get(t);
     assert.equal(has('current'), false, 'legacy current consumed');
     assert.equal(has('battery'), false, 'legacy per-inspection table dropped');
+    assert.equal(has('settings'), false, 'legacy global settings consumed');
 
     assert.equal(has('current_legacy'), false, 'legacy current compatibility table is not retained');
   });
 
   it('is idempotent — re-opening the migrated DB makes no further changes and does not error', () => {
+    migDb.prepare("UPDATE inspection SET cancel_penalty = 4 WHERE type = 'battery'").run();
+    migDb.exec(`
+      CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      INSERT INTO settings VALUES ('sms', 'FALSE');
+      INSERT INTO settings VALUES ('sms_rank', '3');
+      INSERT INTO settings VALUES ('cancel_penalty', '10');
+    `);
     migDb.close();
     migDb = createQueueApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM current_inspection WHERE num = 1").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_queue WHERE inspection = 'battery'").get().c, 2);
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM inspection_history WHERE num = 5").get().c, 1);
+    assert.equal(migDb.prepare("SELECT cancel_penalty FROM inspection WHERE type = 'battery'").get().cancel_penalty, 4);
+    assert.equal(migDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'").get(), undefined);
   });
 
   it('removes an old compatibility table even when the original current table is already absent', () => {
@@ -2355,8 +2409,10 @@ describe('Queue logging audit', () => {
   it('logs socket failures under the unified sms.send action', async () => {
     const isolatedPath = tmpDbPath();
     let requestFailed;
+    let smsAttempts = 0;
     const failed = new Promise((resolve) => { requestFailed = resolve; });
     const smsRequest = () => {
+      smsAttempts += 1;
       const request = new EventEmitter();
       request.setTimeout = () => request;
       request.write = () => {};
@@ -2382,8 +2438,7 @@ describe('Queue logging audit', () => {
     const started = await startServer(created.app);
     const isolated = createClient(started.baseUrl);
     try {
-      created.db.prepare("UPDATE settings SET value = 'TRUE' WHERE key = 'sms'").run();
-      created.db.prepare("UPDATE settings SET value = '1' WHERE key = 'sms_rank'").run();
+      created.db.prepare("UPDATE inspection SET sms = TRUE, sms_rank = 1 WHERE type = 'battery'").run();
       for (const [num, phone] of [[1, '01011112222'], [2, '01022223333']]) {
         const registered = await isolated.post('/api/admin/register/battery', {
           body: { num, phone }, cookie: chiefCookie,
@@ -2420,6 +2475,18 @@ describe('Queue logging audit', () => {
         num: 2,
         type: 'battery',
       });
+
+      for (const [num, phone] of [[1, '01011112222'], [2, '01022223333']]) {
+        const registered = await isolated.post('/api/admin/register/report', {
+          body: { num, phone }, cookie: chiefCookie,
+        });
+        assert.equal(registered.status, 201, await registered.clone().text());
+      }
+      const reportCancelled = await isolated.post('/api/admin/cancel/report', {
+        body: { num: 1 }, cookie: officialCookie,
+      });
+      assert.equal(reportCancelled.status, 200, await reportCancelled.clone().text());
+      assert.equal(smsAttempts, 1, 'the disabled report queue must not inherit battery SMS settings');
     } finally {
       for (const timer of created.timers || []) clearInterval(timer);
       await stopServer(started.server);
