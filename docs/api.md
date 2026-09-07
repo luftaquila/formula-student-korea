@@ -203,7 +203,7 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/admin/all` | `queue.operate` | — | `[{ type, name, length, active, ignore_priority, ... }]` | All inspection types (including inactive) |
+| GET | `/admin/all` | `queue.operate` | — | `[{ type, name, length, active, ignore_priority, sms, sms_rank, cancel_penalty, ... }]` | All inspection types and their per-inspection settings (including inactive types) |
 | GET | `/admin/inspection/:type` | `queue.operate` | — | `[{ num, phone, timestamp, is_reinspection, priority, rank, total, group_rank, group_total }]` | Queue listing with full-queue and initial/reinspection cohort ranks (sorted) |
 | PATCH | `/admin/inspection/:type` | `queue.manage` | `{ active: bool }` | 200 | Toggle inspection active status |
 | PATCH | `/admin/inspection/:type/visibility` | `queue.manage` | `{ hidden: bool }` | 200 | Toggle inspection visibility on the public Queue screen and register page |
@@ -266,12 +266,8 @@ Last-call delivery is an explicit operator action and therefore does not depend 
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/admin/settings/sms` | `queue.operate` | — | `{ value: bool }` | SMS notification enabled status |
-| PATCH | `/admin/settings/sms` | `queue.manage` | `{ value: bool }` | 200 | Toggle SMS notifications |
-| GET | `/admin/settings/sms-rank` | `queue.operate` | — | `{ value: int }` | SMS notification rank threshold |
-| PATCH | `/admin/settings/sms-rank` | `queue.manage` | `{ value: int }` | 200 | Set SMS rank (1-10) |
-| GET | `/admin/settings/cancel-penalty` | `queue.operate` | — | `{ value: int }` | Cancel penalty minutes |
-| PATCH | `/admin/settings/cancel-penalty` | `queue.manage` | `{ value: int }` | 200 | Set cancel penalty (0-60 min) |
+| GET | `/admin/settings/:type` | `queue.operate` | — | `{ sms: bool, smsRank: int, cancelPenalty: int }` | Read SMS and cancel-penalty settings for one inspection |
+| PATCH | `/admin/settings/:type` | `queue.manage` | `{ sms?: bool, smsRank?: int, cancelPenalty?: int }` | `{ sms, smsRank, cancelPenalty }` | Update one inspection's settings (`smsRank`: 1–10, `cancelPenalty`: 0–60) |
 
 ## Registration module (Competition port 9200)
 

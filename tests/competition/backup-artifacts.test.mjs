@@ -187,6 +187,67 @@ function createCompetitionUnit(dbPath, uploads, marker = "artifact") {
   fs.writeFileSync(path.join(uploads, `${marker}.txt`), marker);
 }
 
+function restoreQueueSettingsPreview(dbPath, variant) {
+  const writer = new Database(dbPath);
+  if (variant === "canonical") {
+    const rows = writer.prepare(`
+      SELECT type, name, active, ignore_priority, ignore_reinspection, hidden_from_register
+      FROM inspection
+      ORDER BY rowid
+    `).all();
+    writer.transaction(() => {
+      writer.exec(`
+        DROP TABLE inspection;
+        CREATE TABLE IF NOT EXISTS inspection (
+          type TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          active BOOLEAN NOT NULL DEFAULT TRUE,
+          ignore_priority BOOLEAN NOT NULL DEFAULT FALSE,
+          ignore_reinspection BOOLEAN NOT NULL DEFAULT FALSE,
+          hidden_from_register BOOLEAN NOT NULL DEFAULT FALSE,
+          sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1)),
+          sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10),
+          cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60)
+        );
+      `);
+      const insert = writer.prepare(`
+        INSERT INTO inspection
+          (type, name, active, ignore_priority, ignore_reinspection, hidden_from_register)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of rows) insert.run(
+        row.type,
+        row.name,
+        row.active,
+        row.ignore_priority,
+        row.ignore_reinspection,
+        row.hidden_from_register,
+      );
+    })();
+  } else {
+    writer.exec(`
+      ALTER TABLE inspection ADD COLUMN sms BOOLEAN NOT NULL DEFAULT FALSE CHECK(sms IN (0, 1));
+      ALTER TABLE inspection ADD COLUMN sms_rank INTEGER NOT NULL DEFAULT 3 CHECK(sms_rank BETWEEN 1 AND 10);
+      ALTER TABLE inspection ADD COLUMN cancel_penalty INTEGER NOT NULL DEFAULT 10 CHECK(cancel_penalty BETWEEN 0 AND 60);
+    `);
+  }
+  if (variant === "altered-with-settings") {
+    writer.exec(`
+      DELETE FROM settings WHERE key LIKE 'inspection:%';
+      UPDATE settings SET value = 'TRUE' WHERE key = 'sms';
+      UPDATE settings SET value = '8' WHERE key = 'sms_rank';
+      UPDATE settings SET value = '6' WHERE key = 'cancel_penalty';
+      DELETE FROM schema_migrations WHERE name = 'queue-per-inspection-settings';
+    `);
+  } else {
+    writer.exec(`
+      UPDATE inspection SET sms = TRUE, sms_rank = 8, cancel_penalty = 6 WHERE type = 'battery';
+      DROP TABLE settings;
+    `);
+  }
+  writer.close();
+}
+
 function restoreRetiredCalledStatus(dbPath) {
   const writer = new Database(dbPath);
   writer.exec(`
@@ -952,6 +1013,96 @@ describe("Competition backup/restore artifact validation", () => {
     const result = validateDatabase(minimalDb);
     assert.notEqual(result.status, 0);
     assert.match(result.stderr, /runtime schema/);
+  });
+
+  it("keeps per-inspection Queue settings inside the rollback-compatible schema", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-queue-settings-schema-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    createCompetitionUnit(dbPath, path.join(root, "uploads"));
+
+    const reader = new Database(dbPath, { readonly: true });
+    try {
+      assert.ok(reader.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings'",
+      ).get());
+      assert.deepEqual(
+        reader.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
+        ["type", "name", "active", "ignore_priority", "ignore_reinspection", "hidden_from_register"],
+      );
+      assert.equal(reader.prepare(
+        "SELECT COUNT(*) AS count FROM settings WHERE key LIKE 'inspection:%'",
+      ).get().count, 24);
+      const contract = captureCompetitionSchemaContract(reader);
+      assert.equal(contract.length, 131);
+      assert.equal(
+        competitionSchemaContractDigest(contract),
+        "6ea17b5f529d947108915839bb104a90c27089eb639d3d67f7149376bc904e64",
+      );
+    } finally {
+      reader.close();
+    }
+    const result = validateDatabase(dbPath);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("validates and repairs every committed Queue settings preview state", () => {
+    const contracts = {
+      canonical: "a2ed2c23c3f94119b6a474b95cc92634fe61646110bc02318478a2fde40e24e2",
+      altered: "3fd0e14f8e72cdc703c71371ccb972c79eb243976eebc60207097b617cb2001d",
+      "altered-with-settings": "0c08e93ebc8febb9baf5fee65fd693246e53ac4604ed100f3f012ff66016f2ff",
+    };
+    for (const [variant, expectedContract] of Object.entries(contracts)) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), `fsk-queue-settings-preview-${variant}-`));
+      roots.push(root);
+      const dbPath = path.join(root, "competition.db");
+      const uploads = path.join(root, "uploads");
+      createCompetitionUnit(dbPath, uploads);
+      restoreQueueSettingsPreview(dbPath, variant);
+
+      const before = new Database(dbPath, { readonly: true });
+      const beforeContract = competitionSchemaContractDigest(captureCompetitionSchemaContract(before));
+      before.close();
+      assert.equal(beforeContract, expectedContract, `${variant} fixture must match its deployed contract`);
+      const predecessor = validateDatabase(dbPath);
+      assert.equal(predecessor.status, 0, `${variant}: ${predecessor.stderr}`);
+      const unchanged = new Database(dbPath, { readonly: true });
+      assert.equal(
+        competitionSchemaContractDigest(captureCompetitionSchemaContract(unchanged)),
+        beforeContract,
+        `${variant} predecessor validation must remain read-only`,
+      );
+      unchanged.close();
+
+      const repaired = createCompetitionApp({
+        dbPath,
+        uploadRoot: uploads,
+        skipStaticValidation: true,
+        validateUser: TRUST_JWT,
+      });
+      repaired.close();
+
+      const reader = new Database(dbPath, { readonly: true });
+      try {
+        assert.deepEqual(
+          reader.prepare("PRAGMA table_info(inspection)").all().map(({ name }) => name),
+          ["type", "name", "active", "ignore_priority", "ignore_reinspection", "hidden_from_register"],
+        );
+        assert.deepEqual(Object.fromEntries(reader.prepare(`
+          SELECT key, value FROM settings
+          WHERE key LIKE 'inspection:battery:%'
+          ORDER BY key
+        `).all().map(({ key, value }) => [key.slice("inspection:battery:".length), value])), {
+          cancel_penalty: "6",
+          sms: "TRUE",
+          sms_rank: "8",
+        });
+      } finally {
+        reader.close();
+      }
+      const result = validateDatabase(dbPath);
+      assert.equal(result.status, 0, result.stderr);
+    }
   });
 
   it("validates the exact pre-rule-reference database read-only and upgrades it without replacing template rows", () => {

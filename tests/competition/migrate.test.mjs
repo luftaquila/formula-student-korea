@@ -182,6 +182,10 @@ describe("legacy database migration", () => {
       active: 0,
     });
     assert.equal(db.prepare("SELECT value FROM settings WHERE key = 'sms_rank'").get().value, "8");
+    assert.deepEqual(
+      db.prepare("SELECT DISTINCT value FROM settings WHERE key LIKE 'inspection:%:sms_rank'").all(),
+      [{ value: "8" }],
+    );
     const modules = db.prepare("SELECT module, COUNT(*) AS count FROM logs GROUP BY module ORDER BY module").all();
     assert.equal(modules.length, 6);
     assert.ok(modules.every((row) => row.count >= 1));

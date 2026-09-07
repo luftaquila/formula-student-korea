@@ -229,9 +229,9 @@ test.describe("Inspection summary dashboard", () => {
     const toggle = disclosure.locator("summary");
 
     await expect(toggle).toBeVisible();
-    await expect(toggle.locator(".inspector-preview")).toHaveText("김검차, 이검차");
-    await expect(toggle.locator(".inspector-more")).toHaveText("외 1명");
-    await expect(toggle).toHaveAttribute("title", inspectors.join(", "));
+    await expect(toggle.locator(".inspector-preview")).toHaveText("김검차 이검차");
+    await expect(toggle.locator(".inspector-more")).toHaveText("외 1");
+    await expect(toggle).toHaveAttribute("title", inspectors.join(" "));
     expect(await toggle.evaluate(element => getComputedStyle(element).listStyleType)).toBe("none");
     expect(await toggle.evaluate(element => getComputedStyle(element, "::before").content)).toBe("none");
 

@@ -17,7 +17,7 @@ const managementOnly = [
   { method: "post", path: "/competition/api/v1/queue/admin/priority/battery", body: { num: 999999, priority: 0 } },
   { method: "delete", path: "/competition/api/v1/queue/admin/priority/battery/all", body: {} },
   { method: "delete", path: "/competition/api/v1/queue/admin/history/battery", body: {} },
-  { method: "patch", path: "/competition/api/v1/queue/admin/settings/sms", body: { enabled: false } },
+  { method: "patch", path: "/competition/api/v1/queue/admin/settings/battery", body: { sms: false } },
   { method: "patch", path: "/competition/api/v1/queue/admin/inspection/battery/visibility", body: { hidden: false } },
   { method: "put", path: "/competition/api/v1/queue/admin/inspection/battery/ignore", body: { ignore_priority: false } },
   { method: "patch", path: "/competition/api/v1/queue/admin/inspection/battery", body: { active: true } },

@@ -43,6 +43,32 @@ const upgradeColumns = (columns = {}) => Object.freeze({
 });
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
   Object.freeze({
+    // The earlier Queue preview committed its inspection-column ALTERs before
+    // copying global settings and dropping the settings table. Queue can use
+    // those globals to finish the repair when this exact state is restarted.
+    objectCount: 131,
+    sha256: "0c08e93ebc8febb9baf5fee65fd693246e53ac4604ed100f3f012ff66016f2ff",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
+  Object.freeze({
+    // An earlier preview stored Queue settings on the inspection table and
+    // removed the global settings table. Queue folds this exact deployed shape
+    // back into rollback-compatible namespaced settings before serving.
+    objectCount: 130,
+    sha256: "a2ed2c23c3f94119b6a474b95cc92634fe61646110bc02318478a2fde40e24e2",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
+  Object.freeze({
+    // The same preview interrupted before its final inspection-table rebuild.
+    // Detecting persisted columns makes the runtime repair converge on retry.
+    objectCount: 130,
+    sha256: "3fd0e14f8e72cdc703c71371ccb972c79eb243976eebc60207097b617cb2001d",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
+  Object.freeze({
     // Main after the booth-timer release, before deterministic rule references.
     objectCount: 131,
     sha256: "9feec14de985a4b1829f69bde7570cc5edffbeb16ae502a822e550705ce1ef94",

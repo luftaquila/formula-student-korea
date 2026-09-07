@@ -8,8 +8,6 @@ import {
   fetchInspectionQueue,
   fetchInspectionSummary,
   sendLastCall,
-  toggleInspectionActive,
-  toggleInspectionVisibility,
   cancelFromQueue,
   fetchActivePenalties,
   clearActivePenalty,
@@ -17,14 +15,7 @@ import {
   enterBooth,
   exitBooth,
   setBoothTimerPaused,
-  updateBoothConfig,
   toggleBooth,
-  fetchSmsSettings,
-  setSmsSettings,
-  fetchSmsRankSettings,
-  setSmsRankSettings,
-  fetchCancelPenaltySettings,
-  setCancelPenaltySettings,
 } from "../api";
 import { useSSE } from "../composables/useSSE";
 import { useInspectionSSE } from "../composables/useInspectionSSE";
@@ -53,9 +44,6 @@ const inspections = ref([]);
 const inspectionSummary = ref(null);
 const currentQueue = ref([]);
 const currentTab = ref("");
-const smsEnabled = ref(false);
-const smsRank = ref(3);
-const cancelPenalty = ref(10);
 const loading = ref(true);
 const boothSelectedTeam = ref({});
 const penalties = ref([]);
@@ -78,6 +66,10 @@ const currentTabName = computed(() => {
   const item = activeInspections.value.find((i) => i.type === currentTab.value);
   return item ? item.name : "";
 });
+
+const currentCancelPenalty = computed(() => (
+  inspections.value.find((item) => item.type === currentTab.value)?.cancel_penalty ?? 10
+));
 
 const currentBooths = computed(() => {
   if (!currentTab.value || !allBooths.value[currentTab.value]) return [];
@@ -175,14 +167,6 @@ onMounted(async () => {
     entries.value = await fetchEntries();
     inspections.value = await fetchAllInspections();
     if (canInspect.value) await requestInspectionSummary();
-    if (canManage.value) {
-      const sms = await fetchSmsSettings();
-      smsEnabled.value = sms.value;
-      const smsRankData = await fetchSmsRankSettings();
-      smsRank.value = smsRankData.value;
-    }
-    const penaltyData = await fetchCancelPenaltySettings();
-    cancelPenalty.value = penaltyData.value;
 
     // Restore saved tab
     const savedTab = localStorage.getItem("admin_tab");
@@ -248,26 +232,6 @@ function selectTab(type) {
   refreshQueue(type);
 }
 
-async function toggleActive(type, currentActive) {
-  try {
-    await toggleInspectionActive(type, !currentActive);
-    const item = inspections.value.find(i => i.type === type);
-    if (item) item.active = !currentActive;
-  } catch (e) {
-    error("활성화 상태를 변경할 수 없습니다.");
-  }
-}
-
-async function toggleVisibility(type, currentHidden) {
-  try {
-    await toggleInspectionVisibility(type, !currentHidden);
-    const item = inspections.value.find(i => i.type === type);
-    if (item) item.hidden_from_register = !currentHidden ? 1 : 0;
-  } catch (e) {
-    error("표시 상태를 변경할 수 없습니다.");
-  }
-}
-
 async function enterBoothAction(boothNum) {
   const num = boothSelectedTeam.value[boothNum];
   if (!num) return;
@@ -319,11 +283,11 @@ function syncElapsedTimers() {
 }
 
 async function cancelEntry(num) {
-  if (!confirm(`엔트리 ${num}번을 취소하시겠습니까?\n${cancelPenalty.value}분간 페널티가 적용됩니다.`)) return;
+  if (!confirm(`엔트리 ${num}번을 취소하시겠습니까?\n${currentCancelPenalty.value}분간 페널티가 적용됩니다.`)) return;
 
   try {
     await cancelFromQueue(currentTab.value, num);
-    warning(`엔트리 ${num}번 취소 (${cancelPenalty.value}분 페널티)`);
+    warning(`엔트리 ${num}번 취소 (${currentCancelPenalty.value}분 페널티)`);
     await refreshQueue(currentTab.value);
   } catch (e) {
     error(e.message);
@@ -356,90 +320,6 @@ function isLastCallPending(num) {
   return pendingLastCallKeys.value.has(`${currentTab.value}-${num}`);
 }
 
-async function toggleSms() {
-  try {
-    await setSmsSettings(!smsEnabled.value);
-    const sms = await fetchSmsSettings();
-    smsEnabled.value = sms.value;
-    success("SMS 설정을 변경했습니다.");
-  } catch (e) {
-    error(e.message);
-  }
-}
-
-async function updateSmsRank(e) {
-  const value = parseInt(e.target.value, 10);
-  if (isNaN(value) || value < 1 || value > 10) return;
-
-  try {
-    await setSmsRankSettings(value);
-    smsRank.value = value;
-    success(`SMS 알림 순번을 ${value}번으로 변경했습니다.`);
-  } catch (e) {
-    error(e.message);
-  }
-}
-
-// AdminPanel은 1초마다 penaltyClock을 갱신하고 SSE도 여러 종류 구독한다. Vue 3는 `value`를
-// 리렌더링마다 DOM에 다시 쓰므로, 편집 버퍼가 없으면 입력한 값이 1초 안에 반드시 되돌아간다
-// (경쟁 조건이 아니라 결정론적). 게다가 아래 저장 핸들러엔 "값이 같으면 스킵"이 없어서,
-// 되돌아간 값으로 저장 요청이 나가고 "변경했습니다" 알림까지 뜬다 — 바뀌지 않았는데
-// 바뀌었다고 알리는 게 조용히 사라지는 것보다 나쁘다.
-const editingCancelPenalty = ref(null);
-let cancelPenaltySaving = false;
-
-function handleCancelPenaltyFocus(e) {
-  editingCancelPenalty.value = e.target.value;
-}
-
-function handleCancelPenaltyInput(e) {
-  if (editingCancelPenalty.value !== null) editingCancelPenalty.value = e.target.value;
-}
-
-// change는 blur보다 먼저 발생한다. 저장이 시작됐으면 blur가 버퍼를 먼저 비우지 못하게 해
-// 요청이 도는 동안 화면이 옛 값으로 되돌아가는 깜빡임을 막는다. 값이 그대로면 change 자체가
-// 안 나므로 그때는 blur가 정리한다.
-function handleCancelPenaltyBlur() {
-  if (!cancelPenaltySaving) editingCancelPenalty.value = null;
-}
-
-async function updateCancelPenalty(e) {
-  cancelPenaltySaving = true;
-  const raw = e.target.value;
-  const value = parseInt(raw, 10);
-  if (isNaN(value) || value < 0 || value > 60) {
-    cancelPenaltySaving = false;
-    editingCancelPenalty.value = null;
-    return;
-  }
-
-  try {
-    await setCancelPenaltySettings(value);
-    cancelPenalty.value = value;
-    success(`취소 페널티를 ${value}분으로 변경했습니다.`);
-  } catch (e) {
-    error(e.message);
-  } finally {
-    // 스토어(cancelPenalty)가 갱신된 뒤에 버퍼를 놓는다.
-    cancelPenaltySaving = false;
-    editingCancelPenalty.value = null;
-  }
-}
-
-async function updateBoothCount(type, ev) {
-  const value = parseInt(ev.target.value, 10);
-  if (isNaN(value) || value < 1) return;
-  try {
-    await updateBoothConfig(type, value);
-    success(`부스 수를 ${value}개로 변경했습니다.`);
-  } catch (err) {
-    error(err.message);
-    // Revert input to current booth count
-    const booths = allBooths.value[type];
-    if (booths) ev.target.value = booths.length;
-  }
-}
-
 async function toggleBoothActive(type, boothNum, currentActive, ev) {
   try {
     await toggleBooth(type, boothNum, !currentActive);
@@ -460,8 +340,8 @@ function goToRegister() {
   router.push("/register");
 }
 
-function goToPriority() {
-  router.push("/priority");
+function goToSettings() {
+  router.push("/settings");
 }
 
 function goToStats() {
@@ -587,22 +467,6 @@ function goToInspection(num) {
         </svg>
         검차 등록
       </button>
-      <button v-if="canManage" class="btn btn-ghost" @click="goToPriority">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-          <polygon
-            points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"
-          />
-        </svg>
-        우선순위
-      </button>
-      <button class="btn btn-ghost" @click="goToStats">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
-          <path d="M18 20V10" />
-          <path d="M12 20V4" />
-          <path d="M6 20v-6" />
-        </svg>
-        통계
-      </button>
       <button
         ref="penaltyButton"
         class="btn btn-ghost"
@@ -618,9 +482,24 @@ function goToInspection(num) {
         </svg>
         페널티
       </button>
+      <button class="btn btn-ghost" @click="goToStats">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <path d="M18 20V10" />
+          <path d="M12 20V4" />
+          <path d="M6 20v-6" />
+        </svg>
+        통계
+      </button>
+      <button v-if="canManage" class="btn btn-ghost" @click="goToSettings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.07 14H3v-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63h.01A1.7 1.7 0 0 0 10 3.07V3h4v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9v.01A1.7 1.7 0 0 0 20.93 10H21v4h-.09A1.7 1.7 0 0 0 19.4 15z" />
+        </svg>
+        설정
+      </button>
     </div>
 
-    <div class="admin-grid" :class="{ 'no-settings': !canManage }">
+    <div class="admin-grid">
       <!-- Queue Panel -->
       <div class="card queue-panel">
         <div class="card-header">
@@ -766,7 +645,7 @@ function goToInspection(num) {
                       title="검차표 열기"
                       @click="goToInspection(item.num)"
                     >
-                      {{ previousInspectorsFor(item).join(", ") }}
+                      {{ previousInspectorsFor(item).join(" ") }}
                     </button>
                   </div>
                 </div>
@@ -806,100 +685,6 @@ function goToInspection(num) {
         </div>
       </div>
 
-      <!-- Settings Panel -->
-      <div v-if="canManage" class="card settings-panel">
-        <div class="card-header">
-          <h3>⚙️ 설정</h3>
-        </div>
-        <div class="card-body">
-          <!-- SMS Setting -->
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">SMS 알림 활성화</span>
-            </div>
-            <label class="toggle">
-              <input type="checkbox" :checked="smsEnabled" @change="toggleSms" />
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-
-          <!-- SMS Rank Setting -->
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">SMS 알림 순번</span>
-            </div>
-            <div class="setting-input">
-              <input type="number" :value="smsRank" min="1" max="10" @change="updateSmsRank" />
-              <span>번</span>
-            </div>
-          </div>
-
-          <!-- Cancel Penalty Setting -->
-          <div class="setting-item">
-            <div class="setting-info">
-              <span class="setting-label">취소 페널티</span>
-            </div>
-            <div class="setting-input">
-              <input type="number" :value="editingCancelPenalty ?? cancelPenalty" min="0" max="60" @focus="handleCancelPenaltyFocus" @input="handleCancelPenaltyInput" @change="updateCancelPenalty" @blur="handleCancelPenaltyBlur" />
-              <span>분</span>
-            </div>
-          </div>
-
-          <hr class="divider" />
-
-          <!-- Active Inspections -->
-          <div class="setting-section">
-            <div v-for="item in inspections" :key="item.type" class="inspection-setting-group">
-              <div class="setting-item inspection-setting">
-                <div class="setting-info-left">
-                  <span class="setting-label">{{ item.name }}</span>
-                  <div class="setting-input">
-                    <input
-                      type="number"
-                      :value="allBooths[item.type]?.length || 1"
-                      min="1"
-                      @change="updateBoothCount(item.type, $event)"
-                    />
-                    <span>부스</span>
-                  </div>
-                </div>
-                <div class="inspection-buttons">
-                  <button
-                    class="btn-toggle-visibility"
-                    :class="{ hidden: item.hidden_from_register }"
-                    @click="toggleVisibility(item.type, item.hidden_from_register)"
-                    :title="item.hidden_from_register ? '공개 조회·검차 등록 화면에 표시' : '공개 조회·검차 등록 화면에서 숨김'"
-                  >
-                    <svg v-if="!item.hidden_from_register" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                      <circle cx="12" cy="12" r="3" />
-                    </svg>
-                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
-                      <line x1="1" y1="1" x2="23" y2="23" />
-                    </svg>
-                  </button>
-                  <button
-                    class="btn-toggle-active"
-                    :class="{ active: item.active }"
-                    @click="toggleActive(item.type, item.active)"
-                    :title="item.active ? '비활성화' : '활성화'"
-                  >
-                    <svg v-if="item.active" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-                    </svg>
-                    <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                      <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
     </div>
 
     <Teleport to="body">
@@ -1186,12 +971,8 @@ function goToInspection(num) {
 
 .admin-grid {
   display: grid;
-  grid-template-columns: 1fr 320px;
-  gap: 1.5rem;
-}
-
-.admin-grid.no-settings {
   grid-template-columns: 1fr;
+  gap: 1.5rem;
 }
 
 .queue-panel .card-header {
@@ -1350,174 +1131,6 @@ function goToInspection(num) {
 
 .empty-state {
   padding: 3rem;
-}
-
-/* Settings Panel */
-.setting-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.75rem 0;
-}
-
-.setting-info {
-  display: flex;
-  flex-direction: column;
-  gap: 0.125rem;
-}
-
-.setting-label {
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.divider {
-  border: none;
-  border-top: 1px solid var(--border-color);
-  margin: 0.5rem 0;
-}
-
-.setting-section {
-  margin-top: 0.5rem;
-}
-
-.setting-input {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.setting-input input {
-  width: 60px;
-  padding: 0.375rem 0.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  text-align: center;
-  font-size: 0.875rem;
-  font-family: "JetBrains Mono", monospace;
-  background: var(--bg-input);
-  color: var(--text-primary);
-}
-
-.setting-input input:focus {
-  outline: none;
-  border-color: var(--accent-primary);
-}
-
-.setting-input input::-webkit-outer-spin-button,
-.setting-input input::-webkit-inner-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-
-.setting-input span {
-  font-size: 0.875rem;
-  color: var(--text-secondary);
-}
-
-.inspection-setting {
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
-
-.setting-info-left {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.setting-info-left .setting-label {
-  min-width: 3.5em;
-}
-
-.inspection-setting .setting-input input {
-  width: 40px;
-}
-
-/* Booth Settings */
-.inspection-setting-group {
-  border-bottom: 1px solid var(--border-color);
-  padding-bottom: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.inspection-setting-group:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
-  margin-bottom: 0;
-}
-
-.inspection-buttons {
-  display: flex;
-  gap: 0.375rem;
-}
-
-/* 표시/숨김 버튼 */
-.btn-toggle-visibility {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--accent-primary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-toggle-visibility svg {
-  width: 18px;
-  height: 18px;
-}
-
-.btn-toggle-visibility:hover {
-  background: var(--bg-hover);
-}
-
-.btn-toggle-visibility.hidden {
-  color: var(--text-tertiary);
-  border-color: var(--border-color);
-}
-
-/* 활성화 토글 버튼 */
-.btn-toggle-active {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.btn-toggle-active svg {
-  width: 18px;
-  height: 18px;
-}
-
-.btn-toggle-active:hover {
-  background: var(--bg-hover);
-  color: var(--accent-success);
-  border-color: var(--accent-success);
-}
-
-.btn-toggle-active.active {
-  background: var(--accent-success);
-  color: white;
-  border-color: var(--accent-success);
-}
-
-.btn-toggle-active.active:hover {
-  background: var(--accent-danger);
-  border-color: var(--accent-danger);
 }
 
 .toggle.toggle-sm {

@@ -103,14 +103,14 @@ test.describe("Queue booth advanced features", () => {
 
   test.beforeAll(async () => {
     // Set cancel penalty to 0 for easier testing
-    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
       headers: { Cookie: getAuthCookie("operationsManager") },
     });
-    originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    originalPenalty = (await res.json()).cancelPenalty;
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: 0 }),
+      body: JSON.stringify({ cancelPenalty: 0 }),
     });
 
     // Get original booth count
@@ -125,10 +125,10 @@ test.describe("Queue booth advanced features", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-        body: JSON.stringify({ value: originalPenalty }),
+        body: JSON.stringify({ cancelPenalty: originalPenalty }),
       });
     }
     if (originalBoothCount) {

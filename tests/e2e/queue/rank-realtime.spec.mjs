@@ -47,14 +47,14 @@ test.describe("Queue rank real-time updates via SSE", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
       headers: { Cookie: getAuthCookie("operationsManager") },
     });
-    originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    originalPenalty = (await res.json()).cancelPenalty;
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: 0 }),
+      body: JSON.stringify({ cancelPenalty: 0 }),
     });
     await cleanupQueue();
   });
@@ -65,10 +65,10 @@ test.describe("Queue rank real-time updates via SSE", () => {
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-        body: JSON.stringify({ value: originalPenalty }),
+        body: JSON.stringify({ cancelPenalty: originalPenalty }),
       });
     }
   });

@@ -12,13 +12,14 @@ import { refreshDevice } from "@shared/deviceStore.js";
 import QueueStatus from "./views/QueueStatus.vue";
 import AdminPanel from "./views/AdminPanel.vue";
 import Register from "./views/Register.vue";
-import Priority from "./views/Priority.vue";
+import Settings from "./views/Priority.vue";
 import StatsPage from "./views/StatsPage.vue";
 const routes = [
   { path: "/", component: QueueStatus },
   { path: "/admin", component: AdminPanel, meta: { permission: "queue.operate" } },
   { path: "/register", component: Register, meta: { kioskScope: "kiosk.queue.register", permission: "queue.manage" } },
-  { path: "/priority", component: Priority, meta: { permission: "queue.manage" } },
+  { path: "/settings", component: Settings, meta: { permission: "queue.manage" } },
+  { path: "/priority", redirect: "/settings" },
   { path: "/stats", component: StatsPage, meta: { permission: "queue.operate" } },
 ];
 

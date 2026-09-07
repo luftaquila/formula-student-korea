@@ -84,23 +84,23 @@ test.describe("Queue booth management", () => {
   let originalPenalty;
 
   test.beforeAll(async () => {
-    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
       headers: { Cookie: getAuthCookie("operationsManager") },
     });
-    originalPenalty = (await res.json()).value;
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+    originalPenalty = (await res.json()).cancelPenalty;
+    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: 0 }),
+      body: JSON.stringify({ cancelPenalty: 0 }),
     });
   });
 
   test.afterAll(async () => {
     if (originalPenalty !== undefined) {
-      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+      await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${INSPECTION_TYPE}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-        body: JSON.stringify({ value: originalPenalty }),
+        body: JSON.stringify({ cancelPenalty: originalPenalty }),
       });
     }
   });
@@ -233,7 +233,7 @@ test.describe("Queue booth management", () => {
     await expect(row).toContainText("전체 4번");
     await expect(row).toContainText("재검 2번");
     await expect(row).not.toContainText("기존 검차관");
-    await expect(row).toContainText("김검차, 이검차");
+    await expect(row).toContainText("김검차 이검차");
     await expect(row.getByRole("button", { name: "검차표", exact: true })).toHaveCount(0);
     await expect(row.getByRole("link", { name: "010-0000-0000" })).toBeVisible();
     await expect(row.locator(".entry-time")).toBeVisible();
@@ -495,7 +495,7 @@ test.describe("Queue booth management", () => {
     await waitForPageReady(page);
 
     await expect(page.getByRole("button", { name: "검차 등록", exact: true })).not.toBeVisible();
-    await expect(page.getByRole("button", { name: "우선순위" })).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "설정", exact: true })).not.toBeVisible();
     await expect(page.getByRole("button", { name: "통계" })).toBeVisible();
     await expect(page.getByRole("button", { name: "페널티", exact: true })).toBeVisible();
   });

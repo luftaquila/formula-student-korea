@@ -2,36 +2,23 @@ import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
-async function apiGetCancelPenalty() {
-  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+const SETTINGS_TYPE = "battery";
+
+async function apiGetSettings(type = SETTINGS_TYPE) {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${type}`, {
     headers: { Cookie: getAuthCookie("operationsManager") },
   });
   return res.json();
 }
 
-async function apiSetCancelPenalty(value) {
-  await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/cancel-penalty`, {
+async function apiSetSettings(settings, type = SETTINGS_TYPE) {
+  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${type}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-    body: JSON.stringify({ value }),
+    body: JSON.stringify(settings),
   });
-}
-
-async function apiGetSmsRank() {
-  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms-rank`, {
-    headers: { Cookie: getAuthCookie("operationsManager") },
-  });
-  if (!res.ok) throw new Error(`get SMS rank: ${res.status}`);
-  return (await res.json()).value;
-}
-
-async function apiSetSmsRank(value) {
-  const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms-rank`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-    body: JSON.stringify({ value }),
-  });
-  if (res.status !== 200) throw new Error(`set SMS rank: ${res.status} ${await res.text()}`);
+  if (!res.ok) throw new Error(`set inspection settings: ${res.status} ${await res.text()}`);
+  return res.json();
 }
 
 async function apiGetInspections() {
@@ -52,23 +39,14 @@ async function apiSetInspectionActive(type, active) {
 test.describe("Queue settings management", () => {
   test.use({ storageState: storageStatePath("operationsManager") });
 
-  let originalPenalty;
-  let originalSmsRank;
+  let originalSettings;
 
   test.beforeAll(async () => {
-    const data = await apiGetCancelPenalty();
-    originalPenalty = data.value;
-    originalSmsRank = await apiGetSmsRank();
+    originalSettings = await apiGetSettings();
   });
 
   test.afterAll(async () => {
-    // Restore original penalty
-    if (originalPenalty !== undefined) {
-      await apiSetCancelPenalty(originalPenalty);
-    }
-    if (originalSmsRank !== undefined) {
-      await apiSetSmsRank(originalSmsRank);
-    }
+    if (originalSettings) await apiSetSettings(originalSettings);
     // Ensure all inspections are active
     const inspections = await apiGetInspections();
     for (const insp of inspections) {
@@ -78,30 +56,42 @@ test.describe("Queue settings management", () => {
     }
   });
 
-  test("admin page shows settings panel with queue.manage", async ({ page }) => {
+  test("admin settings button opens per-inspection settings above priorities", async ({ page }) => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // A queue manager should see the settings panel.
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.locator(".top-actions .btn")).toHaveText([
+      "검차 등록",
+      "페널티",
+      "통계",
+      "설정",
+    ]);
+    await page.getByRole("button", { name: "설정", exact: true }).click();
+    await expect(page).toHaveURL(/\/queue\/settings/);
 
-    // Should show cancel penalty setting
-    await expect(page.getByText("취소 페널티")).toBeVisible();
+    const settingsHeading = page.getByRole("heading", { name: "검차별 설정", exact: true });
+    const priorityHeading = page.getByRole("heading", { name: "우선순위 설정", exact: true });
+    await expect(settingsHeading).toBeVisible({ timeout: 10000 });
+    await expect(priorityHeading).toBeVisible();
+    const headings = await page.getByRole("heading").allTextContents();
+    expect(headings.indexOf("검차별 설정")).toBeLessThan(headings.indexOf("우선순위 설정"));
 
-    // Should show SMS settings
-    await expect(page.getByText("SMS 알림 활성화")).toBeVisible();
-    await expect(page.getByText("SMS 알림 순번")).toBeVisible();
+    const batterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
+    await expect(batterySettings.getByText("취소 페널티")).toBeVisible();
+    await expect(batterySettings.getByText("SMS 알림", { exact: true })).toBeVisible();
+    await expect(batterySettings.getByText("SMS 알림 순번")).toBeVisible();
   });
 
   test("change cancel penalty setting", async ({ page }) => {
-    await page.goto("/queue/admin");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    // Wait for settings panel to load
-    await expect(page.getByText("취소 페널티")).toBeVisible({ timeout: 10000 });
+    // Wait for the per-inspection settings to load.
+    const batterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
+    await expect(batterySettings.getByText("취소 페널티")).toBeVisible({ timeout: 10000 });
 
     // Find the cancel penalty input
-    const penaltyItem = page.locator(".setting-item", { hasText: "취소 페널티" });
+    const penaltyItem = batterySettings.locator(".setting-item", { hasText: "취소 페널티" });
     const penaltyInput = penaltyItem.locator("input[type='number']");
     await expect(penaltyInput).toBeVisible();
 
@@ -124,9 +114,6 @@ test.describe("Queue settings management", () => {
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Wait for settings to load
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
-
     // The noise inspection tab should not be visible in the active tabs
     // (only active inspections show as tabs)
     const tabs = page.locator(".tab");
@@ -147,13 +134,13 @@ test.describe("Queue settings management", () => {
     expect(updatedTabTexts).toContain("소음");
   });
 
-  test("inspection active/inactive toggle button in settings panel", async ({ page }) => {
-    await page.goto("/queue/admin");
+  test("inspection active/inactive toggle button in settings page", async ({ page }) => {
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
-    // Find the inspection setting items in the settings panel
+    // Find the inspection setting cards on the settings page.
     const inspectionGroups = page.locator(".inspection-setting-group");
     await expect(inspectionGroups.first()).toBeVisible();
     const count = await inspectionGroups.count();
@@ -166,30 +153,31 @@ test.describe("Queue settings management", () => {
     expect(btnCount).toBe(2); // visibility + active toggle
   });
 
-  test("settings panel not visible for official role", async ({ browser }) => {
+  test("settings navigation is unavailable to an official role", async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("operationsOperator") });
     const page = await context.newPage();
 
     await page.goto("/queue/admin");
     await waitForPageReady(page);
 
-    // Official should see the queue panel but NOT the settings panel
+    // Official should see the queue panel but not the management-only settings entry.
     await expect(page.getByRole("heading", { name: /검차 대기열/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: "설정", exact: true })).not.toBeVisible();
 
-    // Settings panel should not be visible
-    await expect(page.locator(".settings-panel")).not.toBeVisible();
+    await page.goto("/queue/settings");
+    await expect(page).not.toHaveURL(/\/queue\/settings/);
 
     await context.close();
   });
 
   test("change booth count and verify persistence", async ({ page }) => {
-    await page.goto("/queue/admin");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
     // Find the first booth count input
-    const boothInput = page.locator(".inspection-setting .setting-input input[type='number']").first();
+    const boothInput = page.locator(".booth-setting input[type='number']").first();
     await expect(boothInput).toBeVisible();
 
     // Read original value
@@ -208,9 +196,9 @@ test.describe("Queue settings management", () => {
     await page.reload();
     await settingsLoaded;
     await waitForPageReady(page);
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
-    const updatedInput = page.locator(".inspection-setting .setting-input input[type='number']").first();
+    const updatedInput = page.locator(".booth-setting input[type='number']").first();
     await expect(updatedInput).toHaveValue(newValue);
 
     // Restore original value
@@ -242,31 +230,32 @@ test.describe("Queue settings management", () => {
 
   test("SMS enable fails without config (API level)", async ({ page }) => {
     // SMS enable requires SMS config from email service (not configured in CI)
-    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms`, {
+    const res = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${SETTINGS_TYPE}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: true }),
+      body: JSON.stringify({ sms: true }),
     });
     expect(res.status).toBe(400);
     const text = await res.text();
     expect(text).toContain("SMS 설정");
 
     // Disabling should always work
-    const res2 = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/sms`, {
+    const res2 = await fetch(`${BASE_URL}/competition/api/v1/queue/admin/settings/${SETTINGS_TYPE}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ value: false }),
+      body: JSON.stringify({ sms: false }),
     });
     expect(res2.status).toBe(200);
   });
 
   test("change SMS rank setting", async ({ page }) => {
-    await page.goto("/queue/admin");
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
-    await expect(page.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
+    const batterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
+    await expect(batterySettings.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
 
     // Find the SMS rank input
-    const smsRankItem = page.locator(".setting-item", { hasText: "SMS 알림 순번" });
+    const smsRankItem = batterySettings.locator(".setting-item", { hasText: "SMS 알림 순번" });
     const rankInput = smsRankItem.locator("input[type='number']");
     await expect(rankInput).toBeVisible();
 
@@ -277,7 +266,7 @@ test.describe("Queue settings management", () => {
     const newValue = originalValue === "5" ? "3" : "5";
     try {
       const updateResponse = page.waitForResponse(
-        (res) => res.url().includes("/competition/api/v1/queue/admin/settings/sms-rank") &&
+        (res) => res.url().includes(`/competition/api/v1/queue/admin/settings/${SETTINGS_TYPE}`) &&
           res.request().method() === "PATCH" && res.status() === 200,
       );
       await rankInput.fill(newValue);
@@ -285,27 +274,28 @@ test.describe("Queue settings management", () => {
       await updateResponse;
 
       await expectNotification(page, "success", `SMS 알림 순번을 ${newValue}번으로 변경했습니다.`);
-      await expect.poll(apiGetSmsRank).toBe(Number(newValue));
+      await expect.poll(async () => (await apiGetSettings()).smsRank).toBe(Number(newValue));
 
       // Reload and verify persistence
       await page.reload();
       await waitForPageReady(page);
-      await expect(page.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
-      const reloadedInput = page.locator(".setting-item", { hasText: "SMS 알림 순번" }).locator("input[type='number']");
+      const reloadedBatterySettings = page.locator(".inspection-setting-group", { hasText: "축전지" });
+      await expect(reloadedBatterySettings.getByText("SMS 알림 순번")).toBeVisible({ timeout: 10000 });
+      const reloadedInput = reloadedBatterySettings.locator(".setting-item", { hasText: "SMS 알림 순번" }).locator("input[type='number']");
       await expect(reloadedInput).toHaveValue(newValue);
     } finally {
-      await apiSetSmsRank(Number(originalValue));
+      await apiSetSettings({ smsRank: Number(originalValue) });
     }
   });
 
-  test("booth count setting is shown in settings panel", async ({ page }) => {
-    await page.goto("/queue/admin");
+  test("booth count setting is shown in each inspection card", async ({ page }) => {
+    await page.goto("/queue/settings");
     await waitForPageReady(page);
 
-    await expect(page.getByRole("heading", { name: /설정/ })).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("heading", { name: "검차별 설정", exact: true })).toBeVisible({ timeout: 10000 });
 
     // Each inspection setting group should have a booth count input
-    const boothInputs = page.locator(".inspection-setting .setting-input input[type='number']");
+    const boothInputs = page.locator(".booth-setting input[type='number']");
     await expect(boothInputs.first()).toBeVisible();
     const count = await boothInputs.count();
     expect(count).toBe(8);
