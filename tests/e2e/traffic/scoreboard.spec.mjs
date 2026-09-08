@@ -101,6 +101,24 @@ test.describe("Traffic scoreboard", () => {
     })).toBe(true);
   });
 
+  test("shrinks long event labels and only breaks at explicit newlines", async ({ page }) => {
+    await page.goto("/traffic/scoreboard");
+    await waitForPageReady(page);
+    await page.getByLabel("기록 파일").selectOption(`FSK ${YEAR} E2E-Scoreboard`);
+    const input = page.getByLabel("가속 경기 표시명");
+    const title = page.locator(".event-name");
+    await input.fill("가속");
+    await expect(title).toHaveText("가속");
+    for (const label of ["스키드패드경기", "AUTOCROSS FINALS", "스키드패드경기\n결승", "AUTOCROSS FINALS\nFINAL RUN"]) {
+      await input.fill(label);
+      await expect.poll(() => title.evaluate((element, expectedLines) => {
+        const style = getComputedStyle(element);
+        return element.scrollWidth <= element.clientWidth
+          && Math.abs(element.getBoundingClientRect().height / parseFloat(style.lineHeight) - expectedLines) < 0.05;
+      }, label.split("\n").length)).toBe(true);
+    }
+  });
+
   test("preserves the complete scoreboard layout when entering fullscreen", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto("/traffic/scoreboard");
@@ -134,6 +152,7 @@ test.describe("Traffic scoreboard", () => {
   });
 
   test("displays scoreboard data when a file is selected", async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem("traffic-scoreboard-theme", "light"));
     await page.goto("/traffic/scoreboard");
     await waitForPageReady(page);
 
@@ -176,10 +195,9 @@ test.describe("Traffic scoreboard", () => {
     expect(headerSpacingDifference).toBeLessThan(1);
   });
 
-  test("customizes and persists the scoreboard theme, event colors, and visibility", async ({ page }) => {
+  test("customizes and persists event labels, colors, and visibility", async ({ page }) => {
     await page.addInitScript(() => {
       if (!sessionStorage.getItem("scoreboard-settings-cleared")) {
-        localStorage.removeItem("traffic-scoreboard-theme");
         localStorage.removeItem("traffic-scoreboard-colors");
         localStorage.removeItem("traffic-scoreboard-visibility");
         localStorage.removeItem("traffic-scoreboard-labels");
@@ -191,12 +209,10 @@ test.describe("Traffic scoreboard", () => {
 
     await page.locator(".form-select").first().selectOption(`FSK ${YEAR} E2E-Scoreboard`);
 
-    const themeButton = page.getByTestId("scoreboard-theme");
     const accelerationColor = page.getByTestId("scoreboard-color-가속");
     const accelerationVisibility = page.getByTestId("scoreboard-visible-가속");
     const accelerationLabel = page.getByLabel("가속 경기 표시명");
 
-    await expect(themeButton).toHaveAttribute("data-theme", "dark");
     await expect(accelerationColor).toHaveValue("#ffd000");
     await expect(page.getByTestId("scoreboard-color-스키드패드")).toHaveValue("#00e5ff");
     await expect(page.getByTestId("scoreboard-color-오토크로스")).toHaveValue("#ff6b6b");
@@ -205,9 +221,6 @@ test.describe("Traffic scoreboard", () => {
     await expect(page.getByTestId("scoreboard-visible-오토크로스")).toBeChecked();
     await expect(accelerationLabel).toHaveValue("ACCELERATION");
 
-    await themeButton.click();
-    await expect(themeButton).toHaveAttribute("data-theme", "light");
-    await expect(page.locator(".display-area")).toHaveAttribute("data-scoreboard-theme", "light");
 
     await accelerationColor.evaluate((input) => {
       input.value = "#345678";
@@ -226,11 +239,9 @@ test.describe("Traffic scoreboard", () => {
     await page.reload();
     await waitForPageReady(page);
 
-    await expect(page.getByTestId("scoreboard-theme")).toHaveAttribute("data-theme", "light");
     await expect(page.getByTestId("scoreboard-color-가속")).toHaveValue("#345678");
     await expect(page.getByTestId("scoreboard-visible-가속")).not.toBeChecked();
     await expect(page.getByLabel("가속 경기 표시명")).toHaveValue("가속\n경기");
-    await expect(page.locator(".display-area")).toHaveAttribute("data-scoreboard-theme", "light");
 
     await page.getByTestId("scoreboard-visible-가속").check();
     await expect(page.locator(".panel")).toBeVisible({ timeout: 5000 });

@@ -55,15 +55,9 @@ const recordFiles = computed(() => scoreboardRecordFiles({
   eventTypes: Object.keys(EVENT_CONFIG),
 }));
 
-const SCOREBOARD_THEME_KEY = "traffic-scoreboard-theme";
 const SCOREBOARD_COLORS_KEY = "traffic-scoreboard-colors";
 const SCOREBOARD_VISIBILITY_KEY = "traffic-scoreboard-visibility";
 const SCOREBOARD_LABELS_KEY = "traffic-scoreboard-labels";
-
-function loadScoreboardTheme() {
-  const saved = localStorage.getItem(SCOREBOARD_THEME_KEY);
-  return saved === "light" || saved === "dark" ? saved : "dark";
-}
 
 function loadEventColors() {
   const colors = Object.fromEntries(
@@ -107,18 +101,9 @@ function loadEventLabels() {
   return scoreboardEventLabels(EVENT_CONFIG, localStorage.getItem(SCOREBOARD_LABELS_KEY));
 }
 
-const scoreboardTheme = ref(loadScoreboardTheme());
 const eventColors = ref(loadEventColors());
 const eventVisibility = ref(loadEventVisibility());
 const eventLabels = ref(loadEventLabels());
-
-function toggleScoreboardTheme() {
-  scoreboardTheme.value = scoreboardTheme.value === "dark" ? "light" : "dark";
-}
-
-watch(scoreboardTheme, (theme) => {
-  localStorage.setItem(SCOREBOARD_THEME_KEY, theme);
-});
 
 watch(eventColors, (colors) => {
   localStorage.setItem(SCOREBOARD_COLORS_KEY, JSON.stringify(colors));
@@ -462,46 +447,32 @@ onDeactivated(() => {
       <!-- Controls -->
       <div v-show="!isFullscreen" class="controls">
         <div class="control-group">
-          <select v-model="selectedFile" class="form-select" aria-label="기록 파일">
-            <option :value="null" disabled>파일 선택</option>
-            <option v-for="file in recordFiles" :key="file" :value="file">
-              {{ file }}
-            </option>
-          </select>
+          <label class="control-field record-file-field">
+            <span>기록 파일</span>
+            <select v-model="selectedFile" class="form-select" aria-label="기록 파일">
+              <option :value="null" disabled>파일 선택</option>
+              <option v-for="file in recordFiles" :key="file" :value="file">
+                {{ file }}
+              </option>
+            </select>
+          </label>
 
-          <input
-            v-model="trackTemp"
-            class="form-input temp-input"
-            type="text"
-            placeholder="Track Temp"
-            aria-label="트랙 온도"
-          />
+          <label class="control-field">
+            <span>트랙 온도 · °C</span>
+            <input
+              v-model="trackTemp"
+              class="form-input temp-input"
+              type="text"
+              placeholder="미입력 시 숨김"
+              aria-label="트랙 온도"
+            />
+          </label>
 
-          <button
-            type="button"
-            class="btn btn-secondary scoreboard-theme-toggle"
-            :data-theme="scoreboardTheme"
-            :title="scoreboardTheme === 'dark' ? '화이트 전광판 테마' : '다크 전광판 테마'"
-            :aria-label="scoreboardTheme === 'dark' ? '화이트 전광판 테마로 전환' : '다크 전광판 테마로 전환'"
-            data-testid="scoreboard-theme"
-            @click="toggleScoreboardTheme"
-          >
-            <svg v-if="scoreboardTheme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-            </svg>
-            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="5" />
-              <line x1="12" y1="1" x2="12" y2="3" />
-              <line x1="12" y1="21" x2="12" y2="23" />
-              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-              <line x1="1" y1="12" x2="3" y2="12" />
-              <line x1="21" y1="12" x2="23" y2="12" />
-              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+          <button class="btn btn-secondary fullscreen-button" @click="toggleFullscreen" title="전체화면" aria-label="전체화면">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
             </svg>
           </button>
-
           <div class="accent-controls" role="group" aria-label="이벤트 표시명, 표시 여부 및 악센트 컬러">
             <div v-for="type in Object.keys(EVENT_CONFIG)" :key="type" class="event-control">
               <label class="visibility-control">
@@ -538,17 +509,12 @@ onDeactivated(() => {
             </div>
           </div>
 
-          <button class="btn btn-secondary" @click="toggleFullscreen" title="전체화면">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-            </svg>
-          </button>
         </div>
       </div>
 
       <!-- Display Area 16:9 ratio -->
       <div ref="displayWrapper" class="display-wrapper">
-        <div class="display-area" :data-scoreboard-theme="scoreboardTheme">
+        <div class="display-area">
           <div v-if="!selectedFile" class="empty-state"></div>
           <div v-else-if="records.length === 0 && !loading && availableTypes.length === 0" class="empty-state">
             <p>기록이 없습니다</p>
@@ -686,15 +652,6 @@ onDeactivated(() => {
   container-type: inline-size;
 }
 
-.display-area[data-scoreboard-theme="light"] {
-  --scoreboard-bg: #fff;
-  --scoreboard-text: #17191f;
-  --scoreboard-muted: #6b7280;
-  --scoreboard-best: #c81e1e;
-  --scoreboard-live: #dc2626;
-  --scoreboard-temp: #c81e1e;
-}
-
 .display-wrapper:fullscreen {
   width: 100vw;
   height: 100vh;
@@ -806,11 +763,6 @@ onDeactivated(() => {
   overflow: hidden;
 }
 
-.display-area[data-scoreboard-theme="light"] .panel {
-  --panel-fg: color-mix(in srgb, var(--panel-color) 68%, #000);
-  background: color-mix(in srgb, var(--panel-color) 5%, var(--scoreboard-bg));
-}
-
 .event-heading {
   display: flex;
   align-items: center;
@@ -831,7 +783,7 @@ onDeactivated(() => {
   font-weight: 800;
   color: var(--panel-fg);
   letter-spacing: 0.025em;
-  white-space: pre-line;
+  white-space: pre;
 }
 
 .record-cell {
@@ -1033,9 +985,35 @@ onDeactivated(() => {
 
 .control-group {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.control-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.record-file-field {
+  flex: 1 1 16rem;
+}
+
+.record-file-field .form-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.btn.fullscreen-button {
+  justify-content: center;
+  width: 40px;
+  padding: 0;
+  flex: 0 0 40px;
+  min-height: 38px;
 }
 
 .accent-controls,
@@ -1046,37 +1024,43 @@ onDeactivated(() => {
   align-items: center;
 }
 
-.btn.scoreboard-theme-toggle {
-  width: 40px;
-  height: 38px;
-  min-width: 40px;
-  padding: 0;
-  flex: 0 0 40px;
-}
-
-.btn.scoreboard-theme-toggle svg {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-}
-
 .accent-controls {
+  order: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
   gap: 0.75rem;
-  padding-left: 0.75rem;
-  border-left: 1px solid var(--border-color);
-  flex-wrap: wrap;
+  margin-top: 0.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
 }
 
-.event-control,
+.event-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  padding: 0.875rem;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  min-width: 0;
+}
+
+.event-control .color-control {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 .visibility-control {
   gap: 0.35rem;
 }
 
 .form-input.event-label-input {
-  width: 8rem;
-  min-height: 3.25rem;
-  padding: 0.35rem 0.5rem;
-  line-height: 1.2;
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 4.25rem;
+  padding: 0.5rem 0.625rem;
+  line-height: 1.5;
   resize: vertical;
 }
 
@@ -1161,7 +1145,7 @@ onDeactivated(() => {
 }
 
 .temp-input {
-  width: 110px;
+  width: 140px;
 }
 
 .btn {
@@ -1188,11 +1172,15 @@ onDeactivated(() => {
 
 @media (max-width: 768px) {
   .accent-controls {
-    width: 100%;
-    padding-top: 0.75rem;
-    padding-left: 0;
-    border-top: 1px solid var(--border-color);
-    border-left: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .controls {
+    padding: 1rem;
+  }
+
+  .record-file-field {
+    flex-basis: 100%;
   }
 }
 </style>
