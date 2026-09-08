@@ -59,8 +59,12 @@ test.describe("Traffic scoreboard live updates", () => {
     const effectsStarted = page.waitForFunction(() => {
       const current = document.querySelector('[data-testid="current-record-가속"]');
       const best = document.querySelector('[data-testid="best-record-가속"]');
-      return current?.getAnimations().some((animation) => animation.playState === "running")
-        && best?.getAnimations().some((animation) => animation.playState === "running");
+      const currentAnimation = current?.getAnimations().find((animation) => animation.playState === "running");
+      const bestAnimation = best?.getAnimations().find((animation) => animation.playState === "running");
+      if (!currentAnimation || !bestAnimation) return false;
+      return currentAnimation.effect.getTiming().duration === bestAnimation.effect.getTiming().duration
+        && currentAnimation.playbackRate === bestAnimation.playbackRate
+        && Math.abs(currentAnimation.startTime - bestAnimation.startTime) < 2;
     });
 
     // Add a new record via API (SSE should push the update)

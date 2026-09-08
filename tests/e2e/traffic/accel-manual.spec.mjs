@@ -180,6 +180,17 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect.poll(async () => (
       Number.parseFloat(await liveTimer.innerText())
     )).toBeGreaterThan(initial);
+    const teamTypography = () => current.locator(".record-team").evaluate((element) => {
+      const university = element.querySelector(".university-name");
+      const team = element.querySelector(".team-name-text");
+      return {
+        university: getComputedStyle(university).fontSize,
+        team: getComputedStyle(team).fontSize,
+        fits: university.scrollWidth <= university.clientWidth && team.scrollWidth <= team.clientWidth,
+      };
+    });
+    const liveTeamTypography = await teamTypography();
+    expect(liveTeamTypography.fits).toBe(true);
 
     await advanceTestClock(page, 500);
     const recordSaved = page.waitForResponse((response) => (
@@ -203,6 +214,7 @@ test.describe("Acceleration manual mode measurement", () => {
       };
     });
     expect(finalizedTypography).toEqual(liveTypography);
+    await expect.poll(teamTypography).toEqual(liveTeamTypography);
     await scoreboardPage.close();
   });
 

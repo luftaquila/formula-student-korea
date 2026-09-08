@@ -64,6 +64,75 @@ test.describe("Traffic scoreboard", () => {
     await expect.poll(aspectRatioError).toBeLessThan(0.01);
   });
 
+  test("scales typography with the embedded display instead of the browser viewport", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 1200 });
+    await page.goto("/traffic/scoreboard");
+    await waitForPageReady(page);
+    await page.getByLabel("기록 파일").selectOption(`FSK ${YEAR} E2E-Scoreboard`);
+
+    const display = page.locator(".display-area");
+    const result = page.getByTestId("current-record-가속").locator(".record-result");
+    await expect(result).toBeVisible();
+
+    const initialDisplayWidth = await display.evaluate((element) => element.getBoundingClientRect().width);
+    const initialFontSize = await result.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
+
+    await page.setViewportSize({ width: 2000, height: 1200 });
+    await expect.poll(async () => Math.abs(
+      (await display.evaluate((element) => element.getBoundingClientRect().width)) - initialDisplayWidth,
+    )).toBeLessThan(1);
+
+    const widerViewportFontSize = await result.evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
+    expect(Math.abs(widerViewportFontSize - initialFontSize)).toBeLessThan(1);
+  });
+
+  test("keeps a three-character Korean event title on one line", async ({ page }) => {
+    await page.setViewportSize({ width: 800, height: 900 });
+    await page.goto("/traffic/scoreboard");
+    await waitForPageReady(page);
+    await page.getByLabel("기록 파일").selectOption(`FSK ${YEAR} E2E-Scoreboard`);
+    await page.getByLabel("가속 경기 표시명").fill("스키드");
+
+    const eventName = page.locator(".event-name");
+    await expect(eventName).toHaveText("스키드");
+    await expect.poll(() => eventName.evaluate((element) => {
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
+      return element.getBoundingClientRect().height <= lineHeight + 1;
+    })).toBe(true);
+  });
+
+  test("preserves the complete scoreboard layout when entering fullscreen", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/traffic/scoreboard");
+    await waitForPageReady(page);
+    await page.getByLabel("기록 파일").selectOption(`FSK ${YEAR} E2E-Scoreboard`);
+    await page.getByLabel("가속 경기 표시명").fill("스키드\n패드");
+    const measure = () => page.locator(".display-area").evaluate((display) => {
+      const width = display.getBoundingClientRect().width;
+      const title = display.querySelector(".event-name");
+      const style = getComputedStyle(title);
+      return {
+        titleLines: title.getBoundingClientRect().height / parseFloat(style.lineHeight),
+        ratios: [".title", ".event-name", ".record-result", ".university-name", ".team-name-text"]
+          .map((selector) => parseFloat(getComputedStyle(display.querySelector(selector)).fontSize) / width),
+        column: display.querySelector(".event-heading").getBoundingClientRect().width / width,
+      };
+    });
+    await expect.poll(async () => (await measure()).titleLines).toBeLessThan(2.05);
+    const initial = await measure();
+    await page.getByTitle("전체화면").click();
+    await expect.poll(() => page.evaluate(() => !!document.fullscreenElement)).toBe(true);
+    const compare = async () => {
+      const next = await measure();
+      return Math.max(...next.ratios.map((value, i) => Math.abs(value / initial.ratios[i] - 1)),
+        Math.abs(next.column / initial.column - 1), Math.abs(next.titleLines - 2));
+    };
+    await expect.poll(compare).toBeLessThan(0.02);
+    await page.evaluate(() => document.exitFullscreen());
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect.poll(compare).toBeLessThan(0.02);
+  });
+
   test("displays scoreboard data when a file is selected", async ({ page }) => {
     await page.goto("/traffic/scoreboard");
     await waitForPageReady(page);

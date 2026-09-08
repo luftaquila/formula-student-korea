@@ -333,6 +333,11 @@ function formatResult(ms, status = null) {
 const displayWrapper = ref(null);
 const fitTextHandlers = new WeakMap();
 
+function textFitKey(value, element) {
+  if (Array.isArray(value)) return value.map((part) => String(part ?? "")).join("\u0000");
+  return element.textContent;
+}
+
 function scheduleTextFit(element) {
   const state = fitTextHandlers.get(element);
   if (!state) return;
@@ -355,23 +360,32 @@ function scheduleTextFit(element) {
 }
 
 const vFitText = {
-  mounted(element) {
+  mounted(element, binding) {
     const state = {
       frame: 0,
+      key: textFitKey(binding.value, element),
       resize: () => scheduleTextFit(element),
+      observer: null,
     };
     fitTextHandlers.set(element, state);
+    state.observer = new ResizeObserver(state.resize);
+    state.observer.observe(element);
     window.addEventListener("resize", state.resize);
     scheduleTextFit(element);
     document.fonts?.ready.then(state.resize);
   },
-  updated(element) {
+  updated(element, binding) {
+    const state = fitTextHandlers.get(element);
+    const key = textFitKey(binding.value, element);
+    if (!state || state.key === key) return;
+    state.key = key;
     scheduleTextFit(element);
   },
   unmounted(element) {
     const state = fitTextHandlers.get(element);
     if (!state) return;
     cancelAnimationFrame(state.frame);
+    state.observer.disconnect();
     window.removeEventListener("resize", state.resize);
     fitTextHandlers.delete(element);
   },
@@ -592,8 +606,14 @@ onDeactivated(() => {
                     <template v-else>--:--<span class="unit">s</span></template>
                   </div>
                   <div class="record-team record-team-name">
-                    <span v-fit-text class="university-name">{{ currentByType[type]?.univ || "-" }}</span>
-                    <span v-fit-text class="team-name-text">{{ currentByType[type]?.team || "-" }}</span>
+                    <span
+                      v-fit-text="[currentByType[type]?.univ, currentByType[type]?.measuring]"
+                      class="university-name"
+                    >{{ currentByType[type]?.univ || "-" }}</span>
+                    <span
+                      v-fit-text="[currentByType[type]?.team, currentByType[type]?.measuring]"
+                      class="team-name-text"
+                    >{{ currentByType[type]?.team || "-" }}</span>
                   </div>
                 </section>
 
@@ -663,6 +683,7 @@ onDeactivated(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
 .display-area[data-scoreboard-theme="light"] {
@@ -674,13 +695,13 @@ onDeactivated(() => {
   --scoreboard-temp: #c81e1e;
 }
 
-:global(.scoreboard-fullscreen) .display-wrapper {
+.display-wrapper:fullscreen {
   width: 100vw;
   height: 100vh;
   background: #16171c;
 }
 
-:global(.scoreboard-fullscreen) .display-area {
+.display-wrapper:fullscreen .display-area {
   width: min(100vw, 177.7778vh);
   height: min(100vh, 56.25vw);
   max-width: none;
@@ -699,64 +720,49 @@ onDeactivated(() => {
 
 /* Scoreboard */
 .scoreboard {
-  --scoreboard-padding: clamp(1.25rem, 2vw, 2.5rem);
+  --scoreboard-padding: 2cqw;
+  --scoreboard-header-spacing: 1cqw;
   flex: 1;
   display: flex;
   flex-direction: column;
   padding: var(--scoreboard-padding);
+  padding-top: var(--scoreboard-header-spacing);
   background: var(--scoreboard-bg);
   color: var(--scoreboard-text);
   overflow: hidden;
-}
-
-:global(.scoreboard-fullscreen) .scoreboard {
-  --scoreboard-padding: clamp(2rem, 2.6vw, 3.5rem);
 }
 
 /* Header — override the app shell's globally dark .header surface. */
 .scoreboard > .header {
   display: flex;
   align-items: center;
-  gap: clamp(1rem, 1.6vw, 2rem);
-  margin-bottom: var(--scoreboard-padding);
+  gap: 1.6cqw;
+  margin-bottom: var(--scoreboard-header-spacing);
   padding: 0;
   background: transparent;
   border: 0;
 }
 
 .title {
-  font-size: clamp(2rem, 2.6vw, 3.75rem);
+  font-size: 2.6cqw;
   font-weight: 700;
   color: var(--scoreboard-text);
   margin: 0;
 }
 
-:global(.scoreboard-fullscreen) .title {
-  font-size: clamp(3rem, 3.2vw, 4.25rem);
-}
-
 .live {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: clamp(1.1rem, 1.4vw, 1.8rem);
+  gap: 0.416667cqw;
+  font-size: 1.4cqw;
   font-weight: 600;
 }
 
-:global(.scoreboard-fullscreen) .live {
-  font-size: clamp(1.5rem, 1.7vw, 2.25rem);
-}
-
 .live-dot {
-  width: 16px;
-  height: 16px;
+  width: 0.833333cqw;
+  height: 0.833333cqw;
   border-radius: 50%;
   background: var(--scoreboard-muted);
-}
-
-:global(.scoreboard-fullscreen) .live-dot {
-  width: 24px;
-  height: 24px;
 }
 
 .live-dot.connected {
@@ -764,12 +770,8 @@ onDeactivated(() => {
 }
 
 .temp {
-  font-size: clamp(1.1rem, 1.4vw, 1.8rem);
+  font-size: 1.4cqw;
   margin-left: auto;
-}
-
-:global(.scoreboard-fullscreen) .temp {
-  font-size: clamp(1.5rem, 1.7vw, 2.25rem);
 }
 
 .temp-val {
@@ -781,7 +783,7 @@ onDeactivated(() => {
 .panels {
   flex: 1;
   display: grid;
-  gap: clamp(1.25rem, 2.7vh, 2rem);
+  gap: 1.52cqw;
   min-height: 0;
 }
 
@@ -792,13 +794,15 @@ onDeactivated(() => {
 
 .panel {
   --panel-fg: var(--panel-color);
+  --event-font-size: 4.2cqw;
   display: grid;
-  grid-template-columns: clamp(15rem, 18vw, 22rem) repeat(2, minmax(0, 1fr));
+  /* Three Korean glyphs plus letter spacing, padding, and the accent border. */
+  grid-template-columns: calc(var(--event-font-size) + var(--event-font-size) + var(--event-font-size) + 3cqw) repeat(2, minmax(0, 1fr));
   min-width: 0;
   min-height: 0;
   background: color-mix(in srgb, var(--panel-color) 4%, var(--scoreboard-bg));
   border: 1px solid color-mix(in srgb, var(--panel-color) 35%, transparent);
-  border-radius: clamp(10px, 0.9vw, 18px);
+  border-radius: 0.9cqw;
   overflow: hidden;
 }
 
@@ -812,9 +816,9 @@ onDeactivated(() => {
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: clamp(0.5rem, 1vw, 1.25rem);
+  padding: 1cqw;
   background: color-mix(in srgb, var(--panel-color) 13%, var(--scoreboard-bg));
-  border-left: clamp(7px, 0.6vw, 12px) solid var(--panel-color);
+  border-left: 0.6cqw solid var(--panel-color);
 }
 
 .event-name {
@@ -822,8 +826,8 @@ onDeactivated(() => {
   width: 100%;
   min-width: 0;
   overflow: hidden;
-  font-size: clamp(2.8rem, 4.2vw, 5.5rem);
-  line-height: 1.2;
+  font-size: var(--event-font-size);
+  line-height: 1.3;
   font-weight: 800;
   color: var(--panel-fg);
   letter-spacing: 0.025em;
@@ -835,100 +839,73 @@ onDeactivated(() => {
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   min-width: 0;
-  gap: clamp(0.15rem, 0.45vh, 0.45rem);
-  padding: clamp(0.35rem, 1vh, 1rem) clamp(0.65rem, 1.2vw, 1.5rem);
-  padding-bottom: clamp(1rem, 1.8vh, 1.75rem);
+  gap: 0.25cqw;
+  padding: 0.56cqw 1.2cqw;
+  padding-bottom: 1cqw;
   background: var(--scoreboard-bg);
 }
 
 .current-record.record-confirmed {
-  animation: record-confirmed 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
-}
-
-.current-record.record-confirmed .record-result {
-  animation: confirmed-result-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  --record-effect-color: var(--panel-color);
 }
 
 .best-record.best-updated {
-  animation: best-updated 1650ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  --record-effect-color: var(--scoreboard-best);
 }
 
+.current-record.record-confirmed,
+.best-record.best-updated {
+  animation: record-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.current-record.record-confirmed .record-result,
 .best-record.best-updated .record-result {
-  animation: best-result-updated 1650ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  animation: record-result-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
 }
 
 .best-record.best-updated .record-label,
 .best-record.best-updated .entry-number {
-  animation: best-meta-updated 1650ms cubic-bezier(0.2, 0.75, 0.25, 1);
+  animation: best-meta-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
 }
 
-@keyframes record-confirmed {
+@keyframes record-updated {
   0%, 100% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
   18% {
     box-shadow:
-      inset 0 0 0 clamp(4px, 0.32vw, 7px) color-mix(in srgb, var(--panel-color) 95%, white),
-      inset 0 0 clamp(1.8rem, 2.6vw, 3.4rem) color-mix(in srgb, var(--panel-color) 58%, transparent);
+      inset 0 0 0 0.32cqw color-mix(in srgb, var(--record-effect-color) 90%, white),
+      inset 0 0 2.6cqw color-mix(in srgb, var(--record-effect-color) 58%, transparent);
   }
-  42% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel-color) 30%, transparent), inset 0 0 0 transparent; }
-  62% {
+  36% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
+  54% {
     box-shadow:
-      inset 0 0 0 clamp(2px, 0.2vw, 5px) color-mix(in srgb, var(--panel-color) 78%, white),
-      inset 0 0 clamp(1rem, 1.8vw, 2.4rem) color-mix(in srgb, var(--panel-color) 38%, transparent);
+      inset 0 0 0 0.32cqw color-mix(in srgb, var(--record-effect-color) 90%, white),
+      inset 0 0 2.6cqw color-mix(in srgb, var(--record-effect-color) 58%, transparent);
   }
+  72% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
 }
 
-@keyframes confirmed-result-updated {
+@keyframes record-result-updated {
   0%, 100% { transform: scale(1); text-shadow: none; }
   18% {
-    transform: scale(1.065);
+    transform: scale(1.075);
     text-shadow:
-      0 0 0.12em color-mix(in srgb, var(--panel-color) 92%, white),
-      0 0 0.42em color-mix(in srgb, var(--panel-color) 70%, transparent);
+      0 0 0.12em color-mix(in srgb, var(--record-effect-color) 90%, white),
+      0 0 0.42em color-mix(in srgb, var(--record-effect-color) 72%, transparent);
   }
-  42% { transform: scale(1); text-shadow: none; }
-  62% {
-    transform: scale(1.025);
-    text-shadow: 0 0 0.28em color-mix(in srgb, var(--panel-color) 52%, transparent);
-  }
-}
-
-@keyframes best-updated {
-  0%, 100% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
-  16% {
-    box-shadow:
-      inset 0 0 0 clamp(5px, 0.38vw, 8px) color-mix(in srgb, var(--scoreboard-best) 82%, white),
-      inset 0 0 clamp(2.2rem, 3vw, 4rem) color-mix(in srgb, var(--scoreboard-best) 62%, transparent);
-  }
-  38% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--scoreboard-best) 30%, transparent), inset 0 0 0 transparent; }
-  56% {
-    box-shadow:
-      inset 0 0 0 clamp(3px, 0.24vw, 6px) color-mix(in srgb, var(--scoreboard-best) 90%, white),
-      inset 0 0 clamp(1.5rem, 2.2vw, 3rem) color-mix(in srgb, var(--scoreboard-best) 48%, transparent);
-  }
-}
-
-@keyframes best-result-updated {
-  0%, 100% { transform: scale(1); text-shadow: none; }
-  16% {
-    transform: scale(1.09);
+  36% { transform: scale(1); text-shadow: none; }
+  54% {
+    transform: scale(1.075);
     text-shadow:
-      0 0 0.1em color-mix(in srgb, var(--scoreboard-best) 75%, white),
-      0 0 0.38em color-mix(in srgb, var(--scoreboard-best) 85%, transparent);
+      0 0 0.12em color-mix(in srgb, var(--record-effect-color) 90%, white),
+      0 0 0.42em color-mix(in srgb, var(--record-effect-color) 72%, transparent);
   }
-  38% { transform: scale(1); text-shadow: none; }
-  56% {
-    transform: scale(1.045);
-    text-shadow:
-      0 0 0.08em color-mix(in srgb, var(--scoreboard-best) 65%, white),
-      0 0 0.3em color-mix(in srgb, var(--scoreboard-best) 60%, transparent);
-  }
+  72% { transform: scale(1); text-shadow: none; }
 }
 
 @keyframes best-meta-updated {
   0%, 100% { filter: brightness(1); text-shadow: none; }
-  16% { filter: brightness(1.75); text-shadow: 0 0 0.32em color-mix(in srgb, var(--scoreboard-best) 78%, transparent); }
-  38% { filter: brightness(1); text-shadow: none; }
-  56% { filter: brightness(1.35); text-shadow: 0 0 0.22em color-mix(in srgb, var(--scoreboard-best) 55%, transparent); }
+  18%, 54% { filter: brightness(1.75); text-shadow: 0 0 0.32em color-mix(in srgb, var(--scoreboard-best) 78%, transparent); }
+  36%, 72% { filter: brightness(1); text-shadow: none; }
 }
 
 .record-cell + .record-cell {
@@ -939,12 +916,12 @@ onDeactivated(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.416667cqw;
   min-width: 0;
 }
 
 .record-label {
-  font-size: clamp(2.2rem, 3.1vw, 4rem);
+  font-size: 3.1cqw;
   line-height: 0.95;
   color: var(--panel-fg);
   font-weight: 900;
@@ -959,7 +936,7 @@ onDeactivated(() => {
 .record-result {
   align-self: center;
   text-align: center;
-  font-size: clamp(4rem, 7vw, 9rem);
+  font-size: 7cqw;
   line-height: 0.95;
   font-weight: 900;
   color: var(--panel-fg);
@@ -978,7 +955,7 @@ onDeactivated(() => {
   padding: 0;
   background: transparent;
   color: var(--panel-fg);
-  font-size: clamp(2.3rem, 3.1vw, 4rem);
+  font-size: 3.1cqw;
   line-height: 1;
   font-weight: 900;
   font-style: italic;
@@ -993,12 +970,13 @@ onDeactivated(() => {
 .record-team {
   min-width: 0;
   color: var(--scoreboard-text);
-  font-size: clamp(2.5rem, 3.45vw, 4.5rem);
+  /* The 0.9em name text is 58px on a 1920px-wide display. */
+  font-size: 3.356481cqw;
   line-height: 1;
   font-weight: 850;
   display: flex;
   flex-direction: column;
-  gap: clamp(0.3rem, 0.7vh, 0.6rem);
+  gap: 0.4cqw;
 }
 
 .university-name,
@@ -1215,26 +1193,6 @@ onDeactivated(() => {
     padding-left: 0;
     border-top: 1px solid var(--border-color);
     border-left: 0;
-  }
-
-  .scoreboard {
-    padding: 1.5rem;
-  }
-
-  .title {
-    font-size: 1.8rem;
-  }
-
-  .panel {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .event-heading {
-    grid-column: 1 / -1;
-  }
-
-  .record-result {
-    font-size: 3.5rem;
   }
 }
 </style>
