@@ -129,7 +129,7 @@ describe("CI workflow operational contracts", () => {
   });
 
   it("runs unit tests in Seoul time and preserves the UTC/KST year boundary", () => {
-    assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n    env:\n      TZ: Asia\/Seoul\n/);
+    assert.equal(parse(testWorkflow).jobs.unit.env.TZ, "Asia/Seoul");
     assert.equal(currentCompetitionYear(new Date("2025-12-31T14:59:59.999Z")), 2025);
     assert.equal(currentCompetitionYear(new Date("2025-12-31T15:00:00.000Z")), 2026);
     assert.deepEqual(
@@ -177,7 +177,7 @@ describe("CI workflow operational contracts", () => {
     assert.match(pnpmSetupAction, /key: pnpm-home-v2\.1\.0-\$\{\{ runner\.os \}\}-\$\{\{ runner\.arch \}\}-\$\{\{ steps\.pnpm-version\.outputs\.version \}\}/);
     assert.match(pnpmSetupAction, /steps\.pnpm-setup\.outcome == 'failure'[\s\S]+?uses: pnpm\/setup@v2\.1\.0/);
     assert.doesNotMatch(pnpmSetupAction, /restore-keys:|cache: true/);
-    assert.match(testWorkflow, /  unit:\n    runs-on: ubuntu-latest\n/);
+    assert.equal(parse(testWorkflow).jobs.unit["runs-on"], "ubuntu-latest");
     assert.match(testWorkflow, /  e2e:\n    needs: changes\n/);
     assert.match(testWorkflow, /run: pnpm install --frozen-lockfile/);
     assert.doesNotMatch(testWorkflow, /package-lock\.json|\bnpm ci\b/);

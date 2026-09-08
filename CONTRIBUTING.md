@@ -48,6 +48,20 @@ For rover work, follow [rover/README.md](rover/README.md).
 - For a bug fix, first reproduce the defect and observe the test fail. Then apply the
   fix and observe the same test pass.
 - Run the narrowest relevant test first. Run all affected suites before handoff.
+- On shared hosts, use `pnpm test`, a `pnpm run test:<domain>` script, or
+  `node scripts/test.mjs tests/course/course-archive.test.mjs` for a single file.
+  Do not invoke `node --test` directly on these hosts. The runner requires Linux,
+  cgroup v2 and a working systemd user manager; it refuses to run
+  if the actual cgroup limits are missing. It limits the entire process tree to
+  1 GiB RAM, no swap, 256 tasks, and 10 minutes (then a 5-second kill grace),
+  with two concurrent test files and a 256 MiB V8 heap per Node process.
+  Unsupported local environments should use the CI runner instead of bypassing
+  isolation. These limits apply to tests, not application startup or builds.
+  GitHub-hosted CI uses its dedicated VM, two concurrent test files, the same
+  per-process heap cap, and a 15-minute unit-job timeout.
+- Compare binary results using `Buffer.compare()` or `Buffer.equals()` and assert
+  the scalar result. Do not pass large binaries to deep-equality assertions:
+  formatting a failing diff can consume far more memory than the input.
 - Playwright E2E runs in CI only. Do not run it locally.
 - Register API response waits before the action that triggers them. Use Playwright
   assertions or `expect.poll()` for eventual state; never synchronize API or SSE
