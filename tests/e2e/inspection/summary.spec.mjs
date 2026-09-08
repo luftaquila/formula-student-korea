@@ -210,7 +210,7 @@ test.describe("Inspection summary dashboard", () => {
     });
   });
 
-  test("summarizes inspectors after two names without a leading marker", async ({ page }) => {
+  test("keeps two inspector names readable on mobile and opens the full list only from the count", async ({ page }) => {
     const inspectors = ["김검차", "이검차", "박검차"];
     await page.route("**/competition/api/v1/inspection/sheet/summary?*", async (route) => {
       const response = await route.fetch();
@@ -225,22 +225,43 @@ test.describe("Inspection summary dashboard", () => {
     await page.goto("/inspection");
     await waitForPageReady(page);
     const row = page.locator(".sheet-table tbody tr.clickable-row").filter({ hasText: "서울대학교" });
-    const disclosure = row.locator(".inspector-disclosure").first();
-    const toggle = disclosure.locator("summary");
+    await page.setViewportSize({ width: 320, height: 640 });
+    const preview = row.getByText("김검차, 이검차", { exact: true });
+    const toggle = row.getByRole("button", { name: /검차관 3명 전체 목록/ }).first();
+    const popover = page.getByRole("dialog", { name: /전체 검차관/ });
 
-    await expect(toggle).toBeVisible();
-    await expect(toggle.locator(".inspector-preview")).toHaveText("김검차 이검차");
-    await expect(toggle.locator(".inspector-more")).toHaveText("외 1");
-    await expect(toggle).toHaveAttribute("title", inspectors.join(" "));
-    expect(await toggle.evaluate(element => getComputedStyle(element).listStyleType)).toBe("none");
-    expect(await toggle.evaluate(element => getComputedStyle(element, "::before").content)).toBe("none");
+    await expect(preview).toBeVisible();
+    await expect(toggle).toHaveText("외 1명");
+    await expect(popover).toBeHidden();
+    expect(await preview.evaluate(element => {
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      const cell = element.closest("td").getBoundingClientRect();
+      return [...range.getClientRects()].every(rect =>
+        rect.left >= cell.left && rect.right <= cell.right
+        && rect.top >= cell.top && rect.bottom <= cell.bottom);
+    })).toBe(true);
 
+    const rowHeight = (await row.boundingBox()).height;
     await toggle.click();
-    await expect(disclosure).toHaveAttribute("open", "");
-    await expect(disclosure.locator(".inspector-person")).toHaveCount(3);
-    await expect(disclosure.locator(".inspector-person").last()).toBeVisible();
-    await expect(disclosure.locator(".inspector-list")).toContainText("박검차");
+    await expect(popover).toBeVisible();
+    for (const name of inspectors) await expect(popover.getByText(name, { exact: true })).toBeVisible();
+    expect((await row.boundingBox()).height).toBe(rowHeight);
     await expect(page).toHaveURL(/\/inspection\/?$/);
+    await page.keyboard.press("Escape");
+    await expect(popover).toBeHidden();
+    await toggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(popover).toBeVisible();
+    await toggle.click();
+    await expect(popover).toBeHidden();
+    await toggle.click();
+    await expect(popover).toBeVisible();
+    await page.getByRole("heading", { name: "검차 시트" }).click();
+    await expect(popover).toBeHidden();
+    await preview.click();
+    await expect(page).toHaveURL(new RegExp(`/inspection/${YEAR}/1\\?category=`));
+    await expect(popover).toBeHidden();
   });
 
   test("shows category result badges after setting results", async ({ page, browser }) => {

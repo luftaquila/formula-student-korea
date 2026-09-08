@@ -6,7 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { useSSE } from "../composables/useSSE";
 import { currentCompetitionYear, isCompetitionPreparationYear } from "@shared/competition-year.mjs";
 import { permissionComputed } from "@shared/officialsStore.js";
-import { inspectorDisplay } from "../utils/inspector-display.js";
+import InspectorNames from "../components/InspectorNames.vue";
 
 const tableRef = ref(null);
 const { error } = useNotification();
@@ -234,10 +234,6 @@ function getInspectors(num, catId) {
   return Array.isArray(inspectors) ? inspectors : [];
 }
 
-function getInspectorDisplay(num, catId) {
-  return inspectorDisplay(getInspectors(num, catId));
-}
-
 // 카테고리 열은 여러 유형이 섞인 목록에서 공유되므로 열 자체는 남기고,
 // 해당 유형에 표시하지 않는 카테고리는 그 팀의 칸만 완전히 비운다.
 function appliesToTeam(cat, type) {
@@ -431,28 +427,10 @@ watch(lastEntriesUpdate, (update) => {
                         :class="getResult(entry.num, cat.id) === 'PASS' ? 'badge-success' : 'badge-danger'"
                       >{{ getResult(entry.num, cat.id) }}</span>
                       <span v-else class="badge badge-empty">-</span>
-                      <details
-                        v-if="getInspectorDisplay(entry.num, cat.id).expandable"
-                        class="inspector-disclosure"
-                        @click.stop
-                      >
-                        <summary
-                          class="inspector-name"
-                          :title="getInspectorDisplay(entry.num, cat.id).names.join(' ')"
-                          :aria-label="`${cat.name} 검차관 ${getInspectors(entry.num, cat.id).length}명 전체 목록`"
-                        >
-                          <span class="inspector-preview">{{ getInspectorDisplay(entry.num, cat.id).preview }}</span>
-                          <span class="inspector-more">외 {{ getInspectorDisplay(entry.num, cat.id).remaining }}</span>
-                        </summary>
-                        <div class="inspector-list" :aria-label="`${cat.name} 전체 검차관`">
-                          <span v-for="name in getInspectors(entry.num, cat.id)" :key="name" class="inspector-person">{{ name }}</span>
-                        </div>
-                      </details>
-                      <span
-                        v-else-if="getInspectors(entry.num, cat.id).length"
-                        class="inspector-name"
-                        :title="getInspectorDisplay(entry.num, cat.id).names.join(' ')"
-                      >{{ getInspectorDisplay(entry.num, cat.id).preview }}</span>
+                      <InspectorNames
+                        :names="getInspectors(entry.num, cat.id)"
+                        :category="cat.name"
+                      />
                     </template>
                   </td>
                 </template>
@@ -704,63 +682,6 @@ watch(lastEntriesUpdate, (update) => {
   font-variant-numeric: tabular-nums;
 }
 
-.inspector-name {
-  display: block;
-  max-width: 10rem;
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-  margin-top: 0.125rem;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.inspector-disclosure {
-  max-width: 10rem;
-  margin: 0.125rem auto 0;
-  text-align: left;
-}
-
-.inspector-disclosure .inspector-name {
-  display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  margin-top: 0;
-  cursor: pointer;
-  list-style: none;
-  white-space: nowrap;
-}
-
-.inspector-disclosure .inspector-name::-webkit-details-marker {
-  display: none;
-}
-
-.inspector-preview {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.inspector-more {
-  flex: none;
-  color: var(--accent-primary);
-  font-weight: 600;
-}
-
-.inspector-list {
-  display: grid;
-  gap: 0.125rem;
-  margin-top: 0.25rem;
-  padding-left: 0.75rem;
-  font-size: 0.75rem;
-  color: var(--text-secondary);
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.inspector-person::before {
-  content: "· ";
-}
-
 .entry-name {
   color: var(--text-primary);
   font-size: 0.875rem;
@@ -899,9 +820,5 @@ watch(lastEntriesUpdate, (update) => {
     justify-content: center;
   }
 
-  .inspector-name,
-  .inspector-disclosure {
-    max-width: 100%;
-  }
 }
 </style>
