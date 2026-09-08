@@ -13,6 +13,7 @@ async function apiResetPriorities(type = INSPECTION_TYPE) {
 
 test.describe("Queue priority management", () => {
   test.use({ storageState: storageStatePath("operationsManager") });
+  test.describe.configure({ retries: 0 });
 
   test.beforeEach(async () => {
     await apiResetPriorities();
@@ -116,12 +117,23 @@ test.describe("Queue priority management", () => {
     // The input should show current priority
     await expect(priorityInput).toHaveValue("1");
 
-    // Clear the input to remove priority
     await priorityInput.fill("");
-    await priorityInput.dispatchEvent("change");
+    // Re-render while the priority field still has focus, before change commits it.
+    await page.locator(".search-input").evaluate(input => {
+      input.value = "한양";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await expect(page.locator(".priority-table:not([data-table-head-copy]) tbody tr")).toHaveCount(1);
+    await expect(priorityInput).toHaveValue("");
 
-    // Should show success notification about removal
+    const saved = page.waitForResponse(response =>
+      response.url().includes(`/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`)
+      && response.request().method() === "DELETE");
+    await priorityInput.dispatchEvent("change");
+    expect((await saved).ok()).toBe(true);
     await expectNotification(page, "success", "우선순위 해제");
+    await page.reload();
+    await expect(priorityInput).toHaveValue("");
   });
 
   test("search filters entries in the table", async ({ page }) => {
