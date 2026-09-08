@@ -9,6 +9,7 @@ import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import {
   scoreboardLiveAttempt,
   scoreboardRecordFiles,
+  scoreboardSerialLiveAttempt,
 } from "../utils/scoreboard-live";
 import {
   MAX_EVENT_LABEL_LENGTH,
@@ -21,6 +22,7 @@ const {
   lastUpdate,
   connected,
   reconnected,
+  liveAttempts: serialLiveAttempts,
 } = useSSE();
 const route = useRoute();
 const wirelessStore = useWirelessStore();
@@ -34,6 +36,7 @@ const trackTemp = ref("");
 const isActive = ref(true);
 const missedUpdate = ref(false);
 const lastLoadedFile = ref(null);
+const scoreboardNow = ref(Date.now());
 
 const EVENT_CONFIG = {
   가속: { mode: "accel", label: "ACCELERATION", color: "#ffd000" },
@@ -44,6 +47,7 @@ const EVENT_CONFIG = {
 const recordFiles = computed(() => scoreboardRecordFiles({
   persistedFiles: allRecordFiles.value,
   sessions: isWirelessScoreboard.value ? wirelessStore.sessions : null,
+  liveAttempts: isWirelessScoreboard.value ? null : serialLiveAttempts.value,
   year: competitionYear,
   eventTypes: Object.keys(EVENT_CONFIG),
 }));
@@ -134,8 +138,7 @@ async function loadRecords() {
     return;
   }
   if (
-    isWirelessScoreboard.value
-    && !allRecordFiles.value.includes(selectedFile.value)
+    !allRecordFiles.value.includes(selectedFile.value)
     && recordFiles.value.includes(selectedFile.value)
   ) {
     records.value = [];
@@ -186,9 +189,22 @@ const validRecords = computed(() => {
 });
 
 const liveAttempts = computed(() => {
-  if (!isWirelessScoreboard.value) return {};
-
   const attempts = {};
+  if (!isWirelessScoreboard.value) {
+    for (const type of Object.keys(EVENT_CONFIG)) {
+      const activeAttempt = serialLiveAttempts.value[type];
+      if (!activeAttempt) continue;
+      const attempt = scoreboardSerialLiveAttempt({
+        selectedFile: selectedFile.value,
+        year: competitionYear,
+        attempt: activeAttempt,
+        now: scoreboardNow.value,
+      });
+      if (attempt) attempts[type] = attempt;
+    }
+    return attempts;
+  }
+
   for (const [type, config] of Object.entries(EVENT_CONFIG)) {
     const attempt = scoreboardLiveAttempt({
       selectedFile: selectedFile.value,
@@ -320,20 +336,39 @@ function handleFullscreenChange() {
   }
 }
 
+let scoreboardClockFrame = null;
+function startScoreboardClock() {
+  if (scoreboardClockFrame != null) return;
+  const tick = () => {
+    scoreboardNow.value = Date.now();
+    scoreboardClockFrame = requestAnimationFrame(tick);
+  };
+  scoreboardClockFrame = requestAnimationFrame(tick);
+}
+
+function stopScoreboardClock() {
+  if (scoreboardClockFrame == null) return;
+  cancelAnimationFrame(scoreboardClockFrame);
+  scoreboardClockFrame = null;
+}
+
 onMounted(() => {
   document.addEventListener("fullscreenchange", handleFullscreenChange);
+  startScoreboardClock();
   if (selectedFile.value) {
     loadRecords();
   }
 });
 
 onUnmounted(() => {
+  stopScoreboardClock();
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
   document.body.classList.remove("scoreboard-fullscreen");
 });
 
 onActivated(() => {
   isActive.value = true;
+  startScoreboardClock();
   document.addEventListener("fullscreenchange", handleFullscreenChange);
   if (missedUpdate.value || lastLoadedFile.value !== selectedFile.value) {
     missedUpdate.value = false;
@@ -343,6 +378,7 @@ onActivated(() => {
 
 onDeactivated(() => {
   isActive.value = false;
+  stopScoreboardClock();
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
   document.body.classList.remove("scoreboard-fullscreen");
 });
@@ -723,7 +759,7 @@ onDeactivated(() => {
   min-width: 0;
   overflow: hidden;
   font-size: clamp(2.8rem, 4.2vw, 5.5rem);
-  line-height: 0.92;
+  line-height: 1.1;
   font-weight: 800;
   color: var(--panel-fg);
   letter-spacing: 0.025em;

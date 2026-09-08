@@ -5,6 +5,7 @@ import {
   scoreboardElapsedSeconds,
   scoreboardLiveAttempt,
   scoreboardRecordFiles,
+  scoreboardSerialLiveAttempt,
 } from "../../traffic/web/src/utils/scoreboard-live.js";
 
 const YEAR = 2026;
@@ -33,6 +34,18 @@ test("scoreboard offers an armed wireless event before its first record exists",
     year: YEAR,
     eventTypes: ["가속", "스키드패드", "오토크로스"],
   }), ["FSK 2026 기존 경기", FILE]);
+});
+
+test("scoreboard offers an active serial event before its first record exists", () => {
+  assert.deepEqual(scoreboardRecordFiles({
+    persistedFiles: ["controller"],
+    liveAttempts: {
+      가속: { active: true, event_type: "가속", event_name: "다이나믹" },
+      내구: { active: true, event_type: "내구", event_name: "내구 경기" },
+    },
+    year: YEAR,
+    eventTypes: ["가속", "스키드패드", "오토크로스"],
+  }), [FILE]);
 });
 
 test("scoreboard exposes the running clock and the active team after the start sensor", () => {
@@ -102,5 +115,36 @@ test("scoreboard ignores inactive or unrelated wireless attempts", () => {
     session: { ...SESSION, armed: false },
     timing: TIMING,
     records: [],
+  }), null);
+});
+
+test("scoreboard exposes a serial attempt with a locally advancing clock", () => {
+  const attempt = {
+    active: true,
+    attempt_id: "attempt-1",
+    event_type: "스키드패드",
+    event_name: "다이나믹",
+    team: { num: 7, univ: "한국대학교", team: "Korea Racing" },
+    elapsed_ms: 250,
+    received_at: 1_000,
+  };
+
+  assert.deepEqual(scoreboardSerialLiveAttempt({
+    selectedFile: FILE,
+    year: YEAR,
+    attempt,
+    now: 2_000,
+  }), {
+    num: 7,
+    univ: "한국대학교",
+    team: "Korea Racing",
+    elapsedSeconds: "1.250",
+    measuring: true,
+  });
+  assert.equal(scoreboardSerialLiveAttempt({
+    selectedFile: FILE,
+    year: YEAR,
+    attempt: { ...attempt, active: false },
+    now: 2_000,
   }), null);
 });

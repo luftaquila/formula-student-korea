@@ -9,6 +9,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { addRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
+import { useLiveAttempt } from "../composables/useLiveAttempt";
 import EventNameField from "../components/EventNameField.vue";
 import RecordQuickEdit from "../components/RecordQuickEdit.vue";
 import EventStatusPanel from "../components/EventStatusPanel.vue";
@@ -29,6 +30,8 @@ const savedRecord = ref(null);
 const displayRecord = ref(null);
 const quickEditSaveState = ref("ready");
 const attemptFinalized = ref(false);
+const activeLiveAttempt = ref(null);
+const measurementRunKey = ref(0);
 
 async function onSensor({ sensor, tick }) {
   if (attemptFinalized.value) return;
@@ -38,6 +41,7 @@ async function onSensor({ sensor, tick }) {
   if (sensor === 1) {
     if (!startRecord.value) {
       startRecord.value = { tick };
+      activeLiveAttempt.value = liveAttempt.start();
     }
   } else if (sensor === 2 && startRecord.value) {
     // 이미 기록이 있으면 무시 (세션당 1회만)
@@ -47,9 +51,11 @@ async function onSensor({ sensor, tick }) {
     const entry = selectedEntry.value;
 
     displayRecord.value = { result, time: msToClockStr(result) };
+    const completedAttempt = activeLiveAttempt.value;
 
     // 자동 저장 조건: 이벤트 이름과 참가팀 모두 선택된 경우
     if (!eventName.value.trim() || !entry) {
+      stopLiveAttempt(completedAttempt);
       return;
     }
     // 무선: 서버 기록 엔진이 저장(세션 선택 정보로 귀속). 클라는 표시만 — 이중저장 방지.
@@ -71,6 +77,8 @@ async function onSensor({ sensor, tick }) {
       notyf.success(`기록 저장: ${msToClockStr(result)}`);
     } catch (e) {
       notyf.error(`기록 저장 실패: ${e.message}`);
+    } finally {
+      stopLiveAttempt(completedAttempt);
     }
   }
 }
@@ -82,6 +90,10 @@ onMounted(() => {
 
 onActivated(() => {
   serial.setMode(props.config.mode, onSensor);
+});
+
+watch(() => props.config.mode, (mode) => {
+  serial.setMode(mode, onSensor);
 });
 
 const currentYear = computed(() => currentCompetitionYear());
@@ -98,10 +110,12 @@ const session = computed(() => serial.session);
 const resetSubmitting = ref(false);
 const resetInProgress = computed(() => props.wireless && (resetSubmitting.value || !!session.value?.reset_pending));
 function clearMeasurement() {
+  measurementRunKey.value += 1;
   startRecord.value = null;
   savedRecord.value = null;
   displayRecord.value = null;
   attemptFinalized.value = false;
+  activeLiveAttempt.value = null;
 }
 watch(session, (s, previous) => {
   if (!props.wireless || !s) return;
@@ -118,6 +132,23 @@ const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1)
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
 const entries = computed(() => entryStore.entries);
 const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
+const liveAttempt = useLiveAttempt({
+  enabled: () => !props.wireless,
+  active: () => serial.green.active,
+  eventType: () => props.config.type,
+  eventName: () => eventName.value,
+  team: () => selectedEntry.value,
+});
+function stopLiveAttempt(attempt = activeLiveAttempt.value) {
+  if (!attempt) return;
+  liveAttempt.stop(attempt);
+  if (activeLiveAttempt.value?.id === attempt.id) activeLiveAttempt.value = null;
+}
+function handleStatusFinalize(finalized, attempt, runKey) {
+  if (runKey !== measurementRunKey.value) return;
+  attemptFinalized.value = finalized;
+  if (finalized && attempt) stopLiveAttempt(attempt);
+}
 const {
   recentRecord,
   captureRecord,
@@ -131,6 +162,15 @@ const {
   wireless: () => props.wireless,
   session: () => serial.session,
 });
+function handleStatusRecord(record, runKey) {
+  if (runKey === measurementRunKey.value) adoptRecord(record);
+}
+function handleStatusUpdate(update, runKey) {
+  if (runKey === measurementRunKey.value) mergeRecord(update);
+}
+function handleStatusRemove(_removed, runKey) {
+  if (runKey === measurementRunKey.value) clearRecord();
+}
 const recordResultDisplay = computed(() => {
   if (recentRecord.value?.status) return recentRecord.value.status;
   if (displayRecord.value?.time) return displayRecord.value.time;
@@ -306,11 +346,13 @@ onUnmounted(() => clearTimeout(selectTimer));
             :wireless="wireless"
             :source="serial"
             :record="recentRecord"
+            :attempt="activeLiveAttempt"
+            :run-key="measurementRunKey"
             :disabled="!isController || resetInProgress"
-            @record="adoptRecord"
-            @update="mergeRecord"
-            @remove="clearRecord"
-            @finalize="attemptFinalized = $event"
+            @record="handleStatusRecord"
+            @update="handleStatusUpdate"
+            @remove="handleStatusRemove"
+            @finalize="handleStatusFinalize"
           />
           <button
             class="btn btn-warning btn-block mt-1"

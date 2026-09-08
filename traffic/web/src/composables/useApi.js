@@ -66,6 +66,14 @@ export async function addControllerLog(timestamp, data) {
   });
 }
 
+export async function publishLiveAttempt(body) {
+  const res = await request("/api/live-attempts", {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+  return res.json();
+}
+
 export async function deleteControllers() {
   await request("/api/controllers", {
     method: "DELETE",

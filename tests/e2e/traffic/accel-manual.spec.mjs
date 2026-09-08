@@ -18,7 +18,7 @@ test.describe("Acceleration manual mode measurement", () => {
   test.afterAll(async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await context.newPage();
-    for (const name of ["E2E-Test", "E2E-DNF", "E2E-Reset"]) {
+    for (const name of ["E2E-Test", "E2E-Live", "E2E-Live-Race", "E2E-Stale-DNF", "E2E-DNF", "E2E-Reset"]) {
       await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${name}`);
     }
     await context.close();
@@ -144,6 +144,196 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect(scoreboard).toContainText("숨김");
   });
 
+  test("streams a running attempt to the scoreboard until the record is finalized", async ({ page }) => {
+    await page.getByTestId("manual-mode-toggle").click();
+    await setCustomEventName(page, "E2E-Live");
+    await page.getByTestId("event-team").selectOption("1");
+    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
+
+    const sensor1 = page.getByTestId("manual-sensor-1");
+    const sensor2 = page.getByTestId("manual-sensor-2");
+    await sensor1.click();
+
+    const scoreboardPage = await page.context().newPage();
+    await scoreboardPage.goto("/traffic/scoreboard");
+    await waitForPageReady(scoreboardPage);
+    const recordFile = `FSK ${YEAR} E2E-Live`;
+    const fileSelect = scoreboardPage.getByLabel("기록 파일");
+    await expect(fileSelect.locator(`option[value="${recordFile}"]`)).toHaveCount(1);
+    await fileSelect.selectOption(recordFile);
+
+    const current = scoreboardPage.getByTestId("current-record-가속");
+    await expect(current).toHaveAttribute("data-measuring", "true");
+    const initial = Number.parseFloat(await scoreboardPage.getByTestId("live-timer-가속").innerText());
+    await expect.poll(async () => (
+      Number.parseFloat(await scoreboardPage.getByTestId("live-timer-가속").innerText())
+    )).toBeGreaterThan(initial);
+
+    await advanceTestClock(page, 500);
+    const recordSaved = page.waitForResponse((response) => (
+      response.request().method() === "POST"
+      && response.url().endsWith("/competition/api/v1/traffic/records")
+    ));
+    await sensor2.click();
+    const created = await (await recordSaved).json();
+    await expectNotification(page, "success", "기록 저장");
+    await expect(current).toHaveAttribute("data-measuring", "false");
+    await expect(current).toContainText((created.record.result / 1000).toFixed(3));
+    await scoreboardPage.close();
+  });
+
+  test("does not let a delayed save stop the next running attempt", async ({ page }) => {
+    await page.getByTestId("manual-mode-toggle").click();
+    await setCustomEventName(page, "E2E-Live-Race");
+    await page.getByTestId("event-team").selectOption("1");
+    const green = page.locator("button.btn-success", { hasText: "녹색등" });
+    const sensor1 = page.getByTestId("manual-sensor-1");
+    const sensor2 = page.getByTestId("manual-sensor-2");
+    await green.click();
+    await sensor1.click();
+
+    let releaseRecordSave;
+    let markRecordSaveStarted;
+    const recordSaveHeld = new Promise((resolve) => { releaseRecordSave = resolve; });
+    const recordSaveStarted = new Promise((resolve) => { markRecordSaveStarted = resolve; });
+    const holdRecordSave = async (route) => {
+      if (route.request().method() === "POST") {
+        markRecordSaveStarted();
+        await recordSaveHeld;
+      }
+      await route.continue();
+    };
+    await page.route("**/competition/api/v1/traffic/records", holdRecordSave);
+    await sensor2.click();
+    await recordSaveStarted;
+
+    await page.locator("button.btn-warning.btn-block", { hasText: "초기화" }).click();
+    await green.click();
+    const nextAttemptStarted = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/live-attempts")) return false;
+      try { return response.request().postDataJSON()?.action === "start"; }
+      catch { return false; }
+    });
+    await sensor1.click();
+    const nextAttemptResponse = await nextAttemptStarted;
+    const nextAttemptId = nextAttemptResponse.request().postDataJSON().attempt_id;
+
+    const staleAttemptStopped = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/live-attempts")) return false;
+      try { return response.request().postDataJSON()?.action === "stop"; }
+      catch { return false; }
+    });
+    releaseRecordSave();
+    await staleAttemptStopped;
+
+    const scoreboardPage = await page.context().newPage();
+    await scoreboardPage.goto("/traffic/scoreboard");
+    await waitForPageReady(scoreboardPage);
+    const recordFile = `FSK ${YEAR} E2E-Live-Race`;
+    const fileSelect = scoreboardPage.getByLabel("기록 파일");
+    await expect(fileSelect.locator(`option[value="${recordFile}"]`)).toHaveCount(1);
+    await fileSelect.selectOption(recordFile);
+    await expect(scoreboardPage.getByTestId("current-record-가속")).toHaveAttribute("data-measuring", "true");
+
+    const stoppedAttemptResponse = await staleAttemptStopped;
+    expect(stoppedAttemptResponse.request().postDataJSON().attempt_id).not.toBe(nextAttemptId);
+    await scoreboardPage.close();
+    await page.unroute("**/competition/api/v1/traffic/records", holdRecordSave);
+    const nextAttemptStopped = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/live-attempts")) return false;
+      try {
+        const body = response.request().postDataJSON();
+        return body?.action === "stop" && body.attempt_id === nextAttemptId;
+      } catch { return false; }
+    });
+    await page.locator("button.btn-ghost", { hasText: "OFF" }).click();
+    await nextAttemptStopped;
+  });
+
+  test("ignores delayed status finalization from the previous run", async ({ page }) => {
+    await page.getByTestId("manual-mode-toggle").click();
+    await setCustomEventName(page, "E2E-Stale-DNF");
+    await page.getByTestId("event-team").selectOption("1");
+    const green = page.locator("button.btn-success", { hasText: "녹색등" });
+    const sensor1 = page.getByTestId("manual-sensor-1");
+    const sensor2 = page.getByTestId("manual-sensor-2");
+    await green.click();
+    await sensor1.click();
+
+    let releaseStatusSave;
+    let markStatusSaveStarted;
+    const statusSaveHeld = new Promise((resolve) => { releaseStatusSave = resolve; });
+    const statusSaveStarted = new Promise((resolve) => { markStatusSaveStarted = resolve; });
+    const holdStatusSave = async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const body = route.request().postDataJSON();
+      if (body?.data?.status === "DNF") {
+        markStatusSaveStarted();
+        await statusSaveHeld;
+      }
+      await route.continue();
+    };
+    await page.route("**/competition/api/v1/traffic/records", holdStatusSave);
+    const statusSaved = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/records")) return false;
+      try { return response.request().postDataJSON()?.data?.status === "DNF"; }
+      catch { return false; }
+    });
+    await page.locator('.event-status-panel [data-status="DNF"]').click();
+    await statusSaveStarted;
+
+    await page.locator("button.btn-warning.btn-block", { hasText: "초기화" }).click();
+    await green.click();
+    await sensor1.click();
+    await advanceTestClock(page, 500);
+
+    releaseStatusSave();
+    await statusSaved;
+    await expectNotification(page, "success", "DNF 판정을 저장했습니다.");
+    await page.unroute("**/competition/api/v1/traffic/records", holdStatusSave);
+
+    const nextRecordSaved = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/records")) return false;
+      try { return response.request().postDataJSON()?.data?.result > 0; }
+      catch { return false; }
+    });
+    await sensor2.click();
+    expect((await nextRecordSaved).status()).toBe(201);
+    await expectNotification(page, "success", "기록 저장");
+  });
+
+  test("publishes the current event type after a reused route changes", async ({ page }) => {
+    await page.getByTestId("manual-mode-toggle").click();
+    await page.getByRole("link", { name: /오토크로스/ }).click();
+    await expect(page).toHaveURL(/\/traffic\/autocross$/);
+    await setCustomEventName(page, "E2E-Reused-Autocross");
+    await page.getByTestId("event-team").selectOption("1");
+    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
+
+    const attemptStarted = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/live-attempts")) return false;
+      try { return response.request().postDataJSON()?.action === "start"; }
+      catch { return false; }
+    });
+    await page.getByTestId("manual-sensor-1").click();
+    const startedBody = (await attemptStarted).request().postDataJSON();
+    expect(startedBody.event_type).toBe("오토크로스");
+
+    const attemptStopped = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/live-attempts")) return false;
+      try {
+        const body = response.request().postDataJSON();
+        return body?.action === "stop" && body.attempt_id === startedBody.attempt_id;
+      } catch { return false; }
+    });
+    await page.locator("button.btn-ghost", { hasText: "OFF" }).click();
+    const stoppedBody = (await attemptStopped).request().postDataJSON();
+    expect(stoppedBody.event_type).toBe("오토크로스");
+  });
+
   test("records DNF when DNF button is clicked", async ({ page }) => {
     // Enable manual mode
     await page.getByTestId("manual-mode-toggle").click();
@@ -152,13 +342,33 @@ test.describe("Acceleration manual mode measurement", () => {
     await setCustomEventName(page, "E2E-DNF");
     await page.getByTestId("event-team").selectOption("2");
 
-    // 판정은 arm 단계와 무관하게 가능하다.
+    await page.locator("button.btn-success", { hasText: "녹색등" }).click();
+    const liveAttemptStarted = page.waitForResponse((response) => {
+      if (!response.url().endsWith("/competition/api/v1/traffic/live-attempts")) return false;
+      try { return response.request().postDataJSON()?.action === "start"; }
+      catch { return false; }
+    });
+    await page.getByTestId("manual-sensor-1").click();
+    await liveAttemptStarted;
+    const scoreboardPage = await page.context().newPage();
+    await scoreboardPage.goto("/traffic/scoreboard");
+    await waitForPageReady(scoreboardPage);
+    const recordFile = `FSK ${YEAR} E2E-DNF`;
+    const fileSelect = scoreboardPage.getByLabel("기록 파일");
+    await expect(fileSelect.locator(`option[value="${recordFile}"]`)).toHaveCount(1);
+    await fileSelect.selectOption(recordFile);
+    const current = scoreboardPage.getByTestId("current-record-가속");
+    await expect(current).toHaveAttribute("data-measuring", "true");
+
     const dnfBtn = page.locator('.event-status-panel [data-status="DNF"]');
     await expect(dnfBtn).toBeEnabled();
     await dnfBtn.click();
 
     // Verify DNF notification
     await expectNotification(page, "success", "DNF 판정을 저장했습니다.");
+    await expect(current).toHaveAttribute("data-measuring", "false");
+    await expect(current).toContainText("DNF");
+    await scoreboardPage.close();
   });
 
   test("resets and re-measures after reset", async ({ page }) => {
