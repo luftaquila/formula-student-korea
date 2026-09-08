@@ -1,14 +1,31 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated } from "vue";
+import { useRoute } from "vue-router";
 
 import { useSSE } from "../composables/useSSE";
 import { fetchRecord } from "../composables/useApi";
+import { useWirelessStore } from "../stores/wireless";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import {
+  scoreboardLiveAttempt,
+  scoreboardRecordFiles,
+} from "../utils/scoreboard-live";
+import {
+  MAX_EVENT_LABEL_LENGTH,
+  scoreboardEventLabels,
+} from "../utils/scoreboard-settings";
 
-const { recordFiles: allRecordFiles, selectedFile, lastUpdate, connected } = useSSE();
-
-const recordFiles = computed(() => {
-  return allRecordFiles.value.filter((file) => file !== "controller");
-});
+const {
+  recordFiles: allRecordFiles,
+  selectedFile,
+  lastUpdate,
+  connected,
+  reconnected,
+} = useSSE();
+const route = useRoute();
+const wirelessStore = useWirelessStore();
+const competitionYear = currentCompetitionYear();
+const isWirelessScoreboard = computed(() => route.path.startsWith("/wireless/"));
 
 const records = ref([]);
 const loading = ref(false);
@@ -19,14 +36,22 @@ const missedUpdate = ref(false);
 const lastLoadedFile = ref(null);
 
 const EVENT_CONFIG = {
-  가속: { label: "ACCELERATION", color: "#ffd000" },
-  스키드패드: { label: "SKIDPAD", color: "#00e5ff" },
-  오토크로스: { label: "AUTOCROSS", color: "#ff6b6b" },
+  가속: { mode: "accel", label: "ACCELERATION", color: "#ffd000" },
+  스키드패드: { mode: "skidpad", label: "SKIDPAD", color: "#00e5ff" },
+  오토크로스: { mode: "autocross", label: "AUTOCROSS", color: "#ff6b6b" },
 };
+
+const recordFiles = computed(() => scoreboardRecordFiles({
+  persistedFiles: allRecordFiles.value,
+  sessions: isWirelessScoreboard.value ? wirelessStore.sessions : null,
+  year: competitionYear,
+  eventTypes: Object.keys(EVENT_CONFIG),
+}));
 
 const SCOREBOARD_THEME_KEY = "traffic-scoreboard-theme";
 const SCOREBOARD_COLORS_KEY = "traffic-scoreboard-colors";
 const SCOREBOARD_VISIBILITY_KEY = "traffic-scoreboard-visibility";
+const SCOREBOARD_LABELS_KEY = "traffic-scoreboard-labels";
 
 function loadScoreboardTheme() {
   const saved = localStorage.getItem(SCOREBOARD_THEME_KEY);
@@ -71,9 +96,14 @@ function loadEventVisibility() {
   return visibility;
 }
 
+function loadEventLabels() {
+  return scoreboardEventLabels(EVENT_CONFIG, localStorage.getItem(SCOREBOARD_LABELS_KEY));
+}
+
 const scoreboardTheme = ref(loadScoreboardTheme());
 const eventColors = ref(loadEventColors());
 const eventVisibility = ref(loadEventVisibility());
+const eventLabels = ref(loadEventLabels());
 
 function toggleScoreboardTheme() {
   scoreboardTheme.value = scoreboardTheme.value === "dark" ? "light" : "dark";
@@ -91,12 +121,25 @@ watch(eventVisibility, (visibility) => {
   localStorage.setItem(SCOREBOARD_VISIBILITY_KEY, JSON.stringify(visibility));
 }, { deep: true });
 
+watch(eventLabels, (labels) => {
+  localStorage.setItem(SCOREBOARD_LABELS_KEY, JSON.stringify(labels));
+}, { deep: true });
+
 let fetchSeq = 0;
 
 async function loadRecords() {
   if (!selectedFile.value) {
     records.value = [];
     lastLoadedFile.value = null;
+    return;
+  }
+  if (
+    isWirelessScoreboard.value
+    && !allRecordFiles.value.includes(selectedFile.value)
+    && recordFiles.value.includes(selectedFile.value)
+  ) {
+    records.value = [];
+    lastLoadedFile.value = selectedFile.value;
     return;
   }
 
@@ -129,12 +172,39 @@ watch(lastUpdate, (update) => {
   }
 });
 
+watch(reconnected, () => {
+  if (!selectedFile.value) return;
+  if (!isActive.value) {
+    missedUpdate.value = true;
+    return;
+  }
+  loadRecords();
+});
+
 const validRecords = computed(() => {
   return records.value.filter((r) => r.scoreboard);
 });
 
+const liveAttempts = computed(() => {
+  if (!isWirelessScoreboard.value) return {};
+
+  const attempts = {};
+  for (const [type, config] of Object.entries(EVENT_CONFIG)) {
+    const attempt = scoreboardLiveAttempt({
+      selectedFile: selectedFile.value,
+      year: competitionYear,
+      session: wirelessStore.sessions?.[type],
+      timing: wirelessStore.timing?.[config.mode],
+      records: records.value,
+    });
+    if (attempt) attempts[type] = attempt;
+  }
+  return attempts;
+});
+
 const availableTypes = computed(() => {
   const types = new Set(validRecords.value.map((r) => r.type));
+  for (const type of Object.keys(liveAttempts.value)) types.add(type);
   return Object.keys(EVENT_CONFIG).filter((t) => types.has(t) && eventVisibility.value[t]);
 });
 
@@ -156,6 +226,10 @@ const latestByType = computed(() => {
   });
   return latest;
 });
+
+const currentByType = computed(() => Object.fromEntries(
+  availableTypes.value.map((type) => [type, liveAttempts.value[type] || latestByType.value[type]]),
+));
 
 const bestRecords = computed(() => {
   const best = {};
@@ -182,7 +256,7 @@ function formatResult(ms, status = null) {
   return seconds.toFixed(3);
 }
 
-const displayArea = ref(null);
+const displayWrapper = ref(null);
 const fitTextHandlers = new WeakMap();
 
 function scheduleTextFit(element) {
@@ -231,7 +305,7 @@ const vFitText = {
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
-    displayArea.value?.requestFullscreen();
+    displayWrapper.value?.requestFullscreen();
   } else {
     document.exitFullscreen();
   }
@@ -320,16 +394,25 @@ onDeactivated(() => {
             </svg>
           </button>
 
-          <div class="accent-controls" role="group" aria-label="이벤트 표시 및 악센트 컬러">
-            <div v-for="(config, type) in EVENT_CONFIG" :key="type" class="event-control">
+          <div class="accent-controls" role="group" aria-label="이벤트 표시명, 표시 여부 및 악센트 컬러">
+            <div v-for="type in Object.keys(EVENT_CONFIG)" :key="type" class="event-control">
               <label class="visibility-control">
                 <input
                   v-model="eventVisibility[type]"
                   type="checkbox"
                   :data-testid="`scoreboard-visible-${type}`"
                 />
-                <span>{{ config.label }}</span>
+                <span>{{ type }}</span>
               </label>
+              <textarea
+                v-model="eventLabels[type]"
+                class="form-input event-label-input"
+                rows="2"
+                :maxlength="MAX_EVENT_LABEL_LENGTH"
+                :aria-label="`${type} 경기 표시명`"
+                :data-testid="`scoreboard-label-${type}`"
+                spellcheck="false"
+              ></textarea>
               <label
                 class="color-control"
                 :style="{ '--picker-color': eventColors[type] }"
@@ -337,7 +420,7 @@ onDeactivated(() => {
                 <input
                   v-model="eventColors[type]"
                   type="color"
-                  :aria-label="`${config.label} 악센트 컬러`"
+                  :aria-label="`${type} 악센트 컬러`"
                   :data-testid="`scoreboard-color-${type}`"
                 />
                 <output :data-testid="`scoreboard-color-value-${type}`">
@@ -356,10 +439,10 @@ onDeactivated(() => {
       </div>
 
       <!-- Display Area 16:9 ratio -->
-      <div class="display-wrapper">
-        <div ref="displayArea" class="display-area" :data-scoreboard-theme="scoreboardTheme">
+      <div ref="displayWrapper" class="display-wrapper">
+        <div class="display-area" :data-scoreboard-theme="scoreboardTheme">
           <div v-if="!selectedFile" class="empty-state"></div>
-          <div v-else-if="records.length === 0 && !loading" class="empty-state">
+          <div v-else-if="records.length === 0 && !loading && availableTypes.length === 0" class="empty-state">
             <p>기록이 없습니다</p>
           </div>
 
@@ -387,27 +470,31 @@ onDeactivated(() => {
                 :style="{ '--panel-color': eventColors[type] }"
               >
                 <div class="event-heading">
-                  <span class="event-name">{{ EVENT_CONFIG[type].label }}</span>
+                  <span v-fit-text class="event-name">{{ eventLabels[type] }}</span>
                 </div>
 
                 <section
                   class="record-cell current-record"
-                  :class="{ empty: !latestByType[type] }"
+                  :class="{ empty: !currentByType[type], measuring: currentByType[type]?.measuring }"
+                  :data-measuring="currentByType[type]?.measuring ? 'true' : 'false'"
                   :data-testid="`current-record-${type}`"
                 >
                   <div class="record-head">
                     <span class="record-label">Current</span>
-                    <span class="entry-number">No. {{ latestByType[type] ? String(latestByType[type].num).padStart(2, "0") : "--" }}</span>
+                    <span class="entry-number">No. {{ currentByType[type]?.num != null ? String(currentByType[type].num).padStart(2, "0") : "--" }}</span>
                   </div>
                   <div class="record-result">
-                    <template v-if="latestByType[type]">
-                      {{ formatResult(latestByType[type].result, latestByType[type].status) }}<span v-if="!latestByType[type].status" class="unit">s</span>
+                    <template v-if="currentByType[type]?.measuring">
+                      <span v-fit-text class="live-record-result" :data-testid="`live-timer-${type}`">{{ currentByType[type].elapsedSeconds }}<span class="unit">s</span></span>
+                    </template>
+                    <template v-else-if="currentByType[type]">
+                      {{ formatResult(currentByType[type].result, currentByType[type].status) }}<span v-if="!currentByType[type].status" class="unit">s</span>
                     </template>
                     <template v-else>--:--<span class="unit">s</span></template>
                   </div>
                   <div class="record-team record-team-name">
-                    <span v-fit-text class="university-name">{{ latestByType[type]?.univ || "-" }}</span>
-                    <span v-fit-text class="team-name-text">{{ latestByType[type]?.team || "-" }}</span>
+                    <span v-fit-text class="university-name">{{ currentByType[type]?.univ || "-" }}</span>
+                    <span v-fit-text class="team-name-text">{{ currentByType[type]?.team || "-" }}</span>
                   </div>
                 </section>
 
@@ -487,16 +574,17 @@ onDeactivated(() => {
   --scoreboard-temp: #c81e1e;
 }
 
-:global(.scoreboard-fullscreen) .display-area {
-  max-width: none;
-  aspect-ratio: auto;
-  height: 100vh;
+:global(.scoreboard-fullscreen) .display-wrapper {
   width: 100vw;
+  height: 100vh;
+  background: #16171c;
+}
+
+:global(.scoreboard-fullscreen) .display-area {
+  width: min(100vw, 177.7778vh);
+  height: min(100vh, 56.25vw);
+  max-width: none;
   border-radius: 0;
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 9999;
 }
 
 .empty-state {
@@ -511,17 +599,18 @@ onDeactivated(() => {
 
 /* Scoreboard */
 .scoreboard {
+  --scoreboard-padding: clamp(1.25rem, 2vw, 2.5rem);
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: clamp(1.25rem, 2vw, 2.5rem);
+  padding: var(--scoreboard-padding);
   background: var(--scoreboard-bg);
   color: var(--scoreboard-text);
   overflow: hidden;
 }
 
 :global(.scoreboard-fullscreen) .scoreboard {
-  padding: clamp(2rem, 2.6vw, 3.5rem);
+  --scoreboard-padding: clamp(2rem, 2.6vw, 3.5rem);
 }
 
 /* Header — override the app shell's globally dark .header surface. */
@@ -529,7 +618,7 @@ onDeactivated(() => {
   display: flex;
   align-items: center;
   gap: clamp(1rem, 1.6vw, 2rem);
-  margin-bottom: clamp(0.75rem, 1.4vh, 1.5rem);
+  margin-bottom: var(--scoreboard-padding);
   padding: 0;
   background: transparent;
   border: 0;
@@ -604,7 +693,7 @@ onDeactivated(() => {
 .panel {
   --panel-fg: var(--panel-color);
   display: grid;
-  grid-template-columns: clamp(13.5rem, 17vw, 20rem) repeat(2, minmax(0, 1fr));
+  grid-template-columns: clamp(15rem, 18vw, 22rem) repeat(2, minmax(0, 1fr));
   min-width: 0;
   min-height: 0;
   background: color-mix(in srgb, var(--panel-color) 4%, var(--scoreboard-bg));
@@ -629,12 +718,16 @@ onDeactivated(() => {
 }
 
 .event-name {
-  font-size: clamp(1.4rem, 1.75vw, 2.3rem);
-  line-height: 1;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: clamp(2.8rem, 4.2vw, 5.5rem);
+  line-height: 0.92;
   font-weight: 800;
   color: var(--panel-fg);
   letter-spacing: 0.025em;
-  white-space: nowrap;
+  white-space: pre-line;
 }
 
 .record-cell {
@@ -644,14 +737,12 @@ onDeactivated(() => {
   min-width: 0;
   gap: clamp(0.15rem, 0.45vh, 0.45rem);
   padding: clamp(0.35rem, 1vh, 1rem) clamp(0.65rem, 1.2vw, 1.5rem);
+  padding-bottom: clamp(1rem, 1.8vh, 1.75rem);
+  background: var(--scoreboard-bg);
 }
 
 .record-cell + .record-cell {
   border-left: 1px solid color-mix(in srgb, var(--scoreboard-text) 18%, transparent);
-}
-
-.best-record {
-  background: color-mix(in srgb, var(--scoreboard-best) 3%, transparent);
 }
 
 .record-head {
@@ -692,6 +783,18 @@ onDeactivated(() => {
   color: var(--scoreboard-best);
 }
 
+.live-record-result {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-family: "JetBrains Mono", monospace;
+  font-size: inherit;
+  font-style: normal;
+  letter-spacing: -0.065em;
+  white-space: nowrap;
+}
+
 .entry-number {
   flex: 0 0 auto;
   padding: 0;
@@ -712,7 +815,7 @@ onDeactivated(() => {
 .record-team {
   min-width: 0;
   color: var(--scoreboard-text);
-  font-size: clamp(2.4rem, 3.25vw, 4.2rem);
+  font-size: clamp(2.5rem, 3.45vw, 4.5rem);
   line-height: 1;
   font-weight: 850;
   display: flex;
@@ -731,14 +834,14 @@ onDeactivated(() => {
 .university-name {
   width: 100%;
   text-align: center;
-  font-size: 0.85em;
+  font-size: 0.9em;
   font-weight: 900;
 }
 
 .team-name-text {
   width: 100%;
   text-align: center;
-  font-size: 0.85em;
+  font-size: 0.9em;
   font-weight: 750;
 }
 
@@ -800,6 +903,14 @@ onDeactivated(() => {
 .event-control,
 .visibility-control {
   gap: 0.35rem;
+}
+
+.form-input.event-label-input {
+  width: 8rem;
+  min-height: 3.25rem;
+  padding: 0.35rem 0.5rem;
+  line-height: 1.2;
+  resize: vertical;
 }
 
 .color-control {
@@ -919,11 +1030,6 @@ onDeactivated(() => {
 
   .scoreboard {
     padding: 1.5rem;
-  }
-
-  .display-area {
-    aspect-ratio: auto;
-    min-height: 900px;
   }
 
   .title {

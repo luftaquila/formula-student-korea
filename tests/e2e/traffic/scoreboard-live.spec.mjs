@@ -1,6 +1,12 @@
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
-import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
+import {
+  forceSSEReconnect,
+  installSSEEventProbe,
+  sseEventCount,
+  storageStatePath,
+  waitForPageReady,
+} from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
 
 const YEAR = currentCompetitionYear();
@@ -144,5 +150,56 @@ test.describe("Traffic scoreboard live updates", () => {
 
     // Verify it reappears
     await expect(scoreboard).toContainText("한양대학교", { timeout: 10000 });
+  });
+
+  test("refreshes the selected records after SSE reconnects", async ({ page }) => {
+    const eventName = "E2E-SB-Reconnect";
+    const tableName = `FSK ${YEAR} ${eventName}`;
+
+    await page.request.post("/competition/api/v1/traffic/records", {
+      data: {
+        name: eventName,
+        data: {
+          time: new Date(Date.now() - 60_000).toISOString(),
+          type: "가속",
+          entry: await trafficEntry(1),
+          result: 5000,
+          detail: "scoreboard reconnect baseline",
+        },
+      },
+    });
+
+    try {
+      await installSSEEventProbe(page, ["init"]);
+      await page.goto("/traffic/scoreboard");
+      await waitForPageReady(page);
+      await page.locator(".form-select").first().selectOption(tableName);
+
+      const current = page.getByTestId("current-record-가속");
+      await expect(current).toContainText("5.000", { timeout: 5000 });
+
+      const initCountBeforeReconnect = await sseEventCount(page, "init");
+      await forceSSEReconnect(page);
+
+      const response = await page.request.post("/competition/api/v1/traffic/records", {
+        data: {
+          name: eventName,
+          data: {
+            time: new Date().toISOString(),
+            type: "가속",
+            entry: await trafficEntry(1),
+            result: 3500,
+            detail: "scoreboard reconnect refresh",
+          },
+        },
+      });
+      expect(response.ok()).toBeTruthy();
+
+      await expect.poll(() => sseEventCount(page, "init"), { timeout: 8000 })
+        .toBeGreaterThan(initCountBeforeReconnect);
+      await expect(current).toContainText("3.500", { timeout: 15000 });
+    } finally {
+      await page.request.delete(`/competition/api/v1/traffic/records/${tableName}`);
+    }
   });
 });

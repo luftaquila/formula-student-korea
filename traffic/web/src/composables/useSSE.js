@@ -2,7 +2,11 @@ import { ref, watch } from "vue";
 import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 import { fetchWirelessEvents } from "./useApi";
 
-const { on, useSSE: useConnection } = createServiceSSE("/competition/api/v1/traffic");
+const {
+  on,
+  useSSE: useConnection,
+  reconnected,
+} = createServiceSSE("/competition/api/v1/traffic");
 
 // Shared state across all components
 const recordFiles = ref([]);
@@ -232,6 +236,7 @@ export function useSSE() {
     eventModes,
     recordVisibility,
     connected,
+    reconnected,
     wirelessLight,
     wirelessMapping,
     wirelessTelemetry,

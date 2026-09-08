@@ -42,6 +42,28 @@ test.describe("Traffic scoreboard", () => {
     await expect(fileSelect).toBeVisible();
   });
 
+  test("keeps the display at 16:9 across viewport sizes and fullscreen layout", async ({ page }) => {
+    const display = page.locator(".display-area");
+    const aspectRatioError = () => display.evaluate((element) => {
+      const { width, height } = element.getBoundingClientRect();
+      return Math.abs((width / height) - (16 / 9));
+    });
+
+    await page.goto("/traffic/scoreboard");
+    await waitForPageReady(page);
+
+    await expect.poll(aspectRatioError).toBeLessThan(0.01);
+
+    await page.setViewportSize({ width: 700, height: 1000 });
+    await expect.poll(aspectRatioError).toBeLessThan(0.01);
+
+    await page.getByTitle("전체화면").click();
+    await expect.poll(() => page.evaluate(() => (
+      document.fullscreenElement?.classList.contains("display-wrapper") || false
+    ))).toBe(true);
+    await expect.poll(aspectRatioError).toBeLessThan(0.01);
+  });
+
   test("displays scoreboard data when a file is selected", async ({ page }) => {
     await page.goto("/traffic/scoreboard");
     await waitForPageReady(page);
@@ -68,6 +90,21 @@ test.describe("Traffic scoreboard", () => {
     await expect(current).toContainText("서울대학교");
     await expect(current).toContainText("SNU Racing");
     await expect(current).toContainText("4.567");
+
+    await expect.poll(() => current.evaluate((element) => getComputedStyle(element).backgroundColor))
+      .toBe("rgb(0, 0, 0)");
+    await expect.poll(() => best.evaluate((element) => getComputedStyle(element).backgroundColor))
+      .toBe("rgb(0, 0, 0)");
+
+    const headerSpacingDifference = await scoreboard.evaluate((element) => {
+      const scoreboardBox = element.getBoundingClientRect();
+      const headerBox = element.querySelector(":scope > .header").getBoundingClientRect();
+      const panelsBox = element.querySelector(":scope > .panels").getBoundingClientRect();
+      const topGap = headerBox.top - scoreboardBox.top;
+      const bottomGap = panelsBox.top - headerBox.bottom;
+      return Math.abs(topGap - bottomGap);
+    });
+    expect(headerSpacingDifference).toBeLessThan(1);
   });
 
   test("customizes and persists the scoreboard theme, event colors, and visibility", async ({ page }) => {
@@ -76,6 +113,7 @@ test.describe("Traffic scoreboard", () => {
         localStorage.removeItem("traffic-scoreboard-theme");
         localStorage.removeItem("traffic-scoreboard-colors");
         localStorage.removeItem("traffic-scoreboard-visibility");
+        localStorage.removeItem("traffic-scoreboard-labels");
         sessionStorage.setItem("scoreboard-settings-cleared", "true");
       }
     });
@@ -87,6 +125,7 @@ test.describe("Traffic scoreboard", () => {
     const themeButton = page.getByTestId("scoreboard-theme");
     const accelerationColor = page.getByTestId("scoreboard-color-가속");
     const accelerationVisibility = page.getByTestId("scoreboard-visible-가속");
+    const accelerationLabel = page.getByLabel("가속 경기 표시명");
 
     await expect(themeButton).toHaveAttribute("data-theme", "dark");
     await expect(accelerationColor).toHaveValue("#ffd000");
@@ -95,6 +134,7 @@ test.describe("Traffic scoreboard", () => {
     await expect(accelerationVisibility).toBeChecked();
     await expect(page.getByTestId("scoreboard-visible-스키드패드")).toBeChecked();
     await expect(page.getByTestId("scoreboard-visible-오토크로스")).toBeChecked();
+    await expect(accelerationLabel).toHaveValue("ACCELERATION");
 
     await themeButton.click();
     await expect(themeButton).toHaveAttribute("data-theme", "light");
@@ -108,6 +148,9 @@ test.describe("Traffic scoreboard", () => {
       getComputedStyle(panel).getPropertyValue("--panel-color").trim()
     ))).toBe("#345678");
 
+    await accelerationLabel.fill("가속\n경기");
+    await expect.poll(() => page.locator(".event-name").innerText()).toBe("가속\n경기");
+
     await accelerationVisibility.uncheck();
     await expect(page.locator(".panel")).toHaveCount(0);
 
@@ -117,10 +160,12 @@ test.describe("Traffic scoreboard", () => {
     await expect(page.getByTestId("scoreboard-theme")).toHaveAttribute("data-theme", "light");
     await expect(page.getByTestId("scoreboard-color-가속")).toHaveValue("#345678");
     await expect(page.getByTestId("scoreboard-visible-가속")).not.toBeChecked();
+    await expect(page.getByLabel("가속 경기 표시명")).toHaveValue("가속\n경기");
     await expect(page.locator(".display-area")).toHaveAttribute("data-scoreboard-theme", "light");
 
     await page.getByTestId("scoreboard-visible-가속").check();
     await expect(page.locator(".panel")).toBeVisible({ timeout: 5000 });
+    await expect.poll(() => page.locator(".event-name").innerText()).toBe("가속\n경기");
   });
 
   test("shows empty state when no records", async ({ page }) => {
