@@ -540,19 +540,33 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 ## Course Service (port 10000)
 
-RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 코스/콘 CRUD와 SSE(`/api/events`)는 `course.operate`, 스냅샷·코스 삭제는 `course.manage`, 로버 운용은 `rover.operate` 권한이 필요하다. 로버 기기 인입 엔드포인트는 `X-Internal-Service` 또는 범위가 코스 서비스로 제한된 `X-Rover-Secret`을 검증하며, human 세션으로는 접근할 수 없다.
+RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 공개 화면은 `/course/public`이며 로그인 없이 공개 코스만 조회합니다. 코스/콘 CRUD와 SSE(`/api/events`)는 `course.operate`, 스냅샷·코스 삭제는 `course.manage`, 로버 운용은 `rover.operate` 권한이 필요하다. 로버 기기 인입 엔드포인트는 `X-Internal-Service` 또는 범위가 코스 서비스로 제한된 `X-Rover-Secret`을 검증하며, human 세션으로는 접근할 수 없다.
 
 ### Courses (`course.operate`)
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses` | `course.operate` | — | `[{ id, name, cone_count, created_at, updated_at }]` | 코스 목록 조회 |
+| GET | `/api/courses` | `course.operate` | — | `[{ id, name, cone_count, reverse, start_cone_id, is_public, created_at, updated_at }]` | 코스 목록 조회 |
 | POST | `/api/courses` | `course.operate` | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
 | PATCH | `/api/courses/:id` | `course.operate` | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
 | PATCH | `/api/courses/:id/direction` | `course.operate` | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). 주행 마커가 없는 코스의 폴백 값이며 UI는 시작 콘만 노출한다. `courses` SSE(type=direction) 브로드캐스트 |
 | DELETE | `/api/courses/:id` | `course.manage` | — | 200 | 코스 삭제 (콘·스냅샷·주행 마커 CASCADE 삭제). 활성 미션이 사용 중이면 감사 로그를 남기고 `409 { reason:"active_mission_course" }` |
 | GET | `/api/courses/:id/export` | `course.operate` | — | `{ name, cones, memos, route_markers, route_steps, ... }` | 코스 JSON 다운로드. `route_steps`는 DB id가 아닌 `route_markers` 배열 인덱스 |
 | POST | `/api/courses/import` | `course.operate` | `{ name, cones, memos?, route_markers?, route_steps? }` | 201 `{ id, name, ... }` | JSON으로 코스 일괄 생성 (트랜잭션, 주행 단계의 마커 인덱스를 새 id로 재매핑) |
+
+### Public courses
+
+기존·신규·가져온 코스의 `is_public` 기본값은 `0`(비공개)입니다. 관리 화면에서 공개로 전환한 코스의 현재 내용을 그대로 제공하며, 별도의 공개 스냅샷은 만들지 않습니다. 아래 경로는 Course 서비스 기준이며 외부에서는 `/course` 접두어를 붙입니다.
+
+| Method | Path | Auth | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| PATCH | `/api/courses/:id/publication` | `course.manage` | `{ is_public: boolean }` | `{ ...course, is_public: 0\|1 }` | 공개/비공개 전환. `course.publication` 로그에 변경 전후 공개 상태 기록 |
+| GET | `/api/public/courses` | public | — | `[{ id, name, cone_count }]` | 공개된 코스만 조회 |
+| GET | `/api/public/courses/:id` | public | — | `{ course: { id, name, reverse, start_cone_id }, cones: [{ id, lat, lng, alt, side }], route: { markers: [{ id, lat, lng, label }], steps: [marker_id, ...] } }` | 지도와 다운로드용 현재 코스 데이터. 비공개·없는 코스는 동일한 404 |
+
+공개 목록·상세 응답은 `Cache-Control: no-store`이며 메모와 운영 메타데이터를 반환하지 않습니다. 공개 화면은 메뉴 진입 시 한 번 조회하고 해당 데이터를 유지합니다. 공개 SSE·폴링·자동 갱신은 없으며 변경된 내용을 보려면 사용자가 화면을 새로고침해야 합니다. 운영 화면의 SSE는 유지합니다.
+
+공개 다운로드는 클릭 시 상세 API를 새로 조회한 다음 브라우저에서 ZIP을 생성합니다. 생성 완료 후에도 해당 코스의 공개 여부와 내용이 유지되는지 다시 확인하며, 변경되었으면 다운로드를 취소합니다. 공개 JSON에는 `memos` 필드 자체가 없고 PNG·트랙 파일에도 메모를 포함하지 않습니다. ZIP은 코스 JSON, 미리보기 PNG, Assetto Corsa 트랙 ZIP, 영어 설치 안내 `README.txt`로 구성됩니다. 관리 화면의 ZIP도 README를 포함하며 기존 메모 내보내기를 유지합니다.
 
 ### Course Snapshots (`course.manage`)
 
@@ -728,7 +742,7 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | Event | Data | Description |
 |-------|------|-------------|
 | `init` | `{ courses }` | 연결 시 코스 목록 |
-| `courses` | `{ type, course?, courseId?, courses }` | 코스 변경 (type: create/rename/direction/delete/import/start_reset) |
+| `courses` | `{ type, course?, courseId?, courses }` | 코스 변경 (type: create/rename/direction/delete/import/start_reset/publication) |
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 변경 (type: add/update/delete/clear/restore) |
 | `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 변경 (type: add/update/delete) |
 | `route` | `{ type, courseId, markers, steps }` | 주행 마커/방문 순서 변경 (type: marker_add/marker_update/marker_delete/steps) |

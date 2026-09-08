@@ -8,13 +8,12 @@ import { initTheme } from "@shared/theme-init.js";
 import { initTestBanner } from "@shared/test-banner.js";
 import { hasPermission } from "@shared/officialsStore.js";
 
-import MapView from "./views/MapView.vue";
-
 // Mission history is integrated into MapView as the 기록(history) inspector tab
 // so the same rail + map + inspector layout serves both live operation and
 // replay; legacy /missions URLs redirect to the merged view.
 const routes = [
-  { path: "/", component: MapView },
+  { path: "/", component: () => import("./views/MapView.vue"), meta: { permission: "course.operate" } },
+  { path: "/public", component: () => import("./views/PublicCourseView.vue"), meta: { public: true } },
   { path: "/missions", redirect: "/" },
   // VR teleop (Meta Quest 3S, WebXR). Lazy so three.js stays out of the main bundle.
   { path: "/vr", component: () => import("./views/VrView.vue"), meta: { permission: "rover.operate" } },
@@ -26,10 +25,13 @@ const router = createRouter({
 });
 
 router.beforeEach((to) => {
-  if (to.meta.permission && !hasPermission(to.meta.permission)) return "/";
+  if (to.meta.permission && !hasPermission(to.meta.permission)) return to.path === "/" ? "/public" : "/";
 });
+
+router.afterEach((to) => { document.title = to.meta.public ? "FSK 경기 코스" : "FSK 코스 관리"; });
 
 initTheme();
 initTestBanner();
 
-createApp(App).use(router).mount("#app");
+const app = createApp(App).use(router);
+router.isReady().then(() => app.mount("#app"));

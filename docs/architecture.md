@@ -24,6 +24,10 @@ Competition-critical domains run as modules in one `competition` process, one de
 
 Entry, Queue, Registration, Inspection, Traffic, Score, and Documents are not deployable legacy profiles. They have no runtime service URLs, HTTP fan-out, lifecycle outboxes, reconciliation, or copied team lists.
 
+## Public course viewing
+
+Course owns both the operational map at `/course` and the anonymous read-only view at `/course/public`. Publication is a private-by-default flag on the existing course row, not a separate copy or snapshot. Public routes under `/course/api/public` project only published course geometry and never read or return memos. The public viewer loads data on entry and retains that client-side view until manual refresh, without SSE or polling. Operational events, rover telemetry, snapshots, and mutations retain their existing permission gates. Both views share map geometry and browser-side archive generation, with annotation export available only through the operator path. Backup validation accepts the current schema and the exact pre-publication predecessor without modifying either; the runtime adds private defaults when an older database is restored.
+
 ## Teams and years
 
 `competition_team` is the only team source of truth. Its `id` is the stable identity used by operational rows. Team number, university, team name, and vehicle-type name are mutable projections updated transactionally in the shared database.

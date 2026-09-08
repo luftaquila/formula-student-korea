@@ -3,7 +3,7 @@ import L from "leaflet";
 import { haversine } from "@lib/geo.mjs";
 
 // Ruler / protractor measurement overlays for the course map, extracted from
-// MapView. Owns its own toolMode/hint/result state + the Leaflet overlay layer.
+// MapView. Owns its own toolMode/result state + the Leaflet overlay layer.
 // Deps injected by the view:
 //   getMap()        -> the live Leaflet map (created after setup)
 //   rebuildMarkers()-> re-render cone markers (drag is suspended while measuring)
@@ -33,7 +33,6 @@ function fmtDist(m) {
 
 export function useMeasureTools({ getMap, rebuildMarkers, isCoursesTab, clearOtherModes }) {
   const toolMode = ref("none");     // none | ruler | protractor
-  const measureHint = ref("");      // next-step instruction for the active tool
   const measureResult = ref("");    // distance total / measured angle for the overlay
   let measureLayer = null;          // L.layerGroup holding the active tool's overlays
   let measurePoints = [];           // [L.latLng] taps collected for the active tool
@@ -57,7 +56,6 @@ export function useMeasureTools({ getMap, rebuildMarkers, isCoursesTab, clearOth
     const map = getMap();
     if (measureLayer) { measureLayer.clearLayers(); try { map.removeLayer(measureLayer); } catch {} }
     measureResult.value = "";
-    measureHint.value = "";
     if (map && isCoursesTab()) rebuildMarkers();
   }
 
@@ -65,20 +63,6 @@ export function useMeasureTools({ getMap, rebuildMarkers, isCoursesTab, clearOth
     measurePoints = [];
     if (measureLayer) measureLayer.clearLayers();
     measureResult.value = "";
-    updateMeasureHint();
-  }
-
-  function updateMeasureHint() {
-    if (toolMode.value === "ruler") {
-      measureHint.value = measurePoints.length === 0
-        ? "콘을 차례로 탭해 거리를 잽니다."
-        : "다음 콘을 탭하면 구간이 이어집니다.";
-    } else if (toolMode.value === "protractor") {
-      const steps = ["첫 번째 콘을 탭하세요.", "꼭짓점(가운데) 콘을 탭하세요.", "세 번째 콘을 탭하세요.", "측정 완료 — 탭하면 새로 시작합니다."];
-      measureHint.value = steps[Math.min(measurePoints.length, 3)];
-    } else {
-      measureHint.value = "";
-    }
   }
 
   function measureDot(latlng) {
@@ -113,7 +97,6 @@ export function useMeasureTools({ getMap, rebuildMarkers, isCoursesTab, clearOth
       for (let i = 1; i < measurePoints.length; i++) total += haversine(measurePoints[i - 1], measurePoints[i]);
       measureResult.value = n > 2 ? `구간 ${fmtDist(seg)} · 합계 ${fmtDist(total)}` : fmtDist(seg);
     }
-    updateMeasureHint();
   }
 
   function handleProtractorClick(latlng) {
@@ -131,7 +114,6 @@ export function useMeasureTools({ getMap, rebuildMarkers, isCoursesTab, clearOth
       measureLabel(labelAt, `${ang.toFixed(1)}°`, "angle").addTo(measureLayer);
       measureResult.value = `∠ ${ang.toFixed(1)}°`;
     }
-    updateMeasureHint();
   }
 
   // Arc swept from ray b→a to ray b→c (the short way, ≤180°) plus a label anchor
@@ -163,5 +145,5 @@ export function useMeasureTools({ getMap, rebuildMarkers, isCoursesTab, clearOth
     if (measureLayer && map) { try { map.removeLayer(measureLayer); } catch {} }
   });
 
-  return { toolMode, measureHint, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick };
+  return { toolMode, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick };
 }

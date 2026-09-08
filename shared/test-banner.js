@@ -8,10 +8,11 @@ export function initTestBanner() {
   style.textContent = `.test-server .header h1::before { content: "\\26A0\\FE0F  TEST "; }`;
   document.head.appendChild(style);
 
-  // document.title prefix
+  // document.title prefix. The warning glyph lives in the favicon only: a tab
+  // shows both side by side, so repeating it here reads as a doubled icon.
   const prefixTitle = () => {
-    if (!document.title.startsWith("⚠️ TEST ")) {
-      document.title = `⚠️ TEST ${document.title}`;
+    if (!document.title.startsWith("TEST ")) {
+      document.title = `TEST ${document.title}`;
     }
   };
   prefixTitle();

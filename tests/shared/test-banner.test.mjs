@@ -38,11 +38,18 @@ const source = (await readFile(new URL("../../shared/test-banner.js", import.met
 test("test titles retain the warning after navigation without duplicate prefixes", () => {
   const page = bannerContext(true);
   vm.runInContext(`${source}\ninitTestBanner();`, page.context);
-  assert.equal(page.document.title, "⚠️ TEST FSK Example");
+  assert.equal(page.document.title, "TEST FSK Example");
   page.document.title = "FSK Next page";
   page.notify();
   page.notify();
-  assert.equal(page.document.title, "⚠️ TEST FSK Next page");
+  assert.equal(page.document.title, "TEST FSK Next page");
+});
+
+test("titles leave the warning glyph to the favicon", () => {
+  const page = bannerContext(true);
+  vm.runInContext(`${source}\ninitTestBanner();`, page.context);
+  assert.doesNotMatch(page.document.title, /⚠️/);
+  assert.match(page.children.at(-1).href, /%E2%9A%A0%EF%B8%8F/);
 });
 
 test("live pages keep their title and favicon", () => {

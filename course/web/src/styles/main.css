@@ -1,2 +1,55 @@
 @import "@shared/styles/base.css";
 @import "@shared/styles/layout.css";
+
+/* Leaflet measurement overlays used by both course views. */
+.measure-dot {
+  width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
+  background: #fff; border: 2px solid #0ea5e9; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+}
+.measure-label {
+  position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
+  background: rgba(8, 15, 30, 0.92); color: #e2e8f0;
+  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px;
+  padding: 1px 6px; font: 600 12px/1.3 "JetBrains Mono", ui-monospace, monospace;
+}
+.measure-label.angle { color: #fbbf24; border-color: #f59e0b; }
+
+/* Shared map controls for the operator and public course views. */
+.map-fab-panel {
+  position: absolute; bottom: 1.5rem; right: 0.75rem; z-index: 500;
+  display: flex; align-items: center; gap: 0.4rem;
+  flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 1.5rem);
+  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
+  backdrop-filter: blur(6px);
+  padding: 0.4rem; border-radius: 10px;
+  border: 1px solid var(--border-color);
+  box-shadow: var(--shadow-hover);
+  pointer-events: auto;
+}
+/* 영역 · 자 · 각도기 tools live in their own panel, pinned top-right. */
+.map-fab-tools { top: 0.75rem; bottom: auto; }
+.map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
+.fab-icon-btn {
+  flex: none; width: 38px; height: 38px; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px solid var(--border-color); border-radius: 8px;
+  background: var(--bg-secondary); color: var(--text-primary);
+  font-size: 1.1rem; line-height: 1; cursor: pointer; transition: all 0.15s;
+}
+.fab-icon-btn:disabled { opacity: 0.55; cursor: default; }
+.fab-tool.active {
+  border-color: #38bdf8;
+  background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
+}
+/* Standalone rotation button — bottom-left, on every tab (not in a panel). */
+.map-fab-rotate {
+  position: absolute; bottom: 1.5rem; left: 0.75rem; z-index: 500;
+  box-shadow: var(--shadow-hover); pointer-events: auto;
+  font-size: 1.3rem;
+}
+/* Bigger touch targets on coarse pointers, kept uniform across both panels. */
+@media (any-pointer: coarse) {
+  .map-fab-panel .fab-icon-btn,
+  .map-fab-panel .side-btn,
+  .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
+}
