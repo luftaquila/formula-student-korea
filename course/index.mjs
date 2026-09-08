@@ -1,3 +1,4 @@
+import { htmlPage } from "../shared/social-image.mjs";
 import express from "express";
 import Database from "better-sqlite3";
 import { runMigrationOnce, normalizeTimestampColumn, setupRowCapRetention } from "../shared/db-setup.mjs";
@@ -1534,7 +1535,7 @@ app.use("/api", (req, res) => {
 });
 
 // Link preview crawlers need public metadata before the SPA executes.
-app.get("/public", (req, res) => res.sendFile("public.html", { root: app.locals.staticRoot }));
+app.get("/public", htmlPage("public.html", app.locals.staticRoot));
 addSpaFallback(app);
 
 return { app, db, close: closePrivateSse };

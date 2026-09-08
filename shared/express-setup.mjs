@@ -1,3 +1,4 @@
+import { htmlEntries } from "./social-image.mjs";
 import fs from "fs";
 import crypto from "crypto";
 
@@ -468,6 +469,7 @@ export function createApp(deps, authRoleFn) {
   // Vite가 낸 해시 자산(/assets/*)은 파일명이 콘텐츠에 종속되므로 1년 immutable 캐시로
   // 매 페이지 로드의 재검증(304) 왕복을 없앤다. 그 외(index.html 등)는 no-cache라 재배포가
   // 즉시 반영된다.
+  app.use(htmlEntries(staticRoot));
   app.use(express.static(staticRoot, {
     setHeaders: (res, filePath) => {
       if (/[\\/]assets[\\/]/.test(filePath)) {

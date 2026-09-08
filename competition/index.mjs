@@ -1,3 +1,4 @@
+import { htmlEntries, htmlPage } from "../shared/social-image.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +31,7 @@ function mountUi(app, prefix, staticRoot, moduleApp) {
   // serves its SPA. Without this pass, consolidating static hosting would
   // silently make every module UI public even though its API stayed gated.
   app.use(prefix, moduleApp);
+  app.use(prefix, htmlEntries(staticRoot));
   app.use(prefix, express.static(staticRoot, {
     index: false,
     fallthrough: true,
@@ -39,10 +41,7 @@ function mountUi(app, prefix, staticRoot, moduleApp) {
       }
     },
   }));
-  app.get([prefix, `${prefix}/{*splat}`], (req, res) => {
-    res.setHeader("Cache-Control", "no-cache");
-    res.sendFile("index.html", { root: staticRoot });
-  });
+  app.get([prefix, `${prefix}/{*splat}`], htmlPage("index.html", staticRoot));
 }
 
 function mountFlatModuleApi(app, prefix, moduleApp) {

@@ -1,3 +1,4 @@
+import { htmlPage } from "../shared/social-image.mjs";
 import express from "express";
 import Database from "better-sqlite3";
 import { addColumn } from "../shared/db-setup.mjs";
@@ -985,12 +986,13 @@ app.put("/api/score/endurance", (req, res) => {
 /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-app.get("/public/:year", (req, res) => {
+const publicScoreHtml = htmlPage("index.html", app.locals.staticRoot);
+app.get("/public/:year", (req, res, next) => {
   const year = parseScoreYear(req.params.year);
   if (year == null || !isScorePublished(year)) {
     return res.status(404).send("공개 중인 성적표가 아닙니다.");
   }
-  res.sendFile("index.html", { root: app.locals.staticRoot });
+  publicScoreHtml(req, res, next);
 });
 
 if (!options.skipSpaFallback) addSpaFallback(app);
