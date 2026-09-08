@@ -16,7 +16,7 @@
       <section class="section">
         <h2 class="section-title">Services</h2>
         <div class="services">
-          <ServiceCard v-for="item in serviceItems" :key="item.href" v-bind="cardProps(item)" />
+          <ServiceCard v-for="(item, index) in serviceItems" :key="item.href" :style="cardLayout(serviceItems.length, index)" v-bind="cardProps(item)" />
         </div>
       </section>
 
@@ -28,21 +28,21 @@
           </svg>
         </summary>
         <div class="services">
-          <ServiceCard v-for="item in resources" :key="item.href" v-bind="cardProps(item)" />
+          <ServiceCard v-for="(item, index) in resources" :key="item.href" :style="cardLayout(resources.length, index)" v-bind="cardProps(item)" />
         </div>
       </details>
 
       <section v-if="operationItems.length" class="section">
         <h2 class="section-title">Operations</h2>
         <div class="services">
-          <ServiceCard v-for="item in operationItems" :key="item.href" v-bind="cardProps(item)" />
+          <ServiceCard v-for="(item, index) in operationItems" :key="item.href" :style="cardLayout(operationItems.length, index)" v-bind="cardProps(item)" />
         </div>
       </section>
 
       <section v-if="adminItems.length" class="section">
         <h2 class="section-title">Admin</h2>
         <div class="services">
-          <ServiceCard v-for="item in adminItems" :key="item.href" v-bind="cardProps(item)" />
+          <ServiceCard v-for="(item, index) in adminItems" :key="item.href" :style="cardLayout(adminItems.length, index)" v-bind="cardProps(item)" />
         </div>
       </section>
     </main>
@@ -52,6 +52,7 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
+import { balancedRowSizes } from "./balanced-rows.js";
 import NavMenu from "@shared/NavMenu.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { useNotification } from "@shared/useNotification.js";
@@ -82,6 +83,14 @@ const resourcesOpen = ref(readDisclosureState(browserStorage, RESOURCES_DISCLOSU
 function persistResourcesState(event) {
   resourcesOpen.value = event.currentTarget.open;
   writeDisclosureState(browserStorage, RESOURCES_DISCLOSURE_STORAGE_KEY, resourcesOpen.value);
+}
+
+function cardLayout(count, index) {
+  return Object.fromEntries(Array.from({ length: 6 }, (_, offset) => {
+    const capacity = offset + 1;
+    const columns = balancedRowSizes(count, capacity).flatMap(size => Array(size).fill(size));
+    return [`--columns-${capacity}`, columns[index]];
+  }));
 }
 
 function cardProps(item) {
@@ -177,6 +186,7 @@ onMounted(() => {
 }
 
 .section {
+  container-type: inline-size;
   width: 100%;
   max-width: 1200px;
 }
@@ -222,14 +232,36 @@ onMounted(() => {
 .services {
   display: flex;
   flex-wrap: wrap;
-  gap: 1.5rem;
+  --card-gap: 1.5rem;
+  gap: var(--card-gap);
   width: 100%;
 }
 
 .services :deep(.service-card) {
-  /* 170px caps a 1200px section at six cards per row. Flex growth lets every
-     wrapped row, including the last one, fill the section width. */
-  flex: 1 1 170px;
+  --columns: var(--columns-1);
+  flex: 1 1 calc((100% - (var(--columns) - 1) * var(--card-gap)) / var(--columns));
+  min-width: 0;
+}
+
+/* Preserve the 170px card minimum and 24px gap when choosing row capacity. */
+@container (min-width: 364px) {
+  .services :deep(.service-card) { --columns: var(--columns-2); }
+}
+
+@container (min-width: 558px) {
+  .services :deep(.service-card) { --columns: var(--columns-3); }
+}
+
+@container (min-width: 752px) {
+  .services :deep(.service-card) { --columns: var(--columns-4); }
+}
+
+@container (min-width: 946px) {
+  .services :deep(.service-card) { --columns: var(--columns-5); }
+}
+
+@container (min-width: 1140px) {
+  .services :deep(.service-card) { --columns: var(--columns-6); }
 }
 
 @media (max-width: 768px) {
@@ -244,12 +276,11 @@ onMounted(() => {
   }
 
   .services {
-    gap: 0.75rem;
+    --card-gap: 0.75rem;
   }
 
   .services :deep(.service-card) {
-    flex-basis: calc(50% - 0.375rem);
-    min-width: 0;
+    --columns: var(--columns-2);
   }
 }
 
