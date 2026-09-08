@@ -1,3 +1,4 @@
+import { htmlPage } from "../shared/social-image.mjs";
 import crypto from "crypto";
 import express from "express";
 import Database from "better-sqlite3";
@@ -1887,9 +1888,7 @@ app.get("/api/admin/logs", async (req, res) => {
 /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-app.get("/{*splat}", (req, res) => {
-  res.sendFile("index.html", { root: "./web/dist" });
-});
+app.get("/{*splat}", htmlPage("index.html", "./web/dist"));
 
 return { app, db };
 }

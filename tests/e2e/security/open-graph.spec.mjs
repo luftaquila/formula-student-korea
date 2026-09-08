@@ -36,3 +36,25 @@ test("homepage social images follow the request host without JavaScript", async 
     expect(bytes.readUInt32BE(20)).toBe(Number(metadata.get("og:image:height")));
   }
 });
+
+
+test("public service pages expose the shared image before JavaScript runs", async ({ request }) => {
+  for (const path of ["/course/public", "/course/public/", "/queue/", "/calendar/"]) {
+    const response = await request.get(path);
+    expect(response.status(), path).toBe(200);
+    const html = await response.text();
+    const metadata = new Map();
+    function visit(node) {
+      if (node.tag === "meta") {
+        const attrs = Object.fromEntries(node.props.map(attr => [attr.name, attr.value?.content]));
+        metadata.set(attrs.property ?? attrs.name, attrs.content);
+      }
+      for (const child of node.children ?? []) visit(child);
+    }
+    visit(parse(html));
+    expect(metadata.get("og:image"), path).toBe("https://localhost:9000/og-image.png");
+    if (path.startsWith("/course/public")) {
+      expect(metadata.get("og:title")).toBe("FSK 경기 코스");
+    }
+  }
+});
