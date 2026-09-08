@@ -135,6 +135,35 @@ test.describe("Public race courses", () => {
     }
   });
 
+  test("a course without enough boundary cones remains usable without a centerline diagnostic", async ({ browser }) => {
+    const context = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true });
+    try {
+      const course = { id: 1, name: "Sparse course", cone_count: 2 };
+      const detail = {
+        course,
+        cones: [
+          { id: 1, side: "left", lat: 35.292, lng: 126.574 },
+          { id: 2, side: "right", lat: 35.2921, lng: 126.5741 },
+        ],
+        route: { markers: [], steps: [] },
+      };
+      await context.route("**/course/api/public/courses", (route) => route.fulfill({ json: [course] }));
+      await context.route("**/course/api/public/courses/1", (route) => route.fulfill({ json: detail }));
+      const page = await context.newPage();
+      await page.goto("/course/public");
+      await expect(page.getByRole("button", { name: course.name, exact: true })).toHaveAttribute("aria-pressed", "true");
+      const inspector = page.getByRole("complementary", { name: "공개 코스" });
+      await expect(inspector.getByRole("status")).toHaveCount(0);
+      await expect(inspector.getByRole("alert")).toHaveCount(0);
+      await page.getByRole("button", { name: "중심선 표시", exact: true }).click();
+      await expect(inspector.getByRole("status")).toHaveCount(0);
+      await page.getByRole("button", { name: "거리 측정", exact: true }).click();
+      await expect(page.getByRole("button", { name: "측정 닫기", exact: true })).toBeVisible();
+    } finally {
+      await context.close();
+    }
+  });
+
   test("an admin visiting the public URL still has only public course tools and requests", async ({ browser }) => {
     const context = await browser.newContext({ storageState: storageStatePath("admin") });
     const name = `e2e-public-admin-${test.info().parallelIndex}-${Date.now()}`;

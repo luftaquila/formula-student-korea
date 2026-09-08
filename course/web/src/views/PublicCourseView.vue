@@ -10,6 +10,7 @@ import { createCourseBaseMap, courseCenterlineLayer } from "../lib/course-map.mj
 import { courseDirectionOptions, courseDisplayState } from "../lib/course-display.mjs";
 import { LabeledConeCanvas, SIDE_COLORS } from "../lib/cone-render.mjs";
 import { createPublicCourseData } from "../lib/public-course-data.mjs";
+import { createPublicCourseViewport } from "../lib/public-course-viewport.mjs";
 import { requestPublicCourse } from "../public-api.js";
 import { useMeasureTools } from "../composables/useMeasureTools.js";
 
@@ -24,7 +25,7 @@ const mapBearing = ref(preferences.mapBearing);
 let map = null;
 let renderer = null;
 let courseLayers = null;
-let centeredId = null;
+let viewport = null;
 let unmounted = false;
 const state = reactive({ courses: [], details: {}, selectedId: preferences.selectedId, overlays: preferences.overlays, loading: true, error: "" });
 const data = createPublicCourseData(state, { request: requestPublicCourse });
@@ -35,10 +36,10 @@ const geometries = computed(() => Object.fromEntries(Object.entries(state.detail
     const { centerline } = resolveCourseRoute(cones, route.markers, route.steps, {
       step: 1.0, fallback: courseDirectionOptions(course, cones),
     });
-    return [id, centerline.ok ? { line: centerline, error: "" } : { line: null, error: `중심선 생성 실패: ${centerline.reason}` }];
-  } catch (error) { return [id, { line: null, error: `중심선 생성 실패: ${error.message}` }]; }
+    return [id, centerline.ok ? { line: centerline } : { line: null }];
+  } catch { return [id, { line: null }]; }
 })));
-const geometry = computed(() => geometries.value[state.selectedId] || { line: null, error: "" });
+const geometry = computed(() => geometries.value[state.selectedId] || { line: null });
 
 const { toolMode, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick } = useMeasureTools({
   getMap: () => map,
@@ -66,10 +67,7 @@ function draw() {
     }
   }
   if (showCenterline.value && geometry.value.line) courseCenterlineLayer(geometry.value.line).addTo(courseLayers);
-  if (active.value?.cones.length && centeredId !== state.selectedId) {
-    map.fitBounds(active.value.cones.map((cone) => [cone.lat, cone.lng]), { padding: [28, 28], maxZoom: 20 });
-    centeredId = state.selectedId;
-  }
+  viewport?.fit();
 }
 
 function measureAt(event) {
@@ -125,6 +123,7 @@ onMounted(async () => {
   try {
     map = await createCourseBaseMap(mapElement.value, { bearing: renderMapBearing(mapBearing.value) });
     if (unmounted) { map.remove(); map = null; return; }
+    viewport = createPublicCourseViewport(map, () => ({ id: state.selectedId, cones: active.value?.cones }));
     renderer = new LabeledConeCanvas({ padding: 0.5 });
     map.on("click", measureAt);
     await data.refresh();
@@ -133,6 +132,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unmounted = true;
   data.dispose();
+  viewport?.dispose();
   map?.remove();
   map = null;
 });
@@ -181,7 +181,6 @@ onUnmounted(() => {
             </div>
           </li>
         </ul>
-        <p v-if="geometry.error" role="status">{{ geometry.error }}</p>
       </aside>
     </div>
   </div>
