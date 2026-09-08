@@ -5,10 +5,10 @@ import CourseMapIcon from "../components/CourseMapIcon.vue";
 import { readPublicCoursePreferences, savePublicCoursePreference, normalizeMapBearing, renderMapBearing } from "../lib/course-view-preferences.mjs";
 import { useNotification } from "@shared/useNotification.js";
 import { buildSideRanks } from "@lib/cone-index.mjs";
-import { resolveCourseRoute } from "@lib/route-mode.mjs";
 import { createCourseBaseMap, courseCenterlineLayer } from "../lib/course-map.mjs";
-import { courseDirectionOptions, courseDisplayState } from "../lib/course-display.mjs";
+import { courseDisplayState } from "../lib/course-display.mjs";
 import { LabeledConeCanvas, SIDE_COLORS } from "../lib/cone-render.mjs";
+import { createPublicCourseGeometry } from "../lib/public-course-geometry.mjs";
 import { createPublicCourseData } from "../lib/public-course-data.mjs";
 import { createPublicCourseViewport } from "../lib/public-course-viewport.mjs";
 import { requestPublicCourse } from "../public-api.js";
@@ -30,15 +30,10 @@ let unmounted = false;
 const state = reactive({ courses: [], details: {}, selectedId: preferences.selectedId, overlays: preferences.overlays, loading: true, error: "" });
 const data = createPublicCourseData(state, { request: requestPublicCourse });
 const active = computed(() => state.details[state.selectedId]);
-const geometries = computed(() => Object.fromEntries(Object.entries(state.details).map(([id, detail]) => {
-  const { course, cones, route } = detail;
-  try {
-    const { centerline } = resolveCourseRoute(cones, route.markers, route.steps, {
-      step: 1.0, fallback: courseDirectionOptions(course, cones),
-    });
-    return [id, centerline.ok ? { line: centerline } : { line: null }];
-  } catch { return [id, { line: null }]; }
-})));
+const geometries = ref({});
+const geometryLoader = createPublicCourseGeometry((id, result) => {
+  geometries.value[id] = result;
+}, { onError: () => notifyError("중심선을 계산하지 못했습니다. 페이지를 다시 불러오세요.") });
 const geometry = computed(() => geometries.value[state.selectedId] || { line: null });
 
 const { toolMode, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick } = useMeasureTools({
@@ -109,7 +104,13 @@ watch(() => state.selectedId, (id) => {
   exitToolMode();
   draw();
 });
-watch(() => state.details, () => { resetMeasure(); draw(); });
+watch(() => state.details, (details) => {
+  geometries.value = {};
+  resetMeasure();
+  draw();
+  geometryLoader.replace(details);
+});
+watch(geometry, draw);
 watch(showCenterline, (value) => {
   savePublicCoursePreference(preferenceStorage, "showCenterline", value);
   draw();
@@ -132,6 +133,7 @@ onMounted(async () => {
 onUnmounted(() => {
   unmounted = true;
   data.dispose();
+  geometryLoader.dispose();
   viewport?.dispose();
   map?.remove();
   map = null;
@@ -166,16 +168,16 @@ onUnmounted(() => {
         </div>
         <p v-else-if="!state.courses.length">공개된 코스가 없습니다.</p>
         <ul class="public-course-list">
-          <li v-for="course in state.courses" :key="course.id" class="public-course-item" :class="{ selected: state.selectedId === course.id }">
+          <li v-for="course in state.courses" :key="course.id" class="public-course-item" :class="{ selected: state.selectedId === course.id }" @click="state.selectedId = course.id">
             <button class="btn public-select" :title="course.name" :aria-pressed="state.selectedId === course.id" @click="state.selectedId = course.id">
               <span class="public-course-name">{{ course.name }}</span> <span class="public-course-length" v-if="geometries[course.id]?.line">({{ Math.round(geometries[course.id].line.length) }}m)</span>
             </button>
             <div class="public-course-actions">
-              <button class="fab-icon-btn public-download" aria-label="Asseto Corsa 트랙 다운로드" title="다운로드" :aria-busy="exportingId === course.id" :disabled="state.loading || !state.details[course.id] || exportingId != null" @click="download(course.id)">
+              <button class="fab-icon-btn public-download" aria-label="Asseto Corsa 트랙 다운로드" title="다운로드" :aria-busy="exportingId === course.id" :disabled="state.loading || !state.details[course.id] || exportingId != null" @click.stop="download(course.id)">
                 <CourseMapIcon name="download" />
                 <span>Asseto Corsa 트랙</span>
               </button>
-              <button class="fab-icon-btn" aria-label="코스 표시" title="코스 표시" :disabled="state.selectedId === course.id" :aria-pressed="state.selectedId === course.id || state.overlays[course.id] === true" @click="toggleOverlay(course.id)">
+              <button class="fab-icon-btn" aria-label="코스 표시" title="코스 표시" :disabled="state.selectedId === course.id" :aria-pressed="state.selectedId === course.id || state.overlays[course.id] === true" @click.stop="toggleOverlay(course.id)">
                 <CourseMapIcon :name="state.selectedId === course.id || state.overlays[course.id] === true ? 'eye' : 'eye-off'" />
               </button>
             </div>
@@ -198,7 +200,7 @@ onUnmounted(() => {
 .public-list-heading { flex: none; }
 .public-list-heading h2 { margin: 0; font-size: .95rem; font-weight: 600; }
 .public-course-list { list-style: none; min-height: 0; overflow-y: auto; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .375rem; }
-.public-course-item { flex: none; display: flex; flex-direction: column; gap: 0; padding: .25rem .625rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); transition: border-color .15s, background .15s; }
+.public-course-item { cursor: pointer; flex: none; display: flex; flex-direction: column; gap: 0; padding: .25rem .625rem; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); transition: border-color .15s, background .15s; }
 .public-course-item.selected { border-color: color-mix(in srgb, var(--accent-primary) 55%, var(--border-color)); background: color-mix(in srgb, var(--accent-primary) 7%, var(--bg-primary)); }
 .public-select { width: 100%; min-width: 0; min-height: var(--course-title-size); text-align: left; justify-content: flex-start; padding: 0; gap: .375rem; white-space: nowrap; overflow: hidden; border-radius: 6px; background: transparent; color: var(--text-primary); font-weight: 600; }
 .public-course-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
