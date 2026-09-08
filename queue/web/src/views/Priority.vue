@@ -34,6 +34,7 @@ useTableHeadBand({ tableRef, scrollerRef, bandRef: headBandRef });
 const entries = ref({});
 const inspections = ref([]);
 const allPriorities = ref({}); // { inspectionType: { num: priority, ... }, ... }
+const priorityDrafts = ref({});
 const reinspectionStatus = ref({}); // { inspectionType: [num, ...], ... }
 const settingsDrafts = ref({});
 const loading = ref(true);
@@ -74,6 +75,14 @@ const filteredEntries = computed(() => {
 // Get priority for a specific entry and inspection type
 function getPriority(num, type) {
   return allPriorities.value[type]?.[num] ?? null;
+}
+
+function getPriorityInput(num, type) {
+  return priorityDrafts.value[`${type}:${num}`]?.value ?? getPriority(num, type);
+}
+
+function editPriority(type, num, value) {
+  priorityDrafts.value[`${type}:${num}`] = { value };
 }
 
 // Check if any priority is set for a given inspection type
@@ -162,6 +171,17 @@ async function refreshPrioritiesForType(type) {
 }
 
 async function updatePriority(type, num, value) {
+  const key = `${type}:${num}`;
+  const draft = priorityDrafts.value[key];
+  try {
+    await savePriority(type, num, value);
+  } finally {
+    // A slow save must not discard input entered while that request was pending.
+    if (priorityDrafts.value[key] === draft) delete priorityDrafts.value[key];
+  }
+}
+
+async function savePriority(type, num, value) {
   const priority = Number(value);
 
   if (!value || value === "") {
@@ -663,9 +683,10 @@ function goBack() {
                       reinspection: isReinspection(entry.num, inspection.type),
                       'first-inspection': !isReinspection(entry.num, inspection.type),
                     }"
-                    :value="getPriority(entry.num, inspection.type)"
+                    :value="getPriorityInput(entry.num, inspection.type)"
                     placeholder="-"
                     min="0"
+                    @input="editPriority(inspection.type, entry.num, $event.target.value)"
                     @change="updatePriority(inspection.type, entry.num, $event.target.value)"
                     @focus="$event.target.select()"
                   />
