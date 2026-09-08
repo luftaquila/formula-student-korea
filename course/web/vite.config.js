@@ -9,6 +9,11 @@ export default (env) => ({
   plugins: [vue()],
   // @lib -> course/lib (course-local isomorphic modules; not cross-service shared)
   ...createViteConfig("course", 10000, {
+    build: {
+      rollupOptions: {
+        input: { main: resolve(here, "index.html"), public: resolve(here, "public.html") },
+      },
+    },
     aliases: { "@lib": resolve(here, "../lib") },
   })(env),
 });

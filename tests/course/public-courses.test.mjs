@@ -15,6 +15,7 @@ async function fixture(t) {
   const dbPath = tmpDbPath();
   const staticRoot = mkdtempSync(join(tmpdir(), "public-course-web-"));
   writeFileSync(join(staticRoot, "index.html"), "<!doctype html><title>Course</title>");
+  writeFileSync(join(staticRoot, "public.html"), "<!doctype html><title>Public course</title>");
   writeFileSync(join(staticRoot, "env-config.js"), "window.__TEST_SERVER__ = true;");
   const app = createCourseApp({ dbPath, staticRoot, validateUser: TRUST_JWT });
   const { server, baseUrl } = await startServer(app.app);

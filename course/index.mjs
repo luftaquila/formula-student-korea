@@ -1533,6 +1533,8 @@ app.use("/api", (req, res) => {
   res.status(404).send("API endpoint not found.");
 });
 
+// Link preview crawlers need public metadata before the SPA executes.
+app.get("/public", (req, res) => res.sendFile("public.html", { root: app.locals.staticRoot }));
 addSpaFallback(app);
 
 return { app, db, close: closePrivateSse };
