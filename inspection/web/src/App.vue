@@ -2,6 +2,7 @@
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
+import TestServerNotice from "@shared/TestServerNotice.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 
 const route = useRoute();
@@ -27,6 +28,7 @@ watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { i
 
 <template>
   <div v-if="isPrintPage">
+    <TestServerNotice />
     <router-view />
   </div>
   <div v-else class="app-container" :class="{ 'app-wide': isWidePage }">

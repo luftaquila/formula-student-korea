@@ -1,5 +1,6 @@
 <script setup>
 import { ref, watch, provide, onMounted, onUnmounted } from "vue";
+import TestServerNotice from "@shared/TestServerNotice.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -98,6 +99,7 @@ onUnmounted(() => {
 <template>
   <div class="app-container app-fullheight">
     <SonnerToaster />
+    <TestServerNotice />
     <!-- Header bar and nav menu are intentionally omitted on the course view:
          this is a dedicated operator screen, so the map takes the full
          viewport height with no chrome. -->
