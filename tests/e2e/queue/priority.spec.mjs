@@ -13,6 +13,7 @@ async function apiResetPriorities(type = INSPECTION_TYPE) {
 
 test.describe("Queue priority management", () => {
   test.use({ storageState: storageStatePath("operationsManager") });
+  test.describe.configure({ retries: 0 });
 
   test.beforeEach(async () => {
     await apiResetPriorities();
@@ -96,32 +97,52 @@ test.describe("Queue priority management", () => {
   });
 
   test("remove team priority by clearing input", async ({ page }) => {
-    // First set a priority via API
-    await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
-      body: JSON.stringify({ num: 2, priority: 1 }),
-    });
+    for (const attempt of [1, 2, 3]) {
+      await test.step(`clear across re-render, attempt ${attempt}`, async () => {
+        // First set a priority via API
+        await fetch(`${BASE_URL}/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Cookie: getAuthCookie("operationsManager") },
+          body: JSON.stringify({ num: 2, priority: 1 }),
+        });
 
-    await page.goto("/queue/settings");
-    await waitForPageReady(page);
+        await page.goto("/queue/settings");
+        await waitForPageReady(page);
 
-    await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
+        await expect(page.locator(".priority-table:not([data-table-head-copy])")).toBeVisible({ timeout: 10000 });
 
-    // Find the priority input for entry 2 in the battery column
-    const row = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
-    const priorityInput = row.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`);
-    await expect(priorityInput).toBeVisible();
+        // Find the priority input for entry 2 in the battery column
+        const row = page.locator("tr", { has: page.locator(".entry-num", { hasText: /^2$/ }) });
+        const priorityInput = row.locator(`.priority-input[data-inspection="${INSPECTION_TYPE}"]`);
+        await expect(priorityInput).toBeVisible();
 
-    // The input should show current priority
-    await expect(priorityInput).toHaveValue("1");
+        // The input should show current priority
+        await expect(priorityInput).toHaveValue("1");
 
-    // Clear the input to remove priority
-    await priorityInput.fill("");
-    await priorityInput.dispatchEvent("change");
+        await priorityInput.fill("");
+        // Re-render while the priority field still has focus, before change commits it.
+        await page.locator(".search-input").evaluate(input => {
+          input.value = "한양";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        });
+        await expect(page.locator(".priority-table:not([data-table-head-copy]) tbody tr")).toHaveCount(1);
+        await expect(priorityInput).toHaveValue("");
 
-    // Should show success notification about removal
-    await expectNotification(page, "success", "우선순위 해제");
+        const saved = page.waitForResponse(response =>
+          response.url().includes(`/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`)
+          && response.request().method() === "DELETE");
+        await priorityInput.dispatchEvent("change");
+        expect((await saved).ok()).toBe(true);
+        await expectNotification(page, "success", "우선순위 해제");
+        const refreshed = page.waitForResponse(response =>
+          response.url().includes(`/competition/api/v1/queue/admin/priority/${INSPECTION_TYPE}`)
+          && response.request().method() === "GET");
+        await page.reload();
+        const priorities = await (await refreshed).json();
+        expect(priorities.some(priority => priority.num === 2)).toBe(false);
+        await expect(priorityInput).toHaveValue("");
+      });
+    }
   });
 
   test("search filters entries in the table", async ({ page }) => {
