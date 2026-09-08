@@ -2,7 +2,6 @@
 import { ref, computed, watch, provide, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/NavMenu.vue";
-import TestServerNotice from "@shared/TestServerNotice.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { request } from "./api.js";
 import { useNotification } from "@shared/useNotification.js";
@@ -105,7 +104,6 @@ onUnmounted(() => {
 <template>
   <div class="app-container app-fullheight">
     <SonnerToaster />
-    <TestServerNotice />
     <header v-if="isPublic" class="header">
       <div class="header-content">
         <a href="/" class="logo">
