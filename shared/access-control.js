@@ -12,7 +12,7 @@ const definitions = [
   ["files.access", "파일 클라우드", "운영 파일 브라우저 접근"],
   ["calendar.manage", "일정 관리", "대회 일정 생성, 변경과 삭제"],
   ["course.operate", "코스 운영", "코스, 콘, 경로와 메모 편집"],
-  ["course.manage", "코스 관리", "코스 스냅샷 복원과 코스 삭제", ["course.operate"]],
+  ["course.manage", "코스 관리", "코스 공개 설정, 스냅샷 복원과 코스 삭제", ["course.operate"]],
   ["rover.operate", "Rover 운영", "Rover, 카메라, GPS와 미션 운영", ["course.operate"]],
   ["traffic.operate", "계측 운영", "실시간 계측과 일반 기록 운영"],
   ["traffic.manage", "계측 관리", "계측 설정, 매핑과 전체 기록·로그 삭제", ["traffic.operate"]],
@@ -41,7 +41,7 @@ const tieredControls = [
   ["traffic", "계측", "traffic.operate", "traffic.manage"],
 ];
 const toggleControls = [
-  ["course", "코스 관리", "course.manage", "코스 편집, 스냅샷 복원과 코스 삭제"],
+  ["course", "코스 관리", "course.manage", "코스 편집, 공개 설정, 스냅샷 복원과 코스 삭제"],
   ["score", "성적 관리", "score.manage", "성적 입력, 페널티·배점 설정과 공개 관리"],
   ["files", "파일 클라우드", "files.access"],
   ["calendar", "일정 관리", "calendar.manage"],

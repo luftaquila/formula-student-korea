@@ -3,6 +3,10 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "
 import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
+import { createCourseBaseMap, courseCenterlineLayer } from "../lib/course-map.mjs";
+import { courseDisplayState, courseDirectionOptions } from "../lib/course-display.mjs";
+import CourseMapIcon from "../components/CourseMapIcon.vue";
+import { renderMapBearing as renderBearing } from "../lib/course-view-preferences.mjs";
 import MissionBuilder from "../components/MissionBuilder.vue";
 import { optimizeConeRoute } from "../lib/mission-route.mjs";
 import {
@@ -89,14 +93,15 @@ const memosMap = ref({}); // 코스별 메모 스티커: courseId → memo[] { i
 const routeMap = ref({}); // 코스별 { markers, steps }; steps may repeat marker ids
 // 지도가 움직일 때마다 올려서 지리 좌표 고정 메모의 화면 위치·크기를 재계산시키는 트리거.
 const mapFrame = ref(0);
-const visibility = ref(loadPref("visibility", {}, (v) => JSON.parse(v))); // per-course show/hide, persisted
+// Old defaults cannot distinguish explicit overlays; use a fresh preference.
+const visibility = ref(loadPref("overlays", {}, (v) => JSON.parse(v) || {}));
 const activeCourseId = ref(null);
 const loading = ref(true);
 const newCourseName = ref("");
 // Course ZIP export / JSON import lives in a composable; destructured so the
 // template keeps using importInput/exportingId/exportCourse/triggerImport/importCourse by name.
 const { importInput, exportingId, exportCourse, triggerImport, importCourse } = useCourseImportExport({
-  courses, conesMap, memosMap, routeMap, activeCourseId, visibility, newCourseName, courseDirOpts, notifyError,
+  courses, conesMap, memosMap, routeMap, activeCourseId, newCourseName, notifyError,
 });
 const currentSide = ref("left");
 const roverLoading = ref(false);
@@ -161,8 +166,8 @@ const rotateAngleAbs = computed(() => Math.abs(rotateAngle.value).toFixed(1));
 const rotateDirIcon = computed(() => (rotateAngle.value < 0 ? "↺" : "↻"));
 // Measurement tools — read-only, usable even when edit is locked.
 // Ruler/protractor measurement overlays live in a composable; destructured here so
-// the template + map click handlers keep referencing toolMode/measureHint/etc. by name.
-const { toolMode, measureHint, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick } = useMeasureTools({
+// the template + map click handlers keep referencing toolMode/measureResult/etc. by name.
+const { toolMode, measureResult, enterToolMode, exitToolMode, resetMeasure, handleMeasureClick } = useMeasureTools({
   getMap: () => map,
   rebuildMarkers: () => rebuildAllMarkers(),
   isCoursesTab: () => activeTab.value === "courses",
@@ -188,6 +193,7 @@ const editSide = ref("left");
 const editLatOrig = ref("");
 const editLngOrig = ref("");
 const editingCourseId = ref(null);
+const publishingId = ref(null);
 const editCourseName = ref("");
 
 // Rover control
@@ -1682,14 +1688,8 @@ function scheduleCenterline() {
 // the ZIP export so they always agree. start = the station nearest the chosen
 // cone; reverse = flipped travel direction.
 function courseDirOpts(courseId, cones) {
-  const opts = {};
   const course = courses.value.find((c) => c.id === courseId);
-  if (!course) return opts;
-  const startId = course.start_cone_id;
-  const startCone = startId != null ? cones.find((c) => c.id === startId) : null;
-  if (startCone) opts.start = { lat: startCone.lat, lng: startCone.lng };
-  if (course.reverse) opts.reverse = true;
-  return opts;
+  return course ? courseDirectionOptions(course, cones) : {};
 }
 function recomputeCenterline() {
   centerlineTimer = null;
@@ -1721,55 +1721,9 @@ function recomputeCenterline() {
 function drawCenterline() {
   if (centerlineLayer) { try { map.removeLayer(centerlineLayer); } catch {} centerlineLayer = null; }
   if (!map || activeTab.value !== "courses" || !showCenterline.value || !centerline.value?.ok) return;
-  const pts = centerline.value.points;
-  const latlngs = pts.map((p) => [p.lat, p.lng]);
-  // Dark casing under a light dashed line so the centerline reads over satellite tiles.
-  const guided = !!centerline.value.metric?.routeNodeIds;
-  const layers = [
-    L.polyline(latlngs, { color: "#0b1021", weight: 5, opacity: 0.45, interactive: false }),
-    L.polyline(latlngs, {
-      color: guided ? "#34d399" : "#f8fafc",
-      weight: 2.5,
-      opacity: 0.95,
-      dashArray: "7 6",
-      interactive: false,
-    }),
-  ];
-  const arrow = startArrow(pts);
-  if (arrow) layers.push(...arrow);
-  centerlineLayer = L.layerGroup(layers).addTo(map);
+  centerlineLayer = courseCenterlineLayer(centerline.value).addTo(map);
 }
 
-// Start marker + a travel-direction arrow at points[0], drawn in geographic
-// coordinates (metres → lat/lng) so it scales and rotates with the map. The
-// heading is taken a few points ahead for stability; flips with reverse.
-function startArrow(pts) {
-  if (!pts || pts.length < 3) return null;
-  const a = pts[0];
-  const b = pts[Math.min(6, pts.length - 1)];
-  const latRad = (a.lat * Math.PI) / 180;
-  const mLat = 110540, mLng = 111320 * Math.cos(latRad);
-  let fe = (b.lng - a.lng) * mLng, fn = (b.lat - a.lat) * mLat;   // forward (east, north) metres
-  const fm = Math.hypot(fe, fn);
-  if (fm < 1e-6) return null;
-  fe /= fm; fn /= fm;
-  const toLL = (em, nm) => [a.lat + nm / mLat, a.lng + em / mLng];
-  const pe = -fn, pn = fe;                                        // left-perpendicular unit
-  // ONE arrow polygon (shaft + head): a single continuous outline, so there is
-  // no seam between the stem and the triangle and no stem poking past the tip.
-  const HEAD = 7, HEADLEN = 3.2, HW = 1.5, SW = 0.55;            // metres: tip dist, head length, head/shaft half-width
-  const B = HEAD - HEADLEN;                                       // head base distance from start
-  const pt = (along, off) => toLL(along * fe + off * pe, along * fn + off * pn);
-  const arrow = [pt(0, SW), pt(B, SW), pt(B, HW), pt(HEAD, 0), pt(B, -HW), pt(B, -SW), pt(0, -SW)];
-  const C = "#2fe36a";                                            // bright green
-  const EDGE = "#0b1021";                                         // dark casing so it reads on any basemap
-  return [
-    L.polygon(arrow, { color: EDGE, weight: 2, lineJoin: "round", fillColor: C, fillOpacity: 1, interactive: false }),
-    // start dot in METRES (like the shaft) with radius = shaft half-width, so it
-    // is exactly as wide as the stem at every zoom (a pixel circleMarker wasn't).
-    L.circle([a.lat, a.lng], { radius: SW, color: EDGE, weight: 2, fillColor: C, fillOpacity: 1, interactive: false }),
-  ];
-}
 watch(showCenterline, (v) => {
   savePref("showCenterline", v);
   drawCenterline();
@@ -1902,7 +1856,7 @@ function rebuildAllMarkers(onlyCourseId = null) {
 
   for (const course of courses.value) {
     if (onlyCourseId != null && course.id !== onlyCourseId) continue;
-    if (!visibility.value[course.id]) continue;
+    if (courseDisplayState(course.id, activeCourseId.value, visibility.value) === "hidden") continue;
     const cones = conesMap.value[course.id] || [];
     const isActive = course.id === activeCourseId.value;
     const ranks = buildSideRanks(cones);
@@ -2065,7 +2019,7 @@ function rebuildRouteMarkers() {
   // Route markers are part of the active course graphic. Keep them out of the
   // map when that course is hidden, and hide them with the centerline unless
   // the operator explicitly entered route-marker edit mode.
-  if (!visibility.value[activeCourseId.value] || (!showCenterline.value && !routeEditMode.value)) return;
+  if (!showCenterline.value && !routeEditMode.value) return;
   const visits = new Map();
   activeRoute.value.steps.forEach((id, index) => {
     const ranks = visits.get(id) || [];
@@ -2182,9 +2136,9 @@ watch(selectMode, (on) => {
 });
 // Filter change reflows the list — jump back to the top and hide the button.
 watch(coneFilter, () => { coneListScrolled.value = false; coneListEl.value?.scrollTo({ top: 0 }); });
-// Persist per-course show/hide across reloads (course selection already persists
+// Persist explicitly enabled overlays (course selection already persists
 // via activeCourseId). Deep watch since visibility is a per-id map.
-watch(visibility, (v) => savePref("visibility", JSON.stringify(v)), { deep: true });
+watch(visibility, (v) => savePref("overlays", JSON.stringify(v)), { deep: true });
 watch(selectedConeId, (id) => {
   const aid = activeCourseId.value;
   // Locked courses tab draws canvas dots (no setIcon); rebuild so the newly
@@ -2320,7 +2274,6 @@ async function fetchAll() {
     // course on the previous one (1 + 2N serial round-trips); fan them out so
     // first paint waits only on the slowest single course, not their sum.
     await Promise.all(courses.value.map(async (c) => {
-      if (visibility.value[c.id] === undefined) visibility.value[c.id] = true;
       const [cones, memos, route] = await Promise.all([
         request(`/api/courses/${c.id}/cones`).then((r) => r.json()).catch(() => []),
         request(`/api/courses/${c.id}/memos`).then((r) => r.json()).catch(() => []),
@@ -2343,51 +2296,8 @@ async function fetchAll() {
 
 /* ── Map init ─────────────────────────────────────── */
 async function initMap() {
-  // leaflet-rotate is a UMD plugin that patches the global `L`. Expose L on
-  // globalThis first, then dynamically import it (a static import is hoisted
-  // above this assignment and would run with L undefined). After this, the map
-  // supports map.setBearing() and rotates tiles/cones/paths together.
-  globalThis.L = L;
-  await import("leaflet-rotate");
-  map = L.map("map", {
-    // Render vector layers (centerline, direction arrow, mission/rotate/measure
-    // paths) on a single shared <canvas> instead of one SVG node each — the
-    // 850+-point centerline was re-projected as SVG on every pan under
-    // leaflet-rotate, which janks the drag. (Locked/read-only cone dots already
-    // use their own canvas renderer, so canvas + rotation is proven here.)
-    preferCanvas: true,
-    zoomControl: true, maxZoom: 21, boxZoom: false,
-    // Button-driven 90° rotation only — no built-in compass control, no
-    // two-finger free rotation (that would desync the snapped mapBearing).
-    rotate: true, rotateControl: false, touchRotate: false,
-    bearing: renderBearing(mapBearing.value),
-  }).setView([35.292012, 126.574415], 19);
-  // One canvas for all cone dots on non-editing tabs — hundreds of cones become
-  // a single redraw on pan/zoom instead of hundreds of DOM marker transforms.
+  map = await createCourseBaseMap("map", { bearing: renderBearing(mapBearing.value) });
   coneRenderer = new LabeledConeCanvas({ padding: 0.5 });
-
-  // Basemap. VWorld satellite when a key is configured (window.__VWORLD_KEY__,
-  // injected at container start by entrypoint.sh from $VWORLD_KEY). VWorld's
-  // imagery is georeferenced to the Korean national datum, so RTK WGS84 points
-  // land where they actually are — Google's Korea satellite tiles are offset
-  // several meters. Falls back to Google where no key is set (local dev,
-  // production) so those environments stay unchanged.
-  // VWorld tiles top out at native zoom 19; maxNativeZoom upscales 19→21 so the
-  // map's 21 max stays usable (blurry past 19, but no blank tiles).
-  const vworldKey = window.__VWORLD_KEY__;
-  if (vworldKey) {
-    L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${vworldKey}/Satellite/{z}/{y}/{x}.jpeg`, {
-      attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
-    }).addTo(map);
-    // Transparent road/place-label overlay, matching Google hybrid's labels.
-    L.tileLayer(`https://api.vworld.kr/req/wmts/1.0.0/${vworldKey}/Hybrid/{z}/{y}/{x}.png`, {
-      attribution: "&copy; VWorld", maxNativeZoom: 19, maxZoom: 21,
-    }).addTo(map);
-  } else {
-    L.tileLayer("https://mt{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}&scale=2", {
-      subdomains: "0123", attribution: "&copy; Google", maxZoom: 21,
-    }).addTo(map);
-  }
 
   // Keep the DOM cone-icon size (--cone-px) in step with zoom so courses-tab
   // cones scale like the canvas dots on the other tabs.
@@ -2421,17 +2331,6 @@ async function initMap() {
   renderSurveyPoints();
 }
 
-
-// An exact 180° rotation renders as the matrix [-1,0,0,-1] (a pure x/y flip).
-// Browsers snap transforms within ~0.05° of that to an "axis-aligned" fast path
-// that fails to paint the rotated raster tiles (verified empirically: 179.9°
-// paints fine, 179.99° and 180° break; 90°/270° are axis-swap rotations and are
-// unaffected, and the cones are positioned in the non-rotated pane so they never
-// depended on this). Nudge an exact 180° by 0.1° — past the snap threshold but
-// ~1.7px at the screen edge, visually indistinguishable.
-function renderBearing(deg) {
-  return deg === 180 ? 179.9 : deg;
-}
 
 // Floating bottom-left button: each press turns the map a quarter-turn
 // counter-clockwise (matching the ↺ icon) and persists the angle so it survives
@@ -2596,10 +2495,10 @@ function setupSelectionBox() {
 
 /* ── Course CRUD ──────────────────────────────────── */
 function toggleVisibility(courseId) {
+  if (courseId === activeCourseId.value) return;
   visibility.value[courseId] = !visibility.value[courseId];
   if (map) {
     rebuildAllMarkers();
-    if (courseId === activeCourseId.value) rebuildRouteMarkers();
   }
 }
 
@@ -2613,8 +2512,22 @@ async function createCourse() {
     const created = await res.json();
     newCourseName.value = "";
     activeCourseId.value = created.id;
-    visibility.value[created.id] = true;
   } catch (err) { notifyError(err.message); }
+}
+
+async function togglePublication(course) {
+  if (!canManageCourse.value || publishingId.value != null) return;
+  publishingId.value = course.id;
+  try {
+    const response = await request(`/api/courses/${course.id}/publication`, {
+      method: "PATCH", body: JSON.stringify({ is_public: !course.is_public }),
+    });
+    const updated = await response.json();
+    const row = courses.value.find((c) => c.id === course.id);
+    if (row) row.is_public = updated.is_public;
+    notifySuccess(updated.is_public ? "경기 코스에 공개했습니다." : "경기 코스 공개를 해제했습니다.");
+  } catch (error) { notifyError(error.message); }
+  finally { publishingId.value = null; }
 }
 
 function startEditCourse(course) {
@@ -5245,9 +5158,6 @@ function connectSSE() {
         delete visibility.value[id];
       }
     }
-    for (const c of data.courses) {
-      if (visibility.value[c.id] === undefined) visibility.value[c.id] = true;
-    }
     if (activeCourseId.value && !data.courses.find((c) => c.id === activeCourseId.value)) {
       activeCourseId.value = data.courses[0]?.id || null;
     }
@@ -6336,10 +6246,7 @@ onUnmounted(() => {
               aria-label="지도 90° 회전"
               title="지도 90° 회전 (반시계방향)"
             >
-              <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-                <path d="M3 3v5h5" />
-              </svg>
+              <CourseMapIcon name="rotate" />
             </button>
             <!-- Path pick overlay stays inside the map area -->
             <div v-if="roverMode === 'path-pick'" class="map-overlay map-overlay-row">
@@ -6402,11 +6309,7 @@ onUnmounted(() => {
                 aria-label="중심선 표시"
                 title="중심선 — 코스 중심선 표시/숨김"
               >
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M3 18c4 0 5-12 9-12s5 12 9 12" stroke-dasharray="3 3" />
-                  <circle cx="3" cy="18" r="1.7" fill="currentColor" stroke="none" />
-                  <circle cx="21" cy="18" r="1.7" fill="currentColor" stroke="none" />
-                </svg>
+                <CourseMapIcon name="centerline" />
               </button>
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: selectMode }]"
@@ -6419,13 +6322,13 @@ onUnmounted(() => {
                 @click="enterToolMode('ruler')"
                 aria-label="거리 측정"
                 title="자 — 콘 사이 거리 측정"
-              >📏</button>
+              ><CourseMapIcon name="ruler" /></button>
               <button
                 :class="['fab-icon-btn', 'fab-tool', { active: toolMode === 'protractor' }]"
                 @click="enterToolMode('protractor')"
                 aria-label="각도 측정"
                 title="각도기 — 콘 3개의 각도 측정"
-              >📐</button>
+              ><CourseMapIcon name="protractor" /></button>
               <button
                 class="fab-icon-btn fab-tool"
                 @click="addMemo"
@@ -6444,7 +6347,6 @@ onUnmounted(() => {
             <!-- Measurement tool overlay (distance / angle). -->
             <div v-if="toolMode !== 'none'" class="map-overlay map-overlay-row measure-overlay">
               <span class="measure-tool-name">{{ toolMode === 'ruler' ? '📏 거리' : '📐 각도' }}</span>
-              <span class="measure-hint">{{ measureHint }}</span>
               <span v-if="measureResult" class="measure-result">{{ measureResult }}</span>
               <button class="btn btn-ghost btn-sm" @click="resetMeasure">초기화</button>
               <button class="btn btn-ghost btn-sm" @click="exitToolMode">닫기</button>
@@ -6562,8 +6464,8 @@ onUnmounted(() => {
                     :class="['course-item', { active: c.id === activeCourseId, editing: editingCourseId === c.id }]"
                     @click="selectCourse(c.id)"
                   >
-                    <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :title="visibility[c.id] ? '숨기기' : '표시'">
-                      <svg v-if="visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                    <button class="vis-btn" @click.stop="toggleVisibility(c.id)" :disabled="c.id === activeCourseId" aria-label="코스 표시" :aria-pressed="c.id === activeCourseId || visibility[c.id] === true" title="코스 표시">
+                      <svg v-if="c.id === activeCourseId || visibility[c.id]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
                       <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
                     </button>
                     <template v-if="editingCourseId === c.id">
@@ -6575,6 +6477,9 @@ onUnmounted(() => {
                         {{ c.name }} <span class="cone-count">({{ c.cone_count }})</span>
                       </span>
                     </template>
+                    <button v-if="canManageCourse" class="btn btn-ghost btn-sm" :aria-pressed="!!c.is_public" :aria-label="c.is_public ? '공개 해제' : '코스 공개'" :disabled="publishingId != null" @click.stop="togglePublication(c)" :title="c.is_public ? '경기 코스 공개 해제' : '경기 코스에 공개'">
+                      {{ c.is_public ? '공개 중' : '비공개' }}
+                    </button>
                     <button class="dl-btn" @click.stop="exportCourse(c.id)" :disabled="exportingId === c.id" :title="exportingId === c.id ? '내보내는 중…' : 'ZIP 내보내기 (AC 트랙 + JSON + 미리보기)'">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
                     </button>
@@ -7664,20 +7569,6 @@ onUnmounted(() => {
 /* Floating map controls (courses tab). Two panels share this base look:
    the edit panel (bottom-right) and the tools panel (top-right). Theme-aware
    so the surface follows light/dark like the buttons it holds. */
-.map-fab-panel {
-  position: absolute; bottom: 1.5rem; right: 0.75rem; z-index: 500;
-  display: flex; align-items: center; gap: 0.4rem;
-  flex-wrap: wrap; justify-content: flex-end; max-width: calc(100vw - 1.5rem);
-  background: color-mix(in srgb, var(--bg-primary) 88%, transparent);
-  backdrop-filter: blur(6px);
-  padding: 0.4rem; border-radius: 10px;
-  border: 1px solid var(--border-color);
-  box-shadow: var(--shadow-hover);
-  pointer-events: auto;
-}
-/* 영역 · 자 · 각도기 tools live in their own panel, pinned top-right. */
-.map-fab-tools { top: 0.75rem; bottom: auto; }
-.map-fab-panel .side-toggle { flex: none; gap: 0.25rem; }
 /* Every control in the panels is the same square so a row reads as one set. */
 .map-fab-panel .side-btn {
   flex: none; width: 38px; height: 38px; min-width: 0; padding: 0;
@@ -7685,14 +7576,6 @@ onUnmounted(() => {
   font-size: 1rem; font-weight: 600;
   display: flex; align-items: center; justify-content: center;
 }
-.fab-icon-btn {
-  flex: none; width: 38px; height: 38px;
-  display: flex; align-items: center; justify-content: center;
-  border: 2px solid var(--border-color); border-radius: 8px;
-  background: var(--bg-secondary); color: var(--text-primary);
-  font-size: 1.1rem; line-height: 1; cursor: pointer; transition: all 0.15s;
-}
-.fab-icon-btn:disabled { opacity: 0.55; cursor: default; }
 .fab-lock.locked {
   border-color: #f59e0b;
   background: color-mix(in srgb, #f59e0b 22%, var(--bg-secondary));
@@ -7708,23 +7591,6 @@ onUnmounted(() => {
   border-color: #a855f7;
   background: color-mix(in srgb, #a855f7 22%, var(--bg-secondary));
 }
-.fab-tool.active {
-  border-color: #38bdf8;
-  background: color-mix(in srgb, #38bdf8 24%, var(--bg-secondary));
-}
-/* Standalone rotation button — bottom-left, on every tab (not in a panel). */
-.map-fab-rotate {
-  position: absolute; bottom: 1.5rem; left: 0.75rem; z-index: 500;
-  box-shadow: var(--shadow-hover); pointer-events: auto;
-  font-size: 1.3rem;
-}
-/* Bigger touch targets on coarse pointers, kept uniform across both panels. */
-@media (any-pointer: coarse) {
-  .map-fab-panel .fab-icon-btn,
-  .map-fab-panel .side-btn,
-  .map-fab-rotate { width: 44px; height: 44px; min-height: 0; }
-}
-
 /* Memo CHIP layer — geo-anchored map labels styled as a UI chip: pill shape,
    translucent plate, centred label text that reads over satellite imagery. Text
    scales with zoom (font-size from memoStyle) so it never clips. No window
@@ -8820,17 +8686,6 @@ onUnmounted(() => {
   box-shadow: 0 1px 6px rgba(0, 0, 0, 0.45);
 }
 .rotate-handle:active { cursor: grabbing; }
-.measure-dot {
-  width: 12px; height: 12px; border-radius: 50%; box-sizing: border-box;
-  background: #fff; border: 2px solid #0ea5e9; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
-}
-.measure-label {
-  position: absolute; transform: translate(-50%, -50%); white-space: nowrap;
-  background: rgba(8, 15, 30, 0.92); color: #e2e8f0;
-  border: 1px solid rgba(255, 255, 255, 0.2); border-radius: 6px;
-  padding: 1px 6px; font: 600 12px/1.3 "JetBrains Mono", ui-monospace, monospace;
-}
-.measure-label.angle { color: #fbbf24; border-color: #f59e0b; }
 
 /* In select mode the map is pinned; stop the browser from scrolling/zooming the
    page so a touch drag draws a selection box instead. */

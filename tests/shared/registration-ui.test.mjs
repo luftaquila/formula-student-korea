@@ -46,3 +46,12 @@ test("human roles and operation links expose only explicit permissions", () => {
   assert.equal(registrationAccess?.operate.key, "registration.operate");
   assert.equal(registrationAccess?.manage.key, "registration.manage");
 });
+
+test("race courses are a public service directly after queue lookup", () => {
+  const index = services.findIndex((item) => item.href === "/queue");
+  const course = services[index + 1];
+  assert.equal(course.href, "/course/public");
+  assert.equal(course.name, "경기 코스");
+  assert.ok(!course.permission && !course.studentOnly && !course.adminOnly);
+  assert.equal(operations.find((item) => item.href === "/course")?.permission, "course.operate");
+});

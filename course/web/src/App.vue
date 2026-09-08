@@ -1,5 +1,7 @@
 <script setup>
-import { ref, watch, provide, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, provide, onUnmounted } from "vue";
+import { useRoute } from "vue-router";
+import NavMenu from "@shared/NavMenu.vue";
 import TestServerNotice from "@shared/TestServerNotice.vue";
 import SonnerToaster from "@shared/SonnerToaster.vue";
 import { request } from "./api.js";
@@ -8,6 +10,8 @@ import { permissionComputed } from "@shared/officialsStore.js";
 
 const { error: notifyError } = useNotification();
 const canOperateRover = permissionComputed("rover.operate");
+const route = useRoute();
+const isPublic = computed(() => route.meta.public === true);
 
 const roverConnected = ref(false);
 const navState = ref(null);
@@ -81,15 +85,17 @@ async function fetchStatus() {
   try {
     const res = await request("/api/rover/status");
     const data = await res.json();
+    if (isPublic.value) return;
     roverConnected.value = !!data.connected;
     navState.value = data.nav_state || null;
     roverStopRequested.value = data.stop_requested === true;
   } catch { /* best-effort */ }
 }
 
-onMounted(async () => {
-  if (canOperateRover.value) await fetchStatus();
-});
+watch([canOperateRover, isPublic], ([canOperate, publicView]) => {
+  if (publicView) { roverConnected.value = false; sseReconnecting.value = false; clearStopLatch(); }
+  else if (canOperate) void fetchStatus();
+}, { immediate: true });
 
 onUnmounted(() => {
   if (stopReleaseTimer) clearTimeout(stopReleaseTimer);
@@ -100,16 +106,24 @@ onUnmounted(() => {
   <div class="app-container app-fullheight">
     <SonnerToaster />
     <TestServerNotice />
-    <!-- Header bar and nav menu are intentionally omitted on the course view:
-         this is a dedicated operator screen, so the map takes the full
-         viewport height with no chrome. -->
+    <header v-if="isPublic" class="header">
+      <div class="header-content">
+        <a href="/" class="logo">
+          <span class="logo-icon">🏁</span>
+          <h1>FSK 경기 코스</h1>
+        </a>
+        <div class="header-actions">
+          <NavMenu currentPath="/course/public" />
+        </div>
+      </div>
+    </header>
     <main class="main-fill">
       <router-view />
     </main>
 
     <!-- SSE 재연결 진행 중 표시: 무음 freeze 방지용. 자동 화해는 onopen 에서
          일어나므로 이 배지는 시각적 신호만 담당. -->
-    <div v-if="sseReconnecting" class="sse-reconnecting" role="status">
+    <div v-if="!isPublic && sseReconnecting" class="sse-reconnecting" role="status">
       <span class="sse-spinner"></span> 연결 재시도 중...
     </div>
 
@@ -118,7 +132,7 @@ onUnmounted(() => {
          Morphs to a release button when the rover is latched in
          EMERGENCY_STOP so the operator can clear without a tab change. -->
     <button
-      v-if="roverConnected"
+      v-if="!isPublic && roverConnected"
       :class="['global-estop', { active: isMissionActive(), release: inEmergency() }]"
       :disabled="stopping"
       @click="globalEmergencyStop"

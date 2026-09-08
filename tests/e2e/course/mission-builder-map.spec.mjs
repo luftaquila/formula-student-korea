@@ -76,7 +76,7 @@ test.describe("Mission builder map lifecycle", () => {
     await expect(page.locator(".leaflet-container")).toHaveCount(1);
   });
 
-  test("hides centered route markers with the course graphic", async ({ page }) => {
+  test("toggles centered route markers with centerline display", async ({ page }) => {
     await page.locator(".rail-btn[title='코스']").click();
 
     const routeMarker = page.locator(".route-marker-pin");
@@ -90,9 +90,5 @@ test.describe("Mission builder map lifecycle", () => {
 
     await centerlineButton.click();
     await expect(routeMarker).toBeVisible();
-
-    const visibilityButton = page.locator(".course-item.active .vis-btn");
-    await visibilityButton.click();
-    await expect(routeMarker).toHaveCount(0);
   });
 });

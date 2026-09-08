@@ -126,17 +126,28 @@ test.describe("Course + cone CRUD (UI)", () => {
     await expect(page.locator(".course-item").filter({ hasText: newName })).toBeVisible();
   });
 
-  test("toggling course visibility via the eye button", async ({ page }) => {
-    // The visibility button is a client-only toggle (no API call) — assert via
-    // the title attribute that flips between 숨기기 (visible) and 표시 (hidden).
-    const row = page.locator(".course-item.active");
-    await expect(row).toBeVisible();
-    const visBtn = row.locator(".vis-btn");
-    // Default visible → title 숨기기.
-    await expect(visBtn).toHaveAttribute("title", "숨기기");
-    await visBtn.tap();
-    await expect(visBtn).toHaveAttribute("title", "표시");
-    await visBtn.tap();
-    await expect(visBtn).toHaveAttribute("title", "숨기기");
+  test("selected courses stay visible and other courses require an explicit overlay", async ({ page }) => {
+    const selected = page.locator(".course-item.active .vis-btn");
+    await expect(selected).toBeDisabled();
+    await expect(selected).toHaveAttribute("aria-pressed", "true");
+
+    const name = `e2e-overlay-${Date.now()}-${test.info().parallelIndex}`;
+    const response = await page.request.post("/course/api/courses", { data: { name } });
+    expect(response.status()).toBe(201);
+    const otherId = (await response.json()).id;
+    try {
+      const other = page.locator(".course-item").filter({ hasText: name });
+      const overlay = other.getByRole("button", { name: "코스 표시" });
+      await expect(overlay).toHaveAttribute("aria-pressed", "false");
+      await overlay.tap();
+      await expect(overlay).toHaveAttribute("aria-pressed", "true");
+      await overlay.tap();
+      await expect(overlay).toHaveAttribute("aria-pressed", "false");
+      await other.locator(".course-name").tap();
+      await expect(other.locator(".vis-btn")).toBeDisabled();
+      await expect(other.locator(".vis-btn")).toHaveAttribute("aria-pressed", "true");
+    } finally {
+      await page.request.delete(`/course/api/courses/${otherId}`);
+    }
   });
 });

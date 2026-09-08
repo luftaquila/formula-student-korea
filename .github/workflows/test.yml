@@ -638,6 +638,15 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
+      - name: Public course layout preview
+        uses: actions/upload-artifact@v7
+        if: always() && matrix.shard == 'entry-course'
+        with:
+          name: public-course-layout
+          path: test-results/**/public-course-layout.png
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Test report
         uses: dorny/test-reporter@v3
         if: always()

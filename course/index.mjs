@@ -8,6 +8,7 @@ import { access, authorizePrincipal } from "../shared/access-control.js";
 import { registerRoverRoutes } from "./lib/rover-routes.mjs";
 import { setupMissionV2Schema } from "./lib/mission-v2.mjs";
 import { seedOrientationMarkers } from "./lib/route-mode.mjs";
+import { registerPublicCourseRoutes } from "./lib/public-courses.mjs";
 
 const parsedMissionTelemetryMaxRows = Number.parseInt(process.env.MISSION_TELEMETRY_MAX_ROWS || "500000", 10);
 const MISSION_TELEMETRY_MAX_ROWS = Number.isInteger(parsedMissionTelemetryMaxRows) && parsedMissionTelemetryMaxRows > 0
@@ -40,6 +41,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS course (
   const cols = db.prepare("PRAGMA table_info(course)").all().map((c) => c.name);
   if (!cols.includes("reverse")) db.exec("ALTER TABLE course ADD COLUMN reverse INTEGER NOT NULL DEFAULT 0");
   if (!cols.includes("start_cone_id")) db.exec("ALTER TABLE course ADD COLUMN start_cone_id INTEGER");
+  if (!cols.includes("is_public")) db.exec("ALTER TABLE course ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))");
 }
 
 db.exec(`CREATE TABLE IF NOT EXISTS cone (
@@ -367,6 +369,11 @@ function roleFn(req) {
   // path the same way the router does so the gate can't be slipped.
   const p = (req.path || "/").toLowerCase().replace(/\/+$/, "") || "/";
   if (p === "/api/health") return null;
+  if (["GET", "HEAD"].includes(req.method) && (
+    p === "/public" || p === "/env-config.js"
+    || /^\/api\/public\/courses(?:\/[^/]+)?$/.test(p)
+  )) return null;
+  if (/^\/api\/courses\/[^/]+\/publication$/.test(p)) return access.permission("course.manage");
   // Rover-only endpoints. /api/rover/stream is internal-strict — falling
   // back to "admin" let any logged-in operator open the SSE in a browser
   // and clobber the single roverClient slot, which silently kicked the
@@ -434,11 +441,12 @@ function roleFn(req) {
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastEvent, handler: sseHandler } = createSSEManager(200, { logger });
+const { broadcast: broadcastEvent, handler: sseHandler, close: closePrivateSse } = createSSEManager(200, { logger });
+registerPublicCourseRoutes(app, { db, dbRun, logger, getCourseById, getCourses, broadcastEvent });
 
 function getCourses() {
   return db.prepare(`
-    SELECT c.id, c.name, c.created_at, c.updated_at, c.reverse, c.start_cone_id,
+    SELECT c.id, c.name, c.created_at, c.updated_at, c.reverse, c.start_cone_id, c.is_public,
            COUNT(cn.id) AS cone_count
     FROM course c
     LEFT JOIN cone cn ON cn.course_id = c.id
@@ -1527,7 +1535,7 @@ app.use("/api", (req, res) => {
 
 addSpaFallback(app);
 
-return { app, db };
+return { app, db, close: closePrivateSse };
 }
 
 runIfDirect(import.meta, "course", createCourseApp);

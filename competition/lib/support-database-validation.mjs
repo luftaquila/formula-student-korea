@@ -190,6 +190,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
         column("updated_at", "TEXT", 1, 0, "strftime('%Y-%m-%dT%H:%M:%fZ','now')"),
         column("reverse", "INTEGER", 1, 0, "0"),
         column("start_cone_id", "INTEGER"),
+        column("is_public", "INTEGER", 1, 0, "0"),
       ]),
       cone: Object.freeze([
         column("id", "INTEGER", 0, 1),
@@ -402,7 +403,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
       mission_event: Object.freeze([fk("mission", "mission_id", "id", "CASCADE")]),
     }),
     tableSqlFragments: Object.freeze({
-      course: Object.freeze(["nametextnotnullunique"]),
+      course: Object.freeze(["nametextnotnullunique", "check(is_publicin(0,1))"]),
       cone: Object.freeze(["check(sidein('left','right','center'))"]),
       mission: Object.freeze([
         "check(statusin('running','paused','interrupted','completed','stopped','error'))",
@@ -544,7 +545,13 @@ export function assertSupportDatabaseSchema(db, service) {
       incompatible.push(`${table}<table:missing>`);
       continue;
     }
-    if (JSON.stringify(actualColumns(db, table)) !== JSON.stringify(expectedColumns(columns))) {
+    const actual = JSON.stringify(actualColumns(db, table));
+    // Backups from immediately before publication are still restorable. Accept
+    // only that exact predecessor; the runtime adds the private default after
+    // restore, while validation never upgrades the source artifact.
+    const beforePublication = service === "course" && table === "course"
+      && actual === JSON.stringify(expectedColumns(columns.filter((column) => column.name !== "is_public")));
+    if (!beforePublication && actual !== JSON.stringify(expectedColumns(columns))) {
       incompatible.push(`${table}<table:columns>`);
     }
     const expectedFks = [...(contract.foreignKeys[table] || [])]
@@ -554,6 +561,7 @@ export function assertSupportDatabaseSchema(db, service) {
     }
     const normalizedSql = normalizeSql(object.sql);
     for (const fragment of contract.tableSqlFragments[table] || []) {
+      if (beforePublication && fragment === "check(is_publicin(0,1))") continue;
       if (!normalizedSql.includes(fragment)) incompatible.push(`${table}<table:constraint>`);
     }
   }
@@ -621,6 +629,12 @@ export function validateSupportDatabase(db, service) {
     }
   }
   if (service === "course") {
+    const hasPublication = actualColumns(db, "course").some((column) => column.name === "is_public");
+    const invalidPublication = hasPublication ? db.prepare(`SELECT id FROM course
+      WHERE typeof(is_public) != 'integer' OR is_public NOT IN (0, 1)`).all() : [];
+    if (invalidPublication.length) {
+      throw new Error(`invalid course publication state: ${invalidPublication.map(({ id }) => id).slice(0, 20).join(", ")}`);
+    }
     const invalid = [];
     const activeLifecycleStates = new Set([
       "ready", "starting", "running", "pausing", "paused", "interrupted", "resuming",
