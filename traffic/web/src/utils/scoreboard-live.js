@@ -66,3 +66,33 @@ export function scoreboardSerialLiveAttempt({ selectedFile, year, attempt, now }
     measuring: true,
   };
 }
+
+function recordIdentity(record) {
+  if (!record) return null;
+  return record.rowid != null ? `row:${record.rowid}` : `time:${record.time}`;
+}
+
+export function scoreboardRecordEffects(previousState, nextState, eventTypes) {
+  const confirmed = [];
+  const bestUpdated = [];
+
+  for (const type of eventTypes || []) {
+    const previousLatest = previousState?.latest?.[type];
+    const nextLatest = nextState?.latest?.[type];
+    if (nextLatest && recordIdentity(nextLatest) !== recordIdentity(previousLatest)) {
+      confirmed.push(type);
+    }
+
+    const previousBest = previousState?.best?.[type];
+    const nextBest = nextState?.best?.[type];
+    if (
+      previousBest
+      && nextBest
+      && Number(nextBest.result) < Number(previousBest.result)
+    ) {
+      bestUpdated.push(type);
+    }
+  }
+
+  return { confirmed, bestUpdated };
+}

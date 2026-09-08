@@ -91,7 +91,8 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(scoreboardCurrent).toHaveAttribute("data-measuring", "true", { timeout: 5000 });
     await expect(scoreboardCurrent).toContainText("서울대학교");
     const liveTimer = scoreboardPage.getByTestId("live-timer-가속");
-    await expect(liveTimer).toHaveText(/^\d+\.\d{3}s$/);
+    await expect(liveTimer).toHaveText(/^\d+\.\d{3}$/);
+    await expect(scoreboardCurrent.locator(".record-result")).toHaveText(/^\d+\.\d{3}s$/);
     const initialClock = await liveTimer.innerText();
     await expect.poll(() => liveTimer.innerText()).not.toBe(initialClock);
 

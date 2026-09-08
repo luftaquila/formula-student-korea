@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   scoreboardElapsedSeconds,
   scoreboardLiveAttempt,
+  scoreboardRecordEffects,
   scoreboardRecordFiles,
   scoreboardSerialLiveAttempt,
 } from "../../traffic/web/src/utils/scoreboard-live.js";
@@ -147,4 +148,46 @@ test("scoreboard exposes a serial attempt with a locally advancing clock", () =>
     attempt: { ...attempt, active: false },
     now: 2_000,
   }), null);
+});
+
+test("scoreboard identifies record confirmations and genuine best improvements", () => {
+  const baseline = {
+    rowid: 1,
+    time: "2026-09-08T01:00:00.000Z",
+    type: "가속",
+    scoreboard: 1,
+    result: 5_000,
+    status: null,
+  };
+  const fasterRecord = {
+    rowid: 2,
+    time: "2026-09-08T01:01:00.000Z",
+    type: "가속",
+    scoreboard: 1,
+    result: 4_500,
+    status: null,
+  };
+  assert.deepEqual(
+    scoreboardRecordEffects(
+      { latest: { 가속: baseline }, best: { 가속: baseline } },
+      { latest: { 가속: fasterRecord }, best: { 가속: fasterRecord } },
+      ["가속"],
+    ),
+    { confirmed: ["가속"], bestUpdated: ["가속"] },
+  );
+
+  const slowerRecord = {
+    ...fasterRecord,
+    rowid: 3,
+    time: "2026-09-08T01:02:00.000Z",
+    result: 5_500,
+  };
+  assert.deepEqual(
+    scoreboardRecordEffects(
+      { latest: { 가속: fasterRecord }, best: { 가속: fasterRecord } },
+      { latest: { 가속: slowerRecord }, best: { 가속: fasterRecord } },
+      ["가속"],
+    ),
+    { confirmed: ["가속"], bestUpdated: [] },
+  );
 });

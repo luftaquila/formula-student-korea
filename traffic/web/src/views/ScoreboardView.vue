@@ -8,6 +8,7 @@ import { useWirelessStore } from "../stores/wireless";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import {
   scoreboardLiveAttempt,
+  scoreboardRecordEffects,
   scoreboardRecordFiles,
   scoreboardSerialLiveAttempt,
 } from "../utils/scoreboard-live";
@@ -37,6 +38,8 @@ const isActive = ref(true);
 const missedUpdate = ref(false);
 const lastLoadedFile = ref(null);
 const scoreboardNow = ref(Date.now());
+const currentRecordEffects = ref({});
+const bestRecordEffects = ref({});
 
 const EVENT_CONFIG = {
   가속: { mode: "accel", label: "ACCELERATION", color: "#ffd000" },
@@ -130,6 +133,38 @@ watch(eventLabels, (labels) => {
 }, { deep: true });
 
 let fetchSeq = 0;
+let effectBaseline = null;
+let effectsPrimed = false;
+
+function resetRecordEffects() {
+  effectBaseline = null;
+  effectsPrimed = false;
+  currentRecordEffects.value = {};
+  bestRecordEffects.value = {};
+}
+
+function activateRecordEffects(types, target) {
+  if (!types.length) return;
+  target.value = {
+    ...target.value,
+    ...Object.fromEntries(types.map((type) => [type, true])),
+  };
+}
+
+function clearRecordEffect(target, type, event) {
+  if (event.target !== event.currentTarget) return;
+  const next = { ...target.value };
+  delete next[type];
+  target.value = next;
+}
+
+function clearCurrentRecordEffect(type, event) {
+  clearRecordEffect(currentRecordEffects, type, event);
+}
+
+function clearBestRecordEffect(type, event) {
+  clearRecordEffect(bestRecordEffects, type, event);
+}
 
 async function loadRecords() {
   if (!selectedFile.value) {
@@ -161,7 +196,10 @@ async function loadRecords() {
   }
 }
 
-watch(selectedFile, () => { if (isActive.value) loadRecords(); });
+watch(selectedFile, () => {
+  resetRecordEffects();
+  if (isActive.value) loadRecords();
+});
 
 watch(lastUpdate, (update) => {
   if (!isActive.value) {
@@ -226,7 +264,7 @@ const availableTypes = computed(() => {
 
 const recordsByType = computed(() => {
   const grouped = {};
-  availableTypes.value.forEach((type) => {
+  Object.keys(EVENT_CONFIG).forEach((type) => {
     grouped[type] = validRecords.value.filter((r) => r.type === type);
   });
   return grouped;
@@ -234,7 +272,7 @@ const recordsByType = computed(() => {
 
 const latestByType = computed(() => {
   const latest = {};
-  availableTypes.value.forEach((type) => {
+  Object.keys(EVENT_CONFIG).forEach((type) => {
     const typeRecords = recordsByType.value[type];
     if (typeRecords && typeRecords.length > 0) {
       latest[type] = [...typeRecords].sort((a, b) => new Date(b.time) - new Date(a.time))[0];
@@ -249,13 +287,33 @@ const currentByType = computed(() => Object.fromEntries(
 
 const bestRecords = computed(() => {
   const best = {};
-  availableTypes.value.forEach((type) => {
+  Object.keys(EVENT_CONFIG).forEach((type) => {
     const valid = recordsByType.value[type]?.filter((r) => r.status == null && r.result > 0) || [];
     if (valid.length) {
       best[type] = valid.reduce((a, b) => (a.result < b.result ? a : b));
     }
   });
   return best;
+});
+
+watch([latestByType, bestRecords], () => {
+  const nextState = {
+    latest: latestByType.value,
+    best: bestRecords.value,
+  };
+  if (!effectsPrimed) {
+    effectBaseline = nextState;
+    effectsPrimed = true;
+    return;
+  }
+  const effects = scoreboardRecordEffects(
+    effectBaseline,
+    nextState,
+    Object.keys(EVENT_CONFIG),
+  );
+  effectBaseline = nextState;
+  activateRecordEffects(effects.confirmed, currentRecordEffects);
+  activateRecordEffects(effects.bestUpdated, bestRecordEffects);
 });
 
 function formatResult(ms, status = null) {
@@ -511,9 +569,14 @@ onDeactivated(() => {
 
                 <section
                   class="record-cell current-record"
-                  :class="{ empty: !currentByType[type], measuring: currentByType[type]?.measuring }"
+                  :class="{
+                    empty: !currentByType[type],
+                    measuring: currentByType[type]?.measuring,
+                    'record-confirmed': currentRecordEffects[type],
+                  }"
                   :data-measuring="currentByType[type]?.measuring ? 'true' : 'false'"
                   :data-testid="`current-record-${type}`"
+                  @animationend="clearCurrentRecordEffect(type, $event)"
                 >
                   <div class="record-head">
                     <span class="record-label">Current</span>
@@ -521,7 +584,7 @@ onDeactivated(() => {
                   </div>
                   <div class="record-result">
                     <template v-if="currentByType[type]?.measuring">
-                      <span v-fit-text class="live-record-result" :data-testid="`live-timer-${type}`">{{ currentByType[type].elapsedSeconds }}<span class="unit">s</span></span>
+                      <span :data-testid="`live-timer-${type}`">{{ currentByType[type].elapsedSeconds }}</span><span class="unit">s</span>
                     </template>
                     <template v-else-if="currentByType[type]">
                       {{ formatResult(currentByType[type].result, currentByType[type].status) }}<span v-if="!currentByType[type].status" class="unit">s</span>
@@ -536,8 +599,9 @@ onDeactivated(() => {
 
                 <section
                   class="record-cell best-record"
-                  :class="{ empty: !bestRecords[type] }"
+                  :class="{ empty: !bestRecords[type], 'best-updated': bestRecordEffects[type] }"
                   :data-testid="`best-record-${type}`"
+                  @animationend="clearBestRecordEffect(type, $event)"
                 >
                   <div class="record-head">
                     <span class="record-label">Best</span>
@@ -759,7 +823,7 @@ onDeactivated(() => {
   min-width: 0;
   overflow: hidden;
   font-size: clamp(2.8rem, 4.2vw, 5.5rem);
-  line-height: 1.1;
+  line-height: 1.2;
   font-weight: 800;
   color: var(--panel-fg);
   letter-spacing: 0.025em;
@@ -775,6 +839,96 @@ onDeactivated(() => {
   padding: clamp(0.35rem, 1vh, 1rem) clamp(0.65rem, 1.2vw, 1.5rem);
   padding-bottom: clamp(1rem, 1.8vh, 1.75rem);
   background: var(--scoreboard-bg);
+}
+
+.current-record.record-confirmed {
+  animation: record-confirmed 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.current-record.record-confirmed .record-result {
+  animation: confirmed-result-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.best-record.best-updated {
+  animation: best-updated 1650ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.best-record.best-updated .record-result {
+  animation: best-result-updated 1650ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.best-record.best-updated .record-label,
+.best-record.best-updated .entry-number {
+  animation: best-meta-updated 1650ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+@keyframes record-confirmed {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
+  18% {
+    box-shadow:
+      inset 0 0 0 clamp(4px, 0.32vw, 7px) color-mix(in srgb, var(--panel-color) 95%, white),
+      inset 0 0 clamp(1.8rem, 2.6vw, 3.4rem) color-mix(in srgb, var(--panel-color) 58%, transparent);
+  }
+  42% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--panel-color) 30%, transparent), inset 0 0 0 transparent; }
+  62% {
+    box-shadow:
+      inset 0 0 0 clamp(2px, 0.2vw, 5px) color-mix(in srgb, var(--panel-color) 78%, white),
+      inset 0 0 clamp(1rem, 1.8vw, 2.4rem) color-mix(in srgb, var(--panel-color) 38%, transparent);
+  }
+}
+
+@keyframes confirmed-result-updated {
+  0%, 100% { transform: scale(1); text-shadow: none; }
+  18% {
+    transform: scale(1.065);
+    text-shadow:
+      0 0 0.12em color-mix(in srgb, var(--panel-color) 92%, white),
+      0 0 0.42em color-mix(in srgb, var(--panel-color) 70%, transparent);
+  }
+  42% { transform: scale(1); text-shadow: none; }
+  62% {
+    transform: scale(1.025);
+    text-shadow: 0 0 0.28em color-mix(in srgb, var(--panel-color) 52%, transparent);
+  }
+}
+
+@keyframes best-updated {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
+  16% {
+    box-shadow:
+      inset 0 0 0 clamp(5px, 0.38vw, 8px) color-mix(in srgb, var(--scoreboard-best) 82%, white),
+      inset 0 0 clamp(2.2rem, 3vw, 4rem) color-mix(in srgb, var(--scoreboard-best) 62%, transparent);
+  }
+  38% { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--scoreboard-best) 30%, transparent), inset 0 0 0 transparent; }
+  56% {
+    box-shadow:
+      inset 0 0 0 clamp(3px, 0.24vw, 6px) color-mix(in srgb, var(--scoreboard-best) 90%, white),
+      inset 0 0 clamp(1.5rem, 2.2vw, 3rem) color-mix(in srgb, var(--scoreboard-best) 48%, transparent);
+  }
+}
+
+@keyframes best-result-updated {
+  0%, 100% { transform: scale(1); text-shadow: none; }
+  16% {
+    transform: scale(1.09);
+    text-shadow:
+      0 0 0.1em color-mix(in srgb, var(--scoreboard-best) 75%, white),
+      0 0 0.38em color-mix(in srgb, var(--scoreboard-best) 85%, transparent);
+  }
+  38% { transform: scale(1); text-shadow: none; }
+  56% {
+    transform: scale(1.045);
+    text-shadow:
+      0 0 0.08em color-mix(in srgb, var(--scoreboard-best) 65%, white),
+      0 0 0.3em color-mix(in srgb, var(--scoreboard-best) 60%, transparent);
+  }
+}
+
+@keyframes best-meta-updated {
+  0%, 100% { filter: brightness(1); text-shadow: none; }
+  16% { filter: brightness(1.75); text-shadow: 0 0 0.32em color-mix(in srgb, var(--scoreboard-best) 78%, transparent); }
+  38% { filter: brightness(1); text-shadow: none; }
+  56% { filter: brightness(1.35); text-shadow: 0 0 0.22em color-mix(in srgb, var(--scoreboard-best) 55%, transparent); }
 }
 
 .record-cell + .record-cell {
@@ -817,18 +971,6 @@ onDeactivated(() => {
 
 .best-record .record-result {
   color: var(--scoreboard-best);
-}
-
-.live-record-result {
-  display: block;
-  width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  font-family: "JetBrains Mono", monospace;
-  font-size: inherit;
-  font-style: normal;
-  letter-spacing: -0.065em;
-  white-space: nowrap;
 }
 
 .entry-number {
@@ -889,6 +1031,17 @@ onDeactivated(() => {
 .unit {
   font-size: 0.4em;
   margin-left: 0.1em;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .current-record.record-confirmed,
+  .current-record.record-confirmed .record-result,
+  .best-record.best-updated,
+  .best-record.best-updated .record-result,
+  .best-record.best-updated .record-label,
+  .best-record.best-updated .entry-number {
+    animation-duration: 1ms;
+  }
 }
 
 /* Controls */

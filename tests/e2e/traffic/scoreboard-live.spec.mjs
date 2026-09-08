@@ -56,6 +56,13 @@ test.describe("Traffic scoreboard live updates", () => {
     await expect(scoreboard).toBeVisible({ timeout: 5000 });
     await expect(scoreboard).toContainText("서울대학교");
 
+    const effectsStarted = page.waitForFunction(() => {
+      const current = document.querySelector('[data-testid="current-record-가속"]');
+      const best = document.querySelector('[data-testid="best-record-가속"]');
+      return current?.getAnimations().some((animation) => animation.playState === "running")
+        && best?.getAnimations().some((animation) => animation.playState === "running");
+    });
+
     // Add a new record via API (SSE should push the update)
     await page.request.post("/competition/api/v1/traffic/records", {
       data: {
@@ -71,6 +78,7 @@ test.describe("Traffic scoreboard live updates", () => {
     });
 
     // Verify new record appears on scoreboard via SSE
+    await effectsStarted;
     await expect(scoreboard).toContainText("한양대학교", { timeout: 10000 });
   });
 

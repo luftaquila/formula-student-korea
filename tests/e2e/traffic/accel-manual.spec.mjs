@@ -164,9 +164,21 @@ test.describe("Acceleration manual mode measurement", () => {
 
     const current = scoreboardPage.getByTestId("current-record-가속");
     await expect(current).toHaveAttribute("data-measuring", "true");
-    const initial = Number.parseFloat(await scoreboardPage.getByTestId("live-timer-가속").innerText());
+    const liveTimer = scoreboardPage.getByTestId("live-timer-가속");
+    const liveTypography = await liveTimer.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontStyle: style.fontStyle,
+        fontVariantNumeric: style.fontVariantNumeric,
+        fontWeight: style.fontWeight,
+        letterSpacing: style.letterSpacing,
+      };
+    });
+    const initial = Number.parseFloat(await liveTimer.innerText());
     await expect.poll(async () => (
-      Number.parseFloat(await scoreboardPage.getByTestId("live-timer-가속").innerText())
+      Number.parseFloat(await liveTimer.innerText())
     )).toBeGreaterThan(initial);
 
     await advanceTestClock(page, 500);
@@ -179,6 +191,18 @@ test.describe("Acceleration manual mode measurement", () => {
     await expectNotification(page, "success", "기록 저장");
     await expect(current).toHaveAttribute("data-measuring", "false");
     await expect(current).toContainText((created.record.result / 1000).toFixed(3));
+    const finalizedTypography = await current.locator(".record-result").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        fontFamily: style.fontFamily,
+        fontSize: style.fontSize,
+        fontStyle: style.fontStyle,
+        fontVariantNumeric: style.fontVariantNumeric,
+        fontWeight: style.fontWeight,
+        letterSpacing: style.letterSpacing,
+      };
+    });
+    expect(finalizedTypography).toEqual(liveTypography);
     await scoreboardPage.close();
   });
 
