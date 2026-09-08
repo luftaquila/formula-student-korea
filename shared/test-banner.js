@@ -10,8 +10,8 @@ export function initTestBanner() {
 
   // document.title prefix
   const prefixTitle = () => {
-    if (!document.title.startsWith("TEST ")) {
-      document.title = `TEST ${document.title}`;
+    if (!document.title.startsWith("⚠️ TEST ")) {
+      document.title = `⚠️ TEST ${document.title}`;
     }
   };
   prefixTitle();
