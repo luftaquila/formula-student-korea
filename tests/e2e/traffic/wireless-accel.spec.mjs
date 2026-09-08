@@ -55,6 +55,10 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     const observerPage = await observerContext.newPage();
     await observerPage.goto("/traffic/wireless/accel");
     await waitForPageReady(observerPage);
+    const scoreboardContext = await browser.newContext({ storageState: storageStatePath("admin") });
+    const scoreboardPage = await scoreboardContext.newPage();
+    await scoreboardPage.goto("/traffic/wireless/scoreboard");
+    await waitForPageReady(scoreboardPage);
 
     // 무선 입력칸(이벤트명·팀)은 lease 보유 컨트롤러만 편집 가능(disabled). 이 페이지는 관찰자라
     // UI로 채우지 않고, 귀속(팀·이벤트명)은 세션 select API로 공유한다(브리지/컨트롤러 시뮬레이션).
@@ -74,6 +78,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
 
     // 클라이언트가 SSE로 green 반영
     await expect(page.locator(".traffic-light.green")).toBeVisible({ timeout: 8000 });
+    await scoreboardPage.getByLabel("기록 파일").selectOption(`FSK ${YEAR} ${EVENT}`);
 
     // 출발은 온라인 상태에서 수신한다.
     const startIngest = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
@@ -82,6 +87,14 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     expect(startIngest.status()).toBe(200);
     expect(await startIngest.json()).toMatchObject({ stored: 1, rejected: 0 });
     await expect(page.locator(".records-section .record-card").first().locator(".record-item")).toBeVisible({ timeout: 5000 });
+    const scoreboardCurrent = scoreboardPage.getByTestId("current-record-가속");
+    await expect(scoreboardCurrent).toHaveAttribute("data-measuring", "true", { timeout: 5000 });
+    await expect(scoreboardCurrent).toContainText("서울대학교");
+    const liveTimer = scoreboardPage.getByTestId("live-timer-가속");
+    await expect(liveTimer).toHaveText(/^\d+\.\d{3}$/);
+    await expect(scoreboardCurrent.locator(".record-result")).toHaveText(/^\d+\.\d{3}s$/);
+    const initialClock = await liveTimer.innerText();
+    await expect.poll(() => liveTimer.innerText()).not.toBe(initialClock);
 
     // SSE 오류 후 앱이 재연결을 예약한 동안 별도 클라이언트에서 도착과 저장이
     // 완료되는 상황을 재현한다. 브라우저 offline 토글은 열린 EventSource를 실제로
@@ -105,6 +118,8 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     const observerQuickEdit = observerPage.locator(".saved-section").getByTestId("record-quick-edit");
     await expect(observerQuickEdit).toBeVisible({ timeout: 5000 });
     await expect(observerPage.locator(".records-section .record-item")).toHaveCount(2);
+    await expect(scoreboardCurrent).toHaveAttribute("data-measuring", "false", { timeout: 5000 });
+    await expect(scoreboardCurrent).toContainText("10.000");
 
     // 저장 완료 후 처음 접속하면 과거 원시 센서 이벤트는 없지만, 세션의 정확한 행 식별자로
     // 저장 카드와 결과 요약을 복구해야 한다.
@@ -236,6 +251,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(quickEdit).not.toBeVisible();
     await lateContext.close();
     await observerContext.close();
+    await scoreboardContext.close();
     await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("가속")}`);
     await page.reload();
     await waitForPageReady(page);

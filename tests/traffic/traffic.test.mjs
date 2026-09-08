@@ -34,12 +34,13 @@ const unrelatedOfficialCookie = makeAuthCookie({
   email: 'inspection-manager@test.com', name: 'Inspection Manager', role: 'official', permissions: ['inspection.manage'],
 });
 
-let server, baseUrl, client, db, dbPath;
+let server, baseUrl, client, db, dbPath, runLiveAttemptWatch;
 
 before(async () => {
   dbPath = tmpDbPath();
   const result = createTrafficApp({ dbPath, validateUser: TRUST_JWT });
   db = result.db;
+  runLiveAttemptWatch = result.runLiveAttemptWatch;
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
@@ -706,6 +707,77 @@ function connectSSE(sseBaseUrl, sseUrlPath, cookie) {
 }
 
 describe('SSE broadcast payloads', () => {
+  it('shares serial live attempts with current and reconnecting scoreboards', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+
+    const start = await client.post('/api/live-attempts', {
+      body: {
+        action: 'start',
+        event_type: '가속',
+        attempt_id: 'serial-attempt-1',
+        event_name: '다이나믹',
+        team: { num: 5, univ: 'SSE대학교', team: 'SSE팀' },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(start.status, 201);
+    const started = await start.json();
+    assert.equal(started.active, true);
+    assert.equal(started.elapsed_ms, 0);
+
+    const liveEvent = await sse.waitForEvent(
+      'live-attempt',
+      (data) => data.active && data.attempt_id === 'serial-attempt-1',
+    );
+    assert.equal(liveEvent.data.team.num, 5);
+
+    const reconnect = connectSSE(baseUrl, '/api/events', adminCookie);
+    await reconnect.ready;
+    const init = reconnect.events.find((event) => event.event === 'init');
+    assert.ok(init.data.liveAttempts.some((attempt) => attempt.attempt_id === 'serial-attempt-1'));
+
+    const stop = await client.post('/api/live-attempts', {
+      body: { action: 'stop', event_type: '가속', attempt_id: 'serial-attempt-1' },
+      cookie: adminCookie,
+    });
+    assert.equal(stop.status, 200);
+    assert.deepEqual(await stop.json(), { cleared: true });
+    await sse.waitForEvent(
+      'live-attempt',
+      (data) => !data.active && data.attempt_id === 'serial-attempt-1',
+    );
+
+    reconnect.close();
+    sse.close();
+  });
+
+  it('expires an abandoned serial live attempt', async () => {
+    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
+    await sse.ready;
+
+    const start = await client.post('/api/live-attempts', {
+      body: {
+        action: 'start',
+        event_type: '오토크로스',
+        attempt_id: 'serial-attempt-expired',
+        event_name: '다이나믹',
+        team: { num: 5, univ: 'SSE대학교', team: 'SSE팀' },
+      },
+      cookie: adminCookie,
+    });
+    assert.equal(start.status, 201);
+    const started = await start.json();
+
+    runLiveAttemptWatch(Date.parse(started.started_at) + 10 * 60 * 1000 + 1);
+    const expired = await sse.waitForEvent(
+      'live-attempt',
+      (data) => !data.active && data.attempt_id === 'serial-attempt-expired',
+    );
+    assert.equal(expired.data.reason, 'timeout');
+    sse.close();
+  });
+
   it('POST /api/records broadcasts full row with record field', async () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;

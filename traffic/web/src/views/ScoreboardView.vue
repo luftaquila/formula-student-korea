@@ -1,14 +1,34 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, onActivated, onDeactivated } from "vue";
+import { useRoute } from "vue-router";
 
 import { useSSE } from "../composables/useSSE";
 import { fetchRecord } from "../composables/useApi";
+import { useWirelessStore } from "../stores/wireless";
+import { currentCompetitionYear } from "@shared/competition-year.mjs";
+import {
+  scoreboardLiveAttempt,
+  scoreboardRecordEffects,
+  scoreboardRecordFiles,
+  scoreboardSerialLiveAttempt,
+} from "../utils/scoreboard-live";
+import {
+  MAX_EVENT_LABEL_LENGTH,
+  scoreboardEventLabels,
+} from "../utils/scoreboard-settings";
 
-const { recordFiles: allRecordFiles, selectedFile, lastUpdate, connected } = useSSE();
-
-const recordFiles = computed(() => {
-  return allRecordFiles.value.filter((file) => file !== "controller");
-});
+const {
+  recordFiles: allRecordFiles,
+  selectedFile,
+  lastUpdate,
+  connected,
+  reconnected,
+  liveAttempts: serialLiveAttempts,
+} = useSSE();
+const route = useRoute();
+const wirelessStore = useWirelessStore();
+const competitionYear = currentCompetitionYear();
+const isWirelessScoreboard = computed(() => route.path.startsWith("/wireless/"));
 
 const records = ref([]);
 const loading = ref(false);
@@ -17,21 +37,27 @@ const trackTemp = ref("");
 const isActive = ref(true);
 const missedUpdate = ref(false);
 const lastLoadedFile = ref(null);
+const scoreboardNow = ref(Date.now());
+const currentRecordEffects = ref({});
+const bestRecordEffects = ref({});
 
 const EVENT_CONFIG = {
-  가속: { label: "ACCELERATION", color: "#ffd000" },
-  스키드패드: { label: "SKIDPAD", color: "#00e5ff" },
-  오토크로스: { label: "AUTOCROSS", color: "#ff6b6b" },
+  가속: { mode: "accel", label: "ACCELERATION", color: "#ffd000" },
+  스키드패드: { mode: "skidpad", label: "SKIDPAD", color: "#00e5ff" },
+  오토크로스: { mode: "autocross", label: "AUTOCROSS", color: "#ff6b6b" },
 };
 
-const SCOREBOARD_THEME_KEY = "traffic-scoreboard-theme";
+const recordFiles = computed(() => scoreboardRecordFiles({
+  persistedFiles: allRecordFiles.value,
+  sessions: isWirelessScoreboard.value ? wirelessStore.sessions : null,
+  liveAttempts: isWirelessScoreboard.value ? null : serialLiveAttempts.value,
+  year: competitionYear,
+  eventTypes: Object.keys(EVENT_CONFIG),
+}));
+
 const SCOREBOARD_COLORS_KEY = "traffic-scoreboard-colors";
 const SCOREBOARD_VISIBILITY_KEY = "traffic-scoreboard-visibility";
-
-function loadScoreboardTheme() {
-  const saved = localStorage.getItem(SCOREBOARD_THEME_KEY);
-  return saved === "light" || saved === "dark" ? saved : "dark";
-}
+const SCOREBOARD_LABELS_KEY = "traffic-scoreboard-labels";
 
 function loadEventColors() {
   const colors = Object.fromEntries(
@@ -71,17 +97,13 @@ function loadEventVisibility() {
   return visibility;
 }
 
-const scoreboardTheme = ref(loadScoreboardTheme());
-const eventColors = ref(loadEventColors());
-const eventVisibility = ref(loadEventVisibility());
-
-function toggleScoreboardTheme() {
-  scoreboardTheme.value = scoreboardTheme.value === "dark" ? "light" : "dark";
+function loadEventLabels() {
+  return scoreboardEventLabels(EVENT_CONFIG, localStorage.getItem(SCOREBOARD_LABELS_KEY));
 }
 
-watch(scoreboardTheme, (theme) => {
-  localStorage.setItem(SCOREBOARD_THEME_KEY, theme);
-});
+const eventColors = ref(loadEventColors());
+const eventVisibility = ref(loadEventVisibility());
+const eventLabels = ref(loadEventLabels());
 
 watch(eventColors, (colors) => {
   localStorage.setItem(SCOREBOARD_COLORS_KEY, JSON.stringify(colors));
@@ -91,12 +113,56 @@ watch(eventVisibility, (visibility) => {
   localStorage.setItem(SCOREBOARD_VISIBILITY_KEY, JSON.stringify(visibility));
 }, { deep: true });
 
+watch(eventLabels, (labels) => {
+  localStorage.setItem(SCOREBOARD_LABELS_KEY, JSON.stringify(labels));
+}, { deep: true });
+
 let fetchSeq = 0;
+let effectBaseline = null;
+let effectsPrimed = false;
+
+function resetRecordEffects() {
+  effectBaseline = null;
+  effectsPrimed = false;
+  currentRecordEffects.value = {};
+  bestRecordEffects.value = {};
+}
+
+function activateRecordEffects(types, target) {
+  if (!types.length) return;
+  target.value = {
+    ...target.value,
+    ...Object.fromEntries(types.map((type) => [type, true])),
+  };
+}
+
+function clearRecordEffect(target, type, event) {
+  if (event.target !== event.currentTarget) return;
+  const next = { ...target.value };
+  delete next[type];
+  target.value = next;
+}
+
+function clearCurrentRecordEffect(type, event) {
+  clearRecordEffect(currentRecordEffects, type, event);
+}
+
+function clearBestRecordEffect(type, event) {
+  clearRecordEffect(bestRecordEffects, type, event);
+}
 
 async function loadRecords() {
   if (!selectedFile.value) {
     records.value = [];
     lastLoadedFile.value = null;
+    return;
+  }
+  if (
+    !allRecordFiles.value.includes(selectedFile.value)
+    && recordFiles.value.includes(selectedFile.value)
+  ) {
+    records.value = [];
+    lastLoadedFile.value = selectedFile.value;
     return;
   }
 
@@ -115,7 +181,10 @@ async function loadRecords() {
   }
 }
 
-watch(selectedFile, () => { if (isActive.value) loadRecords(); });
+watch(selectedFile, () => {
+  resetRecordEffects();
+  if (isActive.value) loadRecords();
+});
 
 watch(lastUpdate, (update) => {
   if (!isActive.value) {
@@ -129,18 +198,58 @@ watch(lastUpdate, (update) => {
   }
 });
 
+watch(reconnected, () => {
+  if (!selectedFile.value) return;
+  if (!isActive.value) {
+    missedUpdate.value = true;
+    return;
+  }
+  loadRecords();
+});
+
 const validRecords = computed(() => {
   return records.value.filter((r) => r.scoreboard);
 });
 
+const liveAttempts = computed(() => {
+  const attempts = {};
+  if (!isWirelessScoreboard.value) {
+    for (const type of Object.keys(EVENT_CONFIG)) {
+      const activeAttempt = serialLiveAttempts.value[type];
+      if (!activeAttempt) continue;
+      const attempt = scoreboardSerialLiveAttempt({
+        selectedFile: selectedFile.value,
+        year: competitionYear,
+        attempt: activeAttempt,
+        now: scoreboardNow.value,
+      });
+      if (attempt) attempts[type] = attempt;
+    }
+    return attempts;
+  }
+
+  for (const [type, config] of Object.entries(EVENT_CONFIG)) {
+    const attempt = scoreboardLiveAttempt({
+      selectedFile: selectedFile.value,
+      year: competitionYear,
+      session: wirelessStore.sessions?.[type],
+      timing: wirelessStore.timing?.[config.mode],
+      records: records.value,
+    });
+    if (attempt) attempts[type] = attempt;
+  }
+  return attempts;
+});
+
 const availableTypes = computed(() => {
   const types = new Set(validRecords.value.map((r) => r.type));
+  for (const type of Object.keys(liveAttempts.value)) types.add(type);
   return Object.keys(EVENT_CONFIG).filter((t) => types.has(t) && eventVisibility.value[t]);
 });
 
 const recordsByType = computed(() => {
   const grouped = {};
-  availableTypes.value.forEach((type) => {
+  Object.keys(EVENT_CONFIG).forEach((type) => {
     grouped[type] = validRecords.value.filter((r) => r.type === type);
   });
   return grouped;
@@ -148,7 +257,7 @@ const recordsByType = computed(() => {
 
 const latestByType = computed(() => {
   const latest = {};
-  availableTypes.value.forEach((type) => {
+  Object.keys(EVENT_CONFIG).forEach((type) => {
     const typeRecords = recordsByType.value[type];
     if (typeRecords && typeRecords.length > 0) {
       latest[type] = [...typeRecords].sort((a, b) => new Date(b.time) - new Date(a.time))[0];
@@ -157,15 +266,39 @@ const latestByType = computed(() => {
   return latest;
 });
 
+const currentByType = computed(() => Object.fromEntries(
+  availableTypes.value.map((type) => [type, liveAttempts.value[type] || latestByType.value[type]]),
+));
+
 const bestRecords = computed(() => {
   const best = {};
-  availableTypes.value.forEach((type) => {
+  Object.keys(EVENT_CONFIG).forEach((type) => {
     const valid = recordsByType.value[type]?.filter((r) => r.status == null && r.result > 0) || [];
     if (valid.length) {
       best[type] = valid.reduce((a, b) => (a.result < b.result ? a : b));
     }
   });
   return best;
+});
+
+watch([latestByType, bestRecords], () => {
+  const nextState = {
+    latest: latestByType.value,
+    best: bestRecords.value,
+  };
+  if (!effectsPrimed) {
+    effectBaseline = nextState;
+    effectsPrimed = true;
+    return;
+  }
+  const effects = scoreboardRecordEffects(
+    effectBaseline,
+    nextState,
+    Object.keys(EVENT_CONFIG),
+  );
+  effectBaseline = nextState;
+  activateRecordEffects(effects.confirmed, currentRecordEffects);
+  activateRecordEffects(effects.bestUpdated, bestRecordEffects);
 });
 
 function formatResult(ms, status = null) {
@@ -182,8 +315,13 @@ function formatResult(ms, status = null) {
   return seconds.toFixed(3);
 }
 
-const displayArea = ref(null);
+const displayWrapper = ref(null);
 const fitTextHandlers = new WeakMap();
+
+function textFitKey(value, element) {
+  if (Array.isArray(value)) return value.map((part) => String(part ?? "")).join("\u0000");
+  return element.textContent;
+}
 
 function scheduleTextFit(element) {
   const state = fitTextHandlers.get(element);
@@ -207,23 +345,32 @@ function scheduleTextFit(element) {
 }
 
 const vFitText = {
-  mounted(element) {
+  mounted(element, binding) {
     const state = {
       frame: 0,
+      key: textFitKey(binding.value, element),
       resize: () => scheduleTextFit(element),
+      observer: null,
     };
     fitTextHandlers.set(element, state);
+    state.observer = new ResizeObserver(state.resize);
+    state.observer.observe(element);
     window.addEventListener("resize", state.resize);
     scheduleTextFit(element);
     document.fonts?.ready.then(state.resize);
   },
-  updated(element) {
+  updated(element, binding) {
+    const state = fitTextHandlers.get(element);
+    const key = textFitKey(binding.value, element);
+    if (!state || state.key === key) return;
+    state.key = key;
     scheduleTextFit(element);
   },
   unmounted(element) {
     const state = fitTextHandlers.get(element);
     if (!state) return;
     cancelAnimationFrame(state.frame);
+    state.observer.disconnect();
     window.removeEventListener("resize", state.resize);
     fitTextHandlers.delete(element);
   },
@@ -231,7 +378,7 @@ const vFitText = {
 
 function toggleFullscreen() {
   if (!document.fullscreenElement) {
-    displayArea.value?.requestFullscreen();
+    displayWrapper.value?.requestFullscreen();
   } else {
     document.exitFullscreen();
   }
@@ -246,20 +393,39 @@ function handleFullscreenChange() {
   }
 }
 
+let scoreboardClockFrame = null;
+function startScoreboardClock() {
+  if (scoreboardClockFrame != null) return;
+  const tick = () => {
+    scoreboardNow.value = Date.now();
+    scoreboardClockFrame = requestAnimationFrame(tick);
+  };
+  scoreboardClockFrame = requestAnimationFrame(tick);
+}
+
+function stopScoreboardClock() {
+  if (scoreboardClockFrame == null) return;
+  cancelAnimationFrame(scoreboardClockFrame);
+  scoreboardClockFrame = null;
+}
+
 onMounted(() => {
   document.addEventListener("fullscreenchange", handleFullscreenChange);
+  startScoreboardClock();
   if (selectedFile.value) {
     loadRecords();
   }
 });
 
 onUnmounted(() => {
+  stopScoreboardClock();
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
   document.body.classList.remove("scoreboard-fullscreen");
 });
 
 onActivated(() => {
   isActive.value = true;
+  startScoreboardClock();
   document.addEventListener("fullscreenchange", handleFullscreenChange);
   if (missedUpdate.value || lastLoadedFile.value !== selectedFile.value) {
     missedUpdate.value = false;
@@ -269,6 +435,7 @@ onActivated(() => {
 
 onDeactivated(() => {
   isActive.value = false;
+  stopScoreboardClock();
   document.removeEventListener("fullscreenchange", handleFullscreenChange);
   document.body.classList.remove("scoreboard-fullscreen");
 });
@@ -280,56 +447,51 @@ onDeactivated(() => {
       <!-- Controls -->
       <div v-show="!isFullscreen" class="controls">
         <div class="control-group">
-          <select v-model="selectedFile" class="form-select" aria-label="기록 파일">
-            <option :value="null" disabled>파일 선택</option>
-            <option v-for="file in recordFiles" :key="file" :value="file">
-              {{ file }}
-            </option>
-          </select>
+          <label class="control-field record-file-field">
+            <span>기록 파일</span>
+            <select v-model="selectedFile" class="form-select" aria-label="기록 파일">
+              <option :value="null" disabled>파일 선택</option>
+              <option v-for="file in recordFiles" :key="file" :value="file">
+                {{ file }}
+              </option>
+            </select>
+          </label>
 
-          <input
-            v-model="trackTemp"
-            class="form-input temp-input"
-            type="text"
-            placeholder="Track Temp"
-            aria-label="트랙 온도"
-          />
+          <label class="control-field">
+            <span>트랙 온도 · °C</span>
+            <input
+              v-model="trackTemp"
+              class="form-input temp-input"
+              type="text"
+              placeholder="미입력 시 숨김"
+              aria-label="트랙 온도"
+            />
+          </label>
 
-          <button
-            type="button"
-            class="btn btn-secondary scoreboard-theme-toggle"
-            :data-theme="scoreboardTheme"
-            :title="scoreboardTheme === 'dark' ? '화이트 전광판 테마' : '다크 전광판 테마'"
-            :aria-label="scoreboardTheme === 'dark' ? '화이트 전광판 테마로 전환' : '다크 전광판 테마로 전환'"
-            data-testid="scoreboard-theme"
-            @click="toggleScoreboardTheme"
-          >
-            <svg v-if="scoreboardTheme === 'dark'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-            </svg>
-            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="5" />
-              <line x1="12" y1="1" x2="12" y2="3" />
-              <line x1="12" y1="21" x2="12" y2="23" />
-              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
-              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
-              <line x1="1" y1="12" x2="3" y2="12" />
-              <line x1="21" y1="12" x2="23" y2="12" />
-              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
-              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+          <button class="btn btn-secondary fullscreen-button" @click="toggleFullscreen" title="전체화면" aria-label="전체화면">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
             </svg>
           </button>
-
-          <div class="accent-controls" role="group" aria-label="이벤트 표시 및 악센트 컬러">
-            <div v-for="(config, type) in EVENT_CONFIG" :key="type" class="event-control">
+          <div class="accent-controls" role="group" aria-label="이벤트 표시명, 표시 여부 및 악센트 컬러">
+            <div v-for="type in Object.keys(EVENT_CONFIG)" :key="type" class="event-control">
               <label class="visibility-control">
                 <input
                   v-model="eventVisibility[type]"
                   type="checkbox"
                   :data-testid="`scoreboard-visible-${type}`"
                 />
-                <span>{{ config.label }}</span>
+                <span>{{ type }}</span>
               </label>
+              <textarea
+                v-model="eventLabels[type]"
+                class="form-input event-label-input"
+                rows="2"
+                :maxlength="MAX_EVENT_LABEL_LENGTH"
+                :aria-label="`${type} 경기 표시명`"
+                :data-testid="`scoreboard-label-${type}`"
+                spellcheck="false"
+              ></textarea>
               <label
                 class="color-control"
                 :style="{ '--picker-color': eventColors[type] }"
@@ -337,7 +499,7 @@ onDeactivated(() => {
                 <input
                   v-model="eventColors[type]"
                   type="color"
-                  :aria-label="`${config.label} 악센트 컬러`"
+                  :aria-label="`${type} 악센트 컬러`"
                   :data-testid="`scoreboard-color-${type}`"
                 />
                 <output :data-testid="`scoreboard-color-value-${type}`">
@@ -347,19 +509,14 @@ onDeactivated(() => {
             </div>
           </div>
 
-          <button class="btn btn-secondary" @click="toggleFullscreen" title="전체화면">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3" />
-            </svg>
-          </button>
         </div>
       </div>
 
       <!-- Display Area 16:9 ratio -->
-      <div class="display-wrapper">
-        <div ref="displayArea" class="display-area" :data-scoreboard-theme="scoreboardTheme">
+      <div ref="displayWrapper" class="display-wrapper">
+        <div class="display-area">
           <div v-if="!selectedFile" class="empty-state"></div>
-          <div v-else-if="records.length === 0 && !loading" class="empty-state">
+          <div v-else-if="records.length === 0 && !loading && availableTypes.length === 0" class="empty-state">
             <p>기록이 없습니다</p>
           </div>
 
@@ -387,34 +544,50 @@ onDeactivated(() => {
                 :style="{ '--panel-color': eventColors[type] }"
               >
                 <div class="event-heading">
-                  <span class="event-name">{{ EVENT_CONFIG[type].label }}</span>
+                  <span v-fit-text class="event-name">{{ eventLabels[type] }}</span>
                 </div>
 
                 <section
                   class="record-cell current-record"
-                  :class="{ empty: !latestByType[type] }"
+                  :class="{
+                    empty: !currentByType[type],
+                    measuring: currentByType[type]?.measuring,
+                    'record-confirmed': currentRecordEffects[type],
+                  }"
+                  :data-measuring="currentByType[type]?.measuring ? 'true' : 'false'"
                   :data-testid="`current-record-${type}`"
+                  @animationend="clearCurrentRecordEffect(type, $event)"
                 >
                   <div class="record-head">
                     <span class="record-label">Current</span>
-                    <span class="entry-number">No. {{ latestByType[type] ? String(latestByType[type].num).padStart(2, "0") : "--" }}</span>
+                    <span class="entry-number">No. {{ currentByType[type]?.num != null ? String(currentByType[type].num).padStart(2, "0") : "--" }}</span>
                   </div>
                   <div class="record-result">
-                    <template v-if="latestByType[type]">
-                      {{ formatResult(latestByType[type].result, latestByType[type].status) }}<span v-if="!latestByType[type].status" class="unit">s</span>
+                    <template v-if="currentByType[type]?.measuring">
+                      <span :data-testid="`live-timer-${type}`">{{ currentByType[type].elapsedSeconds }}</span><span class="unit">s</span>
+                    </template>
+                    <template v-else-if="currentByType[type]">
+                      {{ formatResult(currentByType[type].result, currentByType[type].status) }}<span v-if="!currentByType[type].status" class="unit">s</span>
                     </template>
                     <template v-else>--:--<span class="unit">s</span></template>
                   </div>
                   <div class="record-team record-team-name">
-                    <span v-fit-text class="university-name">{{ latestByType[type]?.univ || "-" }}</span>
-                    <span v-fit-text class="team-name-text">{{ latestByType[type]?.team || "-" }}</span>
+                    <span
+                      v-fit-text="[currentByType[type]?.univ, currentByType[type]?.measuring]"
+                      class="university-name"
+                    >{{ currentByType[type]?.univ || "-" }}</span>
+                    <span
+                      v-fit-text="[currentByType[type]?.team, currentByType[type]?.measuring]"
+                      class="team-name-text"
+                    >{{ currentByType[type]?.team || "-" }}</span>
                   </div>
                 </section>
 
                 <section
                   class="record-cell best-record"
-                  :class="{ empty: !bestRecords[type] }"
+                  :class="{ empty: !bestRecords[type], 'best-updated': bestRecordEffects[type] }"
                   :data-testid="`best-record-${type}`"
+                  @animationend="clearBestRecordEffect(type, $event)"
                 >
                   <div class="record-head">
                     <span class="record-label">Best</span>
@@ -476,27 +649,20 @@ onDeactivated(() => {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  container-type: inline-size;
 }
 
-.display-area[data-scoreboard-theme="light"] {
-  --scoreboard-bg: #fff;
-  --scoreboard-text: #17191f;
-  --scoreboard-muted: #6b7280;
-  --scoreboard-best: #c81e1e;
-  --scoreboard-live: #dc2626;
-  --scoreboard-temp: #c81e1e;
-}
-
-:global(.scoreboard-fullscreen) .display-area {
-  max-width: none;
-  aspect-ratio: auto;
-  height: 100vh;
+.display-wrapper:fullscreen {
   width: 100vw;
+  height: 100vh;
+  background: #16171c;
+}
+
+.display-wrapper:fullscreen .display-area {
+  width: min(100vw, 177.7778vh);
+  height: min(100vh, 56.25vw);
+  max-width: none;
   border-radius: 0;
-  position: fixed;
-  top: 0;
-  left: 0;
-  z-index: 9999;
 }
 
 .empty-state {
@@ -511,63 +677,49 @@ onDeactivated(() => {
 
 /* Scoreboard */
 .scoreboard {
+  --scoreboard-padding: 2cqw;
+  --scoreboard-header-spacing: 1cqw;
   flex: 1;
   display: flex;
   flex-direction: column;
-  padding: clamp(1.25rem, 2vw, 2.5rem);
+  padding: var(--scoreboard-padding);
+  padding-top: var(--scoreboard-header-spacing);
   background: var(--scoreboard-bg);
   color: var(--scoreboard-text);
   overflow: hidden;
-}
-
-:global(.scoreboard-fullscreen) .scoreboard {
-  padding: clamp(2rem, 2.6vw, 3.5rem);
 }
 
 /* Header — override the app shell's globally dark .header surface. */
 .scoreboard > .header {
   display: flex;
   align-items: center;
-  gap: clamp(1rem, 1.6vw, 2rem);
-  margin-bottom: clamp(0.75rem, 1.4vh, 1.5rem);
+  gap: 1.6cqw;
+  margin-bottom: var(--scoreboard-header-spacing);
   padding: 0;
   background: transparent;
   border: 0;
 }
 
 .title {
-  font-size: clamp(2rem, 2.6vw, 3.75rem);
+  font-size: 2.6cqw;
   font-weight: 700;
   color: var(--scoreboard-text);
   margin: 0;
 }
 
-:global(.scoreboard-fullscreen) .title {
-  font-size: clamp(3rem, 3.2vw, 4.25rem);
-}
-
 .live {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  font-size: clamp(1.1rem, 1.4vw, 1.8rem);
+  gap: 0.416667cqw;
+  font-size: 1.4cqw;
   font-weight: 600;
 }
 
-:global(.scoreboard-fullscreen) .live {
-  font-size: clamp(1.5rem, 1.7vw, 2.25rem);
-}
-
 .live-dot {
-  width: 16px;
-  height: 16px;
+  width: 0.833333cqw;
+  height: 0.833333cqw;
   border-radius: 50%;
   background: var(--scoreboard-muted);
-}
-
-:global(.scoreboard-fullscreen) .live-dot {
-  width: 24px;
-  height: 24px;
 }
 
 .live-dot.connected {
@@ -575,12 +727,8 @@ onDeactivated(() => {
 }
 
 .temp {
-  font-size: clamp(1.1rem, 1.4vw, 1.8rem);
+  font-size: 1.4cqw;
   margin-left: auto;
-}
-
-:global(.scoreboard-fullscreen) .temp {
-  font-size: clamp(1.5rem, 1.7vw, 2.25rem);
 }
 
 .temp-val {
@@ -592,7 +740,7 @@ onDeactivated(() => {
 .panels {
   flex: 1;
   display: grid;
-  gap: clamp(1.25rem, 2.7vh, 2rem);
+  gap: 1.52cqw;
   min-height: 0;
 }
 
@@ -603,19 +751,16 @@ onDeactivated(() => {
 
 .panel {
   --panel-fg: var(--panel-color);
+  --event-font-size: 4.2cqw;
   display: grid;
-  grid-template-columns: clamp(13.5rem, 17vw, 20rem) repeat(2, minmax(0, 1fr));
+  /* Three Korean glyphs plus letter spacing, padding, and the accent border. */
+  grid-template-columns: calc(var(--event-font-size) + var(--event-font-size) + var(--event-font-size) + 3cqw) repeat(2, minmax(0, 1fr));
   min-width: 0;
   min-height: 0;
   background: color-mix(in srgb, var(--panel-color) 4%, var(--scoreboard-bg));
   border: 1px solid color-mix(in srgb, var(--panel-color) 35%, transparent);
-  border-radius: clamp(10px, 0.9vw, 18px);
+  border-radius: 0.9cqw;
   overflow: hidden;
-}
-
-.display-area[data-scoreboard-theme="light"] .panel {
-  --panel-fg: color-mix(in srgb, var(--panel-color) 68%, #000);
-  background: color-mix(in srgb, var(--panel-color) 5%, var(--scoreboard-bg));
 }
 
 .event-heading {
@@ -623,18 +768,22 @@ onDeactivated(() => {
   align-items: center;
   justify-content: center;
   text-align: center;
-  padding: clamp(0.5rem, 1vw, 1.25rem);
+  padding: 1cqw;
   background: color-mix(in srgb, var(--panel-color) 13%, var(--scoreboard-bg));
-  border-left: clamp(7px, 0.6vw, 12px) solid var(--panel-color);
+  border-left: 0.6cqw solid var(--panel-color);
 }
 
 .event-name {
-  font-size: clamp(1.4rem, 1.75vw, 2.3rem);
-  line-height: 1;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--event-font-size);
+  line-height: 1.3;
   font-weight: 800;
   color: var(--panel-fg);
   letter-spacing: 0.025em;
-  white-space: nowrap;
+  white-space: pre;
 }
 
 .record-cell {
@@ -642,28 +791,89 @@ onDeactivated(() => {
   grid-template-rows: auto minmax(0, 1fr) auto;
   min-height: 0;
   min-width: 0;
-  gap: clamp(0.15rem, 0.45vh, 0.45rem);
-  padding: clamp(0.35rem, 1vh, 1rem) clamp(0.65rem, 1.2vw, 1.5rem);
+  gap: 0.25cqw;
+  padding: 0.56cqw 1.2cqw;
+  padding-bottom: 1cqw;
+  background: var(--scoreboard-bg);
+}
+
+.current-record.record-confirmed {
+  --record-effect-color: var(--panel-color);
+}
+
+.best-record.best-updated {
+  --record-effect-color: var(--scoreboard-best);
+}
+
+.current-record.record-confirmed,
+.best-record.best-updated {
+  animation: record-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.current-record.record-confirmed .record-result,
+.best-record.best-updated .record-result {
+  animation: record-result-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+.best-record.best-updated .record-label,
+.best-record.best-updated .entry-number {
+  animation: best-meta-updated 1250ms cubic-bezier(0.2, 0.75, 0.25, 1);
+}
+
+@keyframes record-updated {
+  0%, 100% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
+  18% {
+    box-shadow:
+      inset 0 0 0 0.32cqw color-mix(in srgb, var(--record-effect-color) 90%, white),
+      inset 0 0 2.6cqw color-mix(in srgb, var(--record-effect-color) 58%, transparent);
+  }
+  36% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
+  54% {
+    box-shadow:
+      inset 0 0 0 0.32cqw color-mix(in srgb, var(--record-effect-color) 90%, white),
+      inset 0 0 2.6cqw color-mix(in srgb, var(--record-effect-color) 58%, transparent);
+  }
+  72% { box-shadow: inset 0 0 0 0 transparent, inset 0 0 0 transparent; }
+}
+
+@keyframes record-result-updated {
+  0%, 100% { transform: scale(1); text-shadow: none; }
+  18% {
+    transform: scale(1.075);
+    text-shadow:
+      0 0 0.12em color-mix(in srgb, var(--record-effect-color) 90%, white),
+      0 0 0.42em color-mix(in srgb, var(--record-effect-color) 72%, transparent);
+  }
+  36% { transform: scale(1); text-shadow: none; }
+  54% {
+    transform: scale(1.075);
+    text-shadow:
+      0 0 0.12em color-mix(in srgb, var(--record-effect-color) 90%, white),
+      0 0 0.42em color-mix(in srgb, var(--record-effect-color) 72%, transparent);
+  }
+  72% { transform: scale(1); text-shadow: none; }
+}
+
+@keyframes best-meta-updated {
+  0%, 100% { filter: brightness(1); text-shadow: none; }
+  18%, 54% { filter: brightness(1.75); text-shadow: 0 0 0.32em color-mix(in srgb, var(--scoreboard-best) 78%, transparent); }
+  36%, 72% { filter: brightness(1); text-shadow: none; }
 }
 
 .record-cell + .record-cell {
   border-left: 1px solid color-mix(in srgb, var(--scoreboard-text) 18%, transparent);
 }
 
-.best-record {
-  background: color-mix(in srgb, var(--scoreboard-best) 3%, transparent);
-}
-
 .record-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.416667cqw;
   min-width: 0;
 }
 
 .record-label {
-  font-size: clamp(2.2rem, 3.1vw, 4rem);
+  font-size: 3.1cqw;
   line-height: 0.95;
   color: var(--panel-fg);
   font-weight: 900;
@@ -678,7 +888,7 @@ onDeactivated(() => {
 .record-result {
   align-self: center;
   text-align: center;
-  font-size: clamp(4rem, 7vw, 9rem);
+  font-size: 7cqw;
   line-height: 0.95;
   font-weight: 900;
   color: var(--panel-fg);
@@ -697,7 +907,7 @@ onDeactivated(() => {
   padding: 0;
   background: transparent;
   color: var(--panel-fg);
-  font-size: clamp(2.3rem, 3.1vw, 4rem);
+  font-size: 3.1cqw;
   line-height: 1;
   font-weight: 900;
   font-style: italic;
@@ -712,12 +922,13 @@ onDeactivated(() => {
 .record-team {
   min-width: 0;
   color: var(--scoreboard-text);
-  font-size: clamp(2.4rem, 3.25vw, 4.2rem);
+  /* The 0.9em name text is 58px on a 1920px-wide display. */
+  font-size: 3.356481cqw;
   line-height: 1;
   font-weight: 850;
   display: flex;
   flex-direction: column;
-  gap: clamp(0.3rem, 0.7vh, 0.6rem);
+  gap: 0.4cqw;
 }
 
 .university-name,
@@ -731,14 +942,14 @@ onDeactivated(() => {
 .university-name {
   width: 100%;
   text-align: center;
-  font-size: 0.85em;
+  font-size: 0.9em;
   font-weight: 900;
 }
 
 .team-name-text {
   width: 100%;
   text-align: center;
-  font-size: 0.85em;
+  font-size: 0.9em;
   font-weight: 750;
 }
 
@@ -752,6 +963,17 @@ onDeactivated(() => {
   margin-left: 0.1em;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .current-record.record-confirmed,
+  .current-record.record-confirmed .record-result,
+  .best-record.best-updated,
+  .best-record.best-updated .record-result,
+  .best-record.best-updated .record-label,
+  .best-record.best-updated .entry-number {
+    animation-duration: 1ms;
+  }
+}
+
 /* Controls */
 .controls {
   width: 100%;
@@ -763,9 +985,35 @@ onDeactivated(() => {
 
 .control-group {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 0.75rem;
   flex-wrap: wrap;
+}
+
+.control-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  min-width: 0;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.record-file-field {
+  flex: 1 1 16rem;
+}
+
+.record-file-field .form-select {
+  width: 100%;
+  min-width: 0;
+}
+
+.btn.fullscreen-button {
+  justify-content: center;
+  width: 40px;
+  padding: 0;
+  flex: 0 0 40px;
+  min-height: 38px;
 }
 
 .accent-controls,
@@ -776,30 +1024,44 @@ onDeactivated(() => {
   align-items: center;
 }
 
-.btn.scoreboard-theme-toggle {
-  width: 40px;
-  height: 38px;
-  min-width: 40px;
-  padding: 0;
-  flex: 0 0 40px;
-}
-
-.btn.scoreboard-theme-toggle svg {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-}
-
 .accent-controls {
+  order: 1;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  width: 100%;
   gap: 0.75rem;
-  padding-left: 0.75rem;
-  border-left: 1px solid var(--border-color);
-  flex-wrap: wrap;
+  margin-top: 0.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
 }
 
-.event-control,
+.event-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  padding: 0.875rem;
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  min-width: 0;
+}
+
+.event-control .color-control {
+  grid-column: 2;
+  grid-row: 1;
+}
+
 .visibility-control {
   gap: 0.35rem;
+}
+
+.form-input.event-label-input {
+  grid-column: 1 / -1;
+  width: 100%;
+  min-height: 4.25rem;
+  padding: 0.5rem 0.625rem;
+  line-height: 1.5;
+  resize: vertical;
 }
 
 .color-control {
@@ -883,7 +1145,7 @@ onDeactivated(() => {
 }
 
 .temp-input {
-  width: 110px;
+  width: 140px;
 }
 
 .btn {
@@ -910,36 +1172,15 @@ onDeactivated(() => {
 
 @media (max-width: 768px) {
   .accent-controls {
-    width: 100%;
-    padding-top: 0.75rem;
-    padding-left: 0;
-    border-top: 1px solid var(--border-color);
-    border-left: 0;
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .scoreboard {
-    padding: 1.5rem;
+  .controls {
+    padding: 1rem;
   }
 
-  .display-area {
-    aspect-ratio: auto;
-    min-height: 900px;
-  }
-
-  .title {
-    font-size: 1.8rem;
-  }
-
-  .panel {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .event-heading {
-    grid-column: 1 / -1;
-  }
-
-  .record-result {
-    font-size: 3.5rem;
+  .record-file-field {
+    flex-basis: 100%;
   }
 }
 </style>

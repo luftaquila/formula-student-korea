@@ -6,6 +6,7 @@ import { useNotification } from "@shared/useNotification.js";
 import { currentCompetitionYear } from "@shared/competition-year.mjs";
 import { addRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
+import { useLiveAttempt } from "../composables/useLiveAttempt";
 import EventNameField from "../components/EventNameField.vue";
 import RecordQuickEdit from "../components/RecordQuickEdit.vue";
 import EventStatusPanel from "../components/EventStatusPanel.vue";
@@ -23,6 +24,8 @@ const lap2Time = ref(null);
 const savedRecord = ref(null);
 const quickEditSaveState = ref("ready");
 const attemptFinalized = ref(false);
+const activeLiveAttempt = ref(null);
+const measurementRunKey = ref(0);
 
 async function onSensor({ sensor, tick, startTick }) {
   if (attemptFinalized.value) return;
@@ -31,6 +34,7 @@ async function onSensor({ sensor, tick, startTick }) {
   const prevTick = lastTick.value ?? startTick;
   if (prevTick === null) {
     lastTick.value = tick;
+    activeLiveAttempt.value = liveAttempt.start();
     return;
   }
 
@@ -61,6 +65,7 @@ async function onSensor({ sensor, tick, startTick }) {
 
   // 랩 4: 랩 2와 합쳐서 저장
   if (lapNumber === 4 && lap2Time.value !== null && !savedRecord.value) {
+    const completedAttempt = activeLiveAttempt.value;
     const totalTime = lap2Time.value + lapTime;
     const recordData = {
       time: new Date(),
@@ -79,6 +84,8 @@ async function onSensor({ sensor, tick, startTick }) {
       notyf.success(`스키드패드 저장: ${msToClockStr(totalTime)}`);
     } catch (e) {
       notyf.error(`기록 저장 실패: ${e.message}`);
+    } finally {
+      stopLiveAttempt(completedAttempt);
     }
   }
 }
@@ -104,11 +111,13 @@ const session = computed(() => serial.session);
 const resetSubmitting = ref(false);
 const resetInProgress = computed(() => props.wireless && (resetSubmitting.value || !!session.value?.reset_pending));
 function clearMeasurement() {
+  measurementRunKey.value += 1;
   lapTimes.value = [];
   lastTick.value = null;
   lap2Time.value = null;
   savedRecord.value = null;
   attemptFinalized.value = false;
+  activeLiveAttempt.value = null;
 }
 watch(session, (s, previous) => {
   if (!props.wireless || !s) return;
@@ -124,6 +133,23 @@ watch(session, (s, previous) => {
 const totalTime = computed(() => msToClockStr(lapTimes.value.reduce((sum, lap) => sum + lap.time, 0)));
 const entries = computed(() => entryStore.entries);
 const canAutoSave = computed(() => eventName.value.trim() && selectedTeam.value);
+const liveAttempt = useLiveAttempt({
+  enabled: () => !props.wireless,
+  active: () => serial.green.active,
+  eventType: "스키드패드",
+  eventName: () => eventName.value,
+  team: () => selectedEntry.value,
+});
+function stopLiveAttempt(attempt = activeLiveAttempt.value) {
+  if (!attempt) return;
+  liveAttempt.stop(attempt);
+  if (activeLiveAttempt.value?.id === attempt.id) activeLiveAttempt.value = null;
+}
+function handleStatusFinalize(finalized, attempt, runKey) {
+  if (runKey !== measurementRunKey.value) return;
+  attemptFinalized.value = finalized;
+  if (finalized && attempt) stopLiveAttempt(attempt);
+}
 const {
   recentRecord,
   captureRecord,
@@ -137,6 +163,15 @@ const {
   wireless: () => props.wireless,
   session: () => serial.session,
 });
+function handleStatusRecord(record, runKey) {
+  if (runKey === measurementRunKey.value) adoptRecord(record);
+}
+function handleStatusUpdate(update, runKey) {
+  if (runKey === measurementRunKey.value) mergeRecord(update);
+}
+function handleStatusRemove(_removed, runKey) {
+  if (runKey === measurementRunKey.value) clearRecord();
+}
 
 function handleConnect() {
   serial.connect();
@@ -301,11 +336,13 @@ onUnmounted(() => clearTimeout(selectTimer));
             :wireless="wireless"
             :source="serial"
             :record="recentRecord"
+            :attempt="activeLiveAttempt"
+            :run-key="measurementRunKey"
             :disabled="!isController || resetInProgress"
-            @record="adoptRecord"
-            @update="mergeRecord"
-            @remove="clearRecord"
-            @finalize="attemptFinalized = $event"
+            @record="handleStatusRecord"
+            @update="handleStatusUpdate"
+            @remove="handleStatusRemove"
+            @finalize="handleStatusFinalize"
           />
           <button
             class="btn btn-warning btn-block mt-1"

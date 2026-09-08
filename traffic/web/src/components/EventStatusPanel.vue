@@ -11,6 +11,8 @@ const props = defineProps({
   wireless: { type: Boolean, default: false },
   source: { type: Object, required: true },
   record: { type: Object, default: null },
+  attempt: { type: Object, default: null },
+  runKey: { type: Number, default: 0 },
   disabled: { type: Boolean, default: false },
 });
 const emit = defineEmits(["record", "update", "remove", "finalize"]);
@@ -23,14 +25,16 @@ async function selectStatus(status) {
     notyf.error("이벤트 이름과 팀을 선택하세요.");
     return;
   }
+  const attempt = props.attempt;
+  const runKey = props.runKey;
   busy.value = true;
   try {
     if (props.record) {
       const patch = await updateRecord(props.record.name, props.record.rowid, "status", status);
-      emit("update", patch);
+      emit("update", patch, runKey);
     } else if (props.wireless) {
       const created = await props.source.setStatus(status);
-      emit("record", created);
+      emit("record", created, runKey);
     } else {
       const created = await addRecord(props.eventName.trim(), {
         time: new Date(),
@@ -44,11 +48,11 @@ async function selectStatus(status) {
         result: null,
         status,
       });
-      emit("record", created);
+      emit("record", created, runKey);
     }
     // A measured attempt stays finalized even when its special status is
     // restored to normal. Starting another attempt requires an explicit reset.
-    emit("finalize", status != null || props.record?.result != null);
+    emit("finalize", status != null || props.record?.result != null, attempt, runKey);
     notyf.success(`${status || "정상"} 판정을 저장했습니다.`);
   } catch (e) {
     notyf.error(`판정 저장 실패: ${e.message}`);
@@ -60,11 +64,12 @@ async function selectStatus(status) {
 async function cancelStatus() {
   if (!props.record || busy.value || props.disabled) return;
   if (!window.confirm("측정시간이 없는 판정 기록을 삭제할까요?")) return;
+  const runKey = props.runKey;
   busy.value = true;
   try {
     await deleteRecordRow(props.record.name, props.record.rowid);
-    emit("remove", { name: props.record.name, rowid: props.record.rowid });
-    emit("finalize", false);
+    emit("remove", { name: props.record.name, rowid: props.record.rowid }, runKey);
+    emit("finalize", false, null, runKey);
     notyf.success("판정 기록을 삭제했습니다.");
   } catch (e) {
     notyf.error(`판정 취소 실패: ${e.message}`);

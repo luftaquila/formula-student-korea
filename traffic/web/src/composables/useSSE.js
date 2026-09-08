@@ -2,7 +2,11 @@ import { ref, watch } from "vue";
 import { createServiceSSE, parseSSEData } from "@shared/useSSE.js";
 import { fetchWirelessEvents } from "./useApi";
 
-const { on, useSSE: useConnection } = createServiceSSE("/competition/api/v1/traffic");
+const {
+  on,
+  useSSE: useConnection,
+  reconnected,
+} = createServiceSSE("/competition/api/v1/traffic");
 
 // Shared state across all components
 const recordFiles = ref([]);
@@ -11,6 +15,7 @@ const lastUpdate = ref(null);
 const lastEntriesUpdate = ref(null);
 const eventModes = ref({});
 const recordVisibility = ref({});
+const liveAttempts = ref({});
 
 // 무선 LoRa 계측 실시간 상태
 const wirelessLight = ref(null);
@@ -107,6 +112,13 @@ on("init", (e) => {
   if (data.recordVisibility) {
     recordVisibility.value = data.recordVisibility;
   }
+  const receivedAt = Date.now();
+  liveAttempts.value = Object.fromEntries(
+    (data.liveAttempts || []).map((attempt) => [
+      attempt.event_type,
+      { ...attempt, received_at: receivedAt },
+    ]),
+  );
   if (data.wireless) {
     wirelessLight.value = data.wireless.light || null;
     wirelessMapping.value = data.wireless.mapping || [];
@@ -193,6 +205,15 @@ on("wireless:command", (e) => {
   }
 });
 
+on("live-attempt", (e) => {
+  const data = parseSSEData(e);
+  if (!data?.event_type) return;
+  const next = { ...liveAttempts.value };
+  if (data.active) next[data.event_type] = { ...data, received_at: Date.now() };
+  else delete next[data.event_type];
+  liveAttempts.value = next;
+});
+
 on("records", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
@@ -231,7 +252,9 @@ export function useSSE() {
     lastEntriesUpdate,
     eventModes,
     recordVisibility,
+    liveAttempts,
     connected,
+    reconnected,
     wirelessLight,
     wirelessMapping,
     wirelessTelemetry,

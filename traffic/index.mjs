@@ -457,6 +457,7 @@ const liveTelemetry = new Map();
 // 경기 중 자동 중단 사유. 프로세스 생존 중 SSE 재연결/화면 이동으로 경고가
 // 사라지지 않게 init/state에도 포함하고, 품질을 통과한 다음 GREEN에서만 해제한다.
 const liveQualityFaults = new Map();
+const liveAttempts = new Map();
 let bridgeOnline = false;
 let lastBridgeSeen = 0;
 let lastBridgeSeenIso = null;
@@ -480,6 +481,22 @@ function getBridgeState() {
 }
 function getLiveQualityFaults() {
   return [...liveQualityFaults.values()];
+}
+
+function liveAttemptPayload(attempt, now = Date.now()) {
+  return {
+    active: true,
+    attempt_id: attempt.attempt_id,
+    event_type: attempt.event_type,
+    event_name: attempt.event_name,
+    team: attempt.team,
+    started_at: attempt.started_at,
+    elapsed_ms: Math.max(0, now - attempt.started_at_ms),
+  };
+}
+
+function getLiveAttempts(now = Date.now()) {
+  return [...liveAttempts.values()].map((attempt) => liveAttemptPayload(attempt, now));
 }
 
 function publishWirelessQualityFault(eventType, runId, reasons, kind = "quality") {
@@ -1176,11 +1193,36 @@ const telemetryRetention = setInterval(() => {
 }, 60000);
 telemetryRetention.unref?.();
 
+const LIVE_ATTEMPT_TTL_MS = 10 * 60 * 1000;
+function runLiveAttemptWatch(now = Date.now()) {
+  for (const [eventType, attempt] of liveAttempts) {
+    if (now - attempt.started_at_ms <= LIVE_ATTEMPT_TTL_MS) continue;
+    try {
+      logger.log(null, "live_attempt.expire", {
+        event_type: eventType,
+        attempt_id: attempt.attempt_id,
+      }, eventType, SYS_ACTOR);
+      liveAttempts.delete(eventType);
+      broadcastEvent("live-attempt", {
+        active: false,
+        event_type: eventType,
+        attempt_id: attempt.attempt_id,
+        reason: "timeout",
+      });
+    } catch (error) {
+      console.error("[traffic] live attempt expiry:", error?.message || error);
+    }
+  }
+}
+const liveAttemptWatch = setInterval(runLiveAttemptWatch, 1000);
+liveAttemptWatch.unref?.();
+
 // SSE 엔드포인트
 app.get("/api/events", sseHandler(() => ({
   recordFiles: getRecordFiles(),
   eventModes: getEventModes(),
   recordVisibility: getRecordVisibility(),
+  liveAttempts: getLiveAttempts(),
   wireless: {
     light: getLightState(),
     mapping: getMapping(),
@@ -1335,6 +1377,73 @@ function validateControllerData({ timestamp, data }) {
   }
   return { valid: true, timestamp: normalizedTimestamp };
 }
+
+// 유선 컨트롤러와 유선 매뉴얼 모드는 같은 센서 처리 경로를 사용한다. 출발 센서가
+// 래치된 시점만 서버에 공유하고, 전광판 클라이언트는 SSE 수신 시점부터 로컬로 시간을 증가시킨다.
+app.post("/api/live-attempts", (req, res) => {
+  const { action, event_type, attempt_id } = req.body || {};
+  const reject = (message) => rejectMutation(req, res, {
+    action: "live_attempt.publish",
+    status: 400,
+    message,
+    target: typeof event_type === "string" ? event_type : "live_attempt",
+    operation: typeof action === "string" ? action : "publish",
+    context: { event_type: event_type ?? null, attempt_id: attempt_id ?? null },
+  });
+
+  if (!EVENT_TYPES.includes(event_type)) return reject("올바르지 않은 종목입니다.");
+  if (!/^[A-Za-z0-9-]{1,100}$/.test(attempt_id || "")) return reject("올바르지 않은 계측 시도 ID입니다.");
+
+  if (action === "start") {
+    const selection = validateSelectionRequest(req, res, "live_attempt.start", event_type);
+    if (!selection) return;
+    if (!selection.valid) {
+      return rejectMutation(req, res, {
+        action: "live_attempt.start",
+        status: selection.status || 400,
+        message: selection.error,
+        target: event_type,
+        operation: "start",
+        context: { event_type, attempt_id },
+      });
+    }
+    if (!selection.team || !selection.event_name) return reject("경기 이름과 참가팀을 선택해야 합니다.");
+
+    const startedAtMs = Date.now();
+    const attempt = {
+      attempt_id,
+      event_type,
+      event_name: selection.event_name,
+      team: selection.team,
+      started_at: new Date(startedAtMs).toISOString(),
+      started_at_ms: startedAtMs,
+    };
+    const payload = liveAttemptPayload(attempt, startedAtMs);
+    logger.log(req, "live_attempt.start", {
+      event_type,
+      attempt_id,
+      event_name: selection.event_name,
+      team_id: selection.team.id ?? selection.team.teamId ?? null,
+      team_num: selection.team.num,
+    }, event_type);
+    liveAttempts.set(event_type, attempt);
+    broadcastEvent("live-attempt", payload);
+    return res.status(201).json(payload);
+  }
+
+  if (action === "stop") {
+    const current = liveAttempts.get(event_type);
+    const cleared = current?.attempt_id === attempt_id;
+    logger.log(req, "live_attempt.stop", { event_type, attempt_id, cleared }, event_type);
+    if (cleared) {
+      liveAttempts.delete(event_type);
+      broadcastEvent("live-attempt", { active: false, event_type, attempt_id });
+    }
+    return res.json({ cleared });
+  }
+
+  return reject("올바르지 않은 계측 상태 작업입니다.");
+});
 
 /* ============================================
    API 라우트: /api/records
@@ -2927,10 +3036,11 @@ return {
   db,
   closeSse,
   sourceEvent: broadcastSSEEvent,
-  timers: [bridgeWatch, leaseWatch, eventRetention, telemetryRetention],
+  timers: [bridgeWatch, leaseWatch, eventRetention, telemetryRetention, liveAttemptWatch],
   queries: { yearRecordGroups: getYearRecordGroups, eventModes: getEventModes },
   runBridgeWatch,
   runLeaseWatch,
   runEventRetention,
+  runLiveAttemptWatch,
 };
 }

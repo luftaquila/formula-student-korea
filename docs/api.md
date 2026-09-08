@@ -344,7 +344,13 @@ A successful answer or memo change automatically adds the authenticated account'
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/events` | `traffic.operate` | — | SSE stream | Real-time record/event-mode + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent GREEN emits `{ event_type, cleared: true }`. |
+| GET | `/events` | `traffic.operate` | — | SSE stream | Real-time record/event-mode + live-attempt + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, liveAttempts, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. A `live-attempt` event shares the start/stop state published by wired and manual timing clients. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent GREEN emits `{ event_type, cleared: true }`. |
+
+### Live Attempts
+
+| Method | Path | Role | Request | Response | Description |
+|--------|------|------|---------|----------|-------------|
+| POST | `/live-attempts` | `traffic.operate` | `{ action: start, event_type, attempt_id, event_name, team }` or `{ action: stop, event_type, attempt_id }` | Start: live attempt (201); stop: `{ cleared }` | 유선 계측기와 유선 매뉴얼 모드의 출발 센서 상태를 전광판에 공유한다. 시작과 종료는 `live-attempt` SSE로 전파되며, 10분이 지난 미완료 상태는 자동 종료된다. |
 
 ### Record Management
 
