@@ -101,7 +101,8 @@ per request. Resolved `clause_id` fragments are returned as inert JSON, then HTM
 and MathML are allowlisted in the browser. Stored clause numbers never drive
 resolution, and opening another item does not transfer the full rulebook again.
 
-Rollout, revalidation after a rulebook release, and year rollover steps are in the [rule links runbook](runbooks/inspection-rule-links.md).
+Catalog schema, reference mutations, and failure recovery:
+[Template Management](api.md#template-management).
 
 ## Documents files
 
@@ -118,7 +119,7 @@ create-if-absent artifacts. k3s deployment must never rerun the legacy migration
 Backup and restore validate one coordinated Competition, Auth, Calendar, Course,
 and Email state before publishing or replacing artifacts. FileBrowser payload may
 be included; its private database and lifecycle are outside this contract. Follow
-the [backup/restore gates](runbooks/backup-restore.md).
+the [backup/restore gates](../CONTRIBUTING.md#backup-and-restore).
 
 Rollback never translates Competition writes into legacy schemas or restarts the
 retired writers. Restore a validated coordinated Competition backup and deploy an

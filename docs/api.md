@@ -302,6 +302,13 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 
 ### Template Management
 
+`RULES_BASE_URL` in both clusters' configmaps points at a schema-v2
+`rules-manifest.json` catalog. Fetch limits: 3 s, 5 MB, ten-minute cache.
+`deployment.site_tag` must match `site-YYYYMMDD-vN`; document `release_tag`
+must match `formula-<document>-YYYY-vN`. Invalid/unavailable catalogs fail
+dependent endpoints with `503 RULE_CATALOG_UNAVAILABLE`, without failing readiness.
+Retired stable keys remain declared in the catalog's `retired_rule_keys`.
+
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/sheet/template` | `inspection.operate` | `?year=` | Tree: `[{ id, name, excluded_types, subcategories: [{ groups: [{ items: [{ ..., field_key, rule_refs }] }] }] }]` | Template tree for year; `rule_refs.status` is `verified`, `needs_review`, or `no_direct_rule` |
@@ -318,6 +325,19 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 | POST | `/sheet/template/rule-refs/sync` | `inspection.manage` | `{ from_year, to_year }` | `{ counts, reasons }` | Fill target `needs_review` items by matching `field_key`; verified target decisions are preserved |
 | POST | `/sheet/template/rule-refs/revalidate` | `inspection.manage` | `{ year }` | `{ year, counts }` | Refresh catalog metadata; changed or missing verified clauses become `needs_review` and are never auto-promoted |
 | GET | `/sheet/rule-link/:itemId/:referenceIndex` | `inspection.operate` | — | 302 | Resolve a verified, hash-matching stable key to the current safe Pages anchor for that edition |
+
+After catalog releases, revalidate affected years and inspect audit
+`counts.changed`, `counts.missing`, `catalog_site_tag`, and `catalog_releases`.
+Changed/missing references require explicit review; never auto-promote them.
+If a target edition was unavailable during year copy, sync after publication.
+Preserve reviewed template exports in Git for recovery.
+
+| Failure | Recovery |
+|---|---|
+| `503 RULE_CATALOG_UNAVAILABLE` | Check `RULES_BASE_URL`, catalog deployment/schema, and `phase: rule_catalog` logs from `rule_refs.search` / `rule_link.resolve` |
+| `409 INSPECTION_STALE_WRITE` | Reload current references before retrying |
+| `409 RULE_REFERENCE_CHANGED` / `RULE_REFERENCE_MISSING` | Revalidate the year, then explicitly review affected items |
+| `500 INVALID_STORED_RULE_REFS` | Restore references from the last template export; do not hand-edit clause IDs or hashes |
 
 `excluded_types` contains up to 50 vehicle type **names** (entry's
 `vehicle_types_<year>`) excluded from a category. Default `[]` admits every type,
@@ -405,7 +425,7 @@ mutation endpoint. `answer_updated_by`, `answer_updated_at`, `memo_updated_by`, 
 | GET | `/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |
 | POST | `/wireless/bridge/offline` | `traffic.operate` | — | `{ ...bridge }` | 브리지가 종료 직전 오프라인을 즉시 보고 (15초 무수신 감지 대기 없이) |
 
-무선 프로토콜 v9는 v8과 호환되지 않는다. 서버·웹 브리지·마스터·전 센서 펌웨어를 함께 갱신해야 한다. 업그레이드 시 v9 캡처 검증 정보가 없는 진행 런은 중단하고 저장된 공식 기록은 보존한다.
+무선 프로토콜은 v9다. 서버·웹 브리지·마스터·전 센서는 같은 버전을 사용한다. 업그레이드 시 캡처 검증 정보가 없는 진행 런은 중단하고 저장된 공식 기록은 보존한다.
 
 시작 시각 확인 중 성공한 정지·초기화나 다른 경기 제어 요청으로 상태가 바뀌면 해당 START는 `409`로 거부된다. 서버는 시각 확인 전후에 계측 준비 상태를 검사하고, 확인 중 저장된 캡처도 새 런에서 한 번만 처리한다.
 

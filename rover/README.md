@@ -1,8 +1,7 @@
 # FSK Rover
 
-Raspberry Pi 5 + RTK GPS rover. Drives a waypoint mission, sprays a
-marker at each cone. Podman container on AlmaLinux bootc; Tailscale
-for remote access.
+Raspberry Pi 5 / AlmaLinux bootc hosts ROS navigation in Podman; RP2040 owns
+actuation. Hardware and runtime contracts follow.
 
 ## Hardware
 
@@ -338,10 +337,6 @@ Vbat ─[100 kΩ 1%]─┬─ GP26 (ADC0)
 
 ### Field calibration (1-point gain)
 
-Operator path: battery popover → "전압 보정" → enter multimeter reading.
-
-Pipeline:
-
 ```
 POST /api/rover/calibrate-battery
   → SSE → bridge_node → /rover/cmd/calibrate_battery
@@ -474,8 +469,7 @@ INTERNAL_SECRET=… NTRIP_USERNAME=YOUR_NGII_LOGIN PILOT_STATE_DIR=/tmp \
     server_url:=https://your-server.example/course
 ```
 
-<details>
-<summary>Mirror the rover's <code>/dev/tty{GPS,MCU}</code> symlinks (only if your dev box has these devices)</summary>
+For a development host with GPS/MCU devices, install the device symlinks:
 
 ```bash
 sudo install -m 644 \
@@ -484,8 +478,6 @@ sudo install -m 644 \
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty
 ```
-</details>
-
 Single-node:
 
 ```bash

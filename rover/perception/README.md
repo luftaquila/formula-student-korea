@@ -33,11 +33,10 @@ handles operator alerts, video, and resume.
                                                             + mirror status=paused
 ```
 
-Operator flow: **detect → rover auto-pauses itself → alert + live camera pops up
-→ operator drives manually around the obstacle → presses 재개 (resume)**. Resume
-goes through the server (`/api/rover/resume`) exactly like an operator pause.
+Resume is an explicit server command; obstacle clearance does not auto-resume
+the mission. See [Missions](../../docs/api.md#missions-roveroperate).
 
-## How streaming works
+## Streaming
 
 The outbound control SSE gates capture and encoding by viewer:
 
@@ -52,7 +51,7 @@ WebRTC publishes to `{SERVER_URL}/api/rtc/{rover-2d,rover-vr}/whip` at
 MJPEG uses the whole left eye in dual layout or `CAMERA_VIEW` in SBS layout, and
 activates when WebRTC negotiation fails or the stream drops.
 
-### Depth composite (operator toggle)
+### Depth composite
 
 `depth-on` / `depth-off` on the control SSE toggles the shared MJPEG/`rover-2d`
 composite while any 2D viewer is present. With calibration, it overlays depth on
@@ -67,13 +66,10 @@ With `ximgproc`, left/right SGBM matchers feed the WLS filter. The display uses 
 filled depth map, but detection and the nearest marker require confidence ≥
 `STEREO_WLS_CONF_MIN` to exclude interpolated depth. Without `ximgproc`, use plain
 SGBM plus `filterSpeckles`. Keep `numDisparities` unscaled with compute resolution:
-96 reaches about 0.35 m at 512×288; scaling it previously limited range to ~1.08 m.
+96 reaches about 0.35 m at 512×288.
 The marker uses the nearest equidepth region's centroid and excludes `VIZ_EDGE_MARGIN`.
 
-Pi 5 measurements (720p base, 512×288 depth): ~23 fps SGBM compute;
-paused/idle composite ~8 fps on three cores or ~5 fps on one, limited by rectification.
-
-## How detection works
+## Detection
 
 Detection runs only while `/rover/nav/state` is `NAVIGATING`. Calibrated stereo
 images produce metric depth through rectification and StereoSGBM. An obstacle
@@ -153,9 +149,8 @@ Lower capture resolution for more headroom and recalibrate at that resolution.
 
 ## Stereo calibration (one-time, per camera/mounting)
 
-Until this runs, obstacle detection stays disabled. The rover is headless, so
-the tool has no preview window — it auto-grabs board pairs as you sweep a
-printed checkerboard across the frame.
+Calibration requires physical checkerboard captures; the headless tool has no
+preview window. Detection remains disabled without usable calibration.
 
 ```bash
 # 1. Stop the running node so the camera is free.
@@ -178,20 +173,10 @@ sudo podman run --rm --network=host \
 sudo systemctl start perception.service
 ```
 
-> **Calibrating at a lower depth resolution (for the live depth composite / a faster
-> detect):** stereo block matching cost scales with resolution, so the depth pipeline
-> can run much faster at a smaller size (benchmarked on the Pi 5: 512×288 3WAY ≈ 22 fps
-> on one core vs ~2 fps at 720p). The cam **ignores `--width/--height` and always
-> delivers 720p**, so pass `--proc-width/--proc-height` to downsample each captured eye
-> before solving — that is what fixes the maps' `image_size` at the target size (at
-> runtime `StereoDepth._prep_eye` resizes the 720p eye to match). Keep the aspect 16:9
-> (the sensor is 16:9); 512×288 and 640×360 are good picks. Also set
-> `STEREO_NUM_DISPARITIES` proportionally (720p→96, 512×288→32, 640×360→48):
-> ```bash
-> ... /opt/perception/stereo_calibrate.py \
->     --device /dev/video0 --right-device /dev/video2 \
->     --cols 9 --rows 6 --square-m 0.025 --proc-width 512 --proc-height 288
-> ```
+For a camera that ignores capture `--width`/`--height`, use
+`--proc-width`/`--proc-height` to set the calibration image size (16:9).
+Runtime resizes captures to that size. Do not scale `STEREO_NUM_DISPARITIES`
+with resolution; it controls the nearest measurable depth.
 
 The tool prints per-eye + stereo RMS and the recovered baseline (should be
 ~60 mm). Stereo RMS > 1.0 px means a poor calibration (recapture with a flatter
@@ -207,10 +192,8 @@ ssh fsk@<rover-ip> sudo journalctl -u perception.service -n 50
 # uncalibrated). Open the rover panel and toggle 📷 카메라 to confirm frames.
 ```
 
-> **Hardware-validated:** the server relay + web `<img>` and the pure obstacle
-> decision are covered by tests, but the capture path (`cv2.VideoCapture`) and
-> the tuned depth thresholds must be confirmed against the actual camera. Drive
-> a mission with something in the corridor and confirm the auto-pause + alert.
+Tests cover relay and obstacle decision logic. Capture and depth thresholds
+require actual-camera verification, including mission pause and alert delivery.
 
 ## CI
 

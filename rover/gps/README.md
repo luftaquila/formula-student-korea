@@ -1,8 +1,7 @@
 # FSK GPS-Registration Unit
 
-A Raspberry Pi Zero 2 W + ZED-F9P unit for RTK cone surveys. At a cone, press
-"좌표 요청" in the course UI to capture the current fix. It can also supply RTCM3
-corrections as a [fixed base station](#base-station).
+Pi Zero 2 W + ZED-F9P supports position capture or a mutually exclusive
+[RTCM3 base-station mode](#base-station).
 
 ## Runtime choice
 
@@ -60,23 +59,13 @@ All are internal-strict — the unit sends `X-Internal-Service: $INTERNAL_SECRET
 
 ## Base station
 
-Managed from the course UI's **GPS** tab (admin). Two steps:
-
-1. **Survey** a named point (`측량`): while NGII RTK is `rtk_fixed`, the unit
-   averages `NAV-HPPOSLLH` positions for the chosen duration (default 120 s) and
-   records the mean as the point's coordinate (`POST /api/rover/base/survey-result`).
-2. **Activate** it as the base (select **수신기 base station** + the point): the
-   server sends `base-activate`, the unit switches the F9P to **TMODE FIXED (LLH)**
-   at the surveyed coordinate and enables RTCM3 (MSM7 1077/1087/1097/1127 + 1005 +
-   1230) on USB. It extracts complete RTCM3 frames from the serial stream (see
-   `pilot/lib/rtcm_utils.py`) and relays them via `POST /api/rover/base/rtcm`; the
-   server forwards them to the rover over its SSE (`rtcm` event → GPS serial). No
-   NGII needed while acting as a fixed base.
-
-Cone-capture and base-station roles are mutually exclusive (`_mode`): in base mode
-the unit is not a position source, so cone capture falls back to the rover (which
-is now getting RTK from this base). Switching the source back to **NGII** sends
-`base-stop`, reverts TMODE, and resumes normal capture.
+- Survey requires NGII `rtk_fixed`; average `NAV-HPPOSLLH` over the requested
+  duration (default 120 s), then POST `/api/rover/base/survey-result`.
+- `base-activate` switches F9P to TMODE FIXED (LLH), enables USB RTCM3
+  MSM7 1077/1087/1097/1127 + 1005 + 1230, and relays complete frames through
+  `/api/rover/base/rtcm`. The server forwards them to the rover's `rtcm` SSE.
+- Base mode disables receiver position capture and NGII corrections; capture
+  falls back to the rover. `base-stop` reverts TMODE and restores capture.
 
 ## Provisioning
 
@@ -96,8 +85,8 @@ Keep Wi-Fi and Tailscale keys only in the card's cloud-init files
 (`network-config` and `user-data`), never in Git. First boot needs internet to
 install and authenticate Tailscale.
 
-Boot, wait ~1–2 min for first-boot setup, then `ssh fsk@fsk-rover-gps.local`
-(or via Tailscale). Re-point Wi-Fi for a site with:
+After first-boot setup, connect with `ssh fsk@fsk-rover-gps.local` or Tailscale.
+Update Wi-Fi with:
 
 ```bash
 sudo nmcli connection modify <conn> 802-11-wireless.ssid 'MyAP' \

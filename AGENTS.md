@@ -3,6 +3,9 @@
 - Report progress and results in Korean; write PR titles, descriptions, and comments
   in English.
 - Preserve user changes. Do not commit or create PRs unless requested.
+- Keep repository documentation limited to agent task references: contracts,
+  constraints, and execution/verification procedures. Merge duplicate coverage;
+  omit human user guides, introductions, and historical narration.
 
 ## Required references
 
@@ -14,6 +17,8 @@ Read the applicable references before work:
 - Network limits: [Venue network](docs/architecture.md#venue-network).
 - Roster loading and SSE recovery: [Runtime communication](docs/architecture.md#runtime-communication).
 - Deployment, repository paths, or image ownership: [k3s deployment](CONTRIBUTING.md#k3s-deployment).
+- Backup and restore: [validation gates](CONTRIBUTING.md#backup-and-restore).
+- Rover, GPS, perception, or timing hardware: component references in [README.md](README.md).
 - Completion: [Handoff](CONTRIBUTING.md#handoff).
 
 ## Project invariants
