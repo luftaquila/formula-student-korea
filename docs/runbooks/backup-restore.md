@@ -15,8 +15,6 @@ restore-tests every restore gate below for the target environment.
 
 ## Required backup unit
 
-A backup must contain exactly one coordinated application state:
-
 - `competition.db` and its Documents upload tree
 - Auth, Calendar, Course, and Email SQLite databases
 - an exact manifest identifying every required database
@@ -30,7 +28,7 @@ the main database file while WAL writes can continue.
 
 ## Backup gates
 
-Before publishing an archive:
+Before publication, validate without modifying sources:
 
 1. Validate the exact database manifest and complete schemas.
 2. Run SQLite integrity and foreign-key checks.
@@ -39,8 +37,7 @@ Before publishing an archive:
 5. Verify the archive can be read and record its hash, source environment, and
    creation time.
 
-Any missing member or failed check rejects the backup. Never modify a source database
-to make validation pass.
+Any missing member or failed check rejects the backup.
 
 ## Restore gates
 

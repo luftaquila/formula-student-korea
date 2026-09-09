@@ -4,16 +4,14 @@ A Raspberry Pi Zero 2 W + ZED-F9P unit for RTK cone surveys. At a cone, press
 "좌표 요청" in the course UI to capture the current fix. It can also supply RTCM3
 corrections as a [fixed base station](#base-station).
 
-## Why this exists (and how it differs from the rover)
+## Runtime choice
 
-The Zero 2 W is unsupported by the rover's Pi 4/5 GPT/UEFI bootc image, and its
-512 MB RAM cannot host AlmaLinux, podman, and ROS 2 Jazzy. It runs Raspberry Pi OS
-Lite (64-bit, Trixie), provisioned headlessly with cloud-init, and a Python systemd
-service using the rover's [ROS-free GPS/NTRIP modules](#code-reuse).
+The 512 MB Zero 2 W uses Raspberry Pi OS Lite (64-bit, Trixie), cloud-init, and a
+Python systemd service. It cannot use the Pi 4/5 bootc image or the full ROS stack.
+The agent shares the rover's [ROS-free GPS/NTRIP code](#code-reuse).
 
-The receiver uses `?device=gps`, independently of the rover slot. Both authenticate
-with `INTERNAL_SECRET` and may connect simultaneously. Cone capture prefers the
-receiver, falling back to the rover.
+Its independent `?device=gps` slot authenticates with `INTERNAL_SECRET` and can
+coexist with the rover. Cone capture prefers the receiver.
 
 ## Hardware
 
@@ -42,18 +40,11 @@ receiver, falling back to the rover.
                    ZED-F9P (USB /dev/ttyGPS)
 ```
 
-- **serial loop** — opens `/dev/ttyGPS`, configures the F9P (UBX
-  NAV-PVT/HPPOSLLH/DOP on, NMEA off), parses fixes, reopens on USB drop,
-  and POSTs position every `POSITION_REPORT_INTERVAL` s.
-- **ntrip** — on the first 3D fix, fetches the NGII source table, picks the
-  nearest RTCM 3.2 base, and streams corrections back into the receiver.
-- **sse** — holds `/api/rover/stream?device=gps`; on `request-position` replies
-  with the current fix tagged with the request id, and handles the base-station
-  commands (`base-survey-start`/`base-survey-cancel`/`base-activate`/`base-stop`).
-  Other rover commands (execute-path, manual-control, calibrate-\*) are no-ops.
-- **telemetry** — every 3 s POSTs `fix_status`, NTRIP status, GPS accuracy,
-  plus `mode`/`base` (base-session state + relayed RTCM bytes) so the operator
-  UI shows live RTK quality. `nav_state` is always `IDLE`.
+The agent configures UBX NAV-PVT/HPPOSLLH/DOP with NMEA off, reopens dropped USB,
+and reports position at `POSITION_REPORT_INTERVAL`. The first 3D fix selects the
+nearest NGII RTCM 3.2 base. SSE handles position requests and base commands;
+driving/calibration commands are ignored. Telemetry every 3 s includes fix/NTRIP
+quality and base state, with `nav_state=IDLE`.
 
 ## Server endpoints used
 

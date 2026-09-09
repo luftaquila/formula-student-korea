@@ -37,37 +37,20 @@ Operator flow: **detect → rover auto-pauses itself → alert + live camera pop
 → operator drives manually around the obstacle → presses 재개 (resume)**. Resume
 goes through the server (`/api/rover/resume`) exactly like an operator pause.
 
-### Files
-
-| File | Role |
-|------|------|
-| `perception_node.py` | entrypoint: rclpy node, owns the camera capture loop, wires streaming (MJPEG + WebRTC) + detection |
-| `cloud_link.py` | all HTTP to the server — control SSE (camera-start/stop, mjpeg-on/off, webrtc-2d/vr-on/off, depth-on/off), JPEG frame POST, obstacle alert POST |
-| `webrtc_pub.py` | aiortc WHIP publisher — H.264-encodes pushed frames (via PyAV) and streams them to a mediamtx WHIP endpoint; one publisher per stream (rover-2d, rover-vr) |
-| `stereo.py` | stereo depth + rectified SBS (`rectify_sbs`, for the VR stream) + the pure (cv2-free) corridor-obstacle decision + edge debounce |
-| `stereo_calibrate.py` | one-time checkerboard calibration tool (run on-demand, see below) |
-
 ## How streaming works
 
-Tailscale-free, outbound-only like `pilot`: the node holds a control SSE to the
-server. The server tracks viewers and emits fine-grained gating on that channel
-so the rover only does the work someone is watching: `camera-start`/`camera-stop`
-(any viewer at all), `webrtc-2d-on`/`webrtc-vr-on` (a WebRTC viewer of that stream
-is holding), and `mjpeg-on` (an MJPEG fallback `<img>` viewer is attached).
+The outbound control SSE gates capture and encoding by viewer:
 
-- **WebRTC (primary).** On `webrtc-2d-on`/`webrtc-vr-on` the node lazily starts a
-  `webrtc_pub.py` WHIP publisher for that stream and pushes frames to mediamtx,
-  which relays them to the browser over WHEP. `rover-2d` carries the mono left eye
-  (or the depth composite); `rover-vr` carries the rectified left|right
-  side-by-side stereo (`stereo.rectify_sbs`) that the VR view splits per eye. Each
-  stream is encoded only while its viewer is present, so a 2D-only session pays no
-  VR cost and vice-versa. Frames are paced to `CAMERA_FPS`; the WHIP URLs are built
-  from `SERVER_URL` (`/api/rtc/rover-2d/whip`, `/api/rtc/rover-vr/whip`).
-- **MJPEG (fallback).** On `mjpeg-on` the capture loop also JPEG-encodes one eye —
-  the left node whole in dual layout, or `CAMERA_VIEW` cropped from the SBS frame —
-  and POSTs each frame; the server fans them to browsers as
-  `multipart/x-mixed-replace`. The browser only opens this if WebRTC can't
-  negotiate (e.g. a network with no viable ICE path) or drops mid-session.
+| Event | Work enabled |
+|---|---|
+| `camera-start` / `camera-stop` | Camera capture |
+| `webrtc-2d-on` / `webrtc-vr-on` | WHIP publisher for the corresponding stream |
+| `mjpeg-on` | JPEG POST relay for fallback viewers |
+
+WebRTC publishes to `{SERVER_URL}/api/rtc/{rover-2d,rover-vr}/whip` at
+`CAMERA_FPS`. 2D uses the left eye or depth composite; VR uses rectified stereo.
+MJPEG uses the whole left eye in dual layout or `CAMERA_VIEW` in SBS layout, and
+activates when WebRTC negotiation fails or the stream drops.
 
 ### Depth composite (operator toggle)
 
@@ -92,29 +75,17 @@ paused/idle composite ~8 fps on three cores or ~5 fps on one, limited by rectifi
 
 ## How detection works
 
-- **Gated to driving.** The node subscribes to `/rover/nav/state` and only runs
-  detection while it equals `NAVIGATING`. SETTLING/SPRAYING are stationary at a
-  cone (no collision risk); everything else has no mission to interrupt.
-- **Depth.** The two eyes (dual: `video0`+`video2`; sbs: one frame split) are
-  rectified with the stored calibration, run through `StereoSGBM` to a disparity
-  map, and reprojected to metric depth.
-- **Decision.** If enough valid pixels in the driving-corridor ROI fall inside
-  the `[OBSTACLE_NEAR_M, OBSTACLE_FAR_M]` band (fraction ≥ `OBSTACLE_MIN_FILL`,
-  with a floor of `OBSTACLE_MIN_VALID_PX` valid pixels so a textureless corridor
-  can't trip on speckle), it's an obstacle.
-- **Debounce.** `OBSTACLE_ON_FRAMES` consecutive positives assert; the navigator
-  pauses on the rising edge only. `OBSTACLE_OFF_FRAMES` consecutive clears
-  release.
-- **Safety default.** With no usable calibration the detector is **disabled**
-  (reports no obstacle) — a missing calibration must never auto-pause on noise.
-  Streaming still works.
+Detection runs only while `/rover/nav/state` is `NAVIGATING`. Calibrated stereo
+images produce metric depth through rectification and StereoSGBM. An obstacle
+requires corridor fill ≥ `OBSTACLE_MIN_FILL` within
+`[OBSTACLE_NEAR_M, OBSTACLE_FAR_M]` and ≥ `OBSTACLE_MIN_VALID_PX` valid pixels.
+`OBSTACLE_ON_FRAMES` positives assert a rising-edge pause;
+`OBSTACLE_OFF_FRAMES` clear it. Without usable calibration, detection is disabled
+and streaming remains available.
 
-> **Tuning the band at bring-up:** `OBSTACLE_NEAR_M` is a *near clip* — pixels
-> closer than it are treated as lens-edge noise / the rover's own nose and do
-> NOT count. Set it as small as the rectified depth is still trustworthy (an
-> object filling the corridor closer than `OBSTACLE_NEAR_M` would otherwise be
-> excluded). Validate the band/ROI/`MIN_FILL` against the real camera by driving
-> at a known obstacle and watching the `fill`/`nearest_m` in the journal.
+Pixels closer than `OBSTACLE_NEAR_M` are excluded. Set this near clip only as high
+as needed to reject unreliable depth; validate the band, ROI, and fill threshold
+on the actual camera using journal `fill` / `nearest_m`.
 
 ## Image
 

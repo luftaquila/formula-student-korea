@@ -22,5 +22,3 @@ pnpm test
 pnpm run test:competition
 pnpm --dir entry/web run build
 ```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development, testing, and deployment.

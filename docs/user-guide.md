@@ -35,7 +35,7 @@
   - [오피셜 (official)](#오피셜-official)
   - [관리자 (admin)](#관리자-admin)
   - [접수 전용 태블릿](#접수-전용-태블릿)
-- [12. 시스템 로그 액션 목록](#12-시스템-로그-액션-목록)
+- [12. 시스템 로그](#12-시스템-로그)
 
 ## 0. 개요
 
@@ -115,17 +115,9 @@ SMS 알림을 활성화한 검차에서 대기 순번이 설정값(기본 3번)�
 
 관리 목록에는 전체 순위와 초검/재검 순위가 표시됩니다. `queue.operate`와 `inspection.operate`를 모두 가진 사용자는 재검 팀의 검차관 이름을 눌러 시트를 열 수 있습니다. 이름은 실제 답변·메모 편집자이며, 해당 검차에 적용 가능한 시트 카테고리가 정확히 하나일 때만 표시됩니다. 편집자가 없거나 대응 카테고리가 없거나 여러 개이면 링크를 표시하지 않습니다. 입차한 팀은 `검차` 버튼으로 시트를 엽니다.
 
-#### 2. 대기대기줄
+#### 부스 운영
 
-등록 전 현장 대기줄의 운영 방법을 미리 정하세요. 태블릿을 먼저 설치하고 정해진 시간에 검차별 등록을 활성화할 수 있습니다.
-
-#### 3. Round-Robin Scheduling
-
-부스별 경과 시간과 팀별 통계를 확인할 수 있습니다. 운영 방안으로 1시간 제한 후 다음 팀을 받는 방식을 검토할 수 있으나, 초검 대기를 줄이는 대신 완전 통과가 늦어지고 팀 교체 시간이 늘 수 있습니다.
-
-#### 4. 쉬려면
-
-정확한 통계를 위해 입차·출차를 제때 처리하세요. 참가자도 부스 상태와 경과 시간을 볼 수 있으므로 휴식 중에는 부스를 비활성화하세요.
+입차·출차를 제때 처리하고 휴식 중에는 부스를 비활성화하세요. 참가자도 부스 상태와 경과 시간을 볼 수 있습니다.
 
 ## 2. 등록 대기열
 
@@ -178,8 +170,8 @@ SMS 알림을 활성화한 검차에서 대기 순번이 설정값(기본 3번)�
 * FAIL 항목과 미입력 항목이 있으면 카테고리의 최종 PASS/FAIL 판정 여부와 관계없이 상태 맵 아래에 각각 목록이 표시됩니다. 목록의 문항을 누르면 해당 위치로 이동합니다.
 * `소분류 목차`를 열면 소분류와 그룹 이름을 한 번에 확인하고 이동할 수 있습니다.
 * 체크테이블은 표 전체를 한 문항으로 계산하며, 현재 표에 존재하는 셀 하나만 체크해도 입력 완료로 처리합니다.
-* 현재 카테고리에 작성된 메모가 있으면 시트 상단의 `메모 N개` 목록에서 한 번에 확인하고 해당 문항으로 이동할 수 있습니다. 카테고리를 바꾸면 해당 카테고리의 메모만 표시됩니다.
-* 응답이나 메모를 실제로 변경하면 로그인 계정의 실명이 해당 카테고리 검차관 목록에 자동으로 추가됩니다. 수기로 입력하거나 삭제할 필요가 없습니다.
+* 상단 `메모 N개`에서 현재 카테고리의 메모를 확인하고 문항으로 이동합니다.
+* 응답·메모를 변경하면 계정 실명이 카테고리 검차관 목록에 자동 추가됩니다.
 * 팀 목록의 검차관 이름은 두 명까지 바로 표시하고, 세 명 이상이면 앞의 두 명과 `외 N명`으로 요약합니다. 요약을 누르면 전체 이름을 확인할 수 있습니다.
 * 각 응답과 메모 아래에는 마지막으로 수정한 계정의 실명과 수정 일시가 각각 표시됩니다.
 * 저장에 실패한 응답이나 메모는 해당 문항에 표시됩니다. 입력 내용은 유지되며 `재시도`를 눌러 다시 저장할 수 있습니다.
@@ -197,7 +189,7 @@ SMS 알림을 활성화한 검차에서 대기 순번이 설정값(기본 3번)�
 
 #### 2. 상태 추적
 
-PASS/FAIL 상태는 성적 관리에 연동됩니다. 입력하는 것을 잊지 말아주세요.
+PASS/FAIL 판정은 성적 관리에 반영됩니다.
 
 틸팅, 소음, 우천, 제동 검차는 PASS/FAIL 상태 추적에만 사용되므로, 시트 자체는 비어 있습니다.
 
@@ -211,27 +203,16 @@ PASS/FAIL 상태는 성적 관리에 연동됩니다. 입력하는 것을 잊지
 
 서류 제출 기능은 `student` 계정에 표시됩니다. 제출 현황·파일 검토는 `documents.operate`, 세션·학생 매핑과 파일 변경·삭제는 `documents.manage`가 필요합니다.
 
-student 권한 등록을 위한 계정 생성은 admin 권한 사용자만 가능합니다.
-
 ### 사전 준비
 
 제출 시작 전에 팀별로 사용할 Google 로그인 이메일 한 개를 받아 관리자가 student 계정을 생성합니다. 이후 서류 제출 관리에서 계정을 팀에 연결합니다.
 
 ### 사용 방법
 
-1. 서류 제출 관리 메뉴에서 `세션 생성` 버튼을 클릭합니다.
-2. 세션 이름과 학생들에게 표시할 공지 메시지를 입력합니다.
-3. 제출 시작일과 마감일, 시간을 입력합니다.
-5. 지각 마감일과 시간을 입력합니다.
-    * 지각 제출을 허용하지 않으려면 비워둡니다.
-6. 제출 파일의 총합 용량 제한을 설정합니다.
-7. 제출에 허용할 파일 확장자를 설정합니다.
-    * 모든 파일 형식을 허용하려면 비워둡니다.
-    * 파일 확장자는 , 로 구분되는 목록입니다. (예시: pdf, xlsx, zip)
-8. 제출 대상 팀을 선택합니다.
-9. 생성 버튼을 클릭합니다.
-
-제출 세션 정보를 수정하려면, 서류 제출 관리 메뉴의 표에서 세션 이름을 선택하고 수정 버튼을 클릭합니다.
+1. 서류 제출 관리에서 `세션 생성`을 엽니다.
+2. 이름·공지, 제출 시작·마감 시각을 입력합니다. 지각 제출을 허용하면 지각 마감도 지정합니다.
+3. 총 용량 제한과 허용 확장자를 설정합니다. 확장자는 쉼표로 구분하며, 비워두면 모든 형식을 허용합니다.
+4. 대상 팀을 선택하고 생성합니다. 수정은 목록의 세션 이름 → 수정 버튼에서 합니다.
 
 ### 학생 사용 방법
 
@@ -254,9 +235,7 @@ student 권한 등록을 위한 계정 생성은 admin 권한 사용자만 가�
 
 ### 기록 열람
 
-계측 시 입력한 이벤트 이름으로 기록을 열람합니다.
-
-각 기록의 콘터치와 코스 이탈 개수를 입력하면 성적 관리 시스템에 자동으로 반영됩니다.
+이벤트 이름으로 기록을 열람합니다. 콘터치·코스 이탈 입력은 성적에 자동 반영됩니다.
 
 모든 계측 화면과 기록 표에서 `정상`, `DNS`, `DNF`, `DSQ` 중 하나로 판정합니다. 측정시간이 있는 기록을 판정해도 원시 시간은 보존되며, `정상`으로 되돌리면 다시 성적 계산에 사용됩니다. 측정시간 없이 잘못 만든 판정은 `판정 취소`로 삭제합니다.
 
@@ -345,8 +324,8 @@ Chrome 브라우저로 계측 시스템 메뉴에 접속한 후, 계측기 컨�
 내구 경기 기록은 페이지 상단의 내구 입력 버튼을 클릭하여 수동 입력합니다.
 
 * 각 셀을 클릭하여 기록을 입력하고, `Enter` 또는 입력창 옆의 **확인** 버튼을 눌러 저장합니다. 저장하지 않고 다른 곳을 클릭하거나 셀을 이동하면 입력값은 취소됩니다.
-* 드라이버 1과 드라이버 2의 이름을 각 팀 행에 입력할 수 있습니다. 이름도 `Enter` 또는 **확인** 버튼으로 저장되며 내구 입력 화면의 XLSX 기록에 포함됩니다.
-* `Enter`로 저장하면 해당 셀의 편집이 완료되며, 이어서 화살표 키를 누르면 마지막 입력 셀을 기준으로 해당 방향의 다음 셀 편집으로 이동합니다. **확인** 버튼은 Tab 순서에서 제외되므로 Tab은 다음 입력 셀로 바로 이동합니다. 이동 전에 저장하지 않은 입력값은 취소됩니다.
+* 드라이버 1·2 이름도 같은 방식으로 저장하며 XLSX 기록에 포함됩니다.
+* 저장 후 화살표 키로 인접 셀을 편집합니다. Tab은 **확인** 버튼을 건너뛰고 다음 입력 셀로 이동합니다.
 * 시간 입력 형식: M:SS.mmm 또는 SS.mmm
 * 상단에서 내구 거리와 휘발유 계산 기준(L/2.31 또는 kg/2.95)을 설정합니다. 내구 거리도 `Enter` 또는 입력창 옆의 확인 버튼으로 저장합니다.
 * 성적표와 같은 차량 유형 체크박스로 표시 팀을 필터링할 수 있습니다.
@@ -438,9 +417,7 @@ JSON 업로드는 올해 또는 다음 연도에 팀이 하나도 없을 때 한
 
 ## 10. 계정 관리
 
-로그인 계정과 권한을 설정합니다.
-
-구글 로그인이 가능한 이메일 주소를 사용하여 등록합니다.
+Google 로그인 이메일로 계정을 등록하고 역할·권한을 설정합니다.
 
 사람 계정 역할은 `student`, `official`, `admin` 중 하나입니다. 오피셜을 선택하면 서비스별 접근 수준을 한 목록에서 설정할 수 있습니다. 관리 권한은 같은 서비스의 운영 권한을 자동으로 포함합니다. 역할을 바꾸면 기존 오피셜 권한은 모두 제거되며, 동시에 열린 관리자 화면의 오래된 변경은 revision 충돌로 거부됩니다.
 
@@ -517,158 +494,8 @@ JSON 업로드는 올해 또는 다음 연도에 팀이 하나도 없을 때 한
 
 대기 운영, 설정 변경, 인스펙션, 다른 접수 종류나 관리자 화면에는 접근할 수 없습니다. 한 브라우저에 사람 세션과 장비 세션이 동시에 있으면 요청을 모호한 principal로 거부합니다.
 
-## 12. 시스템 로그 액션 목록
+## 12. 시스템 로그
 
-### Auth
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `auth.forward_auth_denied` | warn | FileBrowser forward_auth 권한 거부 |
-| `auth.rate_limit` | warn | 로그인 속도 제한 초과 |
-| `auth.nonce_failed` | warn | OAuth nonce 검증 실패 |
-| `auth.token_failed` | warn | OAuth 토큰 교환 실패 |
-| `auth.userinfo_failed` | warn | Google userinfo 조회 실패 |
-| `user.login_failed` | warn | 로그인 실패 |
-| `auth.callback_error` | warn | OAuth 콜백 오류 |
-| `user.login` | info | 로그인 |
-| `user.logout` | info | 로그아웃 |
-| `user.create` | info | 사용자 생성 |
-| `user.bulk_create` | info | 사용자 일괄 생성 |
-| `user.bulk_access_update` | info | 선택한 Official 여러 명의 서비스 권한 일괄 교체 |
-| `user.bulk_toggle` | info | 사용자 일괄 활성/비활성 토글 |
-| `user.bulk_delete` | info | 사용자 일괄 삭제 |
-| `user.update` | info | 사용자 정보 수정 |
-| `user.delete` | info | 사용자 삭제 |
-| `ops_contact.create` | info | 운영 연락처 추가 |
-| `ops_contact.update` | info | 운영 연락처 설명 수정 |
-| `ops_contact.reorder` | info | 운영 연락처 표시 순서 변경 |
-| `ops_contact.delete` | info | 운영 연락처 삭제 |
+관리자는 시스템 로그에서 서비스·레벨·액션·유저·기간으로 조회하고 액션·대상·상세를 통합 검색할 수 있습니다. 행을 선택하면 상세 내용을 확인합니다.
 
-### Entry
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `team.create` | info/warn | 엔트리 생성 또는 실패 |
-| `team.update` | info/warn | 엔트리 수정 또는 실패 |
-| `team.import_initial` | info/warn | 빈 올해·다음 연도의 초기 엔트리 업로드 또는 실패 |
-| `vehicle_type.create` | info/warn | 차종 추가 또는 실패 |
-| `vehicle_type.update` | info/warn | 연도별 차종 이름·색상·순서 수정 |
-| `vehicle_type.delete` | info/warn | 차종 삭제 또는 실패 |
-| `competition_year.write_rejected` | warn | 현재 KST 연도가 아닌 데이터의 수정 시도 거부 |
-
-### Queue
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `inspection.toggle` | info | 검차 활성/비활성 토글 |
-| `inspection.visibility` | info | 검차 등록 페이지 표시 토글 |
-| `inspection.ignore` | info | 우선순위/초검재검 무시 토글 |
-| `queue.register` | info | 대기열 등록 |
-| `queue.cancel` | info | 대기열 취소 |
-| `queue.last_call` | info/warn | 대기 팀 즉시 입차 문자 발송 또는 실패 |
-| `penalty.clear` | info | 적용 중인 취소 페널티 해제 |
-| `penalty.restore` | info | 취소 페널티 해제 및 원래 대기 순번 복구 |
-| `history.clear` | info | 대기열 이력 초기화 |
-| `priority.set` | info | 우선순위 설정 |
-| `priority.delete` | info | 우선순위 삭제 |
-| `priority.clear` | info | 우선순위 전체 삭제 |
-| `booth.count` | info | 부스 수 변경 |
-| `booth.toggle` | info | 부스 활성/비활성 토글 |
-| `booth.enter` | info | 부스 입장 |
-| `booth.timer.pause` | info | 검차 진행 타이머 중단 |
-| `booth.timer.resume` | info | 검차 진행 타이머 재개 |
-| `booth.exit` | info | 부스 퇴장 |
-| `settings.update` | info/warn | 검차별 SMS·취소 페널티 설정 변경 또는 실패 |
-| `settings.sms` | warn | SMS 서비스 설정이 없어 검차별 SMS 활성화 거부 |
-
-### Registration
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `registration.register` | info/warn | 등록 대기 접수 또는 실패 |
-| `registration.done` | info/warn | 등록 완료 또는 충돌/실패 |
-| `registration.cancel` | info/warn | 등록 대기 취소 또는 충돌/실패 |
-| `registration.settings_update` | info/warn | 접수·문자·사전 안내 순번 설정 변경 또는 실패 |
-| `registration.status` | warn | 공개 접수 현황 조회 실패 |
-| `registration.lookup` | warn | 공개 순번 조회 실패 또는 요청 제한 |
-| `registration.queue_view` | warn | 운영 대기 목록 조회 실패 |
-| `registration.settings_view` | warn | 설정 조회 실패 |
-| `registration.sms_send` | info/warn | 사전 순번 안내 문자 발송 결과 |
-| `registration.sms_prepare` | warn | 사전 안내 대상 선정 실패 |
-| `registration.sms_claim` | warn | 사전 안내 발송 선점·해제 실패 |
-| `registration.sms_skip` | warn | SENS 설정이 없어 사전 안내를 건너뜀 |
-| `registration.sse_broadcast` | warn | 변경 후 공개 상태 스냅샷 생성 실패 |
-
-### Inspection
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `template.create` | info | 검차 항목 생성 |
-| `template.update` | info | 검차 항목 수정 |
-| `template.delete` | info | 검차 항목 삭제 |
-| `template.reorder` | info | 검차 항목 순서 변경 |
-| `template.copy` | info | 검차 항목 연도 복사 |
-| `template.import` | info | 검차 항목 가져오기 |
-| `template.rule_refs.update` / `template.rule_refs.stale_write` | info / warn | 단일 문항 규정 연결 변경 / 다른 관리자의 선행 변경으로 거부 |
-| `template.rule_refs.import` | info | JSON에서 규정 연결만 일괄 가져오기 |
-| `template.rule_refs.sync` | info | 연도 간 규정 연결 동기화 |
-| `template.rule_refs.revalidate` | info | 규정 카탈로그 기준 연결 재검증 |
-| `rule_refs.search` / `rule_link.resolve` | warn | 규정 카탈로그 연동 또는 저장 데이터 검증 실패 |
-| `answer.update` | info | 검차 응답 수정 |
-| `memo.update` | info | 검차 메모 수정 |
-| `category_result.update` | info | 카테고리 결과 수정 |
-| `inspector.update` | info | 검사관 지정 수정 |
-
-### Traffic
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `record.create` | info | 경기 기록 생성 |
-| `record.update` | info | 경기 기록 수정 |
-| `record.row_delete` | info | 측정시간 없는 판정 기록 취소 |
-| `record.delete` | info | 경기 기록 삭제 |
-| `event_mode.toggle` | info | 경기 모드 활성/비활성 토글 |
-
-### Score
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `manual_score.update` | info | 수동 점수 수정 |
-| `penalty.update` | info | 페널티 설정 수정 |
-| `setting.update` | info | 점수 설정 수정 |
-| `endurance.update` | info | 내구 데이터 수정 |
-
-### Documents
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `submission.create` | info | 문서 제출 |
-| `session.create` | info | 제출 세션 생성 |
-| `session.update` | info | 제출 세션 수정 |
-| `session.delete` | info | 제출 세션 삭제 |
-| `file.download` | info | 파일 다운로드 (학생) |
-| `file.admin_download` | info | 파일 다운로드 (관리자) |
-| `student_team.create` | info | 학생-팀 매핑 생성 |
-| `student_team.delete` | info | 학생-팀 매핑 삭제 |
-
-### Course
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `course.create` | info | 코스 생성 |
-| `course.rename` | info | 코스 이름 변경 |
-| `course.delete` | info | 코스 삭제 |
-| `course.export` | info | 코스 JSON 내보내기 |
-| `course.publication` | info/warn | 코스 공개 상태 변경 또는 실패 |
-| `course.public.list` / `course.public.read` | warn | 공개 목록·상세 조회 실패 |
-| `course.import` | info | 코스 JSON 가져오기 |
-| `cone.create` | info | 콘 추가 |
-| `cone.update` | info | 콘 수정 (위치/방향) |
-| `cone.delete` | info | 콘 삭제 |
-| `rover.request` | info | 로버 위치 요청 |
-| `mission.v2.create` | info | 서버 권위 미션 생성 (plan hash·콘 occurrence 수 포함) |
-| `mission.v2.start/pause/resume/end` | info | boot·command ID에 결합된 미션 명령 요청 |
-| `mission.v2.remaining.update` | info | 남은 경로/종료 동작 변경 전후 |
-| `mission.report` | info/warn | 로버 command·checkpoint·waypoint 보고 또는 거부 |
-| `mission.preset.create/update/delete` | info | 이름 있는 미션 경로 프리셋 변경 |
-| `rover.execute` | info | 레거시 v1 경로 실행 (v2 연결에서는 비활성) |
-| `rover.stop` | info | 비상정지 |
-
-### Calendar
-| 액션 | 레벨 | 설명 |
-|------|------|------|
-| `event.list` | warn | 일정 목록 조회 실패 |
-| `event.create` | info | 일정 생성 |
-| `event.update` | info | 일정 수정 |
-| `event.delete` | info | 일정 삭제 |
+조회 API는 [Log Aggregation](api.md#log-aggregation), 로그 작성 규칙은 [Logging](../CONTRIBUTING.md#logging)을 참고하세요.

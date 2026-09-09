@@ -123,23 +123,14 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
   `calibration_chord_min_m` AND residual RMS ≤ `calibration_residual_max`
   (production: 1.5 m / 5 cm → ~2° heading 1σ), otherwise extend once
   and ERROR if still bad. Hard cap at `calibration_max_distance`.
-- **NAVIGATING**: a single `L1Tracker` (antenna-as-unicycle transform,
-  Aicardi-Casalino-Bicchi-Balestrino 1995; `path_tracker.py`) drives the
-  antenna onto `target_antenna` for the whole approach — there is no
-  separate cruise/dock split. With `eta = bearing(antenna→target) −
-  chassis_ψ` it commands `v = v_des · cos(eta)` and
-  `κ = tan(eta) / antenna_offset_x`, κ clamped to `max_curvature`
-  (1.7 1/m ≈ tan(30.5°)/0.33); cos(eta) drops v to zero as eta → 90°
-  instead of fighting a saturated κ. Inside `l1_brake_zone_m` of the
-  target, v ramps linearly from `cruise_speed` down to `l1_min_speed_m_s`
-  and holds that floor through the last `l1_creep_dist_m` so the chassis
-  settles to min-speed before capture. For large attitude error
-  (|eta| > `l1_kturn_enter_rad`, 60°) the forward arc physically cannot
-  close (min radius ≈ 0.59 m), so a K-turn reverses with saturated κ
-  (rotation direction and alignment both latched against close-range
-  bearing noise), then straightens (κ=0) to build a `l1_kturn_exit_dist_m`
-  standoff for the next forward leg. 'reached' fires when antenna→target
-  drops below `l1_cm_capture_m` (3 cm).
+- **NAVIGATING**: `L1Tracker` (`path_tracker.py`, antenna-as-unicycle transform,
+  Aicardi-Casalino-Bicchi-Balestrino 1995) controls the entire approach:
+  `eta = bearing(antenna→target) − chassis_ψ`, `v = v_des · cos(eta)`,
+  `κ = tan(eta) / antenna_offset_x`, clamped to `max_curvature` (1.7 1/m).
+  Inside `l1_brake_zone_m`, speed falls linearly to `l1_min_speed_m_s`, held
+  through `l1_creep_dist_m`. Beyond `l1_kturn_enter_rad` (60°), reverse at
+  saturated κ with latched rotation/alignment, then straighten to establish
+  `l1_kturn_exit_dist_m` standoff. Capture occurs within `l1_cm_capture_m` (3 cm).
 - **SETTLING → SPRAYING**: antenna within `settle_tolerance` for
   `settle_readings` consecutive samples → fire. Drift back outside
   `waypoint_tolerance` mid-settle hands control back to the dock tracker.
@@ -440,7 +431,7 @@ Output: `build/rover_mcu.uf2`. Overrides (defaults r=62.5 mm, PPR=500, gear=27):
 
 Address as `/dev/ttyMCU` — `/dev/ttyACM*` ordering is non-deterministic.
 
-> Current sensing intentionally omitted: MDD10A self-protects, encoder-vel = 0 with non-zero command covers stall. Re-add `current.c` + `FLAG_OVERCURRENT` if a shunt-amp lands.
+> Current sensing is absent. MDD10A self-protects; non-zero drive with zero encoder velocity indicates a stall.
 
 ## CI
 

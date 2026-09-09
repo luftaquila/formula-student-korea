@@ -1,25 +1,16 @@
 # Contributing
 
-This is the single source of truth for development, testing, review, and deployment
-workflow. Product behavior belongs in the [user guide](docs/user-guide.md), runtime
-boundaries in the [architecture](docs/architecture.md), and HTTP contracts in the
-[API reference](docs/api.md).
+Development and deployment workflow. See [Architecture](docs/architecture.md) for
+service ownership, the [API reference](docs/api.md) for contracts, and the
+[user guide](docs/user-guide.md) for operations.
 
-## Repository layout
-
-- `competition/` deploys Teams, Queue, Registration, Inspection, Traffic, Score, and
-  Documents as one process and database. Their top-level directories contain module
-  factories and web applications, not separate deployments.
-- `auth/`, `calendar/`, `course/`, and `email/` are supporting services; `shared/`
-  contains common server code and `tests/` mirrors service boundaries.
-- Hardware work is documented under `rover/` and `traffic/device/`.
+Competition module factories support tests but share one deployment. Hardware:
+[rover](rover/README.md), [timing devices](traffic/DESIGN.md).
 
 ## Local development
 
-Use Node.js 22 and the repository-pinned pnpm version. Enable Corepack if needed,
-then install the entire workspace once from the repository root. Service startup
-needs `.env` based on `.env.example`; tests inject their own dependencies where
-possible.
+Use Node.js 22, the pinned pnpm version, and `.env` based on `.env.example`.
+Install from the workspace root:
 
 ```bash
 corepack enable
@@ -36,8 +27,6 @@ node competition/index.mjs      # replace competition for a supporting service
 The root `Makefile` and `compose.yml` are not deployment interfaces for the k3s
 servers. Do not use `make deploy`, `make restart`, `make backup`, or `make restore`
 against the live k3s environment.
-
-For rover work, follow [rover/README.md](rover/README.md).
 
 ## Testing
 
@@ -61,29 +50,21 @@ For rover work, follow [rover/README.md](rover/README.md).
   the scalar result. Do not pass large binaries to deep-equality assertions:
   formatting a failing diff can consume far more memory than the input.
 - Playwright E2E runs in CI only. Do not run it locally.
-- Keep parallel tests isolated with unique data. Do not assert a global exact count
-  when another shard can add records.
+- Isolate parallel tests; global counts must not depend on other shards.
 
 ### Test contract and synchronization
 
-- Assert externally observable behavior or an explicitly documented stable
-  contract at the lowest layer that can prove it. Reserve E2E tests for deployed
-  boundaries and critical user journeys instead of repeating unit or API coverage.
-- Do not assert source text, internal names, markup/CSS structure, or exact copy
-  and visual values unless they are a documented public, accessibility, or
-  compatibility contract. Parse or execute shipped Dockerfiles, manifests, and
-  migrations to assert semantics. Otherwise check visibility, usability, and
-  overflow, using one representative visual flow where useful.
-- Register response/event waiters before triggering actions. Use web-first
-  assertions, `expect.poll()`, bounded condition polls, or fake clocks; never use
-  fixed sleeps for API/SSE synchronization or wait for cosmetic animations and
-  notifications to disappear. An absence wait is valid only when the exact
-  interval is part of the documented behavior.
-- A retry-only pass is a failure to fix, not an acceptable CI result. New tests must
-  remain deterministic with retries disabled and repeated execution.
-- Performance changes must include comparable before/after wall measurements and
-  CI run links. Drop an optimization that does not improve its target or that adds
-  flakiness or loses required behavior coverage.
+- Test behavior or documented contracts at the lowest practical layer. Reserve E2E
+  for deployed boundaries and critical journeys; avoid duplicate coverage.
+- Exact source, markup, copy, and visual assertions need a documented public,
+  accessibility, or compatibility requirement. Parse or execute shipped contracts
+  such as manifests instead of matching their formatting.
+- Register response/event waits before triggering actions. Use assertions, bounded
+  polls, or fake clocks; no fixed sleeps or cosmetic waits. Absence waits require
+  a documented interval.
+- Tests must pass without retries. Performance changes require comparable before/after
+  wall times and CI links; discard changes that fail to improve the target or lose
+  reliability or coverage.
 
 CI is defined in [.github/workflows/test.yml](.github/workflows/test.yml). Inspect a
 failed run with `gh run view <run-id> --log-failed`.
@@ -129,9 +110,6 @@ host runs its own Flux reconciliation against its own manifest path.
 | `lufthafen` | Test | `https://test.luftaquila.io` | `clusters/lufthafen/apps/fsk/` |
 | `luftwolke` | Live | `https://fsk.luftaquila.io` | `clusters/luftwolke/apps/fsk/` |
 
-Change one or both paths deliberately; do not assume their configuration is
-identical. A command run on one host affects only that host's cluster.
-
 Repository structure is part of the deployment contract. When a top-level service
 or module path, shared-code boundary, Dockerfile, or image owner changes, update and
 test all of these in the same coordinated change:
@@ -161,12 +139,9 @@ cd /srv/k3s
 ./scripts/fsk-redeploy.sh <pull-request-number>
 ```
 
-The script checks out the PR in a separate worktree, maps changed paths to deployed
-images, builds `:dev` images into k3s containerd, deploys them, waits for readiness,
-and verifies the running image. A Competition-domain change must appear as the
-single `competition` image in the script's `Changed services` output; stop if an
-expected image is missing. Flux remains suspended so it does not overwrite the
-preview.
+The script builds `:dev` images from an isolated PR worktree, deploys them, and
+verifies readiness and running images. Competition changes must map to the single
+`competition` image. Flux stays suspended until promotion or restoration.
 
 ### Promote or restore main
 
@@ -198,4 +173,3 @@ operations instead of copying those procedures here.
 - Review `git diff` for scope, API, boundary, migration, and logging regressions;
   run `git diff --check`.
 - Report files changed, tests run, deployment actions, and remaining risk.
-- Do not claim a behavior or deployment is verified if its check was not run.

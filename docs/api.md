@@ -29,7 +29,7 @@ Competition process health is separate from module compatibility health:
 | GET | `/health/live` | public | Process liveness |
 | GET | `/health/ready` | public | Shared database readiness |
 
-All mutating endpoints are logged via `shared/logger.mjs`.
+Mutation logging follows [CONTRIBUTING.md](../CONTRIBUTING.md#logging).
 
 ## Common Infrastructure
 
@@ -49,16 +49,12 @@ Score use a single full-access grant; other single-action services use one grant
 Admin satisfies all human permissions. A `*.manage` permission implies the matching
 `*.operate` permission, but permissions from different services never imply one another.
 
-The permission keys are:
-
 `registration.operate`, `registration.manage`, `queue.operate`, `queue.manage`,
 `inspection.operate`, `inspection.manage`, `documents.operate`, `documents.manage`,
 `files.access`, `calendar.manage`, `course.operate`, `course.manage`, `rover.operate`,
 `traffic.operate`, `traffic.manage`, `score.operate`, and `score.manage`.
 
-Entry, Email/SMS, the system logs, and Account & Access are Admin tools. They have no
-grant key, so no Official can be given them; the home page and sidebar list them in a
-separate Admin group.
+Entry, Email/SMS, logs, and Account & Access are Admin-only; they have no grant key.
 
 ### Rate Limiting
 
@@ -341,7 +337,10 @@ it; non-category levels always return `[]`.
 
 There are no answer or memo version numbers. If `expectedValue` or `expectedMemo` differs from the stored value, the server returns `409 { code: "INSPECTION_STALE_WRITE", current }` and persists nothing. The browser discards the stale local value and instructs the operator to refresh and retry.
 
-A successful answer or memo change automatically adds the authenticated account's real name to that category's inspector list. Identical no-op saves do not add an inspector, and a real mutation is rejected if the authenticated session has no real name. Inspector names are append-only participation history; there is no manual inspector mutation endpoint. Each answer record exposes `answer_updated_by`, `answer_updated_at`, `memo_updated_by`, and `memo_updated_at`, so answer and memo editors remain independent.
+Answer/memo mutations require an authenticated real name and append it to the
+category's inspector history; no-op saves do not. There is no manual inspector
+mutation endpoint. `answer_updated_by`, `answer_updated_at`, `memo_updated_by`, and
+`memo_updated_at` track the two fields independently.
 
 ## Traffic module (Competition port 9200)
 
@@ -543,7 +542,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 ## Course Service (port 10000)
 
-RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 공개 화면은 `/course/public`이며 로그인 없이 공개 코스만 조회합니다. 코스/콘 CRUD와 SSE(`/api/events`)는 `course.operate`, 스냅샷·코스 삭제는 `course.manage`, 로버 운용은 `rover.operate` 권한이 필요하다. 로버 기기 인입 엔드포인트는 `X-Internal-Service` 또는 범위가 코스 서비스로 제한된 `X-Rover-Secret`을 검증하며, human 세션으로는 접근할 수 없다.
+코스·콘 API와 SSE는 `course.operate`, 스냅샷·코스 삭제는 `course.manage`, 로버 운용은 `rover.operate`가 필요하다. 기기 인입은 `X-Internal-Service` 또는 Course 범위의 `X-Rover-Secret`으로 인증하며 사람 세션은 허용하지 않는다. 공개 조회는 `/course/public`에서 제공한다.
 
 ### Courses (`course.operate`)
 
@@ -629,7 +628,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 공개
 
 ### Rover — 기기 인입 (로버 → 서버)
 
-로버는 SSE(`/api/rover/stream`)로 서버에 연결을 유지하고, 서버 이벤트에 대한 응답과 텔레메트리를 아래 엔드포인트로 POST한다. 라우트 구현은 `course/lib/rover-routes.mjs`.
+로버는 `/api/rover/stream` SSE로 명령을 받고 아래 API로 응답·텔레메트리를 보낸다.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
@@ -683,10 +682,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 공개
 
 ### GPS — 수신기 소스 선택 + base station 측량점
 
-콘 좌표 캡처는 GPS 수신기(연결 시)를 우선, 없으면 로버를 사용한다. 로버의 RTK 보정 소스는
-NGII(공용 NTRIP)와 **수신기 base station**(측량점에 고정한 수신기가 RTCM3 생성 → 서버 릴레이 →
-로버) 중 선택한다. 수신기의 "캡처 소스"·"base station" 역할은 상호배타. `rover.operate` 전용. 구현은
-`course/lib/rover-routes.mjs`, 테이블은 `course/index.mjs`(`gps_config`, `survey_point`).
+콘 캡처는 연결된 GPS 수신기를 우선하고 로버로 폴백한다. RTK 소스는 NGII 또는 수신기 base station이며, 수신기의 캡처·base 역할은 상호배타다. `rover.operate`가 필요하다.
 
 | Method | Path | 인증 | Body | 응답 | 설명 |
 |--------|------|------|------|------|------|

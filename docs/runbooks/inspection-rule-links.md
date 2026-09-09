@@ -1,8 +1,6 @@
 # Inspection Rule Links Rollout and Operation
 
-Inspection links resolve `sheet_template.rule_refs` against the fsk-rules GitHub
-Pages catalog. Stored references contain stable keys, the resolving release tag,
-and verified clause metadata.
+Reference semantics: [Inspection rule references](../architecture.md#inspection-rule-references).
 
 ## Prerequisites
 

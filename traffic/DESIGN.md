@@ -124,17 +124,16 @@ CAD는 같은 SF의 LoRa 활동만 감지한다. 순간 RSSI는 `startReceive` �
 - **보안 관측(§2.11):** 조용히 버려지던 거부를 카운터로 노출 → 위조/키불일치/replay 탐지 가능. 글로벌 `auth_drop`(AEAD 검증 실패 — node 귀속 불가)는 node 0 자기보고 D 라인의 `sec_drop` 슬롯에, 센서별 `sec_drop`(인증후 replay/freshness/session-binding 거부)는 각 D 라인에, `provisioned`(키 보유 여부)는 모든 D 라인에 실린다. 카운터는 마스터가 USB로만 보고(공중 패킷·에어타임 불변). 서버는 ingest에서 증가분/미프로비저닝을 `wireless.security` 로그로 남긴다(`/api/logs`).
 
 ### 2.11 무선 보안 — AEAD (기밀성 + 인증 + 재전송 방어)
-raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
+모든 공중 패킷에 XChaCha20-Poly1305 AEAD(Monocypher)를 적용한다. USB↔PC는 신뢰 구간으로 취급한다.
 
-- **원시(primitive):** XChaCha20-Poly1305 AEAD (Monocypher, vendored 단일 파일). 직접 조합한 암호 대신 검증된 1-함수 AEAD로 기밀성·무결성·송신자 인증을 한 번에.
-- **키 — 런타임 프로비저닝(컴파일 안 함):** 플릿 공유 PSK 256-bit를 **빌드에 박지 않는다**. 각 보드의 예약 flash 페이지(`0xF3000`, keystore.c, magic+CRC32 검증)에 저장되고 부팅 시 로드되며, **USB 시리얼 `K <64hex>` 명령(write-only)으로 보드마다 1회 주입**한다(§8). → CI는 **키 없는 앱**만 빌드하므로 public repo 아티팩트가 노출돼도 안전. 키는 운영자 로컬에만 존재(repo·CI·채팅 금지). 마스터+전 센서 동일 키 필수(다르면 전 패킷 MAC 실패). 키 회전 = 보드별 재주입. flash 페이지는 앱 영역 최상단(linker FLASH에서 제외)이라 앱 DFU에도 보존.
+- **키:** 공통 플릿 PSK 256-bit를 USB `K <64hex>`로 보드별 주입한다(§8). `0xF3000` flash keystore에 magic+CRC32로 검증·저장하며 앱 DFU에도 보존한다. 키는 운영자 로컬에만 보관하고 빌드·repo·CI·채팅에 넣지 않는다. 회전 시 모든 보드에 재주입한다. read-back은 없다.
 - **인증 대상(AD) vs 암호화:** 평문 보안헤더(vt/boot_id/ctr, 업링크는 +node_id)는 AEAD의 associated data로 인증만(라우팅·replay 판단을 복호화 전에). 페이로드(타임스탬프·offset 등)는 암호화. MAC은 16B다.
 - **논스(절대 재사용 금지):** 24B = `domain | type | node_id | boot_id(4) | ctr(4)`. `ctr`은 송신마다 증가(부팅 내 유일), `boot_id`는 부팅마다 RNG 신규(재부팅 후 ctr가 0으로 돌아가도 논스 충돌 없음). node_id로 송신자 분리(다운링크는 마스터 0을 암묵 사용), domain으로 타용도와 분리. 와이어 `ctr`은 24비트로 보내되 논스엔 상위 0으로 확장하며, wrap 직전 seal을 거부해 논스 재사용을 원천 차단(2²⁴ seal=1Hz로 194일, 세션 내 도달 불가).
 - **Replay 방어:** 수신자는 (송신자, 방향)별 `(boot_id, max_ctr)`를 추적해 `ctr ≤ max_ctr`를 거부한다. 새 boot ID는 재기준하여 마스터·센서의 독립 재부팅을 지원한다. 마스터 재부팅 시 센서는 비콘으로 재동기하고, 센서 재부팅 시 마스터는 해당 센서의 창을 재기준한다.
-- **EVENT 마스터 세션 바인딩:** EVENT는 자신이 동기된 마스터 세션 `master_boot_id`(비콘에서 학습)를 실어 보내고, 마스터는 그 값이 자기 현재 boot_id가 아니면 거부. → 이전 마스터 전원주기에 캡처한 EVENT는 재부팅 후에도 재전송 불가(재기준만으로는 못 막는 cross-reboot EVENT replay를 암호학적으로 차단).
-- **EVENT 신선도 백스톱:** 세션 바인딩 + replay 카운터에 더해, `ev_master_t`가 너무 과거(stale)거나 비현실적 미래면 거부. 정상 이벤트는 기껏 수ms 미래(동기오차)뿐이라 **비대칭** 창: 과거 `EVENT_FRESH_MS(3s)` / 미래 `EVENT_FUTURE_MS(250ms)`.
+- **EVENT 세션:** `master_boot_id`가 현재 마스터 boot ID와 다르면 거부한다. 재부팅 전 캡처를 새 세션에서 재사용하지 않는다.
+- **EVENT 신선도:** 과거 `EVENT_FRESH_MS`(3s), 미래 `EVENT_FUTURE_MS`(250ms) 범위 밖의 `ev_master_t`를 거부한다.
 - **boot_id 엔트로피:** nRF52840 하드웨어 RNG(`NRF_RNG`, 바이어스 보정)로 부팅 시 32-bit 1회 시드(`sec_init`).
-- **미프로비저닝 동작:** 키가 없으면 `sec_provisioned()=0` → seal/unseal이 거부되어 보드는 무선 inert(비콘·이벤트 미전송, 잘못된 평문도 안 나감). 마스터는 USB로 `X noprov`를 주기 통지해 운영자가 알 수 있다. 시리얼 `K` 주입(+`sec_reload`) 즉시 활성(재부팅 불필요).
+- **미프로비저닝:** 키가 없으면 seal/unseal을 거부하고 무선 송신하지 않는다. 마스터는 `X noprov`를 주기 통지한다. `K` 주입과 `sec_reload` 후 재부팅 없이 활성화한다.
 - **남는 한계(문서화):** EVENT는 세션 바인딩으로 cross-reboot replay까지 차단. BEACON/STATUS/ACK는 재부팅 후 캡처본 1개가 재기준으로 수용될 여지는 있으나 타이밍 위조 가치 없음(비콘은 seq+1 연속성 게이트로 offset 오염 안 됨 → DoS급). 32-bit boot_id의 두 코너: ① 충돌 시 nonce 재사용 ② 마스터가 같은 boot_id로 재부팅하면 센서가 그 비콘을 거부(센서 재부팅 전까지) — 둘 다 ~2⁻³²라 무시 가능, boot_id를 64-bit로 넓히면 완전 제거(선택). 구현: `src/secure.{h,c}`.
 
 ---

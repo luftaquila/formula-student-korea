@@ -1,52 +1,30 @@
 # Agent Working Agreement
 
-This file applies to the whole repository. Detailed development and deployment
-instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## Working method
-
-- Report progress and results to the user in Korean. Write pull request titles,
-  descriptions, and comments in English.
-- Before editing, inspect `git status`, the relevant implementation, and nearby
-  tests. Preserve user changes and report unrelated problems without fixing them.
-- Make the smallest coherent change that solves the request. Prefer a small API and
-  clear design over the fewest changed lines.
-- Follow local code patterns. Put mechanically checkable rules in tooling or tests,
-  not this file. Comments should explain only non-obvious reasons or constraints.
-- Before changing behavior or writing or running tests, read and follow
-  [CONTRIBUTING.md — Testing](CONTRIBUTING.md#testing).
-- Do not create commits or pull requests unless requested. Keep requested commits
-  focused and consistent with the repository's commit style.
-
-## Project invariants
-
-- `/srv/k3s` manages independent `lufthafen` test and `luftwolke` live clusters.
-  Treat their manifests, deployment actions, and verification as separate scopes.
-- `competition_team.id` is the stable team identity, and `competition_team` is the
-  only team source of truth.
-- Keep Competition domains in one runtime and database.
-- Never mutate migration sources. Migration, backup, and restore validation must be
-  read-only and fail closed before publishing or replacing artifacts.
-- Authentication and integrations fail closed. Only an Auth HTTP `200` confirms a
-  user; never add a runtime authentication bypass.
-- Log every successful mutation and every business, database, or integration
-  failure with enough context to audit destructive changes.
+- Report progress and results in Korean; write PR titles, descriptions, and comments
+  in English.
+- Preserve user changes. Do not commit or create PRs unless requested.
 
 ## Required references
 
-- Before changing domain behavior, runtime boundaries, or data ownership, read and
-  follow the relevant sections of [docs/architecture.md](docs/architecture.md).
-- Before changing public contracts, read and follow [docs/api.md](docs/api.md).
-- Before assessing network behavior or per-IP limits, read
-  [Venue network](docs/architecture.md#venue-network).
-- Before changing roster loading or SSE recovery, read
-  [Runtime communication](docs/architecture.md#runtime-communication).
-- Before deployment work or repository-path or deployed-image ownership changes,
-  read and follow [CONTRIBUTING.md — k3s deployment](CONTRIBUTING.md#k3s-deployment),
-  including its coordinated deployment contract.
+Read the applicable references before work:
 
-## Completion
+- Behavior changes and tests: [Testing](CONTRIBUTING.md#testing).
+- Domain behavior, boundaries, and ownership: [Architecture](docs/architecture.md).
+- Public contracts: [API reference](docs/api.md).
+- Network limits: [Venue network](docs/architecture.md#venue-network).
+- Roster loading and SSE recovery: [Runtime communication](docs/architecture.md#runtime-communication).
+- Deployment, repository paths, or image ownership: [k3s deployment](CONTRIBUTING.md#k3s-deployment).
+- Completion: [Handoff](CONTRIBUTING.md#handoff).
 
-- Follow [CONTRIBUTING.md — Handoff](CONTRIBUTING.md#handoff).
-- If work stops converging, stop speculative edits and report the concrete blocker
-  with evidence.
+## Project invariants
+
+- `/srv/k3s` manages independent test (`lufthafen`) and live (`luftwolke`) clusters;
+  scope deployments and verification separately.
+- Competition has one runtime and database. `competition_team` is the only team
+  source; its `id` is stable.
+- Migration sources are immutable. Migration, backup, and restore validation must
+  be read-only and fail closed before publishing or replacing artifacts.
+- Authentication and integrations fail closed. Only Auth HTTP `200` confirms a user;
+  production has no authentication bypass.
+- Log mutations and business, database, and integration failures under the
+  [logging contract](CONTRIBUTING.md#logging).
