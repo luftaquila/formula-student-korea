@@ -887,20 +887,26 @@ function enduranceUpsertRecord(eventType, binding, run) {
   broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: after, event_type: eventType, run_id: run.runId });
 }
 
-function invalidateRun(eventType, run, reasons) {
-  run.closed = true;
+function invalidateRun(eventType, run, reasons, { awaitEvidence = false } = {}) {
+  // Disarming blocks a new interval; closing also prevents late proof recovery.
+  run.closed = !awaitEvidence;
   run.verification = "invalid";
-  db.prepare("UPDATE wireless_session SET armed = 0 WHERE event_type = ?").run(eventType);
-  publishWirelessQualityFault(eventType, run.runId, reasons);
-  logger.warn(null, "wireless.quality_fault", { error: reasons[0]?.reason, event_type: eventType, run_id: run.runId, reasons }, eventType, SYS_ACTOR);
+  db.prepare("UPDATE wireless_session SET armed = 0 WHERE event_type = ? AND armed != 0").run(eventType);
+  if (!run.fault) {
+    publishWirelessQualityFault(eventType, run.runId, reasons);
+    logger.warn(null, "wireless.quality_fault", { error: reasons[0]?.reason, event_type: eventType, run_id: run.runId, reasons }, eventType, SYS_ACTOR);
+  }
 }
 function processRecordEngine(rows, onlyEventType = null) {
   if (!rows.length) return;
   for (const session of getSessions()) {
     const et = session.event_type;
-    if (!session.armed || (onlyEventType && et !== onlyEventType)) continue;
+    if (onlyEventType && et !== onlyEventType) continue;
     const run = getRun(et);
-    if (!run) throw new Error("진행 중인 계측의 영속 상태가 없습니다.");
+    if (!run) {
+      if (session.armed) throw new Error("진행 중인 계측의 영속 상태가 없습니다.");
+      continue;
+    }
     if (run.closed || !rows.some(row => run.nodes[row.node_id] || row.node_id === "0")) continue;
     const evidence = db.prepare("SELECT * FROM wireless_event WHERE id > ? ORDER BY id").all(run.cursorId);
     const verified = verifyCaptures(run, evidence);
@@ -940,15 +946,18 @@ function processRecordEngine(rows, onlyEventType = null) {
     }
     run.lapTicks = laps;
     run.result = result;
-    run.verification = result == null ? "pending" : "verified";
+    run.verification = !complete && run.fault ? "invalid" : result == null ? "pending" : "verified";
     if (result != null && !invalidDuration) {
       if (et === "내구") enduranceUpsertRecord(et, run.bound, run);
       else if (complete) engineSaveRecord(et, run.bound, result, detail);
     }
-    if (complete) run.closed = true;
+    if (complete) {
+      run.closed = true;
+      if (run.fault) clearWirelessQualityFault(et);
+    }
     // A completed, verified interval before a later fault stays official.
     if (!complete && (verified.fault || invalidDuration)) {
-      invalidateRun(et, run, [verified.fault || { node_id: null, reason: "출발·도착의 원시 시간차가 양수가 아닙니다." }]);
+      invalidateRun(et, run, [verified.fault || { node_id: null, reason: "출발·도착의 원시 시간차가 양수가 아닙니다." }], { awaitEvidence: !!verified.fault && !invalidDuration });
     }
     broadcastEvent("wireless:session", getSession(et));
   }
@@ -2096,7 +2105,7 @@ app.post("/api/wireless/ingest", (req, res) => {
       for (const session of getSessions()) {
         const run = getRun(session.event_type);
         if (session.armed && run && !run.closed && run.masterBootId !== masterBoot) {
-          invalidateRun(session.event_type, run, [{ node_id: "0", reason: "마스터가 계측 중 재부팅되었습니다." }]);
+          invalidateRun(session.event_type, run, [{ node_id: "0", reason: "마스터가 계측 중 재부팅되었습니다." }], { awaitEvidence: true });
           broadcastEvent("wireless:session", getSession(session.event_type));
         }
       }

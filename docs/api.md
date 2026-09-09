@@ -344,7 +344,7 @@ A successful answer or memo change automatically adds the authenticated account'
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/events` | `traffic.operate` | — | SSE stream | Real-time record/event-mode + live-attempt + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, liveAttempts, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. A `live-attempt` event shares the start/stop state published by wired and manual timing clients. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent GREEN emits `{ event_type, cleared: true }`. |
+| GET | `/events` | `traffic.operate` | — | SSE stream | Real-time record/event-mode + live-attempt + wireless updates. init: `{ recordFiles, eventModes, recordVisibility, liveAttempts, wireless: { light, mapping, telemetry, bridge, sessions, qualityFaults, lastEventId } }`. A `live-attempt` event shares the start/stop state published by wired and manual timing clients. `qualityFaults` contains the latest active automatic-stop reason per event. Wireless event names: `wireless:event`, `wireless:telemetry`, `wireless:light`, `wireless:mapping`, `wireless:bridge`, `wireless:session`, `wireless:command`, `wireless:quality-fault`. A quality-fault payload is `{ fault_id, event_type, run_id, kind, occurred_at, reasons }`; a successful subsequent START or late confirmation of the completed pre-fault interval emits `{ event_type, cleared: true }`. |
 
 ### Live Attempts
 
@@ -385,11 +385,11 @@ A successful answer or memo change automatically adds the authenticated account'
 
 마스터에 USB로 연결된 브리지 PC가 캡처·유실 구간·확인 지점(checkpoint)과 진단을 서버로 보낸다. 무선에는 물리 신호등이 없다. 경기별 독점 lease 보유자가 `start`, `stop`, `reset`으로 제어하며, 실제 측정 시작점은 출발 센서 통과다.
 
-서버만 공식 결과를 계산한다. 각 센서의 boot ID와 연속 캡처 순번을 확인하고, 모든 필수 센서의 checkpoint가 측정 구간을 포함할 때 확정한다. 전송 지연·순서 역전·비콘 누락·오래된 진단만으로 중단하지 않으며 확인 전에는 `pending`으로 수집을 계속한다. 실제 캡처 유실·캡처 시계 오류·세션 변경은 영향을 받은 진행 구간을 `invalid`로 끝낸다. 이미 검증된 앞 구간의 기록은 보존한다. 정상 기준점을 확보한 다음 START로 복구하며 누적 오류 카운터를 지우거나 재부팅할 필요가 없다.
+서버만 공식 결과를 계산한다. 각 센서의 boot ID와 연속 캡처 순번을 확인하고, 모든 필수 센서의 checkpoint가 측정 구간을 포함할 때 확정한다. 전송 지연·순서 역전·비콘 누락·오래된 진단만으로 중단하지 않으며 확인 전에는 `pending`으로 수집을 계속한다. 실제 캡처 유실·캡처 시계 오류·세션 변경은 계측을 해제하고 영향을 받은 구간을 `invalid`로 표시한다. 자동 오류 뒤에도 이전 런의 증거 검증은 계속하며, 오류 이전의 정상 구간은 증거가 늦게 도착하거나 서버가 재시작되어도 확정할 수 있다. 완주 구간이 검증되면 `verified`로 변경하고 해당 런의 오류 표시를 해제한다. 이미 검증된 앞 구간의 기록은 보존한다. 명시적 정지·초기화·판정 확정 또는 새 START는 이전 런의 추가 검증을 종료한다. 정상 기준점을 확보한 다음 START로 복구하며 누적 오류 카운터를 지우거나 재부팅할 필요가 없다.
 
 종목별 시간 상·하한은 없다. 원시 tick 차이가 양수인지 확인하고 마지막에 한 번 ms로 반올림한다. 양수 구간이 0ms로 반올림되는 것도 자동 기록에서 허용한다. 수동 기록 입력은 양의 ms 정수다.
 
-세션 객체: `{ event_type, armed, start_tick, master_boot_id, run_id, armed_at, team, event_name, controller, lease_expires_at, updated_at, verification: pending|verified|invalid, result, lap_times, finished, saved_record_name, saved_record_rowid }`. 시작 전 `verification`은 null이며 `lap_times`는 ms 배열이다.
+세션 객체: `{ event_type, armed, start_tick, master_boot_id, run_id, armed_at, team, event_name, controller, lease_expires_at, updated_at, verification: pending|verified|invalid, result, lap_times, finished, saved_record_name, saved_record_rowid }`. 시작 전 `verification`은 null이며 `lap_times`는 ms 배열이다. `finished`는 추가 증거 검증까지 종료되었음을 뜻한다. 자동 오류 뒤에는 `armed: false`, `verification: invalid`, `finished: false`로 이전 증거를 기다릴 수 있으며 별도 대기 시간 제한은 없다.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|

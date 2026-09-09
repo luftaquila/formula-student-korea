@@ -438,7 +438,7 @@ test('START waits for a checkpoint from the currently reported sensor boot', asy
   assert.equal(result.status, 409);
 });
 
-test('a reliable master clock fault closes the active run without diagnostic updates', async t => {
+test('a reliable master clock fault disarms the active run without diagnostic updates', async t => {
   const f = await fixture(t);
   await f.arm();
   await f.ingest([edge('AABB0001', 100000, 1)]);
@@ -451,4 +451,80 @@ test('a reliable master clock fault closes the active run without diagnostic upd
   assert.equal(session.armed, false);
   assert.equal(session.verification, 'invalid');
   assert.equal(f.records().length, 0);
+});
+
+async function interruptedInterval(t, kind) {
+  const f = await fixture(t);
+  await f.arm();
+  const send = (events, telemetry = []) => f.post('/api/wireless/ingest', {rawProtocol: true, events, telemetry});
+  await send([evidence('AABB0001', 1, 100000), evidence('AABB0001', 1, 120000, 47)]);
+  if (kind === 'sensor reboot') {
+    await send([{...evidence('AABB0001', 0, 130000, 47), sensor_boot_id: 2}]);
+  } else if (kind === 'master clock fault') {
+    await send([{node_id: '0', ev_seq: 7, master_tick: tick(130000), end_tick: tick(130000),
+      master_boot_id: 1, sensor_boot_id: 1, capture_seq: 0, end_seq: 0, flags: 16, sync_age_ms: 0}]);
+  } else {
+    await send([], [healthy('0', {master_boot_id: 2})]);
+  }
+  return {f, send};
+}
+
+for (const kind of ['sensor reboot', 'master clock fault', 'master reboot']) {
+  test(`delayed pre-fault FINISH survives ${kind} and server restart`, async t => {
+    const {f, send} = await interruptedInterval(t, kind);
+    assert.equal(f.records().length, 0);
+    await f.restart({refreshHealth: false});
+    const finish = [evidence('AABB0002', 1, 110000), evidence('AABB0002', 1, 120000, 47)];
+    await send(finish);
+    assert.deepEqual(f.records(), [{num: 1, result: 10000}]);
+    await send(finish);
+    assert.equal(f.records().length, 1);
+    const state = await (await f.client.get('/api/wireless/state', {cookie})).json();
+    const session = state.sessions.find(s => s.event_type === '가속');
+    assert.equal(session.armed, false);
+    assert.equal(session.verification, 'verified');
+    assert.equal(session.finished, true);
+    assert.equal(state.qualityFaults.length, 0);
+  });
+}
+
+for (const kind of ['sensor reboot', 'master clock fault']) {
+  test(`FINISH after ${kind} cannot cross its fault boundary`, async t => {
+    const {f, send} = await interruptedInterval(t, kind);
+    await send([evidence('AABB0002', 1, 140000), evidence('AABB0002', 1, 150000, 47)]);
+    assert.equal(f.records().length, 0);
+  });
+}
+
+for (const action of ['stop', 'reset']) {
+  test(`explicit ${action} ends pre-fault evidence recovery`, async t => {
+    const {f, send} = await interruptedInterval(t, 'master clock fault');
+    await f.post('/api/wireless/arm', {event_type: '가속', action});
+    await send([evidence('AABB0002', 1, 110000), evidence('AABB0002', 1, 120000, 47)]);
+    assert.equal(f.records().length, 0);
+  });
+}
+
+test('late proof recovery rolls back with a failed record write and remains retryable', async t => {
+  const {f, send} = await interruptedInterval(t, 'master clock fault');
+  const finish = [evidence('AABB0002', 1, 110000), evidence('AABB0002', 1, 120000, 47)];
+  f.db.exec(`CREATE TEMP TRIGGER fail_recovery BEFORE INSERT ON record
+    BEGIN SELECT RAISE(ABORT, 'injected record failure'); END`);
+  const failed = await f.client.post('/api/wireless/ingest', {cookie, body: {rawProtocol: true, events: finish}});
+  assert.equal(failed.status, 500);
+  assert.equal(f.records().length, 0);
+  const state = await (await f.client.get('/api/wireless/state', {cookie})).json();
+  assert.equal(state.sessions.find(s => s.event_type === '가속').verification, 'invalid');
+  assert.equal(state.qualityFaults.length, 1);
+  f.db.exec('DROP TRIGGER fail_recovery');
+  await send(finish);
+  assert.deepEqual(f.records(), [{num: 1, result: 10000}]);
+});
+
+test('explicit classification prevents late proof from replacing the decision after restart', async t => {
+  const {f, send} = await interruptedInterval(t, 'master clock fault');
+  await f.post('/api/wireless/status', {event_type: '가속', status: 'DNF'});
+  await f.restart({refreshHealth: false});
+  await send([evidence('AABB0002', 1, 110000), evidence('AABB0002', 1, 120000, 47)]);
+  assert.deepEqual(f.db.prepare('SELECT status, result FROM record').all(), [{status: 'DNF', result: null}]);
 });
