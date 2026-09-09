@@ -302,8 +302,10 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 
 ### Template Management
 
-`RULES_BASE_URL` in both clusters' configmaps points at a schema-v2
-`rules-manifest.json` catalog. Fetch limits: 3 s, 5 MB, ten-minute cache.
+`RULES_BASE_URL` in both clusters' configmaps is the catalog directory URL,
+for example `https://luftaquila.github.io/fsk-rules/`. The client appends
+`rules-manifest.json` to fetch the schema-v2 manifest; do not include that filename
+in the setting. Fetch limits: 3 s, 5 MB, ten-minute cache.
 `deployment.site_tag` must match `site-YYYYMMDD-vN`; document `release_tag`
 must match `formula-<document>-YYYY-vN`. Invalid/unavailable catalogs fail
 dependent endpoints with `503 RULE_CATALOG_UNAVAILABLE`, without failing readiness.
