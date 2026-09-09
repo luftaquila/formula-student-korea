@@ -2,13 +2,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { tmpDbPath, cleanup, setupTestEnv, TRUST_JWT } from '../helpers/test-utils.mjs';
-import { currentCompetitionYear } from '../../shared/competition-year.mjs';
+import { currentCompetitionYear } from '../../shared/common/competition-year.mjs';
 
 setupTestEnv();
 
-import { createInspectionApp } from '../../inspection/index.mjs';
+import { createInspectionApp } from '../../competition/modules/inspection/index.mjs';
 
-const requireFromInspection = createRequire(new URL('../../inspection/package.json', import.meta.url));
+const requireFromInspection = createRequire(new URL('../../competition/package.json', import.meta.url));
 const Database = requireFromInspection('better-sqlite3');
 
 describe('Automatic inspector migration', () => {

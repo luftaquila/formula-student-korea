@@ -265,9 +265,9 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, watch } from "vue";
-import { useNotification } from "@shared/useNotification.js";
+import { useNotification } from "@shared/browser/useNotification.js";
 import { fetchStats as apiFetchStats, fetchQuota as apiFetchQuota, fetchEmails, fetchEmail, sendEmail, fetchRecipients, fetchConfig as apiFetchConfig, updateConfig, testEmail as apiTestEmail, testSms as apiTestSms, resetConfig as apiResetConfig } from "../api.js";
-import { isAdmin } from "@shared/officialsStore.js";
+import { isAdmin } from "@shared/browser/officialsStore.js";
 
 const { success, error: showError } = useNotification();
 

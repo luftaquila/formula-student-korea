@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { inspectionSheetPath } from "../../queue/web/src/inspection-sheet-path.js";
+import { inspectionSheetPath } from "../../competition/modules/queue/web/src/inspection-sheet-path.js";
 
 test("inspection sheet path includes a category only when one is known", () => {
   assert.equal(

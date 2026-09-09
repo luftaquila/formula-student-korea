@@ -22,8 +22,8 @@ import {
 
 setupTestEnv();
 
-import { createServiceSkeleton, addSpaFallback, runIfDirect } from '../../shared/service-bootstrap.mjs';
-import { servicePort, RUNTIME_SERVICE_NAMES } from '../../shared/services.mjs';
+import { createServiceSkeleton, addSpaFallback, runIfDirect } from '../../shared/server/service-bootstrap.mjs';
+import { servicePort, RUNTIME_SERVICE_NAMES } from '../../shared/server/services.mjs';
 
 describe('createServiceSkeleton', () => {
   const dbPath = tmpDbPath();

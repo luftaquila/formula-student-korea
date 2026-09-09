@@ -28,7 +28,7 @@ import { request } from "../api.js";
 import { shapeStick } from "@lib/stick.mjs";
 import { formatCoord, ALT_DECIMALS } from "@lib/geo.mjs";
 import { useRoverControl } from "../composables/useRoverControl.js";
-import { useNotification } from "@shared/useNotification.js";
+import { useNotification } from "@shared/browser/useNotification.js";
 
 const { error: notifyError, warning: notifyWarn } = useNotification();
 const router = useRouter();

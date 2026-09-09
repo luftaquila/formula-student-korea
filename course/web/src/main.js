@@ -4,9 +4,9 @@ import App from "./App.vue";
 import "./styles/main.css";
 import "leaflet/dist/leaflet.css";
 import "vue-sonner/style.css";
-import { initTheme } from "@shared/theme-init.js";
-import { initTestBanner } from "@shared/test-banner.js";
-import { hasPermission } from "@shared/officialsStore.js";
+import { initTheme } from "@shared/browser/theme-init.js";
+import { initTestBanner } from "@shared/browser/test-banner.js";
+import { hasPermission } from "@shared/browser/officialsStore.js";
 
 // Mission history is integrated into MapView as the 기록(history) inspector tab
 // so the same rail + map + inspector layout serves both live operation and

@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const Database = require("../../competition/node_modules/better-sqlite3");
 
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 import { ensureCompetitionTeamSchema, TeamStore } from "../../competition/lib/team-store.mjs";
 
 const YEAR = currentCompetitionYear();

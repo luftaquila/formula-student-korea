@@ -1,0 +1,9 @@
+{
+  "entry": "teams",
+  "queue": "queue",
+  "registration": "registration",
+  "inspection": "inspection",
+  "traffic": "traffic",
+  "score": "score",
+  "documents": "documents"
+}

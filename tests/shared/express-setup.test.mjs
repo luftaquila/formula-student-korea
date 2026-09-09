@@ -30,8 +30,8 @@ import {
   formatCookieOpts,
   VALID_ROLES,
   isEnvEnabled,
-} from '../../shared/express-setup.mjs';
-import { access } from '../../shared/access-control.js';
+} from '../../shared/server/express-setup.mjs';
+import { access } from '../../shared/common/access-control.js';
 
 // ─── isEnvEnabled ─────────────────────────────────────────────────────────
 describe('isEnvEnabled', () => {
@@ -671,7 +671,7 @@ describe('public /assets serving', () => {
 });
 
 // ─── createSecretChecker ────────────────────────────────────────────────
-import { createSecretChecker } from '../../shared/express-setup.mjs';
+import { createSecretChecker } from '../../shared/server/express-setup.mjs';
 
 describe('createSecretChecker', () => {
   it('matches only the exact secret', () => {
@@ -856,7 +856,7 @@ describe('INTERNAL_SECRET boot guard', () => {
     const { spawnSync } = await import('node:child_process');
     // `-e` 스크립트는 파일 URL 기준이 없어 상대 동적 import가 cwd로 해석된다. 절대 URL을
     // 넘기지 않으면 MODULE_NOT_FOUND도 exit 1이라 가드를 안 타고도 통과해 버린다.
-    const setupUrl = new URL('../../shared/express-setup.mjs', import.meta.url).href;
+    const setupUrl = new URL('../../shared/server/express-setup.mjs', import.meta.url).href;
     const script = `
       import { createRequire } from 'node:module';
       const require = createRequire('${import.meta.url}');

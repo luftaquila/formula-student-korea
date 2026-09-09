@@ -12,10 +12,10 @@ import {
   TRUST_JWT,
   TEST_SECRET,
 } from '../helpers/test-utils.mjs';
-import { createScoreApp } from '../../score/index.mjs';
-import { currentCompetitionYear } from '../../shared/competition-year.mjs';
+import { createScoreApp } from '../../competition/modules/score/index.mjs';
+import { currentCompetitionYear } from '../../shared/common/competition-year.mjs';
 
-const requireFromScore = createRequire(import.meta.resolve('../../score/index.mjs'));
+const requireFromScore = createRequire(import.meta.resolve('../../competition/modules/score/index.mjs'));
 const Database = requireFromScore('better-sqlite3');
 const CURRENT_YEAR = currentCompetitionYear();
 

@@ -12,8 +12,8 @@
 .env*
 .htpasswd*
 rover
-traffic/device
-traffic/assets
+competition/modules/traffic/device
+competition/modules/traffic/assets
 filebrowser
 rules
 tests

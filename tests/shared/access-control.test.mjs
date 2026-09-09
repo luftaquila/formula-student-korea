@@ -9,7 +9,7 @@ import {
   authorizePrincipal,
   expandPermissions,
   normalizeAccessGrants,
-} from "../../shared/access-control.js";
+} from "../../shared/common/access-control.js";
 
 test("uses only student, official, and admin as human roles", () => {
   assert.deepEqual(HUMAN_ROLES, ["student", "official", "admin"]);

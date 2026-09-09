@@ -5,7 +5,7 @@ import { tmpDbPath, cleanup } from '../helpers/test-utils.mjs';
 
 const require = createRequire(import.meta.url);
 const Database = require('../../auth/node_modules/better-sqlite3');
-import { createDatabase, addColumn } from '../../shared/db-setup.mjs';
+import { createDatabase, addColumn } from '../../shared/server/db-setup.mjs';
 
 let dbPath, db;
 
@@ -74,7 +74,7 @@ describe('addColumn', () => {
   });
 });
 
-import { assertIdentifier } from '../../shared/db-setup.mjs';
+import { assertIdentifier } from '../../shared/server/db-setup.mjs';
 
 describe('assertIdentifier', () => {
   it('accepts valid SQL identifiers', () => {

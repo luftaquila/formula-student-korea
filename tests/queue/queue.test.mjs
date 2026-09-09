@@ -2,7 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
-const require = createRequire(import.meta.resolve('../../queue/index.mjs'));
+const require = createRequire(import.meta.resolve('../../competition/modules/queue/index.mjs'));
 const Database = require('better-sqlite3');
 import {
   tmpDbPath,
@@ -15,8 +15,8 @@ import {
   TRUST_JWT,
   TEST_SECRET,
 } from '../helpers/test-utils.mjs';
-import { createQueueApp, INSPECTIONS } from '../../queue/index.mjs';
-import { competitionYearBounds, currentCompetitionYear } from '../../shared/competition-year.mjs';
+import { createQueueApp, INSPECTIONS } from '../../competition/modules/queue/index.mjs';
+import { competitionYearBounds, currentCompetitionYear } from '../../shared/common/competition-year.mjs';
 
 function withFailureTimeout(promise, label, timeoutMs = 2_000) {
   let timer;

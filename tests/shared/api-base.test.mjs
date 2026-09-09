@@ -2,7 +2,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-const source = (await readFile(new URL("../../shared/api-base.js", import.meta.url), "utf8"))
+const source = (await readFile(new URL("../../shared/browser/api-base.js", import.meta.url), "utf8"))
   .replace("import.meta.env.PROD", "false");
 const { createApiClient } = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
 

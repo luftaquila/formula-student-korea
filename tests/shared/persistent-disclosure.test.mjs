@@ -5,7 +5,7 @@ import {
   RESOURCES_DISCLOSURE_STORAGE_KEY,
   readDisclosureState,
   writeDisclosureState,
-} from "../../shared/persistent-disclosure.js";
+} from "../../shared/browser/persistent-disclosure.js";
 
 function memoryStorage(entries = []) {
   const values = new Map(entries);

@@ -1,5 +1,5 @@
-import { VEHICLE_COLORS } from "../../shared/constants.js";
-import { assertCompetitionTeamWriteYear, parseCompetitionYear } from "../../shared/competition-year.mjs";
+import { VEHICLE_COLORS } from "../../shared/common/constants.js";
+import { assertCompetitionTeamWriteYear, parseCompetitionYear } from "../../shared/common/competition-year.mjs";
 import {
   clearCanonicalTeamTransientState,
   updateCanonicalTeamProjections,

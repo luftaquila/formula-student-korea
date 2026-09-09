@@ -2,9 +2,9 @@ import { createApp } from "vue";
 import { createRouter, createWebHistory } from "vue-router";
 import App from "./App.vue";
 import "vue-sonner/style.css";
-import { initTheme } from "@shared/theme-init.js";
-import { initTestBanner } from "@shared/test-banner.js";
-import { hasPermission, isAdmin } from "@shared/officialsStore.js";
+import { initTheme } from "@shared/browser/theme-init.js";
+import { initTestBanner } from "@shared/browser/test-banner.js";
+import { hasPermission, isAdmin } from "@shared/browser/officialsStore.js";
 
 initTheme();
 initTestBanner();

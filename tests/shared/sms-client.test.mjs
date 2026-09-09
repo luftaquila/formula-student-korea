@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { EventEmitter } from "node:events";
 
-import { createSmsClient, createThrottledSkipWarning } from "../../shared/sms-client.mjs";
+import { createSmsClient, createThrottledSkipWarning } from "../../shared/server/sms-client.mjs";
 
 process.env.INTERNAL_SECRET = "test-internal-secret";
 

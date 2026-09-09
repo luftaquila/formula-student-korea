@@ -31,6 +31,31 @@ image or data ownership.
 Competition modules have no separate deployments or HTTP fan-out. Team data stays
 in the shared database; no copied rosters, lifecycle outboxes, or reconciliation.
 
+## Source boundaries
+
+Competition domains live under `competition/modules/`; the parent Competition
+package owns all backend dependencies. Each module keeps its own `web` package.
+`competition/ui-modules.json` maps public UI names to source directories, including
+`entry` to `teams`; both static hosting and container runtime settings use this map.
+
+Backend `index.mjs` files compose factories and register routes. Their `server`
+folders own schema initialization, storage helpers, feature services, and HTTP
+routes. Keep transactions, event publication order, and resource ownership intact
+when extracting code. State belongs to factory instances; shared database and
+integration clients retain their existing owner. Browser-compatible domain
+algorithms remain in module-local `lib` folders.
+
+Shared dependencies follow these boundaries, verified by `test:shared`:
+
+- `shared/browser`: UI, browser state, API clients, and styles; may use `common`.
+- `shared/server`: Node, Express, database, logging, SSE, and integrations; may use `common`.
+- `shared/common`: runtime-independent values and pure functions; imports only other `common` files.
+- `shared/build`: build configuration; may use `common`.
+
+Shared code never imports an application. Tests remain under the root `tests`
+folders, with existing domain commands. Traffic firmware and hardware stay with
+its module; Rover remains a separate top-level component.
+
 ## Public course viewing
 
 Course serves the operational map at `/course` and anonymous read-only map at

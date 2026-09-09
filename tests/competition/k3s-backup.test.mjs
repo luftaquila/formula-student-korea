@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { setupTestEnv, TRUST_JWT } from "../helpers/test-utils.mjs";
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 import { createK3sBackup } from "../../competition/scripts/create-k3s-backup.mjs";
 import { validateCompetitionDatabaseFile } from
   "../../competition/scripts/validate-database.mjs";

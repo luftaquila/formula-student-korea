@@ -15,7 +15,7 @@ import { healthyWirelessTelemetry as healthy } from "../helpers/wireless-fixture
 
 setupTestEnv();
 
-import { createTrafficApp } from "../../traffic/index.mjs";
+import { createTrafficApp } from "../../competition/modules/traffic/index.mjs";
 
 const cookie = makeAuthCookie({ email: "quality@test.com", name: "Quality", role: "admin" });
 let appState;

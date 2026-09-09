@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
-import { createJWT } from "../../../shared/express-setup.mjs";
+import { createJWT } from "../../../shared/server/express-setup.mjs";
 
 const JWT_SECRET = process.env.JWT_SECRET || "e2e-test-secret";
 const TEST_EMAIL = "e2e-role-propagation@test.com";

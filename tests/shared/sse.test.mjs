@@ -8,7 +8,7 @@ import { waitForCondition } from '../helpers/test-utils.mjs';
 const require = createRequire(import.meta.url);
 const express = require('../../auth/node_modules/express');
 
-import { createSSEManager } from '../../shared/sse.mjs';
+import { createSSEManager } from '../../shared/server/sse.mjs';
 
 function getSSE(url) {
   return new Promise((resolve, reject) => {

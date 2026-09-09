@@ -14,13 +14,13 @@ import {
   TEST_SECRET,
   waitForCondition,
 } from '../helpers/test-utils.mjs';
-import { currentCompetitionYear } from '../../shared/competition-year.mjs';
+import { currentCompetitionYear } from '../../shared/common/competition-year.mjs';
 
 setupTestEnv();
 
-import { createTrafficApp } from '../../traffic/index.mjs';
+import { createTrafficApp } from '../../competition/modules/traffic/index.mjs';
 
-const requireFromTraffic = createRequire(import.meta.resolve('../../traffic/index.mjs'));
+const requireFromTraffic = createRequire(import.meta.resolve('../../competition/modules/traffic/index.mjs'));
 const Database = requireFromTraffic('better-sqlite3');
 const CURRENT_YEAR = currentCompetitionYear();
 

@@ -53,20 +53,6 @@ jobs:
               - 'pnpm-workspace.yaml'
             auth:
               - 'auth/**'
-            entry:
-              - 'entry/**'
-            queue:
-              - 'queue/**'
-            registration:
-              - 'registration/**'
-            inspection:
-              - 'inspection/**'
-            traffic:
-              - 'traffic/**'
-            score:
-              - 'score/**'
-            documents:
-              - 'documents/**'
             competition:
               - 'competition/**'
             course:
@@ -86,13 +72,6 @@ jobs:
           DOCKERFILE_SVC: ${{ steps.filter.outputs.dockerfile-service }}
           DOCKER_CONTEXT: ${{ steps.filter.outputs.docker-context }}
           F_AUTH: ${{ steps.filter.outputs.auth }}
-          F_ENTRY: ${{ steps.filter.outputs.entry }}
-          F_QUEUE: ${{ steps.filter.outputs.queue }}
-          F_REGISTRATION: ${{ steps.filter.outputs.registration }}
-          F_INSPECTION: ${{ steps.filter.outputs.inspection }}
-          F_TRAFFIC: ${{ steps.filter.outputs.traffic }}
-          F_SCORE: ${{ steps.filter.outputs.score }}
-          F_DOCUMENTS: ${{ steps.filter.outputs.documents }}
           F_COMPETITION: ${{ steps.filter.outputs.competition }}
           F_COURSE: ${{ steps.filter.outputs.course }}
           F_CALENDAR: ${{ steps.filter.outputs.calendar }}
@@ -124,12 +103,8 @@ jobs:
             for svc in "${STANDARD[@]}"; do add_service "$svc"; done
             add_service "caddy"
           else
-            competition_changed="$F_COMPETITION"
-            for value in "$F_ENTRY" "$F_QUEUE" "$F_REGISTRATION" "$F_INSPECTION" "$F_TRAFFIC" "$F_SCORE" "$F_DOCUMENTS"; do
-              if [ "$value" = "true" ]; then competition_changed=true; fi
-            done
             declare -A FILTERS=(
-              [auth]="$F_AUTH" [competition]="$competition_changed"
+              [auth]="$F_AUTH" [competition]="$F_COMPETITION"
               [email]="$F_EMAIL" [course]="$F_COURSE" [calendar]="$F_CALENDAR"
             )
             for svc in "${STANDARD[@]}"; do

@@ -1,11 +1,11 @@
 <script setup>
 import { ref, computed, watch, provide, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
-import NavMenu from "@shared/NavMenu.vue";
-import SonnerToaster from "@shared/SonnerToaster.vue";
+import NavMenu from "@shared/browser/NavMenu.vue";
+import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 import { request } from "./api.js";
-import { useNotification } from "@shared/useNotification.js";
-import { permissionComputed } from "@shared/officialsStore.js";
+import { useNotification } from "@shared/browser/useNotification.js";
+import { permissionComputed } from "@shared/browser/officialsStore.js";
 
 const { error: notifyError } = useNotification();
 const canOperateRover = permissionComputed("rover.operate");

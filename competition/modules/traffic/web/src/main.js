@@ -1,0 +1,17 @@
+import { createApp } from "vue";
+import { createPinia } from "pinia";
+import router from "./router";
+import App from "./App.vue";
+
+import "vue-sonner/style.css";
+import "./assets/styles/main.css";
+import { initTheme } from "@shared/browser/theme-init.js";
+import { initTestBanner } from "@shared/browser/test-banner.js";
+
+initTheme();
+initTestBanner();
+
+const app = createApp(App);
+app.use(createPinia());
+app.use(router);
+app.mount("#app");

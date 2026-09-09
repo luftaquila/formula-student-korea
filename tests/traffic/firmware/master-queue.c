@@ -1,6 +1,6 @@
 #include <assert.h>
 #define main firmware_entry
-#include "../../../traffic/device/wireless/firmware/src/main.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/main.c"
 #undef main
 static uint32_t boot = 1;
 static int xtal = 1;

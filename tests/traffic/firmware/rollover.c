@@ -6,9 +6,9 @@ static void gpio_set(uint32_t p){}
 static void gpio_clear(uint32_t p){}
 static void gpio_toggle(uint32_t p){}
 static void gpio_write(uint32_t p,int h){}
-#include "../../../traffic/device/wireless/firmware/src/board.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/board.c"
 #define main firmware_entry
-#include "../../../traffic/device/wireless/firmware/src/main.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/main.c"
 #undef main
 int main(void){
 NRF_TIMER2->CC[0]=4294967000u;uint32_t before=board_millis();

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createRenderer, h, nextTick, ref } from "vue";
 
-import { createSSEConnection } from "../../shared/useSSE.js";
+import { createSSEConnection } from "../../shared/browser/useSSE.js";
 
 function createTestRenderer() {
   return createRenderer({

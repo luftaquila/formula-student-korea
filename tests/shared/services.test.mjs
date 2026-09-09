@@ -1,7 +1,7 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { serviceUrl, logAggregationTargets, SERVICE_NAMES, RUNTIME_SERVICE_NAMES } from '../../shared/services.mjs';
+import { serviceUrl, logAggregationTargets, SERVICE_NAMES, RUNTIME_SERVICE_NAMES } from '../../shared/server/services.mjs';
 
 const ENV_KEYS = ['AUTH_SERVER', 'COMPETITION_SERVER'];
 

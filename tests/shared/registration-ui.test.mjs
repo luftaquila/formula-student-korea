@@ -6,9 +6,9 @@ import {
   administration,
   resources,
   services,
-} from "../../shared/nav-config.js";
-import { ROLE_SORT_ORDER } from "../../shared/constants.js";
-import { ACCESS_CONTROL_DEFINITIONS, PERMISSION_KEYS } from "../../shared/access-control.js";
+} from "../../shared/browser/nav-config.js";
+import { ROLE_SORT_ORDER } from "../../shared/common/constants.js";
+import { ACCESS_CONTROL_DEFINITIONS, PERMISSION_KEYS } from "../../shared/common/access-control.js";
 
 test("participant navigation has one queue lookup while registration operations stay separate", () => {
   const queue = services.find((item) => item.href === "/queue");

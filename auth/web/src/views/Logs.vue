@@ -162,9 +162,9 @@
 
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted } from "vue";
-import { createApiClient } from "@shared/api-base.js";
-import { parseDbTimestamp } from "@shared/parse-timestamp.js";
-import { SERVICE_NAMES } from "@shared/service-names.js";
+import { createApiClient } from "@shared/browser/api-base.js";
+import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
+import { SERVICE_NAMES } from "@shared/common/service-names.js";
 
 const api = createApiClient("/auth");
 const PAGE_SIZE = 100;

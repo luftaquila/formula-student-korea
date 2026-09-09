@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Queue gate (queue/index.mjs authRoleFn ~lines 228-249):
+// Queue gate (competition/modules/queue/index.mjs authRoleFn ~lines 228-249):
 //   queue.manage: registration, priority, history reset, settings writes,
 //               /api/admin/inspection/:type (PATCH), .../visibility, .../ignore,
 //               /api/admin/booths/:type/config

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateEntryNum } from '../../shared/validation.mjs';
+import { validateEntryNum } from '../../shared/common/validation.mjs';
 
 describe('validateEntryNum', () => {
   it('accepts positive integers (number or numeric string)', () => {
@@ -38,7 +38,7 @@ describe('validateEntryNum', () => {
   });
 });
 
-import { validateYear } from '../../shared/validation.mjs';
+import { validateYear } from '../../shared/common/validation.mjs';
 
 describe('validateYear', () => {
   it('accepts years 2000-2099 (number or numeric string)', () => {

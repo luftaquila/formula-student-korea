@@ -1,8 +1,8 @@
 <script setup>
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
-import NavMenu from "@shared/NavMenu.vue";
-import SonnerToaster from "@shared/SonnerToaster.vue";
+import NavMenu from "@shared/browser/NavMenu.vue";
+import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 
 const route = useRoute();
 const isLogs = computed(() => route.path === "/logs");
@@ -52,8 +52,8 @@ watch(pageTitle, (v) => { document.title = v; }, { immediate: true });
 </template>
 
 <style>
-@import "@shared/styles/base.css";
-@import "@shared/styles/layout.css";
+@import "@shared/browser/styles/base.css";
+@import "@shared/browser/styles/layout.css";
 </style>
 
 <style scoped>

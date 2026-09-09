@@ -1,7 +1,7 @@
 .env
 data/
 node_modules/
-*/web/dist/
+**/web/dist/
 rover/rover_mcu.bin
 rover/rover_mcu.elf
 rover/rover_mcu.uf2

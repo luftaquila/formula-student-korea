@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 
 const YEAR = currentCompetitionYear();
 const NEXT_YEAR = YEAR + 1;

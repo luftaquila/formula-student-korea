@@ -1,4 +1,4 @@
-import { getChecktableConfig, getInspectionItemState } from "../../../inspection/lib/item-status.mjs";
+import { getChecktableConfig, getInspectionItemState } from "../../../competition/modules/inspection/lib/item-status.mjs";
 import { BASE_URL, getAuthCookie } from "./auth.mjs";
 
 function responseItems(category) {

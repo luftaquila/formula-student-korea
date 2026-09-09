@@ -4,7 +4,7 @@ import {
   applyResetMarker,
   createResetMarker,
   resetMarkerResolved,
-} from "../../traffic/lib/wireless-reset.mjs";
+} from "../../competition/modules/traffic/lib/wireless-reset.mjs";
 
 const base = {
   event_type: "가속",

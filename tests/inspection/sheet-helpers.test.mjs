@@ -14,7 +14,7 @@ import {
   isMultiSourceCalculation,
   calculationForMode,
   calculationSourcesForOperation,
-} from '../../inspection/web/src/utils/sheet-helpers.js';
+} from '../../competition/modules/inspection/web/src/utils/sheet-helpers.js';
 
 const item = {
   remarks: JSON.stringify({

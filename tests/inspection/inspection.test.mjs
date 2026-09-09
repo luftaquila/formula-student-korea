@@ -12,13 +12,13 @@ import {
   TRUST_JWT,
   TEST_SECRET,
 } from '../helpers/test-utils.mjs';
-import { currentCompetitionYear } from '../../shared/competition-year.mjs';
+import { currentCompetitionYear } from '../../shared/common/competition-year.mjs';
 
 setupTestEnv();
 
-import { createInspectionApp } from '../../inspection/index.mjs';
+import { createInspectionApp } from '../../competition/modules/inspection/index.mjs';
 
-const requireFromInspection = createRequire(import.meta.resolve('../../inspection/index.mjs'));
+const requireFromInspection = createRequire(import.meta.resolve('../../competition/modules/inspection/index.mjs'));
 const Database = requireFromInspection('better-sqlite3');
 
 const CURRENT_YEAR = currentCompetitionYear();

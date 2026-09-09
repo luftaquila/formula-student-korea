@@ -3,7 +3,7 @@ import {
   assertCurrentCompetitionYear,
   currentCompetitionYear,
   parseCompetitionYear,
-} from "../../shared/competition-year.mjs";
+} from "../../shared/common/competition-year.mjs";
 
 function parseExplicitYear(value, assertWritableYear = assertCurrentCompetitionYear) {
   if (value == null || value === "") return null;

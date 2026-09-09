@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { findInspectionCategory } from "../../queue/web/src/inspection-category.js";
+import { findInspectionCategory } from "../../competition/modules/queue/web/src/inspection-category.js";
 
 test("finds the one applicable inspection category with an optional name suffix", () => {
   const categories = [

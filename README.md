@@ -7,4 +7,4 @@
 - [Rover](rover/README.md): navigation, MCU, provisioning, and recovery
 - [GPS](rover/gps/README.md): receiver runtime, base station, and provisioning
 - [Perception](rover/perception/README.md): camera, depth detection, and calibration
-- [Timing hardware](traffic/DESIGN.md): wiring, wireless protocol, firmware, and verification
+- [Timing hardware](competition/modules/traffic/DESIGN.md): wiring, wireless protocol, firmware, and verification

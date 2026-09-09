@@ -10,11 +10,11 @@ import {
   tmpDbPath,
   TRUST_JWT,
 } from "../helpers/test-utils.mjs";
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 
 setupTestEnv();
 
-import { createInspectionApp, parseRuleDocument } from "../../inspection/index.mjs";
+import { createInspectionApp, parseRuleDocument } from "../../competition/modules/inspection/index.mjs";
 
 const YEAR = currentCompetitionYear();
 const HASH_A = `sha256:${"a".repeat(64)}`;

@@ -5,9 +5,9 @@ import { tmpDbPath, cleanup, setupTestEnv, TRUST_JWT } from '../helpers/test-uti
 
 setupTestEnv();
 
-import { createInspectionApp } from '../../inspection/index.mjs';
+import { createInspectionApp } from '../../competition/modules/inspection/index.mjs';
 
-const requireFromInspection = createRequire(new URL('../../inspection/package.json', import.meta.url));
+const requireFromInspection = createRequire(new URL('../../competition/package.json', import.meta.url));
 const Database = requireFromInspection('better-sqlite3');
 
 describe('Inspection answer-type migration', () => {

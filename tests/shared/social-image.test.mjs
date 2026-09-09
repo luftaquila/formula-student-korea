@@ -5,8 +5,8 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { createApp } from '../../shared/express-setup.mjs';
-import { addSpaFallback } from '../../shared/service-bootstrap.mjs';
+import { createApp } from '../../shared/server/express-setup.mjs';
+import { addSpaFallback } from '../../shared/server/service-bootstrap.mjs';
 import { startServer, stopServer, setupTestEnv, TRUST_JWT } from '../helpers/test-utils.mjs';
 
 const require = createRequire(import.meta.url);

@@ -7,7 +7,7 @@ import {
   KIOSK_FULLSCREEN_CLASS,
   syncFullscreenLayout,
   toggleFullscreen,
-} from "../../shared/fullscreen.js";
+} from "../../shared/browser/fullscreen.js";
 
 test("fullscreen support requires both enter and exit operations", () => {
   assert.equal(isFullscreenSupported(null), false);

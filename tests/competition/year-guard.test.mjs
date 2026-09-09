@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 import { createModuleYearGuard } from "../../competition/lib/year-guard.mjs";
 
 const YEAR = currentCompetitionYear();

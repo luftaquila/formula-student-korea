@@ -8,7 +8,7 @@ import { createCompetitionApp } from "../index.mjs";
 import { assertCanonicalTeamReferences, installCanonicalTeamReferences } from "../lib/team-references.mjs";
 import { validateCompetitionDatabase } from "../lib/database-validation.mjs";
 import { clearInactiveTeamLiveState } from "./migration-normalization.mjs";
-import { VEHICLE_COLORS } from "../../shared/constants.js";
+import { VEHICLE_COLORS } from "../../shared/common/constants.js";
 
 const SERVICES = Object.freeze(["entry", "queue", "inspection", "traffic", "score", "documents"]);
 const SKIP_TABLES = new Set([

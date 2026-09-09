@@ -111,6 +111,148 @@ importers:
         specifier: ^8.0.1
         version: 8.0.1
 
+  competition/modules/documents/web:
+    dependencies:
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42)
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
+  competition/modules/inspection/web:
+    dependencies:
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42)
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
+  competition/modules/queue/web:
+    dependencies:
+      qrcode:
+        specifier: ^1.5.4
+        version: 1.5.4
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42)
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
+  competition/modules/registration/web:
+    dependencies:
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42)
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
+  competition/modules/score/web:
+    dependencies:
+      exceljs:
+        specifier: ^4.4.0
+        version: 4.4.0
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42)
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
+  competition/modules/teams/web:
+    dependencies:
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
+  competition/modules/traffic/web:
+    dependencies:
+      exceljs:
+        specifier: ^4.4.0
+        version: 4.4.0
+      pinia:
+        specifier: ^3.0.4
+        version: 3.0.4(vue@3.5.42)
+      vue:
+        specifier: ^3.5.26
+        version: 3.5.42
+      vue-router:
+        specifier: ^4.5.1
+        version: 4.6.4(vue@3.5.42)
+      vue-sonner:
+        specifier: ^2.0.9
+        version: 2.0.9
+    devDependencies:
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.3
+        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
+      vite:
+        specifier: ^7.3.0
+        version: 7.3.6(yaml@2.9.0)
+
   course:
     dependencies:
       better-sqlite3:
@@ -134,40 +276,6 @@ importers:
       three:
         specifier: ^0.185.1
         version: 0.185.1
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-router:
-        specifier: ^4.5.1
-        version: 4.6.4(vue@3.5.42)
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
-  documents:
-    dependencies:
-      archiver:
-        specifier: ^7.0.1
-        version: 7.0.1
-      better-sqlite3:
-        specifier: ^12.5.0
-        version: 12.11.1
-      busboy:
-        specifier: ^1.6.0
-        version: 1.6.0
-      express:
-        specifier: ^5.2.1
-        version: 5.2.1
-
-  documents/web:
-    dependencies:
       vue:
         specifier: ^3.5.26
         version: 3.5.42
@@ -213,182 +321,11 @@ importers:
         specifier: ^7.3.0
         version: 7.3.6(yaml@2.9.0)
 
-  entry/web:
-    dependencies:
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
-  inspection:
-    dependencies:
-      better-sqlite3:
-        specifier: ^12.5.0
-        version: 12.11.1
-      express:
-        specifier: ^5.2.1
-        version: 5.2.1
-      parse5:
-        specifier: ^8.0.1
-        version: 8.0.1
-
-  inspection/web:
-    dependencies:
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-router:
-        specifier: ^4.5.1
-        version: 4.6.4(vue@3.5.42)
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
   landing:
     dependencies:
       vue:
         specifier: ^3.5.26
         version: 3.5.42
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
-  queue:
-    dependencies:
-      better-sqlite3:
-        specifier: ^12.5.0
-        version: 12.11.1
-      express:
-        specifier: ^5.2.1
-        version: 5.2.1
-
-  queue/web:
-    dependencies:
-      qrcode:
-        specifier: ^1.5.4
-        version: 1.5.4
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-router:
-        specifier: ^4.5.1
-        version: 4.6.4(vue@3.5.42)
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
-  registration:
-    dependencies:
-      better-sqlite3:
-        specifier: ^12.5.0
-        version: 12.11.1
-      express:
-        specifier: ^5.2.1
-        version: 5.2.1
-
-  registration/web:
-    dependencies:
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-router:
-        specifier: ^4.5.1
-        version: 4.6.4(vue@3.5.42)
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
-  score:
-    dependencies:
-      better-sqlite3:
-        specifier: ^12.5.0
-        version: 12.11.1
-      express:
-        specifier: ^5.2.1
-        version: 5.2.1
-
-  score/web:
-    dependencies:
-      exceljs:
-        specifier: ^4.4.0
-        version: 4.4.0
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-router:
-        specifier: ^4.5.1
-        version: 4.6.4(vue@3.5.42)
-      vue-sonner:
-        specifier: ^2.0.9
-        version: 2.0.9
-    devDependencies:
-      '@vitejs/plugin-vue':
-        specifier: ^6.0.3
-        version: 6.0.8(vite@7.3.6(yaml@2.9.0))(vue@3.5.42)
-      vite:
-        specifier: ^7.3.0
-        version: 7.3.6(yaml@2.9.0)
-
-  traffic:
-    dependencies:
-      better-sqlite3:
-        specifier: ^12.5.0
-        version: 12.11.1
-      express:
-        specifier: ^5.2.1
-        version: 5.2.1
-
-  traffic/web:
-    dependencies:
-      exceljs:
-        specifier: ^4.4.0
-        version: 4.4.0
-      pinia:
-        specifier: ^3.0.4
-        version: 3.0.4(vue@3.5.42)
-      vue:
-        specifier: ^3.5.26
-        version: 3.5.42
-      vue-router:
-        specifier: ^4.5.1
-        version: 4.6.4(vue@3.5.42)
       vue-sonner:
         specifier: ^2.0.9
         version: 2.0.9

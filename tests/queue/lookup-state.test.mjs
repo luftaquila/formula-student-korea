@@ -5,7 +5,7 @@ import {
   createLookupLoader,
   isLookupEntryAvailable,
   isTerminalLookupError,
-} from "../../queue/web/src/lookup-state.js";
+} from "../../competition/modules/queue/web/src/lookup-state.js";
 
 function httpError(status, message = `HTTP ${status}`) {
   return Object.assign(new Error(message), { status });

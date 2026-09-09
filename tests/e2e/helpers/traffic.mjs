@@ -1,4 +1,4 @@
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { BASE_URL } from "./auth.mjs";
 
 const teamRequests = new Map();

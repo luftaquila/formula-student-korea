@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { formatBoothElapsed } from "../../queue/web/src/booth-timer.js";
+import { formatBoothElapsed } from "../../competition/modules/queue/web/src/booth-timer.js";
 
 test("booth timer freezes at the pause instant after subtracting earlier pauses", () => {
   const booth = {

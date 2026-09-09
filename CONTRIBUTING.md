@@ -4,7 +4,7 @@ Development and deployment workflow. See [Architecture](docs/architecture.md) fo
 service ownership and the [API reference](docs/api.md) for contracts.
 
 Competition module factories support tests but share one deployment. Hardware:
-[rover](rover/README.md), [timing devices](traffic/DESIGN.md).
+[rover](rover/README.md), [timing devices](competition/modules/traffic/DESIGN.md).
 
 ## Local development
 
@@ -18,8 +18,8 @@ pnpm test                         # all unit and integration tests
 pnpm run test:competition        # one service or domain
 pnpm run test:shared
 
-pnpm --dir entry/web run dev     # replace entry with the relevant SPA
-pnpm --dir entry/web run build
+pnpm --dir competition/modules/teams/web run dev     # replace teams with the Competition module
+pnpm --dir competition/modules/teams/web run build
 node competition/index.mjs      # replace competition for a supporting service
 ```
 
@@ -81,7 +81,7 @@ failed run with `gh run view <run-id> --log-failed`.
 
 ## Logging
 
-Backends use `createLogger(db, serviceName)` from `shared/logger.mjs`.
+Backends use `createLogger(db, serviceName)` from `shared/server/logger.mjs`.
 
 ```js
 logger.log(req, "team.create", { before, after }, target);
@@ -117,6 +117,9 @@ test all of these in the same coordinated change:
 - the affected application Dockerfile
 - `/srv/k3s/scripts/fsk-contract.sh` and `fsk-redeploy.sh`
 - both `clusters/{lufthafen,luftwolke}/apps/fsk/` manifest sets when applicable
+
+Run `bash /srv/k3s/scripts/test-fsk-contract.sh` to verify path-to-image selection
+and both clusters' backup contracts without cluster actions.
 
 Do not preview or promote a change when the deployment script's `Changed services`
 output omits an image affected by the diff.
