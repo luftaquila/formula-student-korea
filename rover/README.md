@@ -55,11 +55,10 @@ Bridge: `mcu_bridge_node`. Firmware CI: the `mcu` job in
 
 ## Architecture
 
-Five ROS 2 Jazzy nodes in the rootful `pilot` container, `--network=host` (a
-separate `perception` container handles camera streaming — WebRTC (H.264, WHIP →
-mediamtx) primary with an MJPEG fallback, plus a WebXR VR stereo stream — and
-stereo obstacle detection — it joins this same ROS graph and publishes `/rover/perception/obstacle`,
-which `navigator_node` turns into a local mission pause; see `perception/`):
+Five ROS 2 Jazzy nodes run in the rootful `pilot` container with `--network=host`.
+The separate [perception container](perception/README.md) shares the ROS graph,
+streams camera video, and publishes `/rover/perception/obstacle` for local mission
+pauses.
 
 ```
 course server (port 10000)
@@ -111,21 +110,14 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
                             or battery below battery_abort_pct mid-mission)
 ```
 
-- **Antenna-precise docking**: the planner emits ONE segment per waypoint
-  (`path_planner.py`), whose `end_pose` is the chassis dock pose
-  `target − R(ψ_dock) · antenna_offset` — the pose that lands the GPS
-  antenna (the only cm-precise quantity we observe) exactly on the user's
-  clicked target — and whose `target_antenna` is the waypoint itself.
-  ψ_dock is the bearing from the previous waypoint (or the live chassis
-  pose, for the first WP) to the current one, so consecutive cones are
-  joined by a smooth corridor, and non-zero antenna offset is compensated
-  at planning time. The planner is purely geometric (no controller state),
-  so it regenerates cheaply on skip / stuck / mid-mission replan.
-- **State estimator** fuses MCU encoder odometry (chassis v, ω) with GPS
-  antenna position and GPS heading-of-motion (with antenna-offset
-  inversion) into a chassis (x, y, ψ) at 20 Hz. ψ never depends on raw
-  GPS heading-of-motion alone — that decouples control from the 200–500
-  ms heading-of-motion latency that previously caused figure-8 swings.
+- **Antenna-precise docking**: `path_planner.py` emits one geometric segment per
+  waypoint: `target_antenna` is the waypoint and chassis `end_pose` is
+  `target − R(ψ_dock) · antenna_offset`. Dock bearing comes from the previous
+  waypoint (live chassis pose for the first). The stateless planner compensates
+  antenna offset and regenerates on skip, stuck, or replan.
+- **State estimator**: at 20 Hz, fuses encoder (v, ω), GPS antenna position, and
+  heading-of-motion with antenna-offset inversion into chassis (x, y, ψ).
+  Encoder fusion avoids dependence on GPS heading's 200–500 ms latency.
 - **CALIBRATING**: drive κ = 0 at `calibration_speed`, regress chassis
   heading from antenna ENU samples. Trustworthy when chord ≥
   `calibration_chord_min_m` AND residual RMS ≤ `calibration_residual_max`
@@ -151,17 +143,13 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
 - **SETTLING → SPRAYING**: antenna within `settle_tolerance` for
   `settle_readings` consecutive samples → fire. Drift back outside
   `waypoint_tolerance` mid-settle hands control back to the dock tracker.
-- **CAL_ANTENNA**: drive a straight chord (chord-fit ψ_init), then a
-  constant-curvature CIRCLE orbit (κ = ±1/`antenna_cal_radius_m` for
-  `antenna_cal_revolutions`), and run a closed-form circular solver
-  (`antenna_calibration.py`): while orbiting, both the chassis trace and
-  the antenna trace are circles about the same centre, so two circle fits
-  plus a phase mean recover (a_x, a_y) with no instantaneous heading
-  needed. Gates on a minimum orbit sweep (`SOLVE_CIRCLE_SWEEP_MIN_RAD`,
-  270°), per-circle fit RMS, and chassis-vs-antenna centre agreement, so
-  an orbit that didn't really happen (encoder stall, mid-drive E-Stop)
-  can't silently persist a garbage offset. Result written to
-  `$PILOT_STATE_DIR/antenna_offset.json`.
+- **CAL_ANTENNA**: after a straight chord fit, drive a circle at
+  κ = ±1/`antenna_cal_radius_m` for `antenna_cal_revolutions`.
+  `antenna_calibration.py` recovers (a_x, a_y) from chassis/antenna circle fits
+  and mean phase, without instantaneous heading. Require sweep ≥270°
+  (`SOLVE_CIRCLE_SWEEP_MIN_RAD`), per-circle RMS, and centre agreement before
+  saving `$PILOT_STATE_DIR/antenna_offset.json`; stalled or interrupted orbits
+  must not persist offsets.
 - **CAL_WHEELS**: drive a straight 10 m chord at `wheel_cal_speed` and
   divide GPS chord distance by per-wheel encoder integration to recover
   per-wheel rolling-radius scale. Result written to
@@ -169,20 +157,14 @@ any driving state → ERROR  (GPS timeout / fix below quality > fix_hysteresis_s
   `/rover/cmd/apply_wheel_scales`. Bounded to ±15 % so encoder
   slip / GPS error never produces a runaway scale.
 
-Thresholds in `pilot/config/rover_params.yaml`. The most physically
-load-bearing knob is `antenna_offset_x` / `antenna_offset_y` — measure
-it once on the actual chassis with a tape (or run CAL_ANTENNA once);
-everything else self-corrects via GPS feedback.
+Thresholds are in `pilot/config/rover_params.yaml`. Measure
+`antenna_offset_x` / `antenna_offset_y` on the chassis or run CAL_ANTENNA.
 
-**Hub connectivity is not a safety interlock.** The mission state machine runs
-entirely onboard (`navigator_node`); the server SSE link only carries operator
-commands and telemetry. If the hub connection drops mid-mission, `bridge_node`
-reconnects with backoff (`sse_reconnect_delay`, capped at 30 s) but the rover
-keeps executing the current mission — a dropped link does **not** pause or stop
-it. To halt a running rover you must trigger EMERGENCY_STOP: the `/stop` command
-once the link is back, or the physical E-Stop (independent of the hub). The
-onboard drive watchdog is a separate mechanism — it stops the wheels if the MCU
-stops receiving drive commands (e.g. a `navigator_node` crash), not on hub loss.
+**Hub loss does not stop the rover.** Navigation runs onboard; `bridge_node`
+reconnects with `sse_reconnect_delay` backoff capped at 30 s while the mission
+continues. Use the physical E-Stop, or `/stop` after the link returns. The MCU
+watchdog stops wheels when drive commands stop (for example, a navigator crash),
+not when the hub disconnects.
 
 Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover differs only in `SERVER_URL` / `INTERNAL_SECRET` (or the optional `ROVER_SECRET`) / `NTRIP_USERNAME`.
 
@@ -429,12 +411,9 @@ Async: `! <msg>` (e.g. `! WDT TIMEOUT`).
 | red blink | E-Stop |
 | off (dark) | Pi link down (Pi powered off / unplugged) |
 
-The two external NeoPixel Sticks (16 LEDs, GP11) mirror this onboard LED 1:1
-— same colour and blink. When the Pi heartbeat times out (Pi powered off or
-unplugged) the status LEDs + sticks go dark — the MCU stays powered from the
-battery rail, so without this they would sit lit; E-Stop and undervolt still
-override. The nav lights (GP9) are independent: steady on whenever the MCU is
-powered, not tied to status.
+External NeoPixel sticks (16 LEDs, GP11) mirror the onboard status LED.
+Pi heartbeat timeout makes both dark; E-Stop and undervoltage override this.
+Independent nav lights (GP9) stay on while the MCU is powered.
 
 ### Build
 

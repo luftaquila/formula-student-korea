@@ -1,9 +1,8 @@
 # Inspection Rule Links Rollout and Operation
 
-Inspection items link to rulebook clauses through `sheet_template.rule_refs`. Links are
-resolved at request time against the fsk-rules catalog published on GitHub Pages; nothing
-is stored except the stable `rule_key`, the resolving `release_tag`, and the clause
-metadata copied from the catalog at verification time.
+Inspection links resolve `sheet_template.rule_refs` against the fsk-rules GitHub
+Pages catalog. Stored references contain stable keys, the resolving release tag,
+and verified clause metadata.
 
 ## Prerequisites
 
@@ -16,23 +15,16 @@ metadata copied from the catalog at verification time.
   manifest are rejected, and every rule endpoint returns
   `503 RULE_CATALOG_UNAVAILABLE`.
 
-## First rollout of a year
+## Import and verify references
 
-1. Deploy the Competition image that contains the feature together with the configmap
-   change. The `rule_refs` column is added on startup with `needs_review` for every item.
-2. A chief opens 템플릿 관리 and runs `규정 연결 가져오기` with the current template export
-   (`.github/inspection-template-2026.json` for 2026). The import only touches
-   `rule_refs`; it fails as a whole unless the file's `field_key` set matches the stored
-   template exactly, and it never replaces template rows or answers.
-3. The shipped 2026 mappings have already completed clause-by-clause review: normative
-   items are `verified`, while weights, contact data, and recorded values without a
-   direct normative clause are `no_direct_rule`. Confirm that the import reports no
-   `needs_review` items; resolve any remaining item before rollout.
-4. Export the template afterwards and commit the JSON so the verified state is versioned.
+1. In 템플릿 관리, run `규정 연결 가져오기` with the target year's template export.
+   The import updates only `rule_refs` and requires an exact `field_key` match;
+   a mismatch rejects the whole import without replacing template rows or answers.
+2. Review every `needs_review` item. Verify matching clauses or mark items without
+   a direct clause as `no_direct_rule` before use.
+3. Export the reviewed template and version the JSON in Git.
 
 ## When fsk-rules publishes a new release
-
-A new document revision (`formula-*-2026-vN`) or site tag changes the catalog:
 
 1. Run `재검증` for the year. Renumbered clauses with an unchanged `content_hash` keep
    `verified` and follow the new anchor; changed or missing clauses drop to

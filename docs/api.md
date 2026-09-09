@@ -1,6 +1,7 @@
 # API Reference
 
-This is the maintained HTTP contract. Auth, email, course, and calendar expose their listed `/api/*` routes directly. The seven competition modules run in one Competition process on port 9200. Paths shown inside a Competition module section are relative to that module prefix:
+HTTP contracts for supporting services and Competition (port 9200). Supporting-service
+paths are service-relative. Competition API/SSE paths use these prefixes:
 
 | Module | External prefix |
 |---|---|
@@ -12,7 +13,10 @@ This is the maintained HTTP contract. Auth, email, course, and calendar expose t
 | Score | `/competition/api/v1/score` |
 | Documents | `/competition/api/v1/documents` |
 
-Teams table paths are relative to `/competition/api/v1` because Teams, vehicle types, and meta are flat resources. Other module table paths are relative to their listed module prefix. For example, Queue's `/health` row means `/competition/api/v1/queue/health`. API and SSE clients must use these versioned prefixes. The participant queue UI is `/queue`; `/registration/` redirects there, while Registration operations remain at `/registration/manage` and `/registration/register`.
+Teams, vehicle types, and meta use paths relative to `/competition/api/v1`;
+other module tables use the prefix above (Queue `/health` means
+`/competition/api/v1/queue/health`). UI paths are documented under
+[Runtime communication](architecture.md#runtime-communication).
 
 Former standalone, nested `/{module}/api/*`, lifecycle, finalize, snapshot, and version routes are not compatibility APIs and return `404`.
 
@@ -55,9 +59,6 @@ The permission keys are:
 Entry, Email/SMS, the system logs, and Account & Access are Admin tools. They have no
 grant key, so no Official can be given them; the home page and sidebar list them in a
 separate Admin group.
-
-Queue and Inspection are deliberately separate. `queue.manage` implies only
-`queue.operate`; `inspection.manage` implies only `inspection.operate`.
 
 ### Rate Limiting
 
@@ -217,7 +218,8 @@ There is no team delete or roster replacement endpoint. Deactivation preserves h
 | POST | `/admin/cancel/:type` | `queue.operate` | `{ num }` | 200 | Cancel registration (applies time penalty) |
 | POST | `/admin/inspection/:type/:num/last-call` | `queue.operate` | — | 200 | Send the queued phone an immediate-entry last-call SMS; returns 503 when SMS configuration is unavailable and 502 when delivery fails |
 
-Last-call delivery is an explicit operator action and therefore does not depend on the automatic SMS notification toggle. The target must still be waiting in the selected inspection queue, and usable SENS configuration is required.
+Last-call SMS requires a waiting team and usable SENS configuration, regardless of
+the automatic notification toggle.
 
 ### Active Cancel Penalties
 
@@ -271,7 +273,7 @@ Last-call delivery is an explicit operator action and therefore does not depend 
 
 ## Registration module (Competition port 9200)
 
-Registration rows use `competition_team.id` as their only team identity. Number and team labels below are canonical values resolved from that team. `waiting` is the operational state; `done` and `canceled` remain stored with the submitted phone and timestamps as audit history. Rows left in the retired `called` state by an earlier preview build are treated as waiting until they are completed or canceled.
+Registration rows use `competition_team.id` as their only team identity. Number and team labels below are canonical values resolved from that team. `waiting` is the operational state; `done` and `canceled` remain stored with the submitted phone and timestamps as audit history.
 
 ### Public status and lookup
 
@@ -321,7 +323,10 @@ Advance SMS delivery follows Queue behavior: when an active row is completed or 
 | POST | `/sheet/template/rule-refs/revalidate` | `inspection.manage` | `{ year }` | `{ year, counts }` | Refresh catalog metadata; changed or missing verified clauses become `needs_review` and are never auto-promoted |
 | GET | `/sheet/rule-link/:itemId/:referenceIndex` | `inspection.operate` | — | 302 | Resolve a verified, hash-matching stable key to the current safe Pages anchor for that edition |
 
-`excluded_types` is a category-level array of vehicle type **names** (from entry's `vehicle_types_<year>`) that must NOT see the category. Exclusions rather than inclusions are stored, so `[]` (the default) means every type sees it and a newly added vehicle type is visible without touching existing categories. Max 50 names; a non-array is rejected with 400. It survives `copy` and JSON export/import, and only categories carry it (other levels always report `[]`).
+`excluded_types` contains up to 50 vehicle type **names** (entry's
+`vehicle_types_<year>`) excluded from a category. Default `[]` admits every type,
+including new types. Non-arrays return 400. Copy and JSON export/import preserve
+it; non-category levels always return `[]`.
 
 ### Sheet Data
 
@@ -401,7 +406,9 @@ A successful answer or memo change automatically adds the authenticated account'
 | GET | `/time` | public | — | `{ now }` | 서버 epoch ms — 클라가 라이브 클럭을 서버 기준으로 동기화(오프셋 추정). 인증 면제 |
 | POST | `/wireless/bridge/offline` | `traffic.operate` | — | `{ ...bridge }` | 브리지가 종료 직전 오프라인을 즉시 보고 (15초 무수신 감지 대기 없이) |
 
-무선 펌웨어 2.2.0(무선 프로토콜 v8)은 마스터·센서 전체와 브리지를 함께 갱신해야 한다. USB `E`·`L` 및 `C` ACK에는 마스터 boot ID가 포함된다. 서버는 런의 boot ID와 일치하고 시작 경계 이상인 tick만 계산에 사용한다. 가속·오토크로스는 도착이 먼저 수신되어도 출발과 결합한다. 진행 상태에는 해당 런의 마스터·센서 진단과 원래 수신 시각을 함께 저장해 재시작 후 복구한다. 진단의 신선도는 원래 시각으로 판단하며, 재시작 후 전체 진단보다 대기 이벤트가 먼저 도착해도 아직 유효한 진단으로 처리한다. 복구한 진단의 품질은 새 요청을 받기 전에 검사하며, 만료된 런의 중단 상태를 먼저 저장한다. 따라서 정상 진단이 먼저 도착해도 만료된 런이 재개되지 않는다. 새로 보고된 실제 품질 오류도 기존대로 런을 중단한다. 이전 버전에서 진행 중이던 런은 복구 상태가 없으므로 업그레이드 시 중단하고 다시 arm해야 한다. 주파수 교정은 이 프로토콜 변경에 포함되지 않는다. 판정 변경과 런 완료 상태는 함께 저장하므로 정상 판정으로 복원해도 완료된 내구 런이 재시작 후 재개되지 않는다. 성공한 정지·초기화는 진행 중인 arm 시각 확인을 무효화한다. 시각 확인 중 해당 경기의 품질 오류가 관측되면 이후 진단이 회복되어도 그 arm 요청은 409로 거부하며, 정상 상태에서 새 요청으로 다시 시작해야 한다. 브라우저는 arm 확정 전에 받은 최근 이벤트를 보관하고 일치하는 런에서 한 번만 처리한다.
+무선 프로토콜 v9는 v8과 호환되지 않는다. 서버·웹 브리지·마스터·전 센서 펌웨어를 함께 갱신해야 한다. 업그레이드 시 v9 캡처 검증 정보가 없는 진행 런은 중단하고 저장된 공식 기록은 보존한다.
+
+시작 시각 확인 중 성공한 정지·초기화나 다른 경기 제어 요청으로 상태가 바뀌면 해당 START는 `409`로 거부된다. 서버는 시각 확인 전후에 계측 준비 상태를 검사하고, 확인 중 저장된 캡처도 새 런에서 한 번만 처리한다.
 
 ## Score module (Competition port 9200)
 
@@ -560,7 +567,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 공개
 | GET | `/api/public/courses` | public | — | `[{ id, name, cone_count }]` | 공개된 코스만 조회 |
 | GET | `/api/public/courses/:id` | public | — | `{ course: { id, name, reverse, start_cone_id }, cones: [{ id, lat, lng, alt, side }], route: { markers: [{ id, lat, lng, label }], steps: [marker_id, ...] } }` | 지도와 다운로드용 현재 코스 데이터. 비공개·없는 코스는 동일한 404 |
 
-공개 목록·상세 응답은 `Cache-Control: no-store`이며 메모와 운영 메타데이터를 반환하지 않습니다. 공개 화면은 메뉴 진입 시 한 번 조회하고 해당 데이터를 유지합니다. 공개 SSE·폴링·자동 갱신은 없으며 변경된 내용을 보려면 사용자가 화면을 새로고침해야 합니다. 운영 화면의 SSE는 유지합니다.
+공개 목록·상세는 `Cache-Control: no-store`이며 메모·운영 메타데이터를 제외합니다. 공개 화면은 진입 시 조회한 데이터를 수동 새로고침까지 유지하며 SSE·폴링은 없습니다. 운영 SSE는 유지합니다.
 
 공개 다운로드는 클릭 시 상세 API를 새로 조회한 다음 브라우저에서 ZIP을 생성합니다. 생성 완료 후에도 해당 코스의 공개 여부와 내용이 유지되는지 다시 확인하며, 변경되었으면 다운로드를 취소합니다. 공개 JSON에는 `memos` 필드 자체가 없고 PNG·트랙 파일에도 메모를 포함하지 않습니다. ZIP은 코스 JSON, 미리보기 PNG, Assetto Corsa 트랙 ZIP, 영어 설치 안내 `README.txt`로 구성됩니다. 관리 화면의 ZIP도 README를 포함하며 기존 메모 내보내기를 유지합니다.
 
@@ -611,7 +618,7 @@ RTK GPS 기반 코스 콘 위치 관리 + 로버 원격 운용 서비스. 공개
 
 #### 메모 스티커 (지도 주석)
 
-메모는 중심 좌표(lat/lng)와 실측 크기(width/height, m)로 저장돼 콘처럼 지리 좌표에 고정된다 — 줌/회전에도 코스 위 같은 자리를 가리키며 줌에 따라 함께 커지고 작아진다. course 삭제 시 CASCADE.
+메모는 중심 좌표(lat/lng)와 실측 크기(width/height, m)에 고정되어 지도 줌·회전을 따르며, 코스 삭제 시 CASCADE 삭제됩니다.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
@@ -696,7 +703,7 @@ NGII(공용 NTRIP)와 **수신기 base station**(측량점에 고정한 수신�
 
 ### Rover 카메라 — WebRTC 시그널링 (mediamtx, WHIP/WHEP)
 
-저지연 카메라(H.264)는 별도 `mediamtx` 릴레이를 통한 WebRTC로 전달된다. caddy가 `/course/api/rtc/*`를 `mediamtx:8889`로 리버스 프록시하며(`landing/Caddyfile`), 시그널링 SDP만 HTTP로 타고 미디어는 별도 UDP/SRTP다. mediamtx는 permit-all + ClusterIP 전용(외부에서 직접 접근 불가)이라 **caddy의 게이트가 곧 접근 제어**다 — 시그널링 교환 없이는 SRTP 키를 세울 수 없어 미디어 포트만으로는 무용하다:
+H.264 영상은 `mediamtx`가 WebRTC로 중계합니다. Caddy는 `/course/api/rtc/*`를 `mediamtx:8889`로 프록시합니다(`landing/Caddyfile`). SDP 시그널링은 HTTP, 미디어는 UDP/SRTP를 사용합니다. mediamtx는 permit-all인 ClusterIP 서비스이므로 Caddy가 시그널링 접근을 통제합니다. SRTP 키 수립에는 시그널링이 필요합니다:
 
 - **WHIP(로버 publish)**: caddy가 `X-Internal-Service` = `INTERNAL_SECRET`를 요구(없으면 403). 로버가 이 헤더를 실어 발행.
 - **WHEP(브라우저 play)**: caddy `forward_auth`로 **`rover.operate` 권한**을 요구한다(미인증은 401, 미승인은 403).
@@ -710,7 +717,7 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | 브라우저 play (WHEP) | `POST /course/api/rtc/rover-2d/whep` | `rover.operate` | rover-2d | 2D 운영 패널이 재생 |
 | 브라우저 play (WHEP) | `POST /course/api/rtc/rover-vr/whep` | `rover.operate` | rover-vr | WebXR VR 뷰가 재생 (눈별 분할) |
 
-로버는 `SERVER_URL`로 WHIP URL을 구성하고, publish 게이팅은 `/api/rover/camera/hold`(위 표)가 담당한다. 프론트는 `course/web/src/composables/useWhepStream.js`(2D)·`course/web/src/views/VrView.vue`(VR)에서 WHEP로 재생하며, WebRTC가 기본이고 MJPEG(`/api/rover/camera/stream`)은 폴백이다.
+로버는 `SERVER_URL`로 WHIP URL을 구성하며 `/api/rover/camera/hold`가 발행을 유지합니다. 브라우저는 WHEP로 재생하고 실패 시 MJPEG(`/api/rover/camera/stream`)로 전환합니다.
 
 ### Missions (`rover.operate`)
 
@@ -731,7 +738,7 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | DELETE | `/api/rover/mission-presets/:id` | `rover.operate` | `{ expected_preset_revision }` | 204 | last-read revision이 일치할 때만 프리셋 삭제 |
 | GET | `/api/missions` | `rover.operate` | `?limit=(≤500, 기본 50)&offset=` | `{ missions, total }` | 미션 이력 목록 |
 | GET | `/api/missions/:id` | `rover.operate` | — | v2: `{ ...mission, waypoints, events }`; legacy: 기존 좌표 배열 | 미션 상세와 모든 lifecycle/command/route-edit 감사 이벤트 |
-| GET | `/api/missions/:id/telemetry` | `rover.operate` | — | `{ samples: [...] }` | 미션 텔레메트리 전체 (대용량 가능 — 페이지네이션 미지원, 후속 과제) |
+| GET | `/api/missions/:id/telemetry` | `rover.operate` | — | `{ samples: [...] }` | 미션 텔레메트리 전체 (페이지네이션 미지원, 대용량 가능) |
 
 ### SSE (`/api/events`, `course.operate`)
 

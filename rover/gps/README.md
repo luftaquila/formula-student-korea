@@ -1,36 +1,19 @@
 # FSK GPS-Registration Unit
 
-A lightweight **Raspberry Pi Zero 2 W + ZED-F9P** stand-in for the full
-[rover](../README.md), built for one job: **surveying cone coordinates**
-with RTK precision. Carry it to a cone, hit "좌표 요청" in the course UI,
-and it answers with the current RTK fix. No motors, no MCU, no autonomous
-driving — just GPS → server.
+A Raspberry Pi Zero 2 W + ZED-F9P unit for RTK cone surveys. At a cone, press
+"좌표 요청" in the course UI to capture the current fix. It can also supply RTCM3
+corrections as a [fixed base station](#base-station).
 
 ## Why this exists (and how it differs from the rover)
 
-The full rover is a Raspberry Pi 5 running **AlmaLinux 10 bootc** with the
-ROS 2 Jazzy pilot in a podman container. That stack does **not** fit on a
-Zero 2 W:
+The Zero 2 W is unsupported by the rover's Pi 4/5 GPT/UEFI bootc image, and its
+512 MB RAM cannot host AlmaLinux, podman, and ROS 2 Jazzy. It runs Raspberry Pi OS
+Lite (64-bit, Trixie), provisioned headlessly with cloud-init, and a Python systemd
+service using the rover's [ROS-free GPS/NTRIP modules](#code-reuse).
 
-- AlmaLinux's `bootc-images-rpi` supports only Pi 4 / Pi 5 (GPT/UEFI boot)
-  — the Pi-3-class Zero 2 W isn't a supported board.
-- 512 MB RAM can't host AlmaLinux + podman + ROS 2 Jazzy.
-
-So this unit runs **Raspberry Pi OS Lite (64-bit, Trixie)**, configured
-headless via **cloud-init**, with the agent as a plain `systemd` Python
-service — no ROS, no container. It still reuses the rover's proven,
-ROS-free GPS/NTRIP code (see [Code reuse](#code-reuse)).
-
-> **Two slots.** The unit connects with `?device=gps` and holds its **own**
-> slot on the course server, separate from the rover (`?device=rover`), so
-> both can be connected at once — the receiver is the **preferred** cone-capture
-> source, the rover the fallback. (Both still authenticate with the same
-> `INTERNAL_SECRET`.)
-
-> **Base station.** Beyond cone capture, this unit can act as an RTK **base
-> station**: survey a fixed point with NGII once, then reuse that coordinate to
-> emit RTCM3 corrections for the rover — no on-site internet needed. See
-> [Base station](#base-station).
+The receiver uses `?device=gps`, independently of the rover slot. Both authenticate
+with `INTERNAL_SECRET` and may connect simultaneously. Cone capture prefers the
+receiver, falling back to the rover.
 
 ## Hardware
 
@@ -42,8 +25,7 @@ ROS-free GPS/NTRIP code (see [Code reuse](#code-reuse)).
 
 ## Architecture
 
-One process (`gps_register.py`), four threads, `--network=host` style direct
-HTTP to the course server (port 10000):
+`gps_register.py` communicates directly with the Course server (port 10000):
 
 ```
                 course server  (/course)
@@ -119,10 +101,9 @@ partition (`user-data` + `network-config`). The current card is set up with:
 | Wi-Fi | SSID `fsk-rover`, regulatory-domain `KR` (PSK on the card, not in git) |
 | Tailscale | installed + `tailscale up` on first boot (machine `fsk-rover-gps`); auto-reconnects every boot after |
 
-The Wi-Fi PSK and the Tailscale auth key live **only on the SD card's
-cloud-init** (`network-config` / `user-data` `runcmd`), never in git — same
-posture as the rover's placeholder `fsk-default.nmconnection`. Boot needs
-internet on the team Wi-Fi the first time so Tailscale can install + auth.
+Keep Wi-Fi and Tailscale keys only in the card's cloud-init files
+(`network-config` and `user-data`), never in Git. First boot needs internet to
+install and authenticate Tailscale.
 
 Boot, wait ~1–2 min for first-boot setup, then `ssh fsk@fsk-rover-gps.local`
 (or via Tailscale). Re-point Wi-Fi for a site with:
@@ -143,12 +124,10 @@ scripts/provision-gps.sh fsk-rover-gps.local \
                                        # brings Tailscale up via cloud-init
 ```
 
-Idempotent — it deploys `/opt/gps-register`, apt-installs
-`python3-serial`/`python3-requests` + Tailscale, writes
-`/etc/gps-register/gps.conf` (0600), installs the udev rule + systemd unit,
-and starts `gps-register.service`. Tailscale is normally already up from the
-first-boot cloud-init; `--tailscale-authkey` is only needed to (re-)auth if
-that failed (e.g. no internet on first boot).
+The idempotent script deploys `/opt/gps-register`, installs `python3-serial`,
+`python3-requests`, Tailscale, udev rules, and the systemd unit, writes
+`/etc/gps-register/gps.conf` (0600), and starts `gps-register.service`.
+Use `--tailscale-authkey` only if cloud-init authentication failed or re-auth is needed.
 
 ### 3. Verify
 
@@ -179,8 +158,7 @@ password `gnss`, mountpoint auto-selected (nearest RTCM 3.2 base).
 
 ## Code reuse
 
-The agent imports the rover's pure, ROS-free modules directly — single
-source of truth, no vendored copies in git:
+The agent imports ROS-free pilot modules without vendored copies:
 
 | Module | From |
 |--------|------|

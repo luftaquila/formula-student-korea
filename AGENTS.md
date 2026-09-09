@@ -13,17 +13,8 @@ instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
   clear design over the fewest changed lines.
 - Follow local code patterns. Put mechanically checkable rules in tooling or tests,
   not this file. Comments should explain only non-obvious reasons or constraints.
-- For a bug, reproduce it with a deterministic test, observe the failure, apply the
-  fix, and observe the test pass.
-- Add or update deterministic tests for every behavior change. Never use fixed
-  sleeps for API or SSE synchronization. Playwright E2E runs only in CI.
-- Test externally observable behavior or an explicitly documented stable contract
-  at the lowest practical layer. Do not lock source text, internal identifiers,
-  markup/CSS shape, copy, or pixel values unless that exact representation is a
-  documented public, accessibility, or compatibility requirement.
-- Do not duplicate the same invariant across unit, API, and E2E tests. Treat a
-  retry-only pass as a defect, and measure performance changes with comparable
-  before/after wall times.
+- Before changing behavior or writing or running tests, read and follow
+  [CONTRIBUTING.md — Testing](CONTRIBUTING.md#testing).
 - Do not create commits or pull requests unless requested. Keep requested commits
   focused and consistent with the repository's commit style.
 
@@ -31,28 +22,9 @@ instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 - `/srv/k3s` manages independent `lufthafen` test and `luftwolke` live clusters.
   Treat their manifests, deployment actions, and verification as separate scopes.
-- At the event venue, clients are not placed behind a shared venue NAT; nearly all
-  requests reach the services from distinct mobile-carrier IPs. Do not assume one
-  venue-wide source IP when assessing per-IP limits without contrary evidence.
-- When repository paths or deployed-image ownership change, update the CI build map,
-  `/srv/k3s` deployment contract and script, and both environment manifests together.
 - `competition_team.id` is the stable team identity, and `competition_team` is the
   only team source of truth.
-- Competition entries do not change while an event is in progress. Do not require
-  event-day clients to refresh the entry roster solely to recover from a reconnect.
-- Interpret competition years in `Asia/Seoul`. Reads may target any valid year;
-  team, vehicle-type, and Inspection mutations may target the current or next KST
-  year, while other operational mutations are limited to the current year. Do not
-  add draft/finalize, roster snapshots, numeric roster versions, or soft-delete inference.
-- Keep Competition domains in one runtime and database, with
-  `/competition/api/v1` as their only API namespace. Do not add standalone legacy
-  profiles, compatibility APIs, HTTP fan-out, copied rosters, live roster
-  propagation, lifecycle outboxes, reconciliation, or reverse migration.
-- Keep Inspection stale-write protection value-based: compare the caller's
-  last-read value and reject mismatches without persistence. Do not add numeric
-  answer/memo versions or local-storage drafts.
-- Clean Documents orphan uploads synchronously before readiness. Do not add a
-  background delete job. Legacy migration copies only database-referenced uploads.
+- Keep Competition domains in one runtime and database.
 - Never mutate migration sources. Migration, backup, and restore validation must be
   read-only and fail closed before publishing or replacing artifacts.
 - Authentication and integrations fail closed. Only an Auth HTTP `200` confirms a
@@ -60,12 +32,21 @@ instructions live in [CONTRIBUTING.md](CONTRIBUTING.md).
 - Log every successful mutation and every business, database, or integration
   failure with enough context to audit destructive changes.
 
-Read [docs/architecture.md](docs/architecture.md) before changing boundaries or
-data ownership, and [docs/api.md](docs/api.md) before changing public contracts.
+## Required references
+
+- Before changing domain behavior, runtime boundaries, or data ownership, read and
+  follow the relevant sections of [docs/architecture.md](docs/architecture.md).
+- Before changing public contracts, read and follow [docs/api.md](docs/api.md).
+- Before assessing network behavior or per-IP limits, read
+  [Venue network](docs/architecture.md#venue-network).
+- Before changing roster loading or SSE recovery, read
+  [Runtime communication](docs/architecture.md#runtime-communication).
+- Before deployment work or repository-path or deployed-image ownership changes,
+  read and follow [CONTRIBUTING.md — k3s deployment](CONTRIBUTING.md#k3s-deployment),
+  including its coordinated deployment contract.
 
 ## Completion
 
-- Run the narrowest relevant tests, then broader affected tests when practical.
-- Review the final diff for scope, API, boundary, migration, and logging regressions.
-- Report changed files, tests run, and residual risk. If work stops converging, stop
-  speculative edits and report the concrete blocker with evidence.
+- Follow [CONTRIBUTING.md — Handoff](CONTRIBUTING.md#handoff).
+- If work stops converging, stop speculative edits and report the concrete blocker
+  with evidence.

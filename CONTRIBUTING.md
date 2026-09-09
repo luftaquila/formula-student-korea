@@ -33,9 +33,6 @@ pnpm --dir entry/web run build
 node competition/index.mjs      # replace competition for a supporting service
 ```
 
-Competition is the deployed owner of its seven domains. Their application factories
-remain directly usable by tests, but do not run them as standalone services.
-
 The root `Makefile` and `compose.yml` are not deployment interfaces for the k3s
 servers. Do not use `make deploy`, `make restart`, `make backup`, or `make restore`
 against the live k3s environment.
@@ -48,24 +45,22 @@ For rover work, follow [rover/README.md](rover/README.md).
 - For a bug fix, first reproduce the defect and observe the test fail. Then apply the
   fix and observe the same test pass.
 - Run the narrowest relevant test first. Run all affected suites before handoff.
-- On shared hosts, use `pnpm test`, a `pnpm run test:<domain>` script, or
-  `node scripts/test.mjs tests/course/course-archive.test.mjs` for a single file.
-  Do not invoke `node --test` directly on these hosts. The runner requires Linux,
-  cgroup v2 and a working systemd user manager; it refuses to run
-  if the actual cgroup limits are missing. It limits the entire process tree to
-  1 GiB RAM, no swap, 256 tasks, and 10 minutes (then a 5-second kill grace),
-  with two concurrent test files and a 256 MiB V8 heap per Node process.
-  Unsupported local environments should use the CI runner instead of bypassing
-  isolation. These limits apply to tests, not application startup or builds.
-  GitHub-hosted CI uses its dedicated VM, two concurrent test files, the same
-  per-process heap cap, and a 15-minute unit-job timeout.
+- On shared hosts, run tests through `pnpm test`, `pnpm run test:<domain>`, or
+  `node scripts/test.mjs tests/course/course-archive.test.mjs`; never use
+  `node --test` directly. The runner requires Linux, cgroup v2, and a systemd user
+  manager, and refuses to run without enforced limits. Use CI if unsupported.
+  Test limits (not application/build limits):
+
+  | Limit | Shared host | GitHub-hosted CI |
+  |---|---|---|
+  | Concurrent files / V8 heap per process | 2 / 256 MiB | 2 / 256 MiB |
+  | Process tree | 1 GiB RAM, no swap, 256 tasks | Dedicated VM |
+  | Timeout | 10 min + 5 s kill grace | 15 min unit job |
+
 - Compare binary results using `Buffer.compare()` or `Buffer.equals()` and assert
   the scalar result. Do not pass large binaries to deep-equality assertions:
   formatting a failing diff can consume far more memory than the input.
 - Playwright E2E runs in CI only. Do not run it locally.
-- Register API response waits before the action that triggers them. Use Playwright
-  assertions or `expect.poll()` for eventual state; never synchronize API or SSE
-  behavior with `waitForTimeout` or another fixed sleep.
 - Keep parallel tests isolated with unique data. Do not assert a global exact count
   when another shard can add records.
 
@@ -74,19 +69,16 @@ For rover work, follow [rover/README.md](rover/README.md).
 - Assert externally observable behavior or an explicitly documented stable
   contract at the lowest layer that can prove it. Reserve E2E tests for deployed
   boundaries and critical user journeys instead of repeating unit or API coverage.
-- Do not use source text, function or variable names, CSS classes, internal markup
-  order, or implementation-specific copy and pixel values as a substitute for a
-  behavior assertion. When a Dockerfile, manifest, or migration is itself a shipped
-  contract, parse or execute it and assert its semantics rather than its formatting.
-- Exact copy, color, font, and position assertions require a documented public,
-  accessibility, or compatibility reason. Otherwise assert that information is
-  visible, usable, and not clipped or overflowing, with one representative visual
-  flow where it adds coverage.
-- Synchronize by registering the response or event waiter before its triggering
-  action, or use a web-first assertion, bounded condition poll, or fake clock. Do
-  not wait for cosmetic animation or notification disappearance. A bounded absence
-  wait is allowed only when absence throughout that exact documented interval is
-  the behavior under test.
+- Do not assert source text, internal names, markup/CSS structure, or exact copy
+  and visual values unless they are a documented public, accessibility, or
+  compatibility contract. Parse or execute shipped Dockerfiles, manifests, and
+  migrations to assert semantics. Otherwise check visibility, usability, and
+  overflow, using one representative visual flow where useful.
+- Register response/event waiters before triggering actions. Use web-first
+  assertions, `expect.poll()`, bounded condition polls, or fake clocks; never use
+  fixed sleeps for API/SSE synchronization or wait for cosmetic animations and
+  notifications to disappear. An absence wait is valid only when the exact
+  interval is part of the documented behavior.
 - A retry-only pass is a failure to fix, not an acceptable CI result. New tests must
   remain deterministic with retries disabled and repeated execution.
 - Performance changes must include comparable before/after wall measurements and
@@ -98,19 +90,14 @@ failed run with `gh run view <run-id> --log-failed`.
 
 ## Authentication and service calls
 
-- Human roles are `student`, `official`, and `admin`. Officials receive one explicit
-  list of service grants. Registration, Queue, Inspection, Documents, and Traffic
-  use none/operate/manage access levels; Course and Score use a single full-access
-  grant. Management permissions imply the matching operation permission. Admin
-  satisfies every human permission.
-- Non-auth services revalidate through Auth and fail closed; only HTTP `200` confirms
-  a user. Tests may inject `TRUST_JWT` through an application factory. Production
-  has no authentication bypass.
-- Caddy removes external `X-Internal-Service` and `Authuser` headers. Internal calls
-  use `X-Internal-Service` with `INTERNAL_SECRET`; the resulting internal principal
-  can access only routes that explicitly require internal authentication.
-- Competition modules communicate in-process. Do not add HTTP calls between them or
-  split them into separate runtime profiles.
+- Follow the [roles and permissions contract](docs/api.md#human-roles-and-permissions)
+  when changing access checks.
+- Non-auth services revalidate through Auth; only HTTP `200` confirms a user.
+  Tests may inject `TRUST_JWT` through an application factory; production has no bypass.
+- Caddy strips external `X-Internal-Service` and `Authuser` headers. Internal calls
+  use `X-Internal-Service` with `INTERNAL_SECRET`; the distinct internal principal
+  can access only explicitly internal routes.
+- Competition modules communicate in-process, without HTTP calls or separate profiles.
 
 ## Logging
 
@@ -208,6 +195,7 @@ operations instead of copying those procedures here.
 
 ## Handoff
 
-- Review `git diff` and `git diff --check`.
+- Review `git diff` for scope, API, boundary, migration, and logging regressions;
+  run `git diff --check`.
 - Report files changed, tests run, deployment actions, and remaining risk.
 - Do not claim a behavior or deployment is verified if its check was not run.
