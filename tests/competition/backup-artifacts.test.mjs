@@ -329,7 +329,21 @@ function removeEnduranceDriverNames(dbPath) {
   writer.close();
 }
 
+function removeWirelessRunState(dbPath) {
+  const writer = new Database(dbPath);
+  if (writer.pragma("table_info(wireless_session)").some(({ name }) => name === "engine_state")) {
+    writer.exec(`
+      ALTER TABLE wireless_session DROP COLUMN engine_state;
+      DROP INDEX idx_wevent_dedupe;
+      ALTER TABLE wireless_event DROP COLUMN master_boot_id;
+      CREATE UNIQUE INDEX idx_wevent_dedupe ON wireless_event(node_id, ev_seq, master_tick);
+    `);
+  }
+  writer.close();
+}
+
 function removeBoothTimerState(dbPath) {
+  removeWirelessRunState(dbPath);
   const writer = new Database(dbPath);
   writer.exec(`
     DROP TRIGGER trg_booth_clear_team_update;
@@ -1037,7 +1051,7 @@ describe("Competition backup/restore artifact validation", () => {
       assert.equal(contract.length, 131);
       assert.equal(
         competitionSchemaContractDigest(contract),
-        "6ea17b5f529d947108915839bb104a90c27089eb639d3d67f7149376bc904e64",
+        COMPETITION_SCHEMA_CONTRACT.sha256,
       );
     } finally {
       reader.close();
@@ -1058,6 +1072,7 @@ describe("Competition backup/restore artifact validation", () => {
       const dbPath = path.join(root, "competition.db");
       const uploads = path.join(root, "uploads");
       createCompetitionUnit(dbPath, uploads);
+      removeWirelessRunState(dbPath);
       restoreQueueSettingsPreview(dbPath, variant);
 
       const before = new Database(dbPath, { readonly: true });
@@ -1112,6 +1127,7 @@ describe("Competition backup/restore artifact validation", () => {
     const uploads = path.join(root, "uploads");
     createCompetitionUnit(dbPath, uploads);
     const predecessor = new Database(dbPath);
+    removeWirelessRunState(dbPath);
     const itemId = predecessor.prepare(`INSERT INTO sheet_template
       (year, level, name, answer_type, field_key, calculation)
       VALUES (?, 'item', 'Preserved item', 'number', 'preserved-key', '')`

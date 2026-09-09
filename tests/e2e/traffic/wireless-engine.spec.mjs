@@ -1,3 +1,4 @@
+import { withWirelessClock } from "../../helpers/wireless-clock.mjs";
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
@@ -36,9 +37,15 @@ test.describe("Wireless record engine (ingest contract)", () => {
       expect(health.status()).toBe(200);
 
       // bind-at-arm: arm green 본문에 team·event_name을 실어 귀속을 고정(엔진이 run.bound 사용).
-      const armRes = await page.request.post("/competition/api/v1/traffic/wireless/arm", {
+      const stateResponse = await page.request.get("/competition/api/v1/traffic/wireless/state");
+      const cookies = (await page.request.storageState()).cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
+      const armRes = await withWirelessClock({
+        url: new URL("/competition/api/v1/traffic/events", stateResponse.url()).href,
+        cookie: cookies,
+        respond: data => page.request.post("/competition/api/v1/traffic/wireless/clock", { data }),
+      }, () => page.request.post("/competition/api/v1/traffic/wireless/arm", {
         data: { event_type: "내구", action: "green", green_tick: ms(0), team: TEAM, event_name: EVENT },
-      });
+      }));
       expect(armRes.status()).toBe(200);
       expect((await armRes.json()).armed).toBe(true);
 
@@ -46,7 +53,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
       // t0 @ 0ms, lap1 끝 @ 5000ms(랩=5000), lap2 끝 @ 12000ms(랩=7000).
       // ev_seq/master_tick으로 멱등. 디바운스(기본 300ms)보다 큰 간격이라 모두 수용.
       const ingest = (seq, atMs) => page.request.post("/competition/api/v1/traffic/wireless/ingest", {
-        data: { events: [{ node_id: NODE, master_tick: ms(atMs), ev_seq: seq, rssi: -60, snr: 9 }] },
+        data: { events: [{ master_boot_id: 1, node_id: NODE, master_tick: ms(atMs), ev_seq: seq, rssi: -60, snr: 9 }] },
       });
 
       let r = await ingest(1, 0);      // t0
@@ -175,7 +182,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
     const NODE = `e2e-idem-${Date.now()}`;
 
     try {
-      const event = { node_id: NODE, master_tick: ms(1000), ev_seq: 1, rssi: -55, snr: 8 };
+      const event = { master_boot_id: 1, node_id: NODE, master_tick: ms(1000), ev_seq: 1, rssi: -55, snr: 8 };
 
       // 첫 ingest: 저장됨.
       const first = await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [event] } });
@@ -205,9 +212,9 @@ test.describe("Wireless record engine (ingest contract)", () => {
       // 한 배치에 정상 1건 + 잘못된 node_id 1건(공백은 validateNodeId 실패) + master_tick 누락 1건.
       const batch = {
         events: [
-          { node_id: GOOD, master_tick: ms(2000), ev_seq: 1, rssi: -60, snr: 9 }, // 정상
-          { node_id: "bad id with spaces", master_tick: ms(2000), ev_seq: 2 },     // node_id 거부
-          { node_id: `e2e-nomt-${Date.now()}`, ev_seq: 3 },                         // master_tick 누락 거부
+          { master_boot_id: 1, node_id: GOOD, master_tick: ms(2000), ev_seq: 1, rssi: -60, snr: 9 }, // 정상
+          { master_boot_id: 1, node_id: "bad id with spaces", master_tick: ms(2000), ev_seq: 2 },     // node_id 거부
+          { master_boot_id: 1, node_id: `e2e-nomt-${Date.now()}`, ev_seq: 3 },                         // master_tick 누락 거부
         ],
       };
       const res = await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: batch });

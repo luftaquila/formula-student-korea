@@ -5,6 +5,7 @@ import { msToClockStr } from "./serial";
 import {
   ingestWireless,
   reportLight,
+  reportWirelessClock,
   reportBridgeOffline,
   putPhysicalEvent as apiPutPhysicalEvent,
   putWirelessDebounce,
@@ -136,13 +137,6 @@ export const useWirelessStore = defineStore("wireless", () => {
     return controllerLabel(sessions.value?.[EVENT_TYPE[mode]]?.controller) || null;
   }
 
-  // 마스터 시계 추적(브리지가 H 하트비트로). 가상 신호등 green의 master-time 기준값 산출.
-  let lastMasterMs = null;
-  let lastWall = 0;
-  function masterNowMs() {
-    return lastMasterMs != null ? Math.round(lastMasterMs + (Date.now() - lastWall)) : Date.now();
-  }
-
   // 공유 클럭: 서버 시각과 내 시계의 오프셋(ms). 출발이벤트 server_time을 이 오프셋으로 보정해
   // 전 클라가 동일한 경과시간을 표시한다(표시용; 기록값은 master-tick으로 정확).
   let serverOffsetMs = 0;
@@ -215,7 +209,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     slot.light = s.light_color === "off" ? "grey" : s.light_color || "grey";
     if (s.armed) {
       const gt = tickToMs(s.green_tick);
-      if (!slot.green.active || slot.green.tick !== gt) activateGreen(mode, gt);
+      if (!slot.green.active || slot.green.tick !== gt || previousRunId !== runId) activateGreen(mode, gt);
     } else {
       deactivateGreen(mode);
       if (resetCompleted) clearTiming(mode);
@@ -267,6 +261,9 @@ export const useWirelessStore = defineStore("wireless", () => {
     const serverMs = st ? Date.parse(st.endsWith("Z") ? st : st + "Z") : null;
     for (const row of mapping.value) {
       if (row.node_id !== node || row.enabled === 0) continue;
+      const session = sessions.value?.[row.event_type];
+      if (!session?.armed || session.master_boot_id !== ev.master_boot_id
+        || session.green_tick == null || BigInt(ev.master_tick) < BigInt(session.green_tick)) continue;
       const mode = TYPE_TO_KEY[row.event_type];
       if (!mode) continue;
       routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs, Number.isFinite(serverMs) ? serverMs : null);
@@ -277,6 +274,10 @@ export const useWirelessStore = defineStore("wireless", () => {
   // 물리 신호등 다운링크: 브리지만 처리. 실행 직전 isPhysical 재검사(TOCTOU 방어) 후 시리얼 전달.
   onWirelessCommand((cmd) => {
     if (!bridgeIsSelf.value || !cmd) return;
+    if (cmd.action === "clock" && /^[a-f0-9]{32}$/.test(cmd.request_id)) {
+      transmitLine(`T ${cmd.request_id}`);
+      return;
+    }
     const mode = TYPE_TO_KEY[cmd.event_type];
     if (!mode || !isPhysical(mode)) return; // 물리 지정 경기가 아니면 무시
     if (cmd.action === "green") transmitLine("G");
@@ -296,7 +297,7 @@ export const useWirelessStore = defineStore("wireless", () => {
   let hbTimer = null;
 
   function stateMap(s) { return s === "OK" ? "online" : s === "STALE" ? "degraded" : "lost"; }
-  function eventKey(event) { return `${event.node_id}:${event.ev_seq}:${event.master_tick}`; }
+  function eventKey(event) { return `${event.master_boot_id}:${event.node_id}:${event.ev_seq}:${event.master_tick}`; }
 
   async function flushIngest() {
     if (flushInFlight) return; // 직렬화: 동시 flush로 같은 events 중복 전송/순서 꼬임 방지
@@ -313,7 +314,7 @@ export const useWirelessStore = defineStore("wireless", () => {
         if (acknowledged.has(eventKey(event))) {
           // The server has durably inserted or deduplicated this exact tuple.
           // Only now may the master evict it from its RAM delivery queue.
-          if (await transmitLine(`C ${event.node_id} ${event.ev_seq} ${event.master_tick}`)) {
+          if (await transmitLine(`C ${event.node_id} ${event.ev_seq} ${event.master_tick} ${event.master_boot_id}`)) {
             eventBuf.delete(eventKey(event));
           } else {
             eventBuf.set(eventKey(event), event);
@@ -343,16 +344,12 @@ export const useWirelessStore = defineStore("wireless", () => {
     const t = line.trim().split(/\s+/);
     if (!t[0]) return;
     switch (t[0]) {
-      case "E": // E node ev_seq tmaster flags rssi snr
+      case "E": // E node ev_seq tmaster flags rssi snr master_boot_id
         {
-          const event = { node_id: t[1], ev_seq: Number(t[2]), master_tick: t[3], flags: Number(t[4]), rssi: Number(t[5]), snr: Number(t[6]), link_state: "online" };
+          const event = { node_id: t[1], ev_seq: Number(t[2]), master_tick: t[3], flags: Number(t[4]), rssi: Number(t[5]), snr: Number(t[6]), master_boot_id: Number(t[7]), link_state: "online" };
           eventBuf.set(eventKey(event), event);
         }
         scheduleEventFlush();
-        break;
-      case "H": // H now_tick uptime_ms beacon_seq nseen — 마스터 시계 추적
-        lastMasterMs = Number(t[1]) / TICKS_PER_MS;
-        lastWall = Date.now();
         break;
       case "D": // D ... provisioned sync/skew/clock/capture/queue/USB clock health
         telemetryBuf.set(t[1], {
@@ -375,10 +372,14 @@ export const useWirelessStore = defineStore("wireless", () => {
         });
         break;
       case "L": // L state tick → 물리 신호등 상태를 서버에 보고
-        reportLight({ color: (t[1] || "off").toLowerCase(), green_tick: t[2] || "0" }).catch(async (error) => {
+        reportLight({ color: (t[1] || "off").toLowerCase(), green_tick: t[2] || "0", master_boot_id: Number(t[3]) }).catch(async (error) => {
           if (t[1] === "GREEN") await transmitLine("O");
           notyf.error(`신호등 상태 반영 실패: ${error.message}`);
         });
+        break;
+      case "T":
+        reportWirelessClock({ request_id: t[1], master_tick: t[2], master_boot_id: Number(t[3]) })
+          .catch((error) => notyf.error(`마스터 시각 확인 실패: ${error.message}`));
         break;
       case "I": // I FSK-WL <fw> <devid16hex> <freq> <sf> <bw> <ticks> — 마스터 자기 ID (표시 안 함)
         break;
@@ -626,20 +627,14 @@ export const useWirelessStore = defineStore("wireless", () => {
       notyf.open({ type: "warning", message: `센서 미할당: ${missing.map((r) => ROLE_LABEL[r] || r).join(", ")}` });
     }
     if (isPhysical(mode)) return physicalControl(mode, "green");
-    // 가상: 클릭 즉시 arm을 낙관 반영(green.active=true → 녹색등 버튼 즉시 잠금, 전처럼).
-    // applySession이 같은 green_tick으로 reconcile(재활성 안 함). POST 실패 시 롤백.
+    // The server obtains a fresh master capture before opening the run.
     // team·event_name을 arm 본문에 실어 bind-at-arm: /select POST와의 도착 순서 레이스와
     // 무관하게 서버가 arm 시점 귀속을 고정한다(서버 엔진이 run.bound로 사용).
-    const gtRaw = String(Math.round(masterNowMs() * TICKS_PER_MS));
-    const slot = timing[mode];
-    slot.light = "green";
-    activateGreen(mode, tickToMs(gtRaw));
     try {
-      await armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", green_tick: gtRaw, team: team || null, event_name: eventName || null });
+      const session = await armWirelessEvent({ event_type: EVENT_TYPE[mode], action: "green", team: team || null, event_name: eventName || null });
+      applySession(session);
       return true;
     } catch (e) {
-      deactivateGreen(mode);
-      slot.light = "grey";
       notyf.error(e.message);
       return false;
     }

@@ -66,7 +66,15 @@ uint32_t board_micros(void)
 
 uint32_t board_millis(void)
 {
-    return board_micros() / 1000UL;
+    /* Extend before dividing: micros wraps at ~71 min, whereas callers use
+     * uint32 subtraction expecting millis to wrap at ~49 days. The main loop
+     * calls this much more often than once per micros wrap. */
+    static uint32_t previous;
+    static uint64_t elapsed;
+    uint32_t now = board_micros();
+    elapsed += (uint32_t)(now - previous);
+    previous = now;
+    return (uint32_t)(elapsed / 1000u);
 }
 
 void board_init(void)

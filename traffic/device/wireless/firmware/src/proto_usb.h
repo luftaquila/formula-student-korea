@@ -6,7 +6,7 @@
  *   Master -> PC:
  *     I FSK-WL <fw> <devid16hex> <freq_mhz> <sf> <bw> <ticks_per_ms>
  *     H <now_tick> <uptime_ms> <beacon_seq> <nsensors_seen>
- *     E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>
+ *     E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr> <master_boot_id>
  *     D <node> <state> <offset> <skew> <rx_miss> <gap> <last_seen> <rssi> <snr>
  *       <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned> <sync_valid>
  *       <skew_valid> <XTAL|RC> <sync_age_ms> <capture_overflow> <event_drop>
@@ -17,12 +17,14 @@
  *        sec_drop = security drops — for node 0 the master's AEAD-verify failures
  *        (forgery/wrong-key), for a sensor its replay/freshness/binding rejects;
  *        provisioned = 1 if the master holds a fleet key, else 0)
- *     L <RED|GREEN|OFF> <tick>
+ *     L <RED|GREEN|OFF> <tick> <master_boot_id>
+ *     T <32-hex token> <tick> <master_boot_id>
  *     A <cmd> OK
  *     X <reason>
  *   PC -> Master (K and ?ID/PING also accepted by sensors, for provisioning):
  *     G | R | O | ?ID | ?STATUS | PING | K <64-hex>
- *     C <node8hex> <ev_seq> <tmaster_tick>  (server-storage acknowledgement)
+ *     C <node8hex> <ev_seq> <tmaster_tick> <master_boot_id> (server commit ACK)
+ *     T <32-hex token> (fresh master capture request)
  */
 #ifndef PROTO_USB_H
 #define PROTO_USB_H
@@ -47,7 +49,7 @@ void pu_emit_identity(uint32_t devid_hi, uint32_t devid_lo);
 void pu_emit_heartbeat(uint64_t now_tick, uint32_t uptime_ms, uint8_t beacon_seq, int nseen);
 /* node = the sensor's 32-bit id, emitted as 8 hex chars. */
 int pu_emit_event(uint32_t node_id, uint16_t ev_seq, uint64_t tmaster,
-                  uint8_t flags, float rssi, float snr);
+                  uint8_t flags, float rssi, float snr, uint32_t master_boot_id);
 /* is_master=1 emits the literal "0" node token (master self-report); otherwise the
  * sensor's 32-bit id as 8 hex chars. */
 void pu_emit_diag(uint32_t node_id, int is_master,
@@ -60,7 +62,8 @@ void pu_emit_diag(uint32_t node_id, int is_master,
                   uint16_t capture_overflow, uint16_t event_drop,
                   uint16_t queue_depth, uint16_t queue_overflow,
                   int usb_ref_valid, int32_t usb_ref_ppm);
-void pu_emit_light(int state, uint64_t tick);
+void pu_emit_light(int state, uint64_t tick, uint32_t master_boot_id);
+void pu_emit_clock(const char *token, uint64_t tick, uint32_t master_boot_id);
 void pu_emit_ack(const char *cmd);
 void pu_emit_err(const char *reason);
 
@@ -74,7 +77,8 @@ typedef enum {
     PU_CMD_STATUS,
     PU_CMD_PING,
     PU_CMD_SETKEY,   /* K <64-hex>: write the 32-byte fleet key (see pu_setkey) */
-    PU_CMD_EVENT_ACK,/* C <node> <seq> <tick>: host persisted this queued event */
+    PU_CMD_EVENT_ACK,/* C <node> <seq> <tick> <boot>: host committed this event */
+    PU_CMD_CLOCK,    /* T <32-hex token>: capture a fresh arm boundary */
     PU_CMD_BAD,      /* a full line was parsed but unrecognised */
 } pu_cmd_t;
 
@@ -88,6 +92,8 @@ const uint8_t *pu_setkey(void);
 uint32_t pu_event_ack_node(void);
 uint16_t pu_event_ack_seq(void);
 uint64_t pu_event_ack_tick(void);
+uint32_t pu_event_ack_boot(void);
+const char *pu_clock_token(void);
 
 #ifdef __cplusplus
 }

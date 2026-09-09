@@ -1,0 +1,34 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { createWirelessClock } from "../../traffic/lib/wireless-clock.mjs";
+
+test("clock requests require a fresh correlated response and reject replay", async () => {
+  const commands = [];
+  const clock = createWirelessClock({ send: command => commands.push(command) });
+  const first = clock.read();
+  const second = clock.read();
+  const reply = { ...commands[1], master_tick: "18446744073709551615", master_boot_id: 42 };
+  assert.equal(clock.accept({ ...reply, request_id: "unknown" }), false);
+  assert.equal(clock.accept(reply), true);
+  assert.deepEqual(await second, { master_tick: reply.master_tick, master_boot_id: 42 });
+  assert.equal(clock.accept(reply), false);
+  const closed = assert.rejects(first, /종료/);
+  clock.close();
+  await closed;
+});
+
+test("clock timeout fails closed and a late response cannot revive the request", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let command;
+  const clock = createWirelessClock({ send: value => { command = value; }, timeoutMs: 100 });
+  const failed = assert.rejects(clock.read(), /확인하지 못했습니다/);
+  t.mock.timers.tick(100);
+  await failed;
+  assert.equal(clock.accept({ ...command, master_tick: "1", master_boot_id: 1 }), false);
+});
+
+test("failed command delivery releases the request slot", async () => {
+  const clock = createWirelessClock({ send: () => { throw new Error("disconnected"); } });
+  for (let i = 0; i < 10; i++) await assert.rejects(clock.read(), /disconnected/);
+  clock.close();
+});

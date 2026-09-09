@@ -1,3 +1,4 @@
+import { readWirelessClock, wirelessProtocolClient } from "../helpers/wireless-fixtures.mjs";
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -38,13 +39,13 @@ let server, baseUrl, client, db, dbPath, runLiveAttemptWatch;
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createTrafficApp({ dbPath, validateUser: TRUST_JWT });
+  const result = createTrafficApp({ readWirelessClock, dbPath, validateUser: TRUST_JWT });
   db = result.db;
   runLiveAttemptWatch = result.runLiveAttemptWatch;
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
-  client = createClient(baseUrl);
+  client = wirelessProtocolClient(createClient(baseUrl));
 });
 
 after(async () => {
@@ -2101,13 +2102,13 @@ describe('Traffic TeamStore query-port failure auditing', () => {
     const failingStore = {
       getById: () => { throw new Error('injected traffic team lookup failure'); },
     };
-    const created = createTrafficApp({
+    const created = createTrafficApp({ readWirelessClock,
       dbPath: failingPath,
       validateUser: TRUST_JWT,
       teamStore: failingStore,
     });
     const started = await startServer(created.app);
-    const isolated = createClient(started.baseUrl);
+    const isolated = wirelessProtocolClient(createClient(started.baseUrl));
     const team = { id: 91, teamId: 91, num: 91, univ: 'Lookup U', team: 'Lookup T' };
     try {
       const select = await isolated.post('/api/wireless/select', {
@@ -2172,10 +2173,10 @@ describe('Traffic mutation state preflight auditing', () => {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    const created = createTrafficApp({ db: proxyDb, validateUser: TRUST_JWT });
+    const created = createTrafficApp({ readWirelessClock, db: proxyDb, validateUser: TRUST_JWT });
     for (const timer of created.timers || []) clearInterval(timer);
     const started = await startServer(created.app);
-    const isolated = createClient(started.baseUrl);
+    const isolated = wirelessProtocolClient(createClient(started.baseUrl));
     try {
       failSession = true;
       const requests = [
@@ -2265,10 +2266,10 @@ describe('Traffic record and background mutation auditing', () => {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    const created = createTrafficApp({ db: proxyDb, validateUser: TRUST_JWT });
+    const created = createTrafficApp({ readWirelessClock, db: proxyDb, validateUser: TRUST_JWT });
     for (const timer of created.timers || []) clearInterval(timer);
     const started = await startServer(created.app);
-    const isolated = createClient(started.baseUrl);
+    const isolated = wirelessProtocolClient(createClient(started.baseUrl));
     const activeName = `FSK ${CURRENT_YEAR} Audit Active`;
     const inactiveName = `FSK ${CURRENT_YEAR} Audit Inactive`;
     try {
@@ -2341,7 +2342,7 @@ describe('Traffic record and background mutation auditing', () => {
 
   it('audits lease expiry and event retention successes through exported callbacks', () => {
     const isolatedPath = tmpDbPath();
-    const created = createTrafficApp({
+    const created = createTrafficApp({ readWirelessClock,
       dbPath: isolatedPath,
       validateUser: TRUST_JWT,
     });
@@ -2424,7 +2425,7 @@ describe('Traffic legacy record consolidation migration', () => {
   });
 
   it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
-    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
+    migDb = createTrafficApp({ readWirelessClock, dbPath: migPath, validateUser: TRUST_JWT }).db;
 
     const rows = migDb.prepare("SELECT legacy_rowid, num, detail, status, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
     assert.equal(rows.length, 2);
@@ -2444,7 +2445,7 @@ describe('Traffic legacy record consolidation migration', () => {
 
   it('is idempotent — re-opening the consolidated DB does not duplicate or error', () => {
     migDb.close();
-    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
+    migDb = createTrafficApp({ readWirelessClock, dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });
@@ -2483,7 +2484,7 @@ describe('Traffic normalized record status migration', () => {
   after(() => cleanup(migrationPath));
 
   it('maps invalidated to DSQ, result -1 to DNF, and preserves identity and raw time', () => {
-    const created = createTrafficApp({ dbPath: migrationPath, validateUser: TRUST_JWT });
+    const created = createTrafficApp({ readWirelessClock, dbPath: migrationPath, validateUser: TRUST_JWT });
     for (const timer of created.timers || []) clearInterval(timer);
     try {
       const rows = created.db.prepare(`

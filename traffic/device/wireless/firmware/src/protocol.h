@@ -37,7 +37,8 @@
 #define PKT_TYPE_ACK      0x03u
 #define PKT_TYPE_STATUS   0x04u
 
-#define PROTO_VER   7u  /* 7: fail-closed sync/clock/capture health in EVENT + STATUS;
+#define PROTO_VER   8u  /* 8: ACK binds the sensor boot and exact event timestamp;
+                         * 7: fail-closed sync/clock/capture health in EVENT + STATUS;
                          * 6: compact wire; 5: chip-id identity + hashed-phase STATUS */
 
 /* Type byte = (PROTO_VER << 4) | PKT_TYPE_*. Both nibbles are authenticated as
@@ -70,17 +71,15 @@ typedef struct __attribute__((packed)) {
 } beacon_pl_t;
 
 /* Sensor -> master. ev_master_t = event tick already mapped to master time.
- * master_boot_id = low 16 bits of the master session's boot_id this event is
+ * master_boot_id = the complete master session boot_id this event is
  * synced to (from the beacons the sensor tracks). The master rejects events that
  * don't name its current session, so an event captured under a previous master
- * power-cycle cannot be replayed after the master reboots (DESIGN §2.11). The
- * 16-bit truncation is a defence-in-depth backstop layered on the per-sensor
- * replay counter and the absolute-timestamp freshness gate, so a 1/65536 collision
- * does not by itself admit a replay. */
+ * power-cycle cannot be replayed after the master reboots (DESIGN §2.11).
+ * Preserve the complete boot ID; truncation would weaken the session fence. */
 typedef struct __attribute__((packed)) {
     uint16_t ev_seq;
     uint64_t ev_master_t;
-    uint16_t master_boot_id; /* low 16 bits of the master boot_id (session binding) */
+    uint32_t master_boot_id; /* complete master boot_id (session binding) */
     uint16_t sync_age_ms;    /* age of the offset anchor when the edge was captured */
     uint8_t  flags;
 } event_pl_t;
@@ -97,6 +96,8 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint32_t node_id;  /* sensor being acked (its low-32 chip id) */
     uint16_t ev_seq;   /* event being acked */
+    uint32_t sensor_boot_id;
+    uint64_t ev_master_t;
 } ack_pl_t;
 
 /* Sensor -> master: periodic diagnostics (DESIGN §2.10), sent once per STATUS
@@ -129,7 +130,7 @@ typedef struct __attribute__((packed)) {
 
 #define WIRE_BEACON   SEC_WIRE_LEN(SEC_HDR_DL, sizeof(beacon_pl_t))  /* 33 */
 #define WIRE_EVENT    SEC_WIRE_LEN(SEC_HDR_UL, sizeof(event_pl_t))
-#define WIRE_ACK      SEC_WIRE_LEN(SEC_HDR_DL, sizeof(ack_pl_t))     /* 30 */
+#define WIRE_ACK      SEC_WIRE_LEN(SEC_HDR_DL, sizeof(ack_pl_t))
 #define WIRE_STATUS   SEC_WIRE_LEN(SEC_HDR_UL, sizeof(status_pl_t))
 #define WIRE_MAX      64 /* RX buffer size; largest sealed packet is WIRE_STATUS */
 

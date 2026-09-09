@@ -72,7 +72,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     // 가속을 물리 경기로 지정 + green(=arm). 서버가 세션에 arm 미러.
     await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "가속" } });
     const green = await page.request.post("/competition/api/v1/traffic/wireless/light", {
-      data: { color: "green", green_tick: tickBase.toString() },
+      data: { master_boot_id: 1, color: "green", green_tick: tickBase.toString() },
     });
     expect(green.status()).toBe(200);
 
@@ -82,7 +82,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
 
     // 출발은 온라인 상태에서 수신한다.
     const startIngest = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
-      data: { events: [{ node_id: NODE_S, master_tick: tickBase.toString(), ev_seq: eventSequence, rssi: -60, snr: 9 }] },
+      data: { events: [{ master_boot_id: 1, node_id: NODE_S, master_tick: tickBase.toString(), ev_seq: eventSequence, rssi: -60, snr: 9 }] },
     });
     expect(startIngest.status()).toBe(200);
     expect(await startIngest.json()).toMatchObject({ stored: 1, rejected: 0 });
@@ -102,7 +102,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     const initCountBeforeReconnect = await sseEventCount(page, "init");
     await forceSSEReconnect(page);
     const finishIngest = await observerPage.request.post("/competition/api/v1/traffic/wireless/ingest", {
-      data: { events: [{ node_id: NODE_F, master_tick: finishTick.toString(), ev_seq: eventSequence, rssi: -61, snr: 9 }] },
+      data: { events: [{ master_boot_id: 1, node_id: NODE_F, master_tick: finishTick.toString(), ev_seq: eventSequence, rssi: -61, snr: 9 }] },
     });
     expect(finishIngest.status()).toBe(200);
     expect(await finishIngest.json()).toMatchObject({ stored: 1, rejected: 0 });

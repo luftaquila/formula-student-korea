@@ -134,6 +134,11 @@ export async function reportLight(state) {
   return res.json();
 }
 
+export async function reportWirelessClock(clock) {
+  const res = await request("/api/wireless/clock", { method: "POST", body: JSON.stringify(clock) });
+  return res.json();
+}
+
 // 브리지 연결 해제 시 서버에 즉시 오프라인 보고(15s 워치독 대기 없이).
 export async function reportBridgeOffline() {
   await request("/api/wireless/bridge/offline", { method: "POST" });

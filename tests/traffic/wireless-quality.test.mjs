@@ -1,3 +1,4 @@
+import { readWirelessClock, wirelessProtocolClient } from "../helpers/wireless-fixtures.mjs";
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -25,14 +26,14 @@ const emittedEvents = [];
 
 before(async () => {
   dbPath = tmpDbPath();
-  appState = createTrafficApp({
+  appState = createTrafficApp({ readWirelessClock,
     dbPath,
     validateUser: TRUST_JWT,
     onEvent: (event, data) => emittedEvents.push({ event, data }),
   });
   const started = await startServer(appState.app);
   server = started.server;
-  client = createClient(started.baseUrl);
+  client = wirelessProtocolClient(createClient(started.baseUrl));
 });
 
 after(async () => {
@@ -195,7 +196,7 @@ describe("wireless quality gate", () => {
     try {
       assert.equal((await client.post("/api/wireless/ingest", {
         body: { events: [{ node_id: "quality-finish", master_tick: "3208000000", ev_seq: 402 }] }, cookie,
-      })).status, 200);
+      })).status, 500);
       const failedState = await (await client.get("/api/wireless/state", { cookie })).json();
       const failedSession = failedState.sessions.find((item) => item.event_type === "가속");
       assert.equal(failedSession.armed, true);
@@ -204,7 +205,7 @@ describe("wireless quality gate", () => {
       assert.ok(!emittedEvents.some((item) => item.event === "wireless:quality-fault" && !item.data.cleared));
       const failedAudit = appState.db.prepare(`
         SELECT detail FROM logs
-        WHERE action = 'wireless.measurement_fault' AND target = '가속'
+        WHERE action = 'wireless.ingest' AND level = 'warn'
         ORDER BY id DESC LIMIT 1
       `).get();
       const detail = JSON.parse(failedAudit.detail);
@@ -214,10 +215,9 @@ describe("wireless quality gate", () => {
       appState.db.exec("DROP TRIGGER IF EXISTS inject_measurement_disarm_failure");
     }
 
-    // The failed transition must not latch run.saved. A later accepted finish
-    // still reaches the same fault path and can close the session successfully.
+    // The rejected ingest did not ACK or advance the run. Retry the exact edge.
     assert.equal((await client.post("/api/wireless/ingest", {
-      body: { events: [{ node_id: "quality-finish", master_tick: "3214400000", ev_seq: 403 }] }, cookie,
+      body: { events: [{ node_id: "quality-finish", master_tick: "3208000000", ev_seq: 402 }] }, cookie,
     })).status, 200);
     const recoveredState = await (await client.get("/api/wireless/state", { cookie })).json();
     const recoveredSession = recoveredState.sessions.find((item) => item.event_type === "가속");
@@ -235,7 +235,7 @@ describe("wireless durable handoff", () => {
     });
     assert.equal(response.status, 200);
     const body = await response.json();
-    assert.deepEqual(body.acknowledged, [event]);
+    assert.deepEqual(body.acknowledged, [{ ...event, master_boot_id: 1 }]);
   });
 
   it("does not acknowledge a malformed event key", async () => {
