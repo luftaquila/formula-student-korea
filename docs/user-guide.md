@@ -285,7 +285,7 @@ student 권한 등록을 위한 계정 생성은 admin 권한 사용자만 가�
 
 ## 5. 계측 시스템
 
-일반 기록과 경기 운영에는 `traffic.operate`, 계측 설정·센서 매핑·전체 기록 또는 로그 삭제에는 `traffic.manage`가 필요합니다.
+일반 기록과 경기 운영에는 `traffic.operate`, 계측 설정·센서 매핑·전체 기록 삭제에는 `traffic.manage`가 필요합니다.
 
 ### 기록 열람
 
@@ -664,8 +664,6 @@ JSON 업로드는 올해 또는 다음 연도에 팀이 하나도 없을 때 한
 | `record.update` | info | 경기 기록 수정 |
 | `record.row_delete` | info | 측정시간 없는 판정 기록 취소 |
 | `record.delete` | info | 경기 기록 삭제 |
-| `controller.upload` | info | 컨트롤러 데이터 업로드 |
-| `controller.clear` | info | 컨트롤러 데이터 전체 삭제 |
 | `event_mode.toggle` | info | 경기 모드 활성/비활성 토글 |
 
 ### Score

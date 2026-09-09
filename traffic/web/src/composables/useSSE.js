@@ -103,7 +103,7 @@ watch(selectedFile, (v) => {
 on("init", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
-  recordFiles.value = ["controller", ...data.recordFiles];
+  recordFiles.value = data.recordFiles;
   if (data.eventModes) {
     const modes = {};
     for (const m of data.eventModes) modes[m.event_type] = !!m.enabled;
@@ -218,7 +218,7 @@ on("live-attempt", (e) => {
 on("records", (e) => {
   const data = parseSSEData(e);
   if (!data) return;
-  recordFiles.value = ["controller", ...data.recordFiles];
+  recordFiles.value = data.recordFiles;
   lastUpdate.value = {
     ...data,
     timestamp: Date.now(),
