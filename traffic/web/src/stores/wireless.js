@@ -1,3 +1,4 @@
+import { createWirelessEventBuffer } from "@lib/wireless-event-buffer.mjs";
 import { defineStore } from "pinia";
 import { ref, reactive, computed, watch } from "vue";
 import { useNotification } from "@shared/useNotification.js";
@@ -197,6 +198,7 @@ export const useWirelessStore = defineStore("wireless", () => {
 
   // 경기별 세션(SSE, 서버 권위)을 그 경기 슬롯에 반영 — 가상·물리 공통. green=arm.
   // 가상 경기도 서버 세션으로 공유되므로 브리지가 아닌 모든 클라가 동일하게 본다.
+  const eventBuffer = createWirelessEventBuffer();
   function applySession(s) {
     if (!s) return;
     const mode = TYPE_TO_KEY[s.event_type];
@@ -210,6 +212,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     if (s.armed) {
       const gt = tickToMs(s.green_tick);
       if (!slot.green.active || slot.green.tick !== gt || previousRunId !== runId) activateGreen(mode, gt);
+      eventBuffer.replay(s, ev => routeWirelessEvent(ev, s.event_type));
     } else {
       deactivateGreen(mode);
       if (resetCompleted) clearTiming(mode);
@@ -253,6 +256,12 @@ export const useWirelessStore = defineStore("wireless", () => {
   }
 
   function handleWirelessEvent(ev) {
+    eventBuffer.add(ev);
+    // Apply the session synchronously: Vue's watcher may still be queued when
+    // the next SSE edge arrives. Replay only after activateGreen has run.
+    applyAllSessions();
+  }
+  function routeWirelessEvent(ev, eventType) {
     const tick = tickToMs(ev.master_tick);
     const node = String(ev.node_id);
     const nowMs = Date.now();
@@ -260,10 +269,7 @@ export const useWirelessStore = defineStore("wireless", () => {
     const st = ev.server_time;
     const serverMs = st ? Date.parse(st.endsWith("Z") ? st : st + "Z") : null;
     for (const row of mapping.value) {
-      if (row.node_id !== node || row.enabled === 0) continue;
-      const session = sessions.value?.[row.event_type];
-      if (!session?.armed || session.master_boot_id !== ev.master_boot_id
-        || session.green_tick == null || BigInt(ev.master_tick) < BigInt(session.green_tick)) continue;
+      if (row.node_id !== node || row.enabled === 0 || row.event_type !== eventType) continue;
       const mode = TYPE_TO_KEY[row.event_type];
       if (!mode) continue;
       routeSensor(mode, roleToSensor(mode, row.role), tick, nowMs, Number.isFinite(serverMs) ? serverMs : null);

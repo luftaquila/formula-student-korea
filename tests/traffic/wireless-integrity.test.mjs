@@ -160,3 +160,66 @@ test("an edge committed while the arm clock response is in flight is applied onc
   await f.ingest([edge("AABB0002", 105000, 1)]);
   assert.deepEqual(f.records().map(row => row.result), [5000]);
 });
+
+for (const action of ["red", "off", "reset"]) {
+  test(`successful ${action} cancels a pending initial arm`, async t => {
+    const requested = Promise.withResolvers();
+    const clock = Promise.withResolvers();
+    const f = await fixture(t, () => { requested.resolve(); return clock.promise; });
+    const arming = f.client.post("/api/wireless/arm", {
+      body: { event_type: "가속", action: "green" }, cookie,
+    });
+    await requested.promise;
+    await f.post("/api/wireless/arm", { event_type: "가속", action });
+    clock.resolve({ master_tick: tick(90000), master_boot_id: 1 });
+    const response = await arming;
+    assert.equal(response.status, 409);
+    const state = await (await f.client.get("/api/wireless/state", { cookie })).json();
+    assert.equal(state.sessions.find(s => s.event_type === "가속").armed, false);
+  });
+}
+
+async function enduranceFixture(t) {
+  const f = await fixture(t);
+  await f.client.put("/api/wireless/mapping/AABB0001", {
+    body: { event_type: "내구", role: "start" }, cookie,
+  });
+  await f.post("/api/wireless/arm", {
+    event_type: "내구", action: "green", green_tick: tick(90000),
+    team: { num: 1, univ: "Integrity University", team: "Team A" }, event_name: "INTEGRITY",
+  });
+  await f.ingest([edge("AABB0001", 100000, 1), edge("AABB0001", 160000, 2)]);
+  const row = f.db.prepare("SELECT name, legacy_rowid FROM record").get();
+  const patch = value => f.client.patch(`/api/records/${encodeURIComponent(row.name)}/${row.legacy_rowid}`, {
+    body: { field: "status", value }, cookie,
+  });
+  return { f, patch };
+}
+
+for (const classify of ["status", "patch"]) {
+  test(`${classify} finalization stays final after restoring normal status and restarting`, async t => {
+    const { f, patch } = await enduranceFixture(t);
+    if (classify === "status") await f.post("/api/wireless/status", { event_type: "내구", status: "DNF" });
+    else assert.equal((await patch("DNF")).status, 200);
+    assert.equal((await patch(null)).status, 200);
+    await f.restart();
+    await f.ingest([edge("AABB0001", 220000, 3)]);
+    assert.deepEqual(f.records().map(row => row.result), [60000]);
+  });
+}
+
+for (const classify of ["status", "patch"]) {
+  test(`${classify} rolls back classification when finalization cannot be persisted`, async t => {
+    const { f, patch } = await enduranceFixture(t);
+    f.db.exec(`CREATE TEMP TRIGGER fail_finalization BEFORE UPDATE OF engine_state ON wireless_session
+      BEGIN SELECT RAISE(ABORT, 'injected finalization failure'); END`);
+    const response = classify === "status"
+      ? await f.client.post("/api/wireless/status", { body: { event_type: "내구", status: "DNF" }, cookie })
+      : await patch("DNF");
+    assert.equal(response.status, 500);
+    assert.equal(f.db.prepare("SELECT status FROM record").get().status, null);
+    f.db.exec("DROP TRIGGER fail_finalization");
+    await f.ingest([edge("AABB0001", 220000, 3)]);
+    assert.deepEqual(f.records().map(row => row.result), [120000]);
+  });
+}

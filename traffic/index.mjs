@@ -355,6 +355,7 @@ app.get("/api/time", (req, res) => res.json({ now: Date.now() }));
    ============================================ */
 const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSseStream } = createSSEManager(200, { logger });
 const wirelessClock = createWirelessClock({ send: (command) => broadcastEvent("wireless:command", command) });
+const pendingArmRequests = new Map();
 const readWirelessClock = options.readWirelessClock || (() => wirelessClock.read());
 function closeSse() {
   wirelessClock.close();
@@ -1839,7 +1840,8 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   });
   if (!preflight.ok) return;
 
-  const result = dbRun(() => {
+  const execute = field === "status" ? timingTransaction : dbRun;
+  const result = execute(() => {
     const row = db.prepare(`
       SELECT num, result, status, scoreboard, detail, cones, oc
       FROM record WHERE name = ? AND legacy_rowid = ?
@@ -1857,6 +1859,12 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
         throw err;
       }
       db.prepare("UPDATE record SET status = ? WHERE name = ? AND legacy_rowid = ?").run(value, name, rowid);
+      const sessions = db.prepare(`SELECT event_type, run_id FROM wireless_session
+        WHERE saved_record_name = ? AND saved_record_rowid = ?`).all(name, rowid);
+      for (const session of sessions) {
+        const run = engineRun.get(session.event_type);
+        if (run?.runId === session.run_id) run.saved = true;
+      }
       return { num: row.num, result: row.result, status: value, scoreboard: row.scoreboard };
     } else if (field === "scoreboard") {
       const newStatus = row.scoreboard ? 0 : 1;
@@ -1900,29 +1908,6 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     updateAudit.after = { result: result.result.result, status: result.result.status };
   }
   logger.log(req, "record.update", updateAudit, name);
-
-  if (field === "status") {
-    // Quick edit uses the generic record PATCH route. If the row belongs to a
-    // live wireless run (notably a partial endurance record), finalize the
-    // server-side engine too so later sensor packets cannot mutate raw timing.
-    const sessionLookup = dbRun(() => db.prepare(`
-        SELECT event_type, run_id FROM wireless_session
-        WHERE saved_record_name = ? AND saved_record_rowid = ?
-      `).all(name, rowid));
-    if (!sessionLookup.success) {
-      logger.warn(req, "record.update", {
-        error: sessionLookup.internalError || sessionLookup.error,
-        rowid,
-        field,
-        phase: "wireless_engine_finalize",
-      }, name);
-    } else {
-      for (const session of sessionLookup.result) {
-        const run = engineRun.get(session.event_type);
-        if (run && run.runId === session.run_id) run.saved = true;
-      }
-    }
-  }
 
   // SSE 브로드캐스트 (업데이트된 전체 행 포함)
   try {
@@ -2658,8 +2643,13 @@ app.post("/api/wireless/arm", async (req, res) => {
     if (rejectWirelessQuality(req, res, "wireless.arm", event_type)) return;
     bound ||= { team: sess.team, event_name: sess.event_name };
     clockEventCursor = getLastEventId();
+    const request = {};
+    pendingArmRequests.set(event_type, request);
     try {
       clock = await readWirelessClock({ event_type, green_tick });
+      if (pendingArmRequests.get(event_type) !== request) {
+        throw new Error("시각 확인 중 경기 제어 요청이 변경되었습니다. 다시 시작하세요.");
+      }
       if (tickToText(clock?.master_tick) == null || !validBootId(clock?.master_boot_id)) {
         throw new Error("마스터 시각 응답이 올바르지 않습니다.");
       }
@@ -2668,6 +2658,8 @@ app.post("/api/wireless/arm", async (req, res) => {
         action: "wireless.arm", status: 409, message: error.message,
         target: event_type, operation: action, context: { event_type },
       });
+    } finally {
+      if (pendingArmRequests.get(event_type) === request) pendingArmRequests.delete(event_type);
     }
     const current = getSession(event_type);
     if (current.run_id !== sess.run_id || current.reset_pending
@@ -2714,6 +2706,7 @@ app.post("/api/wireless/arm", async (req, res) => {
     logger.warn(req, "wireless.arm", { error: result.internalError || result.error, event_type, action }, event_type);
     return res.status(result.status).send(result.error);
   }
+  pendingArmRequests.delete(event_type);
   logger.log(req, "wireless.arm", { action, green_tick, before: sess, after: result.result }, event_type);
   broadcastEvent("wireless:session", result.result);
   res.json(result.result);
@@ -2884,7 +2877,7 @@ app.post("/api/wireless/status", (req, res) => {
         context: { event_type, requested_status: status, record_name: targetName, record_rowid: targetRowid, record_year: targetYear },
       });
     }
-    const r = dbRun(() => {
+    const r = timingTransaction(() => {
       const before = getRecordRow(targetName, targetRowid);
       if (!before) {
         const error = new Error("현재 런의 저장 기록을 찾을 수 없습니다.");
@@ -2897,6 +2890,7 @@ app.post("/api/wireless/status", (req, res) => {
         SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE event_type = ? AND run_id = ?
       `).run(targetName, targetRowid, event_type, runId);
+      run.saved = true;
       return { before, after: getRecordRow(targetName, targetRowid) };
     });
     if (!r.success) {
@@ -2914,18 +2908,22 @@ app.post("/api/wireless/status", (req, res) => {
       record: r.result.after, event_type, run_id: runId,
     });
   } else {
-    saved = engineSaveRecord(event_type, run?.bound || sess, null, null, { req }, status);
-    if (!saved) {
-      return rejectMutation(req, res, {
-        action: "wireless.status", status: 500, message: `${status} 판정 저장에 실패했습니다.`,
-        target: event_type, operation: "classify",
-        context: { event_type, status, team: run?.bound?.team ?? sess.team, event_name: run?.bound?.event_name ?? sess.event_name },
-      });
+    const r = timingTransaction(() => {
+      const created = engineSaveRecord(event_type, run?.bound || sess, null, null, { req }, status);
+      if (!created) throw new Error(`${status} 판정 저장에 실패했습니다.`);
+      run.recordName = created.name;
+      run.recordRowid = created.record.rowid;
+      run.saved = true;
+      return created;
+    });
+    if (!r.success) {
+      logger.warn(req, "wireless.status", {
+        error: r.internalError || r.error, event_type, status, run_id: runId,
+      }, event_type);
+      return res.status(r.status).send(r.error);
     }
-    run.recordName = saved.name;
-    run.recordRowid = saved.record.rowid;
+    saved = r.result;
   }
-  run.saved = true;
   logger.log(req, "wireless.status", {
     event_type,
     status,
