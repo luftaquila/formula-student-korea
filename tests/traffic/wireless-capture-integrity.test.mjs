@@ -87,3 +87,21 @@ test('a later loss cannot close the run before another source delivers its earli
   assert.deepEqual(verified.events.map(row => row.master_tick), ['150', '200']);
   assert.equal(verified.fault.node_id, 'a');
 });
+
+for (const reversedTick of [90, 100]) {
+  test(`capture reversal to ${reversedTick} cannot escape validation at the START boundary`, () => {
+    const rows = [capture('a', 1, 150), capture('a', 2, reversedTick), capture('b', 1, 200),
+      checkpoint('a', 2, 250), checkpoint('b', 1, 250)];
+    const result = verifyCaptures(run, rows);
+    assert.equal(result.fault?.node_id, 'a');
+    assert.equal(result.events.length, 0);
+  });
+}
+
+test('a reversal wholly before START does not invalidate subsequent healthy captures', () => {
+  const rows = [capture('a', 1, 80), capture('a', 2, 70), capture('a', 3, 150), capture('b', 1, 200),
+    checkpoint('a', 3, 250), checkpoint('b', 1, 250)];
+  const result = verifyCaptures(run, rows);
+  assert.equal(result.fault, null);
+  assert.deepEqual(result.events.map(row => row.master_tick), ['150', '200']);
+});

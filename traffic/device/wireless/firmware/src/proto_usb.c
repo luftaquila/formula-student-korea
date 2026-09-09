@@ -108,7 +108,7 @@ int pu_emit_event(uint32_t node_id, const event_pl_t *event, uint32_t sensor_boo
 {
     char line[192];
     lb_t b; lb_init(&b, line, sizeof(line));
-    lb_str(&b, "E "); lb_node(&b, node_id, 0);
+    lb_str(&b, "E "); lb_node(&b, node_id, node_id == NODE_MASTER);
     lb_ch(&b, ' '); lb_u32(&b, event->ev_seq);
     lb_ch(&b, ' '); lb_u64(&b, event->ev_master_t);
     lb_ch(&b, ' '); lb_u32(&b, event->flags);
@@ -258,10 +258,14 @@ static int parse_event_ack(const char *s)
     if (s[0] != 'C' || s[1] != ' ') { return 0; }
     s += 2;
     uint32_t node = 0;
-    for (int i = 0; i < 8; i++) {
-        int digit = hexval(*s++);
-        if (digit < 0) { return 0; }
-        node = (node << 4) | (uint32_t)digit;
+    if (s[0] == '0' && s[1] == ' ') {
+        s++;
+    } else {
+        for (int i = 0; i < 8; i++) {
+            int digit = hexval(*s++);
+            if (digit < 0) { return 0; }
+            node = (node << 4) | (uint32_t)digit;
+        }
     }
     if (*s++ != ' ') { return 0; }
     uint64_t seq;

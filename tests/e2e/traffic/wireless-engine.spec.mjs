@@ -217,6 +217,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
     try {
       // 한 배치에 정상 1건 + 잘못된 node_id 1건(공백은 validateNodeId 실패) + master_tick 누락 1건.
       const batch = {
+        checkpoints: false, // Exercise only the three explicit records, without synthetic proof packets.
         events: [
           { master_boot_id: 1, node_id: GOOD, master_tick: ms(2000), ev_seq: 1, rssi: -60, snr: 9 }, // 정상
           { master_boot_id: 1, node_id: "bad id with spaces", master_tick: ms(2000), ev_seq: 2 },     // node_id 거부

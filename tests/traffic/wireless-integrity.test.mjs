@@ -437,3 +437,18 @@ test('START waits for a checkpoint from the currently reported sensor boot', asy
   });
   assert.equal(result.status, 409);
 });
+
+test('a reliable master clock fault closes the active run without diagnostic updates', async t => {
+  const f = await fixture(t);
+  await f.arm();
+  await f.ingest([edge('AABB0001', 100000, 1)]);
+  const marker = {node_id: '0', ev_seq: 7, master_tick: tick(100001), end_tick: tick(100001),
+    master_boot_id: 1, sensor_boot_id: 1, capture_seq: 0, end_seq: 0, flags: 16, sync_age_ms: 0};
+  const saved = await f.post('/api/wireless/ingest', {rawProtocol: true, events: [marker]});
+  assert.deepEqual(saved.acknowledged, [{node_id: '0', ev_seq: 7, master_tick: tick(100001), master_boot_id: 1, sensor_boot_id: 1}]);
+  const state = await (await f.client.get('/api/wireless/state', {cookie})).json();
+  const session = state.sessions.find(s => s.event_type === '가속');
+  assert.equal(session.armed, false);
+  assert.equal(session.verification, 'invalid');
+  assert.equal(f.records().length, 0);
+});

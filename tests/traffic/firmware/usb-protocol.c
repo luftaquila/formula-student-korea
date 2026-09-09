@@ -30,6 +30,15 @@ int main(void) {
     assert(pu_event_ack_sensor_boot() == 42);
     pu_emit_event(0xAABB0001, &event, 42, -60, 9);
     assert(strcmp(output, "E AABB0001 65535 18446744073709551615 47 -60.00 9.00 4294967295 42 4294967295 4294967295 18446744073709551615 7\n") == 0);
+    event = (event_pl_t){ .ev_seq = 7, .ev_master_t = 100, .end_tick = 100,
+        .master_boot_id = 42, .flags = EVENT_LOSS };
+    pu_emit_event(0, &event, 42, 0, 0);
+    assert(strcmp(output, "E 0 7 100 16 0.00 0.00 42 42 0 0 100 0\n") == 0);
+    assert(command("C 0 7 100 42 42") == PU_CMD_EVENT_ACK);
+    assert(pu_event_ack_node() == 0 && pu_event_ack_seq() == 7);
+    assert(pu_event_ack_tick() == 100 && pu_event_ack_boot() == 42 && pu_event_ack_sensor_boot() == 42);
+    assert(command("C 00 7 100 42 42") == PU_CMD_BAD);
+    assert(command("C AABB001 7 100 42 42") == PU_CMD_BAD);
     assert(command("G") == PU_CMD_BAD);
     assert(command("R") == PU_CMD_BAD);
     assert(command("O") == PU_CMD_BAD);

@@ -23,7 +23,7 @@
  *     X <reason>
  *   PC -> Master (K and ?ID/PING also accepted by sensors, for provisioning):
  *     ?ID | ?STATUS | PING | K <64-hex>
- *     C <node8hex> <ev_seq> <tmaster_tick> <master_boot_id> <sensor_boot_id> (server commit ACK)
+ *     C <0|node8hex> <ev_seq> <tmaster_tick> <master_boot_id> <sensor_boot_id> (server commit ACK)
  *     T <32-hex token> (fresh master capture request)
  */
 #ifndef PROTO_USB_H
@@ -68,7 +68,7 @@ typedef enum {
     PU_CMD_STATUS,
     PU_CMD_PING,
     PU_CMD_SETKEY,   /* K <64-hex>: write the 32-byte fleet key (see pu_setkey) */
-    PU_CMD_EVENT_ACK,/* C <node> <seq> <tick> <boot>: host committed this event */
+    PU_CMD_EVENT_ACK,/* C <node> <seq> <tick> <master_boot> <sensor_boot>: host committed this event */
     PU_CMD_CLOCK,    /* T <32-hex token>: capture a fresh arm boundary */
     PU_CMD_BAD,      /* a full line was parsed but unrecognised */
 } pu_cmd_t;

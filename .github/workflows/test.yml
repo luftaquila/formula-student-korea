@@ -329,7 +329,7 @@ jobs:
             workers: 3
             services: auth competition email
             seeds: users vehicle-types entries
-          # Wireless specs share one physical-light owner and session table.
+          # Wireless specs share the mapping and session tables.
           # Keep that global resource serial while the independent traffic
           # paths above retain their three-way parallelism.
           - shard: traffic-wireless
@@ -338,7 +338,6 @@ jobs:
               tests/e2e/traffic/wireless-accel.spec.mjs
               tests/e2e/traffic/wireless-bridge.spec.mjs
               tests/e2e/traffic/wireless-engine.spec.mjs
-              tests/e2e/traffic/wireless-light-lock.spec.mjs
               tests/e2e/traffic/wireless-mapping.spec.mjs
             workers: 1
             services: auth competition email

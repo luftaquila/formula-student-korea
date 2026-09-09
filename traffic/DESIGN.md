@@ -289,8 +289,9 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
 - **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
   - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tick> <flags> <rssi> <snr> <master_boot_id> <sensor_boot_id> <capture_seq> <end_seq> <end_tick> <sync_age_ms>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned> <sync_valid> <skew_valid> <XTAL|RC> <sync_age_ms> <capture_overflow> <event_drop> <queue_depth> <queue_overflow> <usb_ref_valid> <usb_ref_ppm> <sensor_boot_id> <master_boot_id>`.
-  - PC→마스터: `?ID`, `?STATUS`, `PING`, `K <64hex>`, `T <request_id>`(현재 tick·boot ID 응답), `C <node8hex> <ev_seq> <tick> <master_boot_id> <sensor_boot_id>`(서버 저장 확인; 정확한 큐 head만 제거).
+  - PC→마스터: `?ID`, `?STATUS`, `PING`, `K <64hex>`, `T <request_id>`(현재 tick·boot ID 응답), `C <0|node8hex> <ev_seq> <tick> <master_boot_id> <sensor_boot_id>`(서버 저장 확인; 정확한 큐 head만 제거).
   - **프로비저닝:** `K`/`?ID`/`PING`은 **센서도 수용**(역할·무선 상태 무관). 각 보드를 USB로 꽂아 `K <64hex>` 1회 전송 → keystore에 기록·즉시 활성. 키 read-back 명령 없음(시리얼 유출 불가).
+  - USB 노드 ID는 마스터 `0`, 센서 8자리 hex다. EVENT·진단·서버 ACK에서 같은 표기를 사용한다.
   - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
 - NFC핀(P0.09/0.10)을 GPIO로 쓰면 **NFC 비활성화(UICR)** 필요.
 - **펌웨어 업로드 (DFU)**: 부트로더 = nice!nano(Adafruit nRF52, S140 v6.1.1). 앱은 **0x26000**에 링크(S140 user-app base; `linker/nrf52840_app.ld`). 키스토어 페이지 `0xF3000`은 linker FLASH 길이에서 제외돼 앱 DFU에 보존(§2.11).

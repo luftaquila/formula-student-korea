@@ -64,10 +64,12 @@ export function verifyCaptures(run, rows) {
       }).map(item => item.capture_seq)).size === last - seq + 1;
       if (loss && covered) continue;
       const backwards = !loss && previousTick != null && at <= previousTick;
+      // A reversed timestamp cannot classify its own fault as pre-START.
+      const reversalAffectsRun = backwards && previousTick >= boundary;
       if (!loss) previousTick = at;
       if (loss || (row.flags & CAPTURE_HEALTH) !== CAPTURE_HEALTH || row.sync_age_ms > 7000 || backwards) {
         const unknown = !!(row.flags & CAPTURE_TIME_UNKNOWN);
-        if (unknown || BigInt(row.end_tick) >= boundary) {
+        if (unknown || reversalAffectsRun || BigInt(row.end_tick) >= boundary) {
           const from = unknown ? (confirmed > boundary ? confirmed : boundary) : at < boundary ? boundary : at;
           if (pendingFault == null || from < pendingFault) pendingFault = from;
         }
