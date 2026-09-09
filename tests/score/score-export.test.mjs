@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { formatScoreResult } from "../../score/web/src/lib/scoreExport.js";
+import { formatScoreResult } from "../../competition/modules/score/web/src/lib/scoreExport.js";
 
 describe("score result display", () => {
   it("formats rounded millisecond results consistently with the score board", () => {

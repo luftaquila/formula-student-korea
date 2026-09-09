@@ -11,7 +11,7 @@ import {
   enduranceTotal,
   masterTickDeltaMs,
   masterTickDistanceBelowMs,
-} from "../../traffic/lib/event-timing.mjs";
+} from "../../competition/modules/traffic/lib/event-timing.mjs";
 
 describe("event-timing rules", () => {
   it("accel/autocross are start→finish, skidpad/endurance are single-sensor", () => {

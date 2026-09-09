@@ -7,7 +7,7 @@ import {
 import {
   readWirelessClock, wirelessProtocolClient, healthyWirelessTelemetry as healthy,
 } from "../helpers/wireless-fixtures.mjs";
-import { createTrafficApp } from "../../traffic/index.mjs";
+import { createTrafficApp } from "../../competition/modules/traffic/index.mjs";
 
 setupTestEnv();
 const cookie = makeAuthCookie({ email: "integrity@test.com", name: "Integrity", role: "admin" });

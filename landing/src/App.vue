@@ -53,16 +53,16 @@
 import { computed, onMounted, ref } from "vue";
 import ServiceCard from "./components/ServiceCard.vue";
 import { balancedRowSizes } from "./balanced-rows.js";
-import NavMenu from "@shared/NavMenu.vue";
-import SonnerToaster from "@shared/SonnerToaster.vue";
-import { useNotification } from "@shared/useNotification.js";
+import NavMenu from "@shared/browser/NavMenu.vue";
+import SonnerToaster from "@shared/browser/SonnerToaster.vue";
+import { useNotification } from "@shared/browser/useNotification.js";
 import {
   RESOURCES_DISCLOSURE_STORAGE_KEY,
   readDisclosureState,
   writeDisclosureState,
-} from "@shared/persistent-disclosure.js";
-import { user, isStudent, isAdmin, hasPermission, refreshUser } from "@shared/officialsStore.js";
-import { services, resources, operations, administration, getIcon, isSvgIcon, forumSvg } from "@shared/nav-config.js";
+} from "@shared/browser/persistent-disclosure.js";
+import { user, isStudent, isAdmin, hasPermission, refreshUser } from "@shared/browser/officialsStore.js";
+import { services, resources, operations, administration, getIcon, isSvgIcon, forumSvg } from "@shared/browser/nav-config.js";
 
 // 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
 // "홈"은 landing 자신이므로 카드에서 제외하고, 학생 전용 항목은 exact role로 제한한다.

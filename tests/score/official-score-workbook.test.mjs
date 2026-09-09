@@ -4,7 +4,7 @@ import {
   buildOfficialScoreWorkbookModel,
   createOfficialScoreWorkbook,
   formatOfficialResult,
-} from "../../score/web/src/lib/officialScoreWorkbook.js";
+} from "../../competition/modules/score/web/src/lib/officialScoreWorkbook.js";
 
 function fixture() {
   const entries = {

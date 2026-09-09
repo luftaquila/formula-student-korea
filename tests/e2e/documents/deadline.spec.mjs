@@ -1,4 +1,4 @@
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";

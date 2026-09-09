@@ -7,7 +7,7 @@ import {
   scoreboardRecordEffects,
   scoreboardRecordFiles,
   scoreboardSerialLiveAttempt,
-} from "../../traffic/web/src/utils/scoreboard-live.js";
+} from "../../competition/modules/traffic/web/src/utils/scoreboard-live.js";
 
 const YEAR = 2026;
 const FILE = "FSK 2026 다이나믹";

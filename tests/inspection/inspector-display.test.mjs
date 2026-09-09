@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { inspectorDisplay } from "../../inspection/web/src/utils/inspector-display.js";
+import { inspectorDisplay } from "../../competition/modules/inspection/web/src/utils/inspector-display.js";
 
 test("inspector display shows up to two names separated by commas", () => {
   assert.deepEqual(inspectorDisplay([]), {

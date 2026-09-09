@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   MAX_EVENT_LABEL_LENGTH,
   scoreboardEventLabels,
-} from "../../traffic/web/src/utils/scoreboard-settings.js";
+} from "../../competition/modules/traffic/web/src/utils/scoreboard-settings.js";
 
 const EVENT_CONFIG = {
   가속: { label: "ACCELERATION" },

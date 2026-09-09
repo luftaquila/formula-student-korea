@@ -1,4 +1,4 @@
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { TEST_USERS, getAuthCookie, BASE_URL } from "./auth.mjs";
 
 const headers = (role = "admin") => ({

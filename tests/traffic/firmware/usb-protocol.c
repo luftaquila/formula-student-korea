@@ -1,6 +1,6 @@
 #include <assert.h>
 #include <string.h>
-#include "../../../traffic/device/wireless/firmware/src/proto_usb.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/proto_usb.c"
 
 static char output[256];
 int usb_write(const char *line) {

@@ -1,8 +1,8 @@
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Inspection gate (inspection/index.mjs authRoleFn ~lines 109-115):
+// Inspection gate (competition/modules/inspection/index.mjs authRoleFn ~lines 109-115):
 //   /api/sheet/template* with method != GET  -> inspection.manage
 //   operational sheet APIs                  -> inspection.operate
 // An operator has no template-management permission, so writes return 403.

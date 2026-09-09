@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWirelessClock } from "../../traffic/lib/wireless-clock.mjs";
+import { createWirelessClock } from "../../competition/modules/traffic/lib/wireless-clock.mjs";
 
 test("clock requests require a fresh correlated response and reject replay", async () => {
   const commands = [];

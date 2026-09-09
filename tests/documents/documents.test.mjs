@@ -7,9 +7,9 @@ import crypto from 'crypto';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
-const express = require('../../documents/node_modules/express/index.js');
-const Database = require('../../documents/node_modules/better-sqlite3');
-const archiver = require('../../documents/node_modules/archiver/index.js');
+const express = require('../../competition/node_modules/express/index.js');
+const Database = require('../../competition/node_modules/better-sqlite3');
+const archiver = require('../../competition/node_modules/archiver/index.js');
 import {
   tmpDbPath,
   makeAuthCookie,
@@ -21,7 +21,7 @@ import {
   TEST_SECRET,
   TRUST_JWT,
 } from '../helpers/test-utils.mjs';
-import { createDocumentsApp } from '../../documents/index.mjs';
+import { createDocumentsApp } from '../../competition/modules/documents/index.mjs';
 
 /* ============================================
    Mock Auth Server

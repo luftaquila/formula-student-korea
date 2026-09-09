@@ -1534,7 +1534,7 @@ describe('Auth middleware integration', () => {
   });
 
   it('expired JWT returns 401 on protected endpoints', async () => {
-    const { createJWT } = await import('../../shared/express-setup.mjs');
+    const { createJWT } = await import('../../shared/server/express-setup.mjs');
     const expired = createJWT({ email: 'admin@test.com', name: 'Admin', role: 'admin' }, TEST_SECRET, -1);
     const res = await client.get('/api/users', { cookie: `fsk_session=${expired}` });
     assert.equal(res.status, 401);
@@ -1556,7 +1556,7 @@ describe('Account applications', () => {
   let applicantCookie;
 
   before(async () => {
-    const { createJWT } = await import('../../shared/express-setup.mjs');
+    const { createJWT } = await import('../../shared/server/express-setup.mjs');
     applicantCookie = (email, name) =>
       `fsk_applicant=${createJWT({ email, name, applicant: true }, TEST_SECRET, 3600)}`;
   });
@@ -1903,7 +1903,7 @@ describe('Account applications - edge cases', () => {
   let applicantCookie;
 
   before(async () => {
-    const { createJWT } = await import('../../shared/express-setup.mjs');
+    const { createJWT } = await import('../../shared/server/express-setup.mjs');
     applicantCookie = (email, name) => `fsk_applicant=${createJWT({ email, name, applicant: true }, TEST_SECRET, 3600)}`;
     await client.patch('/api/applications/config', { body: { open: true }, cookie: adminCookie });
   });

@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { getAuthCookie } from "../helpers/auth.mjs";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 

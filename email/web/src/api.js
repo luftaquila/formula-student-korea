@@ -1,4 +1,4 @@
-import { createApiClient } from "@shared/api-base.js";
+import { createApiClient } from "@shared/browser/api-base.js";
 
 const api = createApiClient("/email");
 

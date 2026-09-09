@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { createJWT } from "../../../shared/express-setup.mjs";
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { createJWT } from "../../../shared/server/express-setup.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { storageStatePath, waitForPageReady, expectNotification } from "../helpers/utils.mjs";
 
 const JWT_SECRET = process.env.JWT_SECRET || "e2e-test-secret";

@@ -1,9 +1,9 @@
 <script setup>
 import { ref, onMounted, onUnmounted, computed } from "vue";
-import { useNotification } from "@shared/useNotification.js";
-import { formatPhone } from "@shared/format-phone.js";
-import { ROLE_SORT_ORDER } from "@shared/constants.js";
-import { parseDbTimestamp } from "@shared/parse-timestamp.js";
+import { useNotification } from "@shared/browser/useNotification.js";
+import { formatPhone } from "@shared/common/format-phone.js";
+import { ROLE_SORT_ORDER } from "@shared/common/constants.js";
+import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 
@@ -1163,7 +1163,7 @@ onUnmounted(() => {
 </template>
 
 <style>
-@import "@shared/styles/base.css";
+@import "@shared/browser/styles/base.css";
 </style>
 
 <style scoped>

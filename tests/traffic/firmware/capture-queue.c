@@ -26,7 +26,7 @@ static struct { uint32_t EVENTS_SOF, ENABLE, FRAMECNTR; } capture_usb;
 #define NVIC_EnableIRQ(x) ((void)0)
 #define NVIC_DisableIRQ(x) ((void)0)
 #define __DMB() ((void)0)
-#include "../../../traffic/device/wireless/firmware/src/capture.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/capture.c"
 int board_hfclk_xtal(void) { return 1; }
 static void edge(uint32_t at) {
     NRF_TIMER1->CC[CAP_CC_NOW] = at;

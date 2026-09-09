@@ -1,11 +1,11 @@
 import { withWirelessClock } from "../../helpers/wireless-clock.mjs";
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
 import { healthyWirelessBatch, wirelessBrowserRequest } from "../../helpers/wireless-fixtures.mjs";
 
-// 서버 권위 기록 엔진(traffic/index.mjs)의 무선 ingest 계약 검증. 하드웨어 없이 ingest로 직접 구동
+// 서버 권위 기록 엔진(competition/modules/traffic/index.mjs)의 무선 ingest 계약 검증. 하드웨어 없이 ingest로 직접 구동
 // (wireless-accel.spec.mjs와 동일 계약: events:[{ node_id, master_tick, ev_seq, rssi, snr }]).
 // 모든 무선 쓰기는 admin (authRoleFn: /api/* → "admin").
 const WL_TICKS_PER_MS = 16000; // index.mjs WL_TICKS_PER_MS

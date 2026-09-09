@@ -1,4 +1,4 @@
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 const YEAR = currentCompetitionYear();
 
 export const PDF_CONTENT = Buffer.from(

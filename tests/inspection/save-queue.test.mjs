@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import {
   createSaveQueue,
   reconcileSaveQueuesAfterReconnect,
-} from "../../inspection/web/src/utils/save-queue.js";
+} from "../../competition/modules/inspection/web/src/utils/save-queue.js";
 
 describe("inspection field save queue", () => {
   it("serializes same-field saves and carries the last successful value as expected", async () => {

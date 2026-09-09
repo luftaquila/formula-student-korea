@@ -1,5 +1,5 @@
-import { createJWT } from '../../shared/express-setup.mjs';
-import { expandPermissions } from '../../shared/access-control.js';
+import { createJWT } from '../../shared/server/express-setup.mjs';
+import { expandPermissions } from '../../shared/common/access-control.js';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createWirelessEventBuffer } from "../../traffic/lib/wireless-event-buffer.mjs";
+import { createWirelessEventBuffer } from "../../competition/modules/traffic/lib/wireless-event-buffer.mjs";
 
 const session = {
   event_type: "가속", armed: true, run_id: "run-1", master_boot_id: 7, start_tick: "1000",

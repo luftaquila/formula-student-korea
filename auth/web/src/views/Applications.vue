@@ -1,8 +1,8 @@
 <script setup>
 import { ref, computed, onMounted } from "vue";
-import { useNotification } from "@shared/useNotification.js";
-import { parseDbTimestamp } from "@shared/parse-timestamp.js";
-import { isAdmin } from "@shared/officialsStore.js";
+import { useNotification } from "@shared/browser/useNotification.js";
+import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
+import { isAdmin } from "@shared/browser/officialsStore.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();
@@ -222,7 +222,7 @@ onMounted(() => {
 </template>
 
 <style>
-@import "@shared/styles/base.css";
+@import "@shared/browser/styles/base.css";
 </style>
 
 <style scoped>

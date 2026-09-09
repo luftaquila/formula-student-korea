@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import L from "leaflet";
 import CourseMapIcon from "../components/CourseMapIcon.vue";
 import { readPublicCoursePreferences, savePublicCoursePreference, normalizeMapBearing, renderMapBearing } from "../lib/course-view-preferences.mjs";
-import { useNotification } from "@shared/useNotification.js";
+import { useNotification } from "@shared/browser/useNotification.js";
 import { buildSideRanks } from "@lib/cone-index.mjs";
 import { createCourseBaseMap, courseCenterlineLayer } from "../lib/course-map.mjs";
 import { courseDisplayState } from "../lib/course-display.mjs";

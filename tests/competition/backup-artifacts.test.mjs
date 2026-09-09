@@ -8,7 +8,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { setupTestEnv, TRUST_JWT } from "../helpers/test-utils.mjs";
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 import { createMissionV2Store } from "../../course/lib/mission-v2.mjs";
 
 setupTestEnv();
@@ -144,9 +144,9 @@ function scriptProject() {
   for (const name of ["database-validation.mjs", "support-database-validation.mjs", "team-references.mjs"]) {
     fs.copyFileSync(path.resolve("competition", "lib", name), path.join(root, "competition", "lib", name));
   }
-  fs.mkdirSync(path.join(root, "shared"), { recursive: true });
-  fs.copyFileSync(path.resolve("shared", "competition-year.mjs"), path.join(root, "shared", "competition-year.mjs"));
-  fs.copyFileSync(path.resolve("shared", "access-control.js"), path.join(root, "shared", "access-control.js"));
+  fs.mkdirSync(path.join(root, "shared", "common"), { recursive: true });
+  fs.copyFileSync(path.resolve("shared", "common", "competition-year.mjs"), path.join(root, "shared", "common", "competition-year.mjs"));
+  fs.copyFileSync(path.resolve("shared", "common", "access-control.js"), path.join(root, "shared", "common", "access-control.js"));
   fs.symlinkSync(path.resolve("competition/node_modules"), path.join(root, "competition", "node_modules"), "dir");
   return root;
 }

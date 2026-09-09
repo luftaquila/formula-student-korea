@@ -10,7 +10,7 @@ import {
   createClient, makeAuthCookie, setupTestEnv, startServer, stopServer, TRUST_JWT,
 } from "../helpers/test-utils.mjs";
 import { healthyWirelessBatch, wirelessProtocolClient } from "../helpers/wireless-fixtures.mjs";
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 import { validateCompetitionDatabase } from "../../competition/lib/database-validation.mjs";
 
 setupTestEnv();

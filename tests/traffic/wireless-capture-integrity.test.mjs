@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyCaptures } from '../../traffic/lib/wireless-capture-integrity.mjs';
+import { verifyCaptures } from '../../competition/modules/traffic/lib/wireless-capture-integrity.mjs';
 
 const run = { boundaryTick: '100', masterBootId: 1, nodes: {
   a: { boot: 2, seq: 0, role: 'start' }, b: { boot: 3, seq: 0, role: 'finish' },

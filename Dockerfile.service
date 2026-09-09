@@ -14,6 +14,7 @@ COPY ${SERVICE}/web/package.json ${SERVICE}/web/package.json
 RUN --mount=type=cache,id=pnpm,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter "./${SERVICE}" --filter "./${SERVICE}/web"
 COPY ${SERVICE}/index.mjs ${SERVICE}/index.mjs
+COPY ${SERVICE}/server ${SERVICE}/server
 COPY ${SERVICE}/web/ ${SERVICE}/web/
 COPY ${SERVICE}/lib ${SERVICE}/lib
 COPY shared shared
@@ -29,6 +30,7 @@ WORKDIR /home/node/fsk-${SERVICE}
 COPY --from=builder /prod/service/node_modules node_modules/
 COPY --from=builder /workspace/${SERVICE}/package.json ./
 COPY --from=builder /workspace/${SERVICE}/index.mjs ./
+COPY --from=builder /workspace/${SERVICE}/server ./server
 COPY --from=builder /workspace/${SERVICE}/lib ./lib
 COPY --from=builder /workspace/${SERVICE}/web/dist web/dist/
 COPY shared ../shared

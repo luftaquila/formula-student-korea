@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { acceptSensorTick } from "../../traffic/web/src/composables/sensorDebounce.js";
+import { acceptSensorTick } from "../../competition/modules/traffic/web/src/composables/sensorDebounce.js";
 
 const WINDOW = 1000; // SENSOR_COOLDOWN_MS
 

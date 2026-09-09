@@ -1,3 +1,4 @@
+import uiModules from "../../competition/ui-modules.json" with { type: "json" };
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -5,9 +6,9 @@ import test from "node:test";
 import vm from "node:vm";
 import { createSSRApp } from "vue";
 import { renderToString } from "vue/server-renderer";
-import { createViteConfig } from "../../shared/vite-config.js";
+import { createViteConfig } from "../../shared/build/vite-config.js";
 
-const requireWeb = createRequire(new URL("../../inspection/web/package.json", import.meta.url));
+const requireWeb = createRequire(new URL("../../competition/modules/inspection/web/package.json", import.meta.url));
 const { createServer, build } = await import(requireWeb.resolve("vite"));
 const { default: vue } = await import(requireWeb.resolve("@vitejs/plugin-vue"));
 const root = new URL("../../", import.meta.url).pathname;
@@ -32,7 +33,7 @@ function bannerContext(enabled) {
   return { context, document, children, notify: () => notifyTitle() };
 }
 
-const source = (await readFile(new URL("../../shared/test-banner.js", import.meta.url), "utf8"))
+const source = (await readFile(new URL("../../shared/browser/test-banner.js", import.meta.url), "utf8"))
   .replace("export function", "function");
 
 test("test titles retain the warning after navigation without duplicate prefixes", () => {
@@ -67,7 +68,7 @@ test("runtime settings resolve to the application root on direct nested visits",
       const base = service === "landing" ? "/" : `/${service}/`;
       const result = await build({
         ...createViteConfig(service, 9000)({ mode: "production" }),
-        base, root: `${root}${service}${service === "landing" ? "" : "/web"}`,
+        base, root: `${root}${uiModules[service] ? `competition/modules/${uiModules[service]}/web` : service === "landing" ? service : `${service}/web`}`,
         configFile: false, logLevel: "silent",
         build: { write: false, rollupOptions: { external: (id) => !id.endsWith(".html") } },
       });
@@ -86,7 +87,7 @@ test("standalone notice identifies test screens and is absent on live screens", 
   });
   const previousWindow = globalThis.window;
   try {
-    const { default: Notice } = await server.ssrLoadModule("/shared/TestServerNotice.vue");
+    const { default: Notice } = await server.ssrLoadModule("/shared/browser/TestServerNotice.vue");
     globalThis.window = { __TEST_SERVER__: true };
     assert.match(await renderToString(createSSRApp(Notice)), /⚠️ TEST/);
     globalThis.window = { __TEST_SERVER__: false };

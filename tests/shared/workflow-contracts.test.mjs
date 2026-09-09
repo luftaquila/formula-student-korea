@@ -9,7 +9,7 @@ import {
   competitionYearBounds,
   currentCompetitionYear,
   formatCompetitionDate,
-} from "../../shared/competition-year.mjs";
+} from "../../shared/common/competition-year.mjs";
 
 const testWorkflow = fs.readFileSync(".github/workflows/test.yml", "utf8");
 const buildWorkflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
@@ -219,12 +219,16 @@ describe("CI workflow operational contracts", () => {
 
   it("treats Registration as Competition code in build, unit, and E2E plans", () => {
     for (const workflow of [testWorkflow, buildWorkflow]) {
-      assert.match(workflow, /            registration:\n              - 'registration\/\*\*'/);
-      assert.match(workflow, /F_REGISTRATION: \$\{\{ steps\.filter\.outputs\.registration \}\}/);
-      assert.match(workflow, /"\$F_QUEUE" "\$F_REGISTRATION" "\$F_INSPECTION"/);
+      const filter = parse(workflow).jobs.changes.steps.find(step => step.id === "filter");
+      assert.deepEqual(parse(filter.with.filters).competition, ["competition/**"]);
     }
-    assert.match(workspaceConfig, /^  - registration$/m);
-    assert.match(workspaceLock, /^  registration:$/m);
+    const packages = parse(workspaceConfig).packages;
+    const importers = parse(workspaceLock).importers;
+    assert.ok(packages.includes("competition/modules/registration/web"));
+    assert.ok(!packages.includes("registration"));
+    assert.ok(importers.competition);
+    assert.ok(importers["competition/modules/registration/web"]);
+    assert.equal(importers.registration, undefined);
     assert.match(testWorkflow, /- shard: registration\n            projects: --project=registration/);
   });
 

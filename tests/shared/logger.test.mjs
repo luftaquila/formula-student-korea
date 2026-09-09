@@ -7,7 +7,7 @@ const Database = require('../../auth/node_modules/better-sqlite3');
 
 process.env.INTERNAL_SECRET = 'test-secret';
 
-import { createLogger } from '../../shared/logger.mjs';
+import { createLogger } from '../../shared/server/logger.mjs';
 
 function mockReq(query = {}, user = null, headers = {}) {
   return {
@@ -433,7 +433,7 @@ describe('createLogger', () => {
   });
 });
 
-import { buildLogFilter } from '../../shared/logger.mjs';
+import { buildLogFilter } from '../../shared/server/logger.mjs';
 
 describe('buildLogFilter', () => {
   it('returns empty WHERE for no filters', () => {

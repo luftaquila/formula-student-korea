@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
-import { createJWT } from "../../../shared/express-setup.mjs";
+import { createJWT } from "../../../shared/server/express-setup.mjs";
 
 // Cross-service fail-close propagation:
 // Every non-auth service resolves an authoritative access snapshot from Auth.

@@ -15,8 +15,8 @@ const stubUrl = new URL('./record-files-sse-stub.mjs', import.meta.url).href;
 const hooks = registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier === stubUrl) return { url: stubUrl, shortCircuit: true };
-    if (context.parentURL?.endsWith('/traffic/web/src/composables/useSSE.js')) {
-      if (specifier === '@shared/useSSE.js') return { url: stubUrl, shortCircuit: true };
+    if (context.parentURL?.endsWith('/competition/modules/traffic/web/src/composables/useSSE.js')) {
+      if (specifier === '@shared/browser/useSSE.js') return { url: stubUrl, shortCircuit: true };
       if (specifier === './useApi') return { url: 'data:text/javascript,export const fetchWirelessEvents = async () => [];', shortCircuit: true };
     }
     return nextResolve(specifier, context);
@@ -31,7 +31,7 @@ test('record selection uses only server record files on initialization and updat
   const previousStorage = globalThis.localStorage;
   globalThis.localStorage = { getItem: () => null, setItem() {}, removeItem() {} };
   try {
-    const { useSSE } = await import('../../traffic/web/src/composables/useSSE.js');
+    const { useSSE } = await import('../../competition/modules/traffic/web/src/composables/useSSE.js');
     const { handlers } = await import(stubUrl);
     const { recordFiles } = useSSE();
     for (const event of ['init', 'records']) {

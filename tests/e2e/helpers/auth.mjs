@@ -1,7 +1,7 @@
 import fs from "fs";
 import path from "path";
-import { createJWT } from "../../../shared/express-setup.mjs";
-import { expandPermissions, PERMISSION_KEYS } from "../../../shared/access-control.js";
+import { createJWT } from "../../../shared/server/express-setup.mjs";
+import { expandPermissions, PERMISSION_KEYS } from "../../../shared/common/access-control.js";
 
 const JWT_SECRET = process.env.JWT_SECRET || "e2e-test-secret";
 const BASE_URL = process.env.BASE_URL || "http://localhost:9000";

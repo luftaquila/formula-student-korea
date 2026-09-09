@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createCoalescedRefresh } from "../../queue/web/src/coalesced-refresh.js";
+import { createCoalescedRefresh } from "../../competition/modules/queue/web/src/coalesced-refresh.js";
 
 test("coalesced refresh merges simultaneous requests and runs one trailing refresh", async () => {
   const scheduled = [];

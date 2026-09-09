@@ -2,7 +2,7 @@
 #include <string.h>
 #include <assert.h>
 #define main firmware_entry
-#include "../../../traffic/device/wireless/firmware/src/main.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/main.c"
 #undef main
 uint32_t board_millis(void){static uint32_t ms;return ms++;}
 int radio_lbt_clear(void){return 1;}

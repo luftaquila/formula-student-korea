@@ -7,7 +7,7 @@ import {
   registrationQueueRankSms,
   smsPrefix,
   smsTestMessage,
-} from "../../shared/sms-template.mjs";
+} from "../../shared/common/sms-template.mjs";
 
 function eucKrByteLength(value) {
   return [...value].reduce((bytes, character) => (

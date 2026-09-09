@@ -4,7 +4,7 @@ import { getAuthCookie, BASE_URL } from "../helpers/auth.mjs";
 
 // Queue booth occupancy guards, public booth/state reads, rate limiting, and
 // settings read scoping (API-level). Endpoints/roles verified against
-// queue/index.mjs:
+// competition/modules/queue/index.mjs:
 //   - PATCH /api/admin/booths/:type/config            -> queue.manage
 //   - POST  /api/admin/booths/:type/:boothNum/enter   -> queue.operate
 //   - POST  /api/admin/booths/:type/:boothNum/exit    -> queue.operate

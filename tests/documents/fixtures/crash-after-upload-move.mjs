@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { createDocumentsApp } from '../../../documents/index.mjs';
+import { createDocumentsApp } from '../../../competition/modules/documents/index.mjs';
 import {
   TRUST_JWT,
   makeAuthCookie,

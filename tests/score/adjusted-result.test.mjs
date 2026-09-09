@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { calculateAdjustedResult } from "../../score/lib/adjusted-result.mjs";
+import { calculateAdjustedResult } from "../../competition/modules/score/lib/adjusted-result.mjs";
 
 describe("event scoring result", () => {
   it("averages the skidpad lap sum before adding all cone penalties", () => {

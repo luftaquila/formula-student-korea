@@ -1,8 +1,8 @@
-import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
+import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
 
-// Documents gate (documents/index.mjs authRoleFn ~lines 168-176):
+// Documents gate (competition/modules/documents/index.mjs authRoleFn ~lines 168-176):
 //   Legacy team lifecycle endpoints are absent from the Competition boundary.
 //   /api/admin*     -> documents.operate/documents.manage by operation
 //   /api/*          -> exact-student self-service

@@ -1,29 +1,32 @@
-import { htmlEntries, htmlPage } from "../shared/social-image.mjs";
+import uiModules from "./ui-modules.json" with { type: "json" };
+import { htmlEntries, htmlPage } from "../shared/server/social-image.mjs";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import Database from "better-sqlite3";
-import { createDatabase } from "../shared/db-setup.mjs";
-import { createCachedValidator, createRemoteUserValidator, ensureDataDir } from "../shared/express-setup.mjs";
-import { currentCompetitionYear } from "../shared/competition-year.mjs";
-import { createQueueApp } from "../queue/index.mjs";
-import { createRegistrationApp } from "../registration/index.mjs";
-import { createInspectionApp } from "../inspection/index.mjs";
-import { createTrafficApp } from "../traffic/index.mjs";
-import { createScoreApp } from "../score/index.mjs";
-import { createDocumentsApp } from "../documents/index.mjs";
+import { createDatabase } from "../shared/server/db-setup.mjs";
+import { createCachedValidator, createRemoteUserValidator, ensureDataDir } from "../shared/server/express-setup.mjs";
+import { currentCompetitionYear } from "../shared/common/competition-year.mjs";
+import { createQueueApp } from "./modules/queue/index.mjs";
+import { createRegistrationApp } from "./modules/registration/index.mjs";
+import { createInspectionApp } from "./modules/inspection/index.mjs";
+import { createTrafficApp } from "./modules/traffic/index.mjs";
+import { createScoreApp } from "./modules/score/index.mjs";
+import { createDocumentsApp } from "./modules/documents/index.mjs";
 import { createModuleYearGuard } from "./lib/year-guard.mjs";
 import { installCanonicalTeamReferences } from "./lib/team-references.mjs";
 import { ensureCompetitionTeamSchema } from "./lib/team-store.mjs";
-import { createTeamsModule } from "./modules/teams.mjs";
+import { createTeamsModule } from "./modules/teams/index.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PORT = 9200;
-const UI_MODULES = Object.freeze(["entry", "queue", "registration", "inspection", "traffic", "score", "documents"]);
+const UI_MODULES = Object.freeze(Object.keys(uiModules));
 
 function defaultStaticRoots() {
-  return Object.fromEntries(UI_MODULES.map((name) => [name, path.resolve(here, `../${name}/web/dist`)]));
+  return Object.fromEntries(UI_MODULES.map((name) => [
+    name, path.resolve(here, `modules/${uiModules[name]}/web/dist`),
+  ]));
 }
 
 function mountUi(app, prefix, staticRoot, moduleApp) {

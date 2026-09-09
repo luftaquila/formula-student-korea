@@ -12,14 +12,14 @@ import {
   tmpDbPath,
   TRUST_JWT,
 } from "../helpers/test-utils.mjs";
-import { currentCompetitionYear } from "../../shared/competition-year.mjs";
-import { createRegistrationApp } from "../../registration/index.mjs";
+import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
+import { createRegistrationApp } from "../../competition/modules/registration/index.mjs";
 import { createModuleYearGuard } from "../../competition/lib/year-guard.mjs";
 import { ensureCompetitionTeamSchema, TeamStore } from "../../competition/lib/team-store.mjs";
 
 setupTestEnv();
 const require = createRequire(import.meta.url);
-const Database = require("../../registration/node_modules/better-sqlite3");
+const Database = require("../../competition/node_modules/better-sqlite3");
 const YEAR = currentCompetitionYear();
 const cookies = Object.fromEntries(["student", "staff", "official", "chief", "master", "admin"].map((role) => [
   role,

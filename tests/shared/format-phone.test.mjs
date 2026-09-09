@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatPhone, displayPhone } from '../../shared/format-phone.js';
+import { formatPhone, displayPhone } from '../../shared/common/format-phone.js';
 
 describe('formatPhone', () => {
   it('returns empty string for empty input', () => {

@@ -6,22 +6,16 @@ packages:
   - competition
   - course
   - course/web
-  - documents
-  - documents/web
+  - competition/modules/documents/web
   - email
   - email/web
-  - entry/web
-  - inspection
-  - inspection/web
+  - competition/modules/teams/web
+  - competition/modules/inspection/web
   - landing
-  - queue
-  - queue/web
-  - registration
-  - registration/web
-  - score
-  - score/web
-  - traffic
-  - traffic/web
+  - competition/modules/queue/web
+  - competition/modules/registration/web
+  - competition/modules/score/web
+  - competition/modules/traffic/web
 
 injectWorkspacePackages: true
 

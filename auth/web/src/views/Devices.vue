@@ -1,8 +1,8 @@
 <script setup>
 import { onMounted, onUnmounted, ref } from "vue";
-import { isAdmin } from "@shared/officialsStore.js";
-import { parseDbTimestamp } from "@shared/parse-timestamp.js";
-import { useNotification } from "@shared/useNotification.js";
+import { isAdmin } from "@shared/browser/officialsStore.js";
+import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
+import { useNotification } from "@shared/browser/useNotification.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();

@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   addPendingKey,
   removePendingKey,
-} from "../../queue/web/src/pending-last-calls.js";
+} from "../../competition/modules/queue/web/src/pending-last-calls.js";
 
 test("finishing one last call preserves other pending entries", () => {
   const first = addPendingKey(new Set(), "battery-1");

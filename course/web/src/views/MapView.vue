@@ -58,11 +58,11 @@ import {
   trackManualControlRequest,
   waitForManualControlDrain,
 } from "../lib/mission-session.mjs";
-import { useNotification } from "@shared/useNotification.js";
+import { useNotification } from "@shared/browser/useNotification.js";
 import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
 import { resolveCourseRoute, ROUTE_MODE } from "@lib/route-mode.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
-import { permissionComputed } from "@shared/officialsStore.js";
+import { permissionComputed } from "@shared/browser/officialsStore.js";
 import { useWhepStream } from "../composables/useWhepStream.js";
 import { useMeasureTools } from "../composables/useMeasureTools.js";
 import { useCourseImportExport } from "../composables/useCourseImportExport.js";

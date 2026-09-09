@@ -5,7 +5,7 @@ import {
   formatCalculationValue,
   normalizeCalculationConfig,
   validateCalculationGraph,
-} from "../../inspection/lib/calculations.mjs";
+} from "../../competition/modules/inspection/lib/calculations.mjs";
 
 function item(id, fieldKey, calculation = null, answerType = "number") {
   return { id, field_key: fieldKey, calculation, answer_type: answerType };

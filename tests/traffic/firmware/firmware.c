@@ -3,7 +3,7 @@
 #include <string.h>
 #include <setjmp.h>
 #define main firmware_entry
-#include "../../../traffic/device/wireless/firmware/src/main.c"
+#include "../../../competition/modules/traffic/device/wireless/firmware/src/main.c"
 #undef main
 static jmp_buf done;
 static unsigned iteration, popped;

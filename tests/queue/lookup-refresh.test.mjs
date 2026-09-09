@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createLookupRefreshScheduler } from "../../queue/web/src/lookup-refresh.js";
+import { createLookupRefreshScheduler } from "../../competition/modules/queue/web/src/lookup-refresh.js";
 
 function schedulerFixture() {
   let clock = 1_000;

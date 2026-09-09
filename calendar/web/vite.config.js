@@ -1,5 +1,5 @@
 import vue from "@vitejs/plugin-vue";
-import { createViteConfig } from "../../shared/vite-config.js";
+import { createViteConfig } from "../../shared/build/vite-config.js";
 
 export default (env) => ({
   plugins: [vue()],

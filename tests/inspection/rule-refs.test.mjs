@@ -6,7 +6,7 @@ import {
   parseStoredRuleRefs,
   transitionRuleRefs,
   validateRuleRefs,
-} from "../../inspection/lib/rule-refs.mjs";
+} from "../../competition/modules/inspection/lib/rule-refs.mjs";
 
 const HASH_A = `sha256:${"a".repeat(64)}`;
 const HASH_B = `sha256:${"b".repeat(64)}`;

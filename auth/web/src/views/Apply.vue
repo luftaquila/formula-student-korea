@@ -1,7 +1,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted } from "vue";
-import { useNotification } from "@shared/useNotification.js";
-import { formatPhone } from "@shared/format-phone.js";
+import { useNotification } from "@shared/browser/useNotification.js";
+import { formatPhone } from "@shared/common/format-phone.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const APPLY_PATH = import.meta.env.PROD ? "/auth/apply" : "/apply";
@@ -171,7 +171,7 @@ onMounted(load);
 </template>
 
 <style>
-@import "@shared/styles/base.css";
+@import "@shared/browser/styles/base.css";
 </style>
 
 <style scoped>

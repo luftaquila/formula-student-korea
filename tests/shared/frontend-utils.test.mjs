@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { formatDate, formatDateLines, formatSize } from '../../shared/format-date.js';
-import { createKeyedDebouncer } from '../../shared/debounce.js';
+import { formatDate, formatDateLines, formatSize } from '../../shared/common/format-date.js';
+import { createKeyedDebouncer } from '../../shared/common/debounce.js';
 
 describe('formatDate', () => {
   it('formats valid DB timestamps to a locale string', () => {

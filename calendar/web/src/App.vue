@@ -1,6 +1,6 @@
 <script setup>
-import NavMenu from "@shared/NavMenu.vue";
-import SonnerToaster from "@shared/SonnerToaster.vue";
+import NavMenu from "@shared/browser/NavMenu.vue";
+import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 </script>
 
 <template>

@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { DEVICE_SCOPES, PERMISSION_KEYS } from "../../shared/access-control.js";
+import { DEVICE_SCOPES, PERMISSION_KEYS } from "../../shared/common/access-control.js";
 
 const column = (name, type, notnull = 0, pk = 0, defaultValue = null) =>
   Object.freeze({ name, type, notnull, pk, defaultValue });
