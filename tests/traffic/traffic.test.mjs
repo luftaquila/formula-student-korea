@@ -501,97 +501,29 @@ describe('DELETE /api/records/:name', () => {
   });
 });
 
-// ─── Controllers ────────────────────────────────────────────────────────
-describe('GET /api/controllers (initial)', () => {
-  it('returns empty array initially', async () => {
-    const res = await client.get('/api/controllers', { cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(Array.isArray(data));
-    assert.equal(data.length, 0);
+describe('removed controller logs', () => {
+  it('keeps historical controller data out of record files', async () => {
+    db.prepare("INSERT INTO controller VALUES (?, ?)").run('2026-01-01T10:00:00Z', '$HI');
+    try {
+      const res = await client.get('/api/records', { cookie: adminCookie });
+      assert.equal(res.status, 200);
+      assert.ok(!(await res.json()).includes('controller'));
+      assert.equal(db.prepare("SELECT data FROM controller").get().data, '$HI');
+    } finally {
+      db.exec("DELETE FROM controller");
+    }
   });
-});
 
-describe('POST /api/controllers', () => {
-  it('creates controller log', async () => {
-    const res = await client.post('/api/controllers', {
-      body: { timestamp: '2026-01-01T10:00:00', data: 'test data' },
-      cookie: adminCookie,
+  for (const method of ['get', 'post', 'delete']) {
+    it(`returns 404 for ${method.toUpperCase()} /api/controllers`, async () => {
+      const res = await client[method]('/api/controllers', {
+        cookie: adminCookie,
+        ...(method === 'post' ? { body: { timestamp: '2026-01-01T10:00:00Z', data: '$HI' } } : {}),
+      });
+      assert.equal(res.status, 404);
+      assert.equal(db.prepare("SELECT COUNT(*) AS count FROM controller").get().count, 0);
     });
-    assert.equal(res.status, 201);
-    const audit = db.prepare(`
-      SELECT actor_email, detail FROM logs
-      WHERE action = 'controller.upload' ORDER BY id DESC LIMIT 1
-    `).get();
-    assert.equal(audit.actor_email, 'admin@test.com');
-    assert.deepEqual(JSON.parse(audit.detail), {
-      rowid: 1,
-      timestamp: '2026-01-01T10:00:00.000Z',
-      bytes: 9,
-    });
-  });
-
-  it('validates required fields (missing timestamp → 400)', async () => {
-    const res = await client.post('/api/controllers', {
-      body: { data: 'test data' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 400);
-    const audit = db.prepare(`
-      SELECT level, actor_email, target, detail FROM logs
-      WHERE action = 'controller.upload' ORDER BY id DESC LIMIT 1
-    `).get();
-    assert.equal(audit.level, 'warn');
-    assert.equal(audit.actor_email, 'admin@test.com');
-    assert.equal(audit.target, 'controller');
-    assert.deepEqual(JSON.parse(audit.detail), {
-      error: '타임스탬프가 누락되었습니다.',
-      reason: '타임스탬프가 누락되었습니다.',
-      operation: 'upload',
-      timestamp: null,
-      data_type: 'string',
-    });
-  });
-
-  it('validates required fields (missing data → 400)', async () => {
-    const res = await client.post('/api/controllers', {
-      body: { timestamp: '2026-01-01T10:00:00' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 400);
-  });
-
-  it('validates timestamp is string (400)', async () => {
-    const res = await client.post('/api/controllers', {
-      body: { timestamp: 12345, data: 'test data' },
-      cookie: adminCookie,
-    });
-    assert.equal(res.status, 400);
-  });
-});
-
-describe('GET /api/controllers (after creation)', () => {
-  it('returns created log', async () => {
-    const res = await client.get('/api/controllers', { cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const data = await res.json();
-    assert.ok(Array.isArray(data));
-    assert.equal(data.length, 1);
-    assert.equal(data[0].timestamp, '2026-01-01T10:00:00.000Z');
-    assert.equal(data[0].data, 'test data');
-  });
-});
-
-describe('DELETE /api/controllers', () => {
-  it('deletes all controller logs', async () => {
-    const res = await client.delete('/api/controllers', { cookie: adminCookie });
-    assert.equal(res.status, 200);
-
-    // Verify all gone
-    const listRes = await client.get('/api/controllers', { cookie: adminCookie });
-    const data = await listRes.json();
-    assert.equal(data.length, 0);
-  });
+  }
 });
 
 // ─── Event Modes ────────────────────────────────────────────────────────

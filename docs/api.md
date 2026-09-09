@@ -366,14 +366,6 @@ A successful answer or memo change automatically adds the authenticated account'
 | DELETE | `/records/:name/:rowid` | `traffic.operate` | — | `{ name, rowid, deleted }` | Cancel and delete an untimed (`result=null`) status row only. Timed rows must be retained and reclassified |
 | DELETE | `/records/:name` | `traffic.manage` | — | 200 | Drop record table |
 
-### Controller Logs
-
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| GET | `/controllers` | `traffic.operate` | — | `[{ timestamp, data }]` | All controller logs (DESC) |
-| POST | `/controllers` | `traffic.operate` | `{ timestamp, data }` | 201 | Add controller log |
-| DELETE | `/controllers` | `traffic.manage` | — | 200 | Clear all controller logs |
-
 ### Event Modes
 
 | Method | Path | Role | Request | Response | Description |

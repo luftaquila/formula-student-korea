@@ -40,7 +40,6 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
     if (req.path === "/api/logs") return access.anyOf(access.admin, access.internal);
     if (req.method === "PUT" && /^\/api\/records\/[^/]+\/visibility$/.test(req.path)) return access.permission("traffic.manage");
     if (req.method === "DELETE" && /^\/api\/records\/[^/]+$/.test(req.path)) return access.permission("traffic.manage");
-    if (req.method === "DELETE" && req.path === "/api/controllers") return access.permission("traffic.manage");
     if (req.method === "PUT" && req.path.startsWith("/api/event-modes/")) return access.permission("traffic.manage");
     if (["PUT", "DELETE"].includes(req.method) && req.path.startsWith("/api/wireless/mapping/")) return access.permission("traffic.manage");
     if (req.method === "PUT" && req.path === "/api/wireless/debounce") return access.permission("traffic.manage");
@@ -50,13 +49,14 @@ const { app, db, logger, dbRun } = createServiceSkeleton({
 ensureInactiveTeamView(db);
 
 // 동적 기록 테이블과 구분되는 예약 테이블 이름. 동적 테이블을 열거하는 모든
-// 쿼리에서 제외해야 한다(아래 reservedSql).
+// 쿼리에서 제외해야 한다(아래 reservedSql). 폐지된 controller도 기존 DB에 남을 수 있다.
 const RESERVED_TABLES = [
   "controller", "event_mode", "record_visibility", "record", "logs",
   "wireless_event", "wireless_mapping", "wireless_telemetry", "wireless_light", "wireless_session",
 ];
 const reservedSql = RESERVED_TABLES.map((n) => `'${n}'`).join(", ");
 
+// 기존 백업·복원 스키마 계약을 유지한다. 원본 통신 로그의 수집 API는 폐지되었다.
 db.exec(`CREATE TABLE IF NOT EXISTS controller (
   timestamp TEXT NOT NULL,
   data TEXT NOT NULL
@@ -1254,26 +1254,6 @@ function validateSelectionRequest(req, res, action, eventType, body = req.body) 
   }
 }
 
-function validateControllerData({ timestamp, data }) {
-  if (timestamp === undefined || timestamp === null) {
-    return { valid: false, error: "타임스탬프가 누락되었습니다." };
-  }
-  if (typeof timestamp !== "string") {
-    return { valid: false, error: "타임스탬프 형식이 올바르지 않습니다." };
-  }
-  const normalizedTimestamp = normalizeUtcTextTimestamp(timestamp);
-  if (!normalizedTimestamp) {
-    return { valid: false, error: "타임스탬프 형식이 올바르지 않습니다." };
-  }
-  if (data === undefined || data === null) {
-    return { valid: false, error: "데이터가 누락되었습니다." };
-  }
-  if (typeof data !== "string") {
-    return { valid: false, error: "데이터 형식이 올바르지 않습니다." };
-  }
-  return { valid: true, timestamp: normalizedTimestamp };
-}
-
 // 유선 컨트롤러와 유선 매뉴얼 모드는 같은 센서 처리 경로를 사용한다. 출발 센서가
 // 래치된 시점만 서버에 공유하고, 전광판 클라이언트는 SSE 수신 시점부터 로컬로 시간을 증가시킨다.
 app.post("/api/live-attempts", (req, res) => {
@@ -1827,72 +1807,6 @@ app.delete("/api/records/:name", (req, res) => {
   // SSE 브로드캐스트
   broadcastEvent("records", { type: "delete", name, recordFiles: getRecordFiles() });
 
-  res.status(200).send();
-});
-
-/* ============================================
-   API 라우트: /api/controllers
-   ============================================ */
-
-// GET /api/controllers - 모든 컨트롤러 로그 조회
-app.get("/api/controllers", (req, res) => {
-  // 최근 N건만(기본·최대 5000). controller 테이블은 최대 10만 행까지 커질 수 있어 무제한
-  // 조회는 수십 MB 응답 + 동기 직렬화로 이벤트 루프를 블로킹한다. limit/offset로 페이지네이션.
-  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 5000, 1), 5000);
-  const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
-  const result = dbRun(() => db.prepare("SELECT * FROM controller ORDER BY timestamp DESC LIMIT ? OFFSET ?").all(limit, offset));
-
-  if (!result.success) {
-    return res.status(result.status).send(result.error);
-  }
-
-  res.json(result.result);
-});
-
-// POST /api/controllers - 컨트롤러 로그 추가
-app.post("/api/controllers", (req, res) => {
-  const validation = validateControllerData(req.body);
-  if (!validation.valid) {
-    return rejectMutation(req, res, {
-      action: "controller.upload",
-      status: 400,
-      message: validation.error,
-      target: "controller",
-      operation: "upload",
-      context: {
-        timestamp: req.body?.timestamp ?? null,
-        data_type: typeof req.body?.data,
-      },
-    });
-  }
-
-  const result = dbRun(() =>
-    db.prepare("INSERT INTO controller (timestamp, data) VALUES (?, ?)").run(validation.timestamp, req.body.data),
-  );
-
-  if (!result.success) {
-    logger.warn(req, "controller.upload", { error: result.internalError || result.error });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "controller.upload", {
-    rowid: Number(result.result.lastInsertRowid),
-    timestamp: validation.timestamp,
-    bytes: Buffer.byteLength(req.body.data),
-  }, "controller");
-  res.status(201).send();
-});
-
-// DELETE /api/controllers - 모든 컨트롤러 로그 삭제
-app.delete("/api/controllers", (req, res) => {
-  const result = dbRun(() => db.prepare("DELETE FROM controller").run());
-
-  if (!result.success) {
-    logger.warn(req, "controller.clear", { error: result.internalError || result.error });
-    return res.status(result.status).send(result.error);
-  }
-
-  logger.log(req, "controller.clear", { deleted: result.result.changes });
   res.status(200).send();
 });
 

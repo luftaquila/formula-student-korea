@@ -1,7 +1,6 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
 import { useNotification } from "@shared/useNotification.js";
-import { addControllerLog } from "../composables/useApi";
 import { acceptSensorTick } from "../composables/sensorDebounce";
 import { ruleFor, shouldLatchStart, shouldIgnore, lapTime } from "@lib/event-timing.mjs";
 
@@ -142,8 +141,6 @@ export const useSerialStore = defineStore("serial", () => {
   }
 
   function parse(data) {
-    addControllerLog(new Date(), data);
-
     if (data.startsWith("$E")) {
       notyf.error("컨트롤러 프로토콜 오류 컨트롤러 전원을 껐다 켜세요.");
     } else if (data.startsWith("$HI")) {

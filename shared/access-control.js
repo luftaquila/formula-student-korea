@@ -15,7 +15,7 @@ const definitions = [
   ["course.manage", "코스 관리", "코스 공개 설정, 스냅샷 복원과 코스 삭제", ["course.operate"]],
   ["rover.operate", "Rover 운영", "Rover, 카메라, GPS와 미션 운영", ["course.operate"]],
   ["traffic.operate", "계측 운영", "실시간 계측과 일반 기록 운영"],
-  ["traffic.manage", "계측 관리", "계측 설정, 매핑과 전체 기록·로그 삭제", ["traffic.operate"]],
+  ["traffic.manage", "계측 관리", "계측 설정, 매핑과 전체 기록 삭제", ["traffic.operate"]],
   ["score.operate", "성적 운영", "집계, 수동 점수와 내구 성적 입력"],
   ["score.manage", "성적 관리", "페널티, 설정과 성적 공개 변경", ["score.operate"]],
 ];

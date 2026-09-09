@@ -2,10 +2,8 @@
 import { ref, computed, watch, onMounted, onActivated, onDeactivated } from "vue";
 import {
   fetchRecord,
-  fetchControllers,
   deleteRecord,
   deleteRecordRow,
-  deleteControllers,
   updateRecord,
   addRecord,
   toggleEventMode,
@@ -88,10 +86,8 @@ onDeactivated(() => {
   editingOcId.value = null;
 });
 
-const isControllerLog = computed(() => selectedFile.value === "controller");
-
 function updateMatchesSelectedFile(update) {
-  if (!selectedFile.value || selectedFile.value === "controller") return false;
+  if (!selectedFile.value) return false;
   if (update.name) return update.name === selectedFile.value;
   if (update.year) return selectedFile.value.startsWith(`FSK ${update.year} `);
   return false;
@@ -99,7 +95,6 @@ function updateMatchesSelectedFile(update) {
 
 // 필터링된 레코드
 const filteredRecords = computed(() => {
-  if (isControllerLog.value) return records.value;
   return records.value.filter((r) => typeFilters.value[r.type]);
 });
 
@@ -197,9 +192,7 @@ async function refreshRecords() {
   if (!selectedFile.value) return;
   const seq = ++fetchSeq;
   try {
-    const data = selectedFile.value === "controller"
-      ? await fetchControllers()
-      : await fetchRecord(selectedFile.value);
+    const data = await fetchRecord(selectedFile.value);
     if (seq === fetchSeq) records.value = data;
   } catch (e) {
     if (seq === fetchSeq) notyf.error(`기록을 불러오지 못했습니다.`);
@@ -214,9 +207,7 @@ async function loadRecords() {
   sortOrder.value = "desc";
   const seq = ++fetchSeq;
   try {
-    const data = selectedFile.value === "controller"
-      ? await fetchControllers()
-      : await fetchRecord(selectedFile.value);
+    const data = await fetchRecord(selectedFile.value);
     if (seq === fetchSeq) records.value = data;
   } catch (e) {
     if (seq === fetchSeq) {
@@ -233,11 +224,7 @@ async function handleDelete() {
   if (!confirm(`"${selectedFile.value}" 기록을 삭제하시겠습니까?`)) return;
 
   try {
-    if (isControllerLog.value) {
-      await deleteControllers();
-    } else {
-      await deleteRecord(selectedFile.value);
-    }
+    await deleteRecord(selectedFile.value);
     notyf.success("기록이 삭제되었습니다.");
     selectedFile.value = null;
     records.value = [];
@@ -249,25 +236,19 @@ async function handleDelete() {
 function downloadCSV() {
   if (!sortedRecords.value.length) return;
 
-  let headers, rows;
-  if (isControllerLog.value) {
-    headers = ["시간", "데이터"];
-    rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
-  } else {
-    headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
-    rows = sortedRecords.value.map((r) => [
-      formatTime(r.time),
-      r.num,
-      `${r.univ} ${r.team}`,
-      r.type,
-      formatResult(r.result),
-      r.status || "정상",
-      r.cones || 0,
-      r.oc || 0,
-      r.detail || "",
-      r.scoreboard ? "Y" : "N",
-    ]);
-  }
+  const headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
+  const rows = sortedRecords.value.map((r) => [
+    formatTime(r.time),
+    r.num,
+    `${r.univ} ${r.team}`,
+    r.type,
+    formatResult(r.result),
+    r.status || "정상",
+    r.cones || 0,
+    r.oc || 0,
+    r.detail || "",
+    r.scoreboard ? "Y" : "N",
+  ]);
 
   // CSV 셀: 수식 인젝션 방지 — =,+,-,@,tab,CR로 시작하면 텍스트 마커(')를 접두.
   const csvCell = (cell) => {
@@ -286,26 +267,19 @@ function downloadCSV() {
 async function downloadXLSX() {
   if (!sortedRecords.value.length) return;
 
-  let headers, rows;
-
-  if (isControllerLog.value) {
-    headers = ["시간", "데이터"];
-    rows = sortedRecords.value.map((r) => [formatTime(r.timestamp), r.data]);
-  } else {
-    headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
-    rows = sortedRecords.value.map((r) => [
-      formatTime(r.time),
-      r.num,
-      `${r.univ} ${r.team}`,
-      r.type,
-      formatResult(r.result),
-      r.status || "정상",
-      r.cones || 0,
-      r.oc || 0,
-      r.detail || "",
-      r.scoreboard ? "Y" : "N",
-    ]);
-  }
+  const headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
+  const rows = sortedRecords.value.map((r) => [
+    formatTime(r.time),
+    r.num,
+    `${r.univ} ${r.team}`,
+    r.type,
+    formatResult(r.result),
+    r.status || "정상",
+    r.cones || 0,
+    r.oc || 0,
+    r.detail || "",
+    r.scoreboard ? "Y" : "N",
+  ]);
 
   const { default: ExcelJS } = await import("exceljs");
   const wb = new ExcelJS.Workbook();
@@ -506,7 +480,7 @@ async function handleScoreboardToggle(record) {
 }
 
 async function handleToggleVisibility() {
-  if (!selectedFile.value || isControllerLog.value) return;
+  if (!selectedFile.value) return;
   try {
     await toggleRecordVisibility(selectedFile.value);
   } catch (e) {
@@ -619,7 +593,7 @@ async function handleAddRecord() {
             XLSX
           </button>
           <button
-            v-if="!isControllerLog && canManage"
+            v-if="canManage"
             class="btn-visibility"
             :class="{ active: recordVisibility[selectedFile] !== false }"
             @click="handleToggleVisibility"
@@ -630,7 +604,7 @@ async function handleAddRecord() {
             </svg>
             성적 반영
           </button>
-          <button v-if="!isControllerLog" class="btn btn-primary" @click="showAddForm = !showAddForm">
+          <button class="btn btn-primary" @click="showAddForm = !showAddForm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <line x1="12" y1="5" x2="12" y2="19" />
               <line x1="5" y1="12" x2="19" y2="12" />
@@ -654,7 +628,7 @@ async function handleAddRecord() {
           <h2>{{ selectedFile || "기록" }}</h2>
           <span v-if="filteredRecords.length" class="entry-count">{{ filteredRecords.length }}개</span>
         </div>
-        <div v-if="records.length && !isControllerLog" class="type-filters">
+        <div v-if="records.length" class="type-filters">
           <label v-for="t in EVENT_TYPES" :key="t" class="filter-checkbox">
             <input type="checkbox" v-model="typeFilters[t]" />
             <span class="filter-label" :class="typeMap[t]">{{ t }}</span>
@@ -663,7 +637,7 @@ async function handleAddRecord() {
       </div>
 
       <!-- 수동 기록 추가 폼 -->
-      <div v-if="showAddForm && !isControllerLog" class="add-form">
+      <div v-if="showAddForm" class="add-form">
         <div class="add-form-fields">
           <div class="form-group">
             <label class="form-label">경기 유형</label>
@@ -719,28 +693,8 @@ async function handleAddRecord() {
       </div>
 
       <div v-else-if="records.length > 0" class="table-wrapper">
-        <!-- 컨트롤러 로그 테이블 -->
-        <table v-if="isControllerLog" class="data-table">
-          <thead>
-            <tr>
-              <th class="sortable" @click="handleSort('timestamp')">
-                시간 <span class="sort-icon">{{ getSortIcon("timestamp") }}</span>
-              </th>
-              <th class="sortable" @click="handleSort('data')">
-                데이터 <span class="sort-icon">{{ getSortIcon("data") }}</span>
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(record, index) in sortedRecords" :key="index">
-              <td class="time-cell">{{ formatTime(record.timestamp) }}</td>
-              <td class="controller-data">{{ record.data }}</td>
-            </tr>
-          </tbody>
-        </table>
-
         <!-- 경기 기록 테이블 -->
-        <table v-else class="data-table">
+        <table class="data-table">
           <thead>
             <tr>
               <th class="sortable" @click="handleSort('time')">
@@ -1576,12 +1530,6 @@ async function handleAddRecord() {
 
 .btn-scoreboard.active:hover {
   opacity: 0.8;
-}
-
-.controller-data {
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.875rem;
-  color: var(--text-secondary);
 }
 
 .empty-state-container {
