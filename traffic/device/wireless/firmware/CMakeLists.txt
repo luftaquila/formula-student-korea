@@ -92,7 +92,6 @@ add_executable(${ELF}
     "${MDK_DIR}/system_nrf52840.c"
     src/main.c
     src/board.c
-    src/lights.c
     src/sensor.c
     src/meas.c
     src/capture.c
@@ -118,12 +117,6 @@ target_compile_definitions(${ELF} PRIVATE NRF52840_XXAA)
 # PC host enumerates us, else sensor; src/main.c). A sensor's on-air identity is
 # the low 32 bits of its chip's FICR.DEVICEID (src/node_id.c); the master
 # auto-registers it on first contact. Nothing is hardcoded per board.
-
-# Test-only: sensor synthesizes a periodic event (physical SENSOR line unwired).
-option(SENSOR_SIM "Sensor fires a synthetic event every 3 s (testing only)" OFF)
-if(SENSOR_SIM)
-    target_compile_definitions(${ELF} PRIVATE SENSOR_SIM)
-endif()
 
 # Debug: print the chip id + resolved role over USB once per second.
 option(NODE_DEBUG "Print chip id / role over USB (testing only)" OFF)

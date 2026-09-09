@@ -1,3 +1,4 @@
+import { readWirelessClock, wirelessProtocolClient } from "../helpers/wireless-fixtures.mjs";
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -38,13 +39,13 @@ let server, baseUrl, client, db, dbPath, runLiveAttemptWatch;
 
 before(async () => {
   dbPath = tmpDbPath();
-  const result = createTrafficApp({ dbPath, validateUser: TRUST_JWT });
+  const result = createTrafficApp({ readWirelessClock, dbPath, validateUser: TRUST_JWT });
   db = result.db;
   runLiveAttemptWatch = result.runLiveAttemptWatch;
   const started = await startServer(result.app);
   server = started.server;
   baseUrl = started.baseUrl;
-  client = createClient(baseUrl);
+  client = wirelessProtocolClient(createClient(baseUrl));
 });
 
 after(async () => {
@@ -856,7 +857,7 @@ describe('POST /api/wireless/ingest', () => {
   it('stores events and preserves 64-bit master_tick as string', async () => {
     const bigTick = '1844674407370955161'; // > 2^53, must survive as string
     const res = await client.post('/api/wireless/ingest', {
-      body: { events: [{ node_id: '1', master_tick: bigTick, ev_seq: 1, rssi: -70.5, snr: 9.25 }] },
+      body: { checkpoints: false, events: [{ node_id: '1', master_tick: bigTick, ev_seq: 1, rssi: -70.5, snr: 9.25 }] },
       cookie: adminCookie,
     });
     assert.equal(res.status, 200);
@@ -1201,49 +1202,13 @@ describe('Wireless mapping', () => {
 });
 
 // ─── Wireless: physical-light event designation ─────────────────────────
-describe('Wireless physical-event designation', () => {
-  it('PUT designates the physical-light event', async () => {
-    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).owner_event, '가속');
-  });
 
-  it('PUT can change the designation to another event', async () => {
-    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '스키드패드' }, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).owner_event, '스키드패드');
-  });
-
-  it('PUT null clears the designation (all virtual)', async () => {
-    const res = await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).owner_event, null);
-  });
-
-  it('PUT rejects an invalid event (400)', async () => {
-    const res = await client.put('/api/wireless/physical-event', { body: { event_type: '없는종목' }, cookie: adminCookie });
-    assert.equal(res.status, 400);
-  });
-
-  it('light report updates color and green tick for the designated event', async () => {
-    await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
-    await refreshWirelessQuality('가속');
-    const res = await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '987654321012' }, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    const row = await res.json();
-    assert.equal(row.light_color, 'green');
-    assert.equal(row.green_tick, '987654321012');
-    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-  });
-});
-
-// ─── Wireless: state & SSE ──────────────────────────────────────────────
 describe('Wireless state & SSE', () => {
   it('GET /api/wireless/state returns light/mapping/telemetry/bridge', async () => {
     const res = await client.get('/api/wireless/state', { cookie: adminCookie });
     assert.equal(res.status, 200);
     const s = await res.json();
-    assert.ok(s.light && 'owner_event' in s.light);
+    assert.ok(s.light && 'debounce_ms' in s.light);
     assert.ok(Array.isArray(s.mapping));
     assert.ok(Array.isArray(s.telemetry));
     assert.ok(s.bridge && 'online' in s.bridge);
@@ -1276,17 +1241,7 @@ describe('Wireless state & SSE', () => {
     assert.ok(ev.data.events.some(x => x.node_id === '5'));
   });
 
-  it('physical-event designation broadcasts wireless:light over SSE', async () => {
-    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
-    await sse.ready;
-    await client.put('/api/wireless/physical-event', { body: { event_type: '오토크로스' }, cookie: adminCookie });
-    await sse.waitForEvent('wireless:light');
-    sse.close();
-    const ev = sse.events.find(e => e.event === 'wireless:light');
-    assert.ok(ev, 'received wireless:light');
-    assert.equal(ev.data.owner_event, '오토크로스');
-    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-  });
+
 
   it('mapping PUT broadcasts wireless:mapping over SSE', async () => {
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
@@ -1331,42 +1286,44 @@ describe('Wireless sessions & arm', () => {
     assert.equal(s.sessions.length, 4);
     const types = s.sessions.map((x) => x.event_type).sort();
     assert.deepEqual(types, ['가속', '스키드패드', '오토크로스', '내구'].sort());
-    // 각 세션은 arm/초기화 대기 상태(불리언)와 light_color를 노출한다.
+    // 각 세션은 arm 여부와 서버 검증 상태를 노출한다.
     for (const sess of s.sessions) {
       assert.equal(typeof sess.armed, 'boolean');
-      assert.equal(typeof sess.reset_pending, 'boolean');
-      assert.ok(typeof sess.light_color === 'string');
+      assert.ok('verification' in sess);
+      assert.ok('start_tick' in sess);
     }
   });
 
-  it('POST /api/wireless/arm green arms the event with light_color green', async () => {
+  it('POST /api/wireless/arm start arms the event with a captured boundary', async () => {
+    const stopped = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'stop' }, cookie: adminCookie });
+    assert.equal(stopped.status, 200);
     await refreshWirelessQuality('가속');
-    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'green', green_tick: '16000000' }, cookie: adminCookie });
+    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'start', start_tick: '16000000' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const sess = await res.json();
     assert.equal(sess.event_type, '가속');
     assert.equal(sess.armed, true);
-    assert.equal(sess.light_color, 'green');
-    assert.equal(sess.green_tick, '16000000');
+
+    assert.equal(sess.start_tick, '16000000');
   });
 
-  it('POST /api/wireless/arm off disarms the event', async () => {
-    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'off' }, cookie: adminCookie });
+  it('POST /api/wireless/arm stop disarms the event', async () => {
+    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'stop' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const sess = await res.json();
     assert.equal(sess.armed, false);
-    assert.equal(sess.light_color, 'off');
+
   });
 
   it('POST /api/wireless/arm reset authoritatively clears the run identity', async () => {
     await refreshWirelessQuality('가속');
-    const armed = await (await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'green', green_tick: '17000000' }, cookie: adminCookie })).json();
+    const armed = await (await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'start', start_tick: '17000000' }, cookie: adminCookie })).json();
     assert.ok(armed.run_id);
     const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'reset' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const sess = await res.json();
     assert.equal(sess.armed, false);
-    assert.equal(sess.light_color, 'off');
+
     assert.equal(sess.run_id, null);
     assert.equal(sess.saved_record_name, null);
     assert.equal(sess.saved_record_rowid, null);
@@ -1394,7 +1351,7 @@ describe('Wireless sessions & arm', () => {
   });
 
   it('POST /api/wireless/arm rejects invalid event/action (400)', async () => {
-    const r1 = await client.post('/api/wireless/arm', { body: { event_type: '짐카나', action: 'green' }, cookie: adminCookie });
+    const r1 = await client.post('/api/wireless/arm', { body: { event_type: '짐카나', action: 'start' }, cookie: adminCookie });
     assert.equal(r1.status, 400);
     const r2 = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'blink' }, cookie: adminCookie });
     assert.equal(r2.status, 400);
@@ -1404,14 +1361,14 @@ describe('Wireless sessions & arm', () => {
     await refreshWirelessQuality('스키드패드');
     const sse = connectSSE(baseUrl, '/api/events', adminCookie);
     await sse.ready;
-    await client.post('/api/wireless/arm', { body: { event_type: '스키드패드', action: 'green', green_tick: '16000000' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: '스키드패드', action: 'start', start_tick: '16000000' }, cookie: adminCookie });
     await sse.waitForEvent('wireless:session');
     sse.close();
     const ev = sse.events.find((e) => e.event === 'wireless:session');
     assert.ok(ev, 'received wireless:session');
     assert.equal(ev.data.event_type, '스키드패드');
     assert.equal(ev.data.armed, true);
-    await client.post('/api/wireless/arm', { body: { event_type: '스키드패드', action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: '스키드패드', action: 'stop' }, cookie: adminCookie });
   });
 
   it('SSE init frame includes wireless.sessions', async () => {
@@ -1450,7 +1407,7 @@ describe('Wireless lease (per-event exclusive control)', () => {
     assert.equal(sess.controller, 'admin@test.com');
 
     // 다른 사용자는 arm·lease 모두 차단(409).
-    const otherArm = await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'green', green_tick: '16000000' }, cookie: otherCookie });
+    const otherArm = await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'start', start_tick: '16000000' }, cookie: otherCookie });
     assert.equal(otherArm.status, 409);
     const otherLease = await client.post('/api/wireless/lease/오토크로스', { cookie: otherCookie });
     assert.equal(otherLease.status, 409);
@@ -1463,11 +1420,11 @@ describe('Wireless lease (per-event exclusive control)', () => {
     `).all().reverse();
     assert.deepEqual(rejectedAudits.map((row) => row.action), ['wireless.arm', 'wireless.lease']);
     assert.ok(rejectedAudits.every((row) => row.actor_email === 'other@test.com'));
-    assert.deepEqual(rejectedAudits.map((row) => JSON.parse(row.detail).operation), ['green', 'claim']);
+    assert.deepEqual(rejectedAudits.map((row) => JSON.parse(row.detail).operation), ['start', 'claim']);
     assert.ok(rejectedAudits.every((row) => JSON.parse(row.detail).reason.includes('다른 사용자가 제어 중')));
 
     // 보유자는 arm 가능.
-    const ownArm = await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'green', green_tick: '16000000' }, cookie: adminCookie });
+    const ownArm = await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'start', start_tick: '16000000' }, cookie: adminCookie });
     assert.equal(ownArm.status, 200);
 
     // 해제 후 controller 비워짐.
@@ -1482,7 +1439,7 @@ describe('Wireless lease (per-event exclusive control)', () => {
     `).all().reverse();
     assert.deepEqual(audits.map((row) => JSON.parse(row.detail).operation), ['claim', 'release']);
     assert.ok(audits.every((row) => row.actor_email === 'admin@test.com'));
-    await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: '오토크로스', action: 'stop' }, cookie: adminCookie });
   });
 
   it('logs a controlled database failure while claiming a lease', async () => {
@@ -1507,7 +1464,7 @@ describe('Wireless lease (per-event exclusive control)', () => {
   });
 
   it('lease/arm without auth returns 401', async () => {
-    const a = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'green' } });
+    const a = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'start' } });
     assert.equal(a.status, 401);
     const l = await client.post('/api/wireless/lease/가속');
     assert.equal(l.status, 401);
@@ -1533,11 +1490,11 @@ describe('Wireless lease (per-session identity)', () => {
     assert.equal(c2.status, 409);
 
     // 제어는 점유 세션만: 탭2 arm 409, 탭1 arm 200. 409 메시지는 #sid를 가려 email만 노출.
-    const arm2 = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'green', green_tick: '16000000' }, cookie: adminCookie, headers: sid2 });
+    const arm2 = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'start', start_tick: '16000000' }, cookie: adminCookie, headers: sid2 });
     assert.equal(arm2.status, 409);
     const msg = await arm2.text();
     assert.ok(msg.includes('admin@test.com') && !msg.includes('#tab-1'), 'controller label hides session id');
-    const arm1 = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'green', green_tick: '16000000' }, cookie: adminCookie, headers: sid1 });
+    const arm1 = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'start', start_tick: '16000000' }, cookie: adminCookie, headers: sid1 });
     assert.equal(arm1.status, 200);
 
     // 가로채기: 같은 계정은 자기 다른 세션 lease를 회수(DELETE) 후 claim 가능.
@@ -1548,11 +1505,11 @@ describe('Wireless lease (per-session identity)', () => {
     assert.equal((await c2b.json()).controller, 'admin@test.com#tab-2');
 
     // 가로채기당한 탭1은 더 이상 제어 못 함(409).
-    const arm1b = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'green', green_tick: '16000000' }, cookie: adminCookie, headers: sid1 });
+    const arm1b = await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'start', start_tick: '16000000' }, cookie: adminCookie, headers: sid1 });
     assert.equal(arm1b.status, 409);
 
     await client.delete(`/api/wireless/lease/${encodeURIComponent(ET)}`, { cookie: adminCookie, headers: sid2 });
-    await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'off' }, cookie: adminCookie, headers: sid2 });
+    await client.post('/api/wireless/arm', { body: { event_type: ET, action: 'stop' }, cookie: adminCookie, headers: sid2 });
   });
 });
 
@@ -1579,7 +1536,7 @@ describe('Wireless server-authoritative record engine', () => {
     await client.put(`/api/wireless/mapping/${NF}`, { body: { event_type: ev, role: 'finish' }, cookie: adminCookie });
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 5, univ: 'SNU', team: 'RT' }, event_name: NAME }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
-    const armResponse = await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    const armResponse = await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000' }, cookie: adminCookie });
     const armedSession = await armResponse.json();
     assert.match(armedSession.run_id, /^[0-9a-f-]{36}$/i, 'new run has a stable id');
     assert.equal(armedSession.saved_record_name, null);
@@ -1601,7 +1558,7 @@ describe('Wireless server-authoritative record engine', () => {
     assert.equal(savedSession.saved_record_rowid, saved.rowid, 'session exposes the exact saved row for reconnect recovery');
 
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NS}`, { cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
   });
@@ -1612,7 +1569,7 @@ describe('Wireless server-authoritative record engine', () => {
     await client.put(`/api/wireless/mapping/${N}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 8, univ: 'KU', team: 'SK' }, event_name: NAME }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000' }, cookie: adminCookie });
     // 5회 통과(10초 간격, 마지막 20초): lap2=10초, lap4=20초 → 합 30초
     const ticks = ['1600000000', '1760000000', '1920000000', '2080000000', '2400000000'];
     for (let i = 0; i < ticks.length; i++) {
@@ -1624,7 +1581,7 @@ describe('Wireless server-authoritative record engine', () => {
     assert.ok(rows.some((r) => r.type === ev && r.result === 30000 && r.num === 8), 'skidpad lap2+lap4 saved');
 
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
   });
 
@@ -1634,7 +1591,7 @@ describe('Wireless server-authoritative record engine', () => {
     await client.put(`/api/wireless/mapping/${N}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 12, univ: 'HU', team: 'EN' }, event_name: NAME }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000' }, cookie: adminCookie });
     // 4회 통과: 첫 통과=출발선, 이후 랩 10/20/15초 → 총합 45초, detail 3개
     const ticks = ['1600000000', '1760000000', '2080000000', '2320000000'];
     for (let i = 0; i < ticks.length; i++) {
@@ -1654,20 +1611,14 @@ describe('Wireless server-authoritative record engine', () => {
     assert.ok(audits.every((row) => row.actor_email === 'system'));
     const lastAudit = JSON.parse(audits.at(-1).detail);
     assert.equal(lastAudit.run_id?.length > 0, true);
-    assert.equal(lastAudit.team_num, 12);
-    assert.equal(lastAudit.lap_count, 3);
-    assert.equal(lastAudit.lap_detail, '00:10.000 / 00:20.000 / 00:15.000');
-    assert.deepEqual(lastAudit.before, {
-      result: 30000,
-      detail: '00:10.000 / 00:20.000',
-    });
-    assert.deepEqual(lastAudit.after, {
-      result: 45000,
-      detail: '00:10.000 / 00:20.000 / 00:15.000',
-    });
+    assert.equal(lastAudit.after.num, 12);
+    assert.equal(lastAudit.before.result, 30000);
+    assert.equal(lastAudit.before.detail, '00:10.000 / 00:20.000');
+    assert.equal(lastAudit.after.result, 45000);
+    assert.equal(lastAudit.after.detail, '00:10.000 / 00:20.000 / 00:15.000');
 
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
   });
 
@@ -1681,7 +1632,7 @@ describe('Wireless server-authoritative record engine', () => {
     });
     await refreshWirelessQuality(ev);
     await client.post('/api/wireless/arm', {
-      body: { event_type: ev, action: 'green', green_tick: '3200000000' }, cookie: adminCookie,
+      body: { event_type: ev, action: 'start', start_tick: '3200000000' }, cookie: adminCookie,
     });
 
     for (const [index, tick] of ['3200000000', '3360000000'].entries()) {
@@ -1710,7 +1661,7 @@ describe('Wireless server-authoritative record engine', () => {
     assert.equal(after[0].detail, '00:10.000');
 
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
   });
 
@@ -1718,7 +1669,7 @@ describe('Wireless server-authoritative record engine', () => {
     const ev = '오토크로스', NAME = 'ENG-DNF';
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 3, univ: 'A', team: 'B' }, event_name: NAME }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000' }, cookie: adminCookie });
     const res = await client.post('/api/wireless/status', { body: { event_type: ev, status: 'DNF' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const rows = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
@@ -1726,16 +1677,16 @@ describe('Wireless server-authoritative record engine', () => {
     const dnfAudit = db.prepare(`
       SELECT actor_email, detail FROM logs
       WHERE action = 'wireless.status' AND target = ? ORDER BY id DESC LIMIT 1
-    `).get(ev);
+    `).get(tbl(NAME));
     assert.equal(dnfAudit.actor_email, 'admin@test.com');
-    assert.equal(JSON.parse(dnfAudit.detail).team.num, 3);
+    assert.equal(JSON.parse(dnfAudit.detail).after.num, 3);
     const recordAudit = db.prepare(`
       SELECT actor_email FROM logs
       WHERE action = 'wireless.record' AND target = ? ORDER BY id DESC LIMIT 1
     `).get(tbl(NAME));
     assert.equal(recordAudit.actor_email, 'admin@test.com');
     await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
   });
 
   it('status without a selection returns 400', async () => {
@@ -1751,7 +1702,7 @@ describe('Wireless server-authoritative record engine', () => {
     await client.put(`/api/wireless/mapping/${NS}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
     await client.put(`/api/wireless/mapping/${NF}`, { body: { event_type: ev, role: 'finish' }, cookie: adminCookie });
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 9, univ: 'X', team: 'Y' }, event_name: NAME }, cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie }); // 미무장
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie }); // 미무장
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NS, master_tick: '1700000000', ev_seq: 9 }] }, cookie: adminCookie });
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NF, master_tick: '1700160000', ev_seq: 9 }] }, cookie: adminCookie });
 
@@ -1762,27 +1713,7 @@ describe('Wireless server-authoritative record engine', () => {
     await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
   });
 
-  it('physical light green arms+records; duplicate green does NOT reset the run', async () => {
-    const ev = '가속';
-    const NS = 'dup-s', NF = 'dup-f', NAME = 'ENG-DUPGREEN';
-    await client.put(`/api/wireless/mapping/${NS}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
-    await client.put(`/api/wireless/mapping/${NF}`, { body: { event_type: ev, role: 'finish' }, cookie: adminCookie });
-    await client.put('/api/wireless/physical-event', { body: { event_type: ev }, cookie: adminCookie });
-    await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 11, univ: 'A', team: 'B' }, event_name: NAME }, cookie: adminCookie });
-    await refreshWirelessQuality(ev);
-    // 물리 신호등 green → 세션 arm + 엔진 런 리셋
-    await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '1600000000' }, cookie: adminCookie });
-    await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NS, master_tick: '1600000000', ev_seq: 1 }] }, cookie: adminCookie }); // 출발
-    // 동일 green 중복 보고 → 런이 리셋되면 안 됨(출발 tick 보존되어야 도착 기록됨)
-    await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '1600000000' }, cookie: adminCookie });
-    await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NF, master_tick: '1672000000', ev_seq: 1 }] }, cookie: adminCookie }); // 도착(4.5초)
-    const rows = await (await client.get(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie })).json();
-    assert.ok(rows.some((r) => r.type === ev && r.result === 4500 && r.num === 11), '중복 green에도 기록 저장(런 보존)');
-    await client.delete(`/api/records/${encodeURIComponent(tbl(NAME))}`, { cookie: adminCookie });
-    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-    await client.delete(`/api/wireless/mapping/${NS}`, { cookie: adminCookie });
-    await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
-  });
+
 
   it('skidpad does NOT save when a lap is negative (reordered)', async () => {
     const ev = '스키드패드';
@@ -1790,7 +1721,7 @@ describe('Wireless server-authoritative record engine', () => {
     await client.put(`/api/wireless/mapping/${N}`, { body: { event_type: ev, role: 'start' }, cookie: adminCookie });
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 12, univ: 'A', team: 'B' }, event_name: NAME }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000' }, cookie: adminCookie });
     // 5회 통과인데 5번째(lap4)가 4번째보다 앞선 tick → lap4 음수 → 저장 안 함
     const ticks = ['1600000000', '1760000000', '1920000000', '2080000000', '2000000000'];
     for (let i = 0; i < ticks.length; i++) {
@@ -1798,154 +1729,13 @@ describe('Wireless server-authoritative record engine', () => {
     }
     const list = await (await client.get('/api/records', { cookie: adminCookie })).json();
     assert.ok(!list.includes(tbl(NAME)), '음수 lap이면 저장하지 않음');
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${N}`, { cookie: adminCookie });
   });
 });
 
-// ─── 물리 신호등 다운링크 (Phase 5 / 네트워크 제어) ────────────────────────
-describe('Wireless physical command downlink', () => {
-  it('rejects command for a non-physical event (409)', async () => {
-    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-    const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'green' }, cookie: adminCookie });
-    assert.equal(res.status, 409);
-  });
+// ─── 무선 기록 저장 검증 ──────────────────────────────────────────────
 
-  it('rejects an invalid action (400)', async () => {
-    const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'nope' }, cookie: adminCookie });
-    assert.equal(res.status, 400);
-  });
-
-  it('broadcasts wireless:command for the physical event when bridge online', async () => {
-    // ingest로 브리지 online 표시
-    await client.post('/api/wireless/ingest', { body: { events: [{ node_id: 'cmd-x', master_tick: '100', ev_seq: 1 }] }, cookie: adminCookie });
-    await client.put('/api/wireless/physical-event', { body: { event_type: '가속' }, cookie: adminCookie });
-    await refreshWirelessQuality('가속');
-    // 물리 소유권 SSE를 놓친 클라이언트가 가상 reset 경로를 호출해도 런을 즉시 폐기하지 않는다.
-    const beforeStaleResetState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const beforeStaleReset = beforeStaleResetState.sessions.find((session) => session.event_type === '가속');
-    const staleClientReset = await client.post('/api/wireless/arm', {
-      body: { event_type: '가속', action: 'reset' }, cookie: adminCookie,
-    });
-    assert.equal(staleClientReset.status, 409);
-    assert.match(await staleClientReset.text(), /OFF 확인/);
-    const afterStaleResetState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const afterStaleReset = afterStaleResetState.sessions.find((session) => session.event_type === '가속');
-    assert.equal(afterStaleReset.run_id, beforeStaleReset.run_id);
-    assert.equal(afterStaleReset.saved_record_name, beforeStaleReset.saved_record_name);
-    assert.equal(afterStaleReset.saved_record_rowid, beforeStaleReset.saved_record_rowid);
-    assert.equal(afterStaleReset.reset_pending, beforeStaleReset.reset_pending);
-
-    const sse = connectSSE(baseUrl, '/api/events', adminCookie);
-    await sse.ready;
-    const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'green' }, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    await sse.waitForEvent('wireless:command');
-    sse.close();
-    const ev = sse.events.find((e) => e.event === 'wireless:command');
-    assert.ok(ev, 'received wireless:command');
-    assert.equal(ev.data.action, 'green');
-    assert.equal(ev.data.event_type, '가속');
-
-    // 물리 초기화는 명령 수락만으로 런을 지우지 않고, 마스터의 OFF 보고에서 확정한다.
-    await client.post('/api/wireless/light', { body: { color: 'green', green_tick: '17000000' }, cookie: adminCookie });
-    const armedState = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const armedSession = armedState.sessions.find((session) => session.event_type === '가속');
-    assert.ok(armedSession.run_id);
-    await client.post('/api/wireless/light', { body: { color: 'red' }, cookie: adminCookie });
-    const reset = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'reset' }, cookie: adminCookie });
-    assert.equal(reset.status, 200);
-    const resetBody = await reset.json();
-    assert.equal(resetBody.ok, true);
-    assert.equal(resetBody.session.reset_pending, true);
-    assert.ok(resetBody.session.run_id, 'physical reset keeps the run until OFF is confirmed');
-    const resetAudit = db.prepare(`
-      SELECT actor_email, detail FROM logs
-      WHERE action = 'wireless.command' AND target = '가속' AND level = 'info'
-      ORDER BY id DESC LIMIT 1
-    `).get();
-    assert.equal(resetAudit.actor_email, 'admin@test.com');
-    assert.deepEqual(JSON.parse(resetAudit.detail), {
-      action: 'reset',
-      before: { reset_pending: false },
-      after: { reset_pending: true },
-    });
-    const beforeOff = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const pendingSession = beforeOff.sessions.find((session) => session.event_type === '가속');
-    assert.equal(pendingSession.reset_pending, true);
-    assert.ok(pendingSession.run_id, 'reset remains pending until physical OFF');
-
-    // OFF 확인 전에는 어떤 green 경로도 새 런을 열거나 pending을 해제할 수 없다.
-    const commandGreen = await client.post('/api/wireless/command', {
-      body: { event_type: '가속', action: 'green' }, cookie: adminCookie,
-    });
-    assert.equal(commandGreen.status, 409);
-    assert.match(await commandGreen.text(), /OFF 확인/);
-    const armGreen = await client.post('/api/wireless/arm', {
-      body: { event_type: '가속', action: 'green', green_tick: '18000000' }, cookie: adminCookie,
-    });
-    assert.equal(armGreen.status, 409);
-    assert.match(await armGreen.text(), /OFF 확인/);
-    const armReset = await client.post('/api/wireless/arm', {
-      body: { event_type: '가속', action: 'reset' }, cookie: adminCookie,
-    });
-    assert.equal(armReset.status, 409);
-    assert.match(await armReset.text(), /OFF 확인/);
-    const reportedGreen = await client.post('/api/wireless/light', {
-      body: { color: 'green', green_tick: '18000000' }, cookie: adminCookie,
-    });
-    assert.equal(reportedGreen.status, 200);
-    const afterBlockedGreen = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const stillPending = afterBlockedGreen.sessions.find((session) => session.event_type === '가속');
-    assert.equal(stillPending.reset_pending, true);
-    assert.equal(stillPending.run_id, armedSession.run_id);
-    assert.equal(stillPending.light_color, 'red');
-
-    await client.post('/api/wireless/light', { body: { color: 'off' }, cookie: adminCookie });
-    const afterOff = await (await client.get('/api/wireless/state', { cookie: adminCookie })).json();
-    const resetSession = afterOff.sessions.find((session) => session.event_type === '가속');
-    assert.equal(resetSession.reset_pending, false);
-    assert.equal(resetSession.run_id, null);
-    await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-  });
-
-  it('audits a reset database failure without publishing the command', async () => {
-    await client.post('/api/wireless/ingest', {
-      body: { events: [{ node_id: 'cmd-failure', master_tick: '101', ev_seq: 1 }] },
-      cookie: adminCookie,
-    });
-    await client.put('/api/wireless/physical-event', { body: { event_type: '내구' }, cookie: adminCookie });
-    db.exec(`CREATE TRIGGER reject_wireless_reset
-      BEFORE UPDATE ON wireless_session
-      WHEN OLD.event_type = '내구' AND NEW.reset_pending = 1
-      BEGIN SELECT RAISE(ABORT, 'injected reset failure'); END`);
-    try {
-      const reset = await client.post('/api/wireless/command', {
-        body: { event_type: '내구', action: 'reset' },
-        cookie: adminCookie,
-      });
-      assert.equal(reset.status, 500);
-      const audit = db.prepare(`
-        SELECT actor_email, detail FROM logs
-        WHERE action = 'wireless.command' AND target = '내구' AND level = 'warn'
-        ORDER BY id DESC LIMIT 1
-      `).get();
-      assert.equal(audit.actor_email, 'admin@test.com');
-      assert.match(JSON.parse(audit.detail).error, /injected reset failure/);
-      assert.equal(JSON.parse(audit.detail).action, 'reset');
-    } finally {
-      db.exec('DROP TRIGGER reject_wireless_reset');
-      await client.put('/api/wireless/physical-event', { body: { event_type: null }, cookie: adminCookie });
-    }
-  });
-
-  it('command without auth returns 401', async () => {
-    const res = await client.post('/api/wireless/command', { body: { event_type: '가속', action: 'green' } });
-    assert.equal(res.status, 401);
-  });
-});
-
-// ─── 버그 수정 가드 (검증/음수/DNF) ────────────────────────────────────────
 describe('Wireless save guards', () => {
   const YEAR = CURRENT_YEAR;
 
@@ -1966,7 +1756,7 @@ describe('Wireless save guards', () => {
   it('allows a status before the event is armed', async () => {
     const ev = '오토크로스';
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 4, univ: 'A', team: 'B' }, event_name: 'ENG-NOARM-DNF' }, cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     const res = await client.post('/api/wireless/status', { body: { event_type: ev, status: 'DNS' }, cookie: adminCookie });
     assert.equal(res.status, 200);
     const body = await res.json();
@@ -1982,13 +1772,13 @@ describe('Wireless save guards', () => {
     await client.put(`/api/wireless/mapping/${NF}`, { body: { event_type: ev, role: 'finish' }, cookie: adminCookie });
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 6, univ: 'A', team: 'B' }, event_name: NAME }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000' }, cookie: adminCookie });
     // 출발 tick=3200000000(200000ms), 도착 tick=1600000000(100000ms) → 도착이 앞섬 → 음수 → 미저장
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NS, master_tick: '3200000000', ev_seq: 1 }] }, cookie: adminCookie });
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NF, master_tick: '1600000000', ev_seq: 1 }] }, cookie: adminCookie });
     const list = await (await client.get('/api/records', { cookie: adminCookie })).json();
     assert.ok(!list.includes(`FSK ${YEAR} ${NAME}`), '음수 결과는 저장하지 않음');
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NS}`, { cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
   });
@@ -2001,7 +1791,7 @@ describe('Wireless save guards', () => {
     await client.put(`/api/wireless/mapping/${NF}`, { body: { event_type: ev, role: 'finish' }, cookie: adminCookie });
     await refreshWirelessQuality(ev);
     // arm 본문에 팀A(num 21) + event_name을 실어 bind-at-arm
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'green', green_tick: '1600000000', team: { num: 21, univ: 'AU', team: 'TeamA' }, event_name: NAME }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'start', start_tick: '1600000000', team: { num: 21, univ: 'AU', team: 'TeamA' }, event_name: NAME }, cookie: adminCookie });
     await client.post('/api/wireless/ingest', { body: { events: [{ node_id: NS, master_tick: '1600000000', ev_seq: 1 }] }, cookie: adminCookie }); // 출발
     // 런 진행 중 팀B(num 22)로 select 변경 — 귀속은 바뀌면 안 됨
     await client.post('/api/wireless/select', { body: { event_type: ev, team: { num: 22, univ: 'BU', team: 'TeamB' }, event_name: NAME }, cookie: adminCookie });
@@ -2010,13 +1800,13 @@ describe('Wireless save guards', () => {
     assert.ok(rows.some((r) => r.num === 21 && r.team === 'TeamA' && r.result === 60000), 'arm 시점 팀A로 귀속');
     assert.ok(!rows.some((r) => r.num === 22), '중간 select의 팀B로 귀속되지 않음');
     await client.delete(`/api/records/${encodeURIComponent(`FSK ${YEAR} ${NAME}`)}`, { cookie: adminCookie });
-    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'off' }, cookie: adminCookie });
+    await client.post('/api/wireless/arm', { body: { event_type: ev, action: 'stop' }, cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NS}`, { cookie: adminCookie });
     await client.delete(`/api/wireless/mapping/${NF}`, { cookie: adminCookie });
   });
 
   it('arm green rejects a malformed team in the body (400)', async () => {
-    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'green', green_tick: '100', team: { num: 0, univ: 'X', team: 'Y' } }, cookie: adminCookie });
+    const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'start', start_tick: '100', team: { num: 0, univ: 'X', team: 'Y' } }, cookie: adminCookie });
     assert.equal(res.status, 400);
   });
 
@@ -2030,8 +1820,8 @@ describe('Wireless save guards', () => {
 
   it('ingest rejects an event with a missing ev_seq so dedupe cannot be bypassed by NULL', async () => {
     const event = { node_id: 'no-seq', master_tick: '123456' };
-    const r1 = await client.post('/api/wireless/ingest', { body: { events: [event] }, cookie: adminCookie });
-    const r2 = await client.post('/api/wireless/ingest', { body: { events: [event] }, cookie: adminCookie });
+    const r1 = await client.post('/api/wireless/ingest', { body: { checkpoints: false, events: [event] }, cookie: adminCookie });
+    const r2 = await client.post('/api/wireless/ingest', { body: { checkpoints: false, events: [event] }, cookie: adminCookie });
     assert.equal((await r1.json()).stored, 0);
     const body = await r2.json();
     assert.equal(body.stored, 0, 'ev_seq 없는 이벤트는 저장 안 함');
@@ -2052,23 +1842,20 @@ describe('Wireless save guards', () => {
         body: { event_type: '가속', team: { num: 0, univ: 'X', team: 'Y' } }, cookie: adminCookie,
       }),
       client.post('/api/wireless/arm', {
-        body: { event_type: '가속', action: 'green', green_tick: {} }, cookie: adminCookie,
-      }),
-      client.post('/api/wireless/command', {
-        body: { event_type: '가속', action: 'blink' }, cookie: adminCookie,
+        body: { event_type: '가속', action: 'start', start_tick: {} }, cookie: adminCookie,
       }),
       client.post('/api/wireless/lease/짐카나', { cookie: adminCookie }),
       client.delete('/api/wireless/lease/짐카나', { cookie: adminCookie }),
     ];
     const responses = await Promise.all(requests);
-    assert.deepEqual(responses.map((response) => response.status), [400, 400, 400, 400, 400, 400, 400]);
+    assert.deepEqual(responses.map((response) => response.status), [400, 400, 400, 400, 400, 400]);
 
     await client.post('/api/wireless/select', {
       body: { event_type: '오토크로스', team: null, event_name: null },
       cookie: adminCookie,
     });
     await client.post('/api/wireless/arm', {
-      body: { event_type: '오토크로스', action: 'off' }, cookie: adminCookie,
+      body: { event_type: '오토크로스', action: 'stop' }, cookie: adminCookie,
     });
     const dnf = await client.post('/api/wireless/status', {
       body: { event_type: '오토크로스', status: 'DNF' }, cookie: adminCookie,
@@ -2078,12 +1865,12 @@ describe('Wireless save guards', () => {
     const warnings = db.prepare(`
       SELECT action, actor_email, target, detail FROM logs
       WHERE id > ? AND level = 'warn'
-        AND action IN ('wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.status')
+        AND action IN ('wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.lease', 'wireless.status')
       ORDER BY id
     `).all(beforeId);
     const actions = new Set(warnings.map((row) => row.action));
     assert.deepEqual(actions, new Set([
-      'wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.command', 'wireless.lease', 'wireless.status',
+      'wireless.ingest', 'wireless.select', 'wireless.arm', 'wireless.lease', 'wireless.status',
     ]));
     for (const row of warnings) {
       const detail = JSON.parse(row.detail);
@@ -2101,13 +1888,13 @@ describe('Traffic TeamStore query-port failure auditing', () => {
     const failingStore = {
       getById: () => { throw new Error('injected traffic team lookup failure'); },
     };
-    const created = createTrafficApp({
+    const created = createTrafficApp({ readWirelessClock,
       dbPath: failingPath,
       validateUser: TRUST_JWT,
       teamStore: failingStore,
     });
     const started = await startServer(created.app);
-    const isolated = createClient(started.baseUrl);
+    const isolated = wirelessProtocolClient(createClient(started.baseUrl));
     const team = { id: 91, teamId: 91, num: 91, univ: 'Lookup U', team: 'Lookup T' };
     try {
       const select = await isolated.post('/api/wireless/select', {
@@ -2118,7 +1905,7 @@ describe('Traffic TeamStore query-port failure auditing', () => {
       assert.equal(await select.text(), '팀 기준 정보를 확인할 수 없습니다.');
 
       const arm = await isolated.post('/api/wireless/arm', {
-        body: { event_type: '가속', action: 'green', green_tick: '1', team, event_name: 'Lookup Arm' },
+        body: { event_type: '가속', action: 'start', start_tick: '1', team, event_name: 'Lookup Arm' },
         cookie: adminCookie,
       });
       assert.equal(arm.status, 500);
@@ -2172,15 +1959,15 @@ describe('Traffic mutation state preflight auditing', () => {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    const created = createTrafficApp({ db: proxyDb, validateUser: TRUST_JWT });
+    const created = createTrafficApp({ readWirelessClock, db: proxyDb, validateUser: TRUST_JWT });
     for (const timer of created.timers || []) clearInterval(timer);
     const started = await startServer(created.app);
-    const isolated = createClient(started.baseUrl);
+    const isolated = wirelessProtocolClient(createClient(started.baseUrl));
     try {
       failSession = true;
       const requests = [
         () => isolated.post('/api/wireless/arm', {
-          body: { event_type: '가속', action: 'off' }, cookie: adminCookie,
+          body: { event_type: '가속', action: 'stop' }, cookie: adminCookie,
         }),
         () => isolated.post('/api/wireless/select', {
           body: { event_type: '가속', team: null, event_name: null }, cookie: adminCookie,
@@ -2188,15 +1975,12 @@ describe('Traffic mutation state preflight auditing', () => {
         () => isolated.post('/api/wireless/status', {
           body: { event_type: '가속', status: 'DNF' }, cookie: adminCookie,
         }),
-        () => isolated.post('/api/wireless/command', {
-          body: { event_type: '가속', action: 'off' }, cookie: adminCookie,
-        }),
         () => isolated.post('/api/wireless/lease/가속', { cookie: adminCookie }),
         () => isolated.delete('/api/wireless/lease/가속', { cookie: adminCookie }),
       ];
       const responses = [];
       for (const request of requests) responses.push(await request());
-      assert.deepEqual(responses.map((response) => response.status), [500, 500, 500, 500, 500, 500]);
+      assert.deepEqual(responses.map((response) => response.status), [500, 500, 500, 500, 500]);
       for (const response of responses) assert.match(await response.text(), /상태를 확인할 수 없습니다/);
 
       failSession = false;
@@ -2209,12 +1993,12 @@ describe('Traffic mutation state preflight auditing', () => {
       const warnings = rawDb.prepare(`
         SELECT action, target, detail FROM logs
         WHERE level = 'warn' AND action IN (
-          'wireless.arm', 'wireless.select', 'wireless.status', 'wireless.command', 'wireless.lease',
+          'wireless.arm', 'wireless.select', 'wireless.status', 'wireless.lease',
           'event_mode.toggle'
         ) ORDER BY id
       `).all();
       assert.deepEqual(warnings.map((row) => row.action), [
-        'wireless.arm', 'wireless.select', 'wireless.status', 'wireless.command',
+        'wireless.arm', 'wireless.select', 'wireless.status',
         'wireless.lease', 'wireless.lease', 'event_mode.toggle',
       ]);
       for (const row of warnings) {
@@ -2265,10 +2049,10 @@ describe('Traffic record and background mutation auditing', () => {
         return typeof value === 'function' ? value.bind(target) : value;
       },
     });
-    const created = createTrafficApp({ db: proxyDb, validateUser: TRUST_JWT });
+    const created = createTrafficApp({ readWirelessClock, db: proxyDb, validateUser: TRUST_JWT });
     for (const timer of created.timers || []) clearInterval(timer);
     const started = await startServer(created.app);
-    const isolated = createClient(started.baseUrl);
+    const isolated = wirelessProtocolClient(createClient(started.baseUrl));
     const activeName = `FSK ${CURRENT_YEAR} Audit Active`;
     const inactiveName = `FSK ${CURRENT_YEAR} Audit Inactive`;
     try {
@@ -2341,7 +2125,7 @@ describe('Traffic record and background mutation auditing', () => {
 
   it('audits lease expiry and event retention successes through exported callbacks', () => {
     const isolatedPath = tmpDbPath();
-    const created = createTrafficApp({
+    const created = createTrafficApp({ readWirelessClock,
       dbPath: isolatedPath,
       validateUser: TRUST_JWT,
     });
@@ -2424,7 +2208,7 @@ describe('Traffic legacy record consolidation migration', () => {
   });
 
   it('absorbs the legacy table into `record` preserving rowid order, backfills columns, and drops it', () => {
-    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
+    migDb = createTrafficApp({ readWirelessClock, dbPath: migPath, validateUser: TRUST_JWT }).db;
 
     const rows = migDb.prepare("SELECT legacy_rowid, num, detail, status, scoreboard, cones, oc FROM record WHERE name = ? ORDER BY legacy_rowid").all(LEGACY);
     assert.equal(rows.length, 2);
@@ -2444,7 +2228,7 @@ describe('Traffic legacy record consolidation migration', () => {
 
   it('is idempotent — re-opening the consolidated DB does not duplicate or error', () => {
     migDb.close();
-    migDb = createTrafficApp({ dbPath: migPath, validateUser: TRUST_JWT }).db;
+    migDb = createTrafficApp({ readWirelessClock, dbPath: migPath, validateUser: TRUST_JWT }).db;
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM record WHERE name = ?").get(LEGACY).c, 2, 'no duplicate rows on re-run');
     assert.equal(migDb.prepare("SELECT COUNT(*) AS c FROM sqlite_master WHERE type='table' AND name = 'random_notes'").get().c, 1);
   });
@@ -2483,7 +2267,7 @@ describe('Traffic normalized record status migration', () => {
   after(() => cleanup(migrationPath));
 
   it('maps invalidated to DSQ, result -1 to DNF, and preserves identity and raw time', () => {
-    const created = createTrafficApp({ dbPath: migrationPath, validateUser: TRUST_JWT });
+    const created = createTrafficApp({ readWirelessClock, dbPath: migrationPath, validateUser: TRUST_JWT });
     for (const timer of created.timers || []) clearInterval(timer);
     try {
       const rows = created.db.prepare(`

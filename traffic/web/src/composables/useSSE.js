@@ -22,7 +22,7 @@ const wirelessLight = ref(null);
 const wirelessMapping = ref([]);
 const wirelessTelemetry = ref({}); // node_id -> { rssi, snr, offset_us, skew_ppm, latency_ms, link_state, last_seen }
 const wirelessBridge = ref({ online: false, last_seen: null });
-const wirelessSessions = ref({}); // event_type -> { armed, light_color, green_tick, team, event_name, controller, ... }
+const wirelessSessions = ref({}); // event_type -> { armed, start_tick, result, lap_times, team, event_name, controller, ... }
 const wirelessQualityFaults = ref({}); // event_type -> 마지막 자동 중단 원인
 // wireless:event는 last-value ref로 모으면 빠른 연속 이벤트가 합쳐지므로 fan-out 사용
 const wirelessEventSubs = new Set();
@@ -30,7 +30,7 @@ export function onWirelessEvent(fn) {
   wirelessEventSubs.add(fn);
   return () => wirelessEventSubs.delete(fn);
 }
-// 물리 신호등 다운링크 명령(서버→브리지). 브리지만 의미 있게 처리(시리얼 전달).
+// Fresh hardware clock requests are handled by the attached bridge.
 const wirelessCommandSubs = new Set();
 export function onWirelessCommand(fn) {
   wirelessCommandSubs.add(fn);
@@ -181,12 +181,13 @@ on("wireless:bridge", (e) => {
   wirelessBridge.value = data;
 });
 
-on("wireless:session", (e) => {
-  const data = parseSSEData(e);
-  if (!data) return;
-  if (!data || !data.event_type) return;
+export function applyWirelessSession(data) {
+  if (!data?.event_type) return;
+  const current = wirelessSessions.value[data.event_type];
+  if (current?.updated_at && data.updated_at && data.updated_at < current.updated_at) return;
   wirelessSessions.value = { ...wirelessSessions.value, [data.event_type]: data };
-});
+}
+on("wireless:session", e => applyWirelessSession(parseSSEData(e)));
 
 on("wireless:quality-fault", (e) => {
   const data = parseSSEData(e);

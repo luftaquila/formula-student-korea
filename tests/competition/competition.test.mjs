@@ -1,3 +1,4 @@
+import { withWirelessClock } from "../helpers/wireless-clock.mjs";
 import { describe, it, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -8,7 +9,7 @@ import path from "node:path";
 import {
   createClient, makeAuthCookie, setupTestEnv, startServer, stopServer, TRUST_JWT,
 } from "../helpers/test-utils.mjs";
-import { healthyWirelessBatch } from "../helpers/wireless-fixtures.mjs";
+import { healthyWirelessBatch, wirelessProtocolClient } from "../helpers/wireless-fixtures.mjs";
 import { currentCompetitionYear } from "../../shared/competition-year.mjs";
 import { validateCompetitionDatabase } from "../../competition/lib/database-validation.mjs";
 
@@ -732,7 +733,7 @@ describe("Competition modular monolith", () => {
       validateUser: TRUST_JWT, enableNotificationScheduler: false,
     });
     const { server, baseUrl } = await startServer(created.app);
-    const client = createClient(baseUrl);
+    const client = wirelessProtocolClient(createClient(baseUrl));
     const admin = makeAuthCookie({ email: "admin@test.invalid", name: "Admin", role: "admin" });
     try {
       const currentTeam = created.teams.createTeam(YEAR, {
@@ -764,16 +765,19 @@ describe("Competition modular monolith", () => {
         body: healthyWirelessBatch(["canonical-start", "canonical-finish"]),
       });
       assert.equal(health.status, 200, await health.clone().text());
-      const armed = await client.post("/competition/api/v1/traffic/wireless/arm", {
+      const armed = await withWirelessClock({
+        url: `${baseUrl}/competition/api/v1/traffic/events`, cookie: admin, tick: "1600000000",
+        respond: body => client.post("/competition/api/v1/traffic/wireless/clock", { cookie: admin, body }),
+      }, () => client.post("/competition/api/v1/traffic/wireless/arm", {
         cookie: admin,
         body: {
           event_type: "오토크로스",
-          action: "green",
-          green_tick: "1600000000",
+          action: "start",
+          start_tick: "1600000000",
           team: { id: currentTeam.id, num: 7, univ: "stale", team: "stale" },
           event_name: "CANONICAL-TEAM",
         },
-      });
+      }));
       assert.equal(armed.status, 200, await armed.clone().text());
       const armAudit = created.db.prepare(`
         SELECT detail FROM logs
@@ -790,7 +794,7 @@ describe("Competition modular monolith", () => {
       });
       await client.post("/competition/api/v1/traffic/wireless/ingest", {
         cookie: admin,
-        body: { events: [{ node_id: "canonical-start", master_tick: "1600000000", ev_seq: 1 }] },
+        body: { events: [{ master_boot_id: 1, node_id: "canonical-start", master_tick: "1600000000", ev_seq: 1 }] },
       });
 
       const updated = await client.patch(`/competition/api/v1/teams/${currentTeam.id}`, {
@@ -800,7 +804,7 @@ describe("Competition modular monolith", () => {
       assert.equal(updated.status, 200, await updated.clone().text());
       await client.post("/competition/api/v1/traffic/wireless/ingest", {
         cookie: admin,
-        body: { events: [{ node_id: "canonical-finish", master_tick: "1760000000", ev_seq: 1 }] },
+        body: { events: [{ master_boot_id: 1, node_id: "canonical-finish", master_tick: "1760000000", ev_seq: 1 }] },
       });
 
       const records = await client.get(

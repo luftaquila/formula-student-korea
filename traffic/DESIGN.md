@@ -1,9 +1,9 @@
 # LoRa 타이밍 시스템 — 설계 (단일 겸용 보드)
 
-KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **MCU = SuperMini nRF52840** (nice!nano 핀호환).
+KR920 LoRa 기반 시간동기 이벤트 측정 시스템. **MCU = SuperMini nRF52840** (nice!nano 핀호환).
 **하나의 PCB를 전부 실장**하고, **펌웨어로 역할만 전환**한다:
 
-- **마스터 역할** — USB로 PC 연결, LoRa 비콘 송신 + 모든 센서의 이벤트·진단 수집, **신호등(SSR) 제어**, USB 시리얼 출력.
+- **마스터 역할** — USB로 PC 연결, LoRa 비콘 송신 + 모든 센서의 이벤트·진단 수집, USB 시리얼 출력.
 - **센서 역할** — 센서 1개 연결, 배터리 구동, 이벤트 HW 타임스탬프 → 마스터 시각 변환 → LoRa 송신 + 주기적 동기 진단 보고.
 
 > 보드는 **항상 18650 장착**. 마스터는 USB가 충전+PC데이터, 센서는 배터리 구동.
@@ -13,11 +13,11 @@ KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **
 ## 1. 시스템 개요 & 토폴로지
 
 - **마스터 1개 + 센서 최대 6개.** 전부 **하나의 채널**에서 **하나의 타임베이스**(마스터 TIMER1)를 공유.
-- 센서가 이벤트 HW 타임스탬프 → 마스터 시각 변환 → 송신. 마스터가 모든 센서를 수집 → USB 시리얼로 PC(센서 칩 ID 태그) + 신호등 제어.
-- **여러 경기(세트)를 동시에 운용**하더라도 무선은 마스터 1개·채널 1개로 통합한다. 어느 센서가 어느 경기의 어느 역할(출발/도착)인지의 **매핑은 서버/PC 측에서 설정**하고, 펌웨어는 node_id만 다룬다. 신호등은 마스터의 단일 SSR 출력 — 기본은 모든 경기가 **가상 신호등**(측정만)이고, 무선 설정에서 **지정한 1개 경기만 실제 SSR 램프를 구동**한다(표시용).
+- 센서가 이벤트 HW 타임스탬프 → 마스터 시각 변환 → 송신. 마스터가 모든 센서를 수집 → USB 시리얼로 PC(센서 칩 ID 태그).
+- **여러 경기(세트)를 동시에 운용**하더라도 무선은 마스터 1개·채널 1개로 통합한다. 어느 센서가 어느 경기의 어느 역할(출발/도착)인지의 **매핑은 서버/PC 측에서 설정**하고, 펌웨어는 node_id만 다룬다. 무선에는 물리 신호등이 없으며 경기별 시작·정지·초기화는 서버 세션 제어다.
 
 ```
-                 마스터 ─USB→ PC (모든 node 수집, 신호등 SSR 제어)
+                 마스터 ─USB→ PC (모든 node 수집)
                    │  단일 채널 921.3MHz, 단일 타임베이스
    ┌────────┬──────┼──────┬────────┬────────┐
  센서1    센서2   센서3   센서4   센서5   센서6
@@ -31,7 +31,6 @@ KR920 LoRa 기반 시간동기 이벤트 측정 + 신호등 제어 시스템. **
 | SX1262(SPI) | DIO1 엣지 HW 캡처 필요 → UART 투명전송 모듈 불가. KR920 +14dBm라 PA(-P) 불필요 |
 | nRF52840 | GPIOTE→PPI→TIMER HW 캡처가 결정론적 (C3 캡처 없음) |
 | 겸용 단일보드 | 한 BOM·한 어셈블리, 역할은 펌웨어. 재고·제작 단순 |
-| 신호등 = SSR | 램프(AC 220V)는 SSR이 끊음. 보드는 SSR 제어입력(저전류)만 |
 | 타이밍 예산 ~1ms | 센서 응답 1ms가 바닥 |
 
 ---
@@ -73,7 +72,7 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 
 **이벤트 timestamp의 skew 보정.** 이벤트 시각은 `master_t = cur_off + ev_tick + (ev_tick − sync_ref_tick)·skew/1e6`로 변환한다 — **클럭 자체는 안 건드리고 변환에만** 적용. `sync_ref_tick`은 cur_off를 계산한 비콘의 RxDone(앵커). offset-only 대비 비콘 간 drift(≈skew·Δt; 18ppm이면 ~18µs/s, 비콘 누락 시 누적)를 제거한다. EVENT는 `|skew| ≤ SKEW_CLAMP_PPM`, 샘플 ≥ `SKEW_MIN_SAMPLES`, 측정 span ≥ `SKEW_MIN_DL_TICKS`, 앵커 이후 외삽 ≤ `SKEW_MAX_EXTRAP_MS`, `ev_tick ≥ sync_ref_tick`을 모두 만족할 때만 생성한다. 진단용 raw skew는 STATUS에 i16 클램프로만 보고해 RC fallback(~10000ppm) 같은 고장을 숨기지 않는다.
 
-**동기 만료.** 마지막 유효 offset 앵커가 `SYNC_TTL_MS=7000`보다 오래되면 센서는 EVENT를 만들지 않는다. 5초 STATUS 주기를 포함하면서도 ±40ppm인 두 XO의 최악 상대편차(80ppm)로 인한 추가 오차를 0.56ms 이하로 제한한다. EVENT에는 캡처 당시 `sync_age_ms`와 동기·skew·HFXO·캡처 상태 비트를 싣고 마스터가 다시 검사한다.
+**동기 만료.** 마지막 유효 offset 앵커가 `SYNC_TTL_MS=7000`보다 오래되면 센서는 해당 캡처를 정상 EVENT로 확정하지 않고 유실 증거로 전달한다. 5초 STATUS 주기를 포함하면서도 ±40ppm인 두 XO의 최악 상대편차(80ppm)로 인한 추가 오차를 0.56ms 이하로 제한한다. EVENT에는 캡처 당시 `sync_age_ms`와 동기·skew·HFXO·캡처 상태 비트를 싣고 마스터가 다시 검사한다.
 
 ### 2.6 패킷 (리틀엔디언, 고정 길이; set_id 없음)
 모든 패킷은 §2.11의 AEAD로 봉인된다. 와이어 = **평문 보안헤더 + 암호화 페이로드 + MAC(16)**:
@@ -82,18 +81,18 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
   업링크(EVENT/STATUS)만 + node_id(송신자 ID, 4B)                           = 12B
   + 암호화 페이로드:
     BEACON   : seq, m_tx_prev(8)                                          (9B)
-    EVENT    : ev_seq(2), ev_master_t(8), master_boot_id(2), sync_age_ms(2), flags (15B)
-    ACK      : node_id(대상 센서 ID, 4B), ev_seq(2)                         (6B)
+    EVENT    : ev_seq(2), ev_master_t(8), master_boot_id(4), sync_age_ms(2), flags(1), capture_seq(4), end_seq(4), end_tick(8) (33B)
+    ACK      : node_id(4), ev_seq(2), sensor_boot_id(4), ev_master_t(8) (18B)
     STATUS   : seq, offset_tick(i64), skew_ppm(i16), rx_miss(2), beacon_gap(u8), batt_mv(2), temp_c10(i16), sync_age_ms(2), capture_overflow(2), event_drop(2), flags (23B)
   + MAC(16, Poly1305)
-→ 와이어 길이: BEACON 33, EVENT 43, ACK 30, STATUS 51 (B)
+→ 와이어 길이: BEACON 33, EVENT 61, ACK 42, STATUS 51 (B)
 ```
 - 옛 CRC16은 폐기 — MAC이 비트오류 + 위변조를 모두 검출(§2.11).
-- `vt` = 상위 니블 프로토콜 버전(현재 7) + 하위 니블 type. 별도 ver 바이트 없이 **모든 패킷이 버전 체크**를 받고, 불일치는 복호화 전에 거부.
+- `vt` = 상위 니블 프로토콜 버전(현재 9) + 하위 니블 type. 별도 ver 바이트 없이 **모든 패킷이 버전 체크**를 받고, 불일치는 복호화 전에 거부.
 - 보안헤더의 `node_id`는 **송신자의 32비트 ID**인데 **업링크(EVENT/STATUS)에만 실린다.** 다운링크(BEACON/ACK)는 항상 마스터(0)이므로 양측이 암묵적으로 0을 논스에 넣고 와이어에선 생략 → 비콘·ACK에서 4B 절약. ACK의 **대상 센서는 페이로드** node_id(32비트)로 지정.
 - `ctr`은 와이어 24비트(2²⁴ seal = 1Hz로 194일, 세션 내 도달 불가; 논스엔 상위 0으로 확장).
 - EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
-- EVENT의 master_boot_id = 동기된 마스터 세션 boot_id의 **하위 16비트**(추적 중인 비콘에서 학습). 마스터는 자기 현재 세션을 지칭하지 않는 이벤트를 거부 → 마스터 재부팅 후 이전 세션에서 캡처된 이벤트는 재전송 불가(§2.11). 16비트 절단은 replay 카운터·신선도 게이트 위에 얹는 심층방어라 1/65536 충돌이 단독으로 재전송을 허용하지 않는다.
+- EVENT의 master_boot_id는 전체 uint32 세션 ID다. 센서 boot ID는 인증된 업링크 헤더에서 가져오며 USB·서버·ACK까지 보존한다.
 - 비콘 주기·STATUS 주기는 양 역할이 **config.h 상수로 공유**하므로 더 이상 on-air로 싣지 않는다(옛 period_ms/status_period_ms 폐기).
 - STATUS는 진단 필드를 right-size: skew_ppm은 i16(±32767ppm, 실 XO 충분), beacon_gap은 u8(255 포화).
 - STATUS = 센서가 비콘 앵커 해시-오프셋으로 보내는 주기 진단(§2.8, §2.10).
@@ -109,7 +108,7 @@ AEAD + 압축 헤더(다운링크 8B / 업링크 12B + MAC 16B)로 가장 큰 �
 
 1. **비콘 = 동기 앵커.** 마스터가 매 1s 프레임에 best-effort LBT 후 송신(busy면 bounded wait, 끝까지 안 비면 송신 — 절대 skip 안 함). 동기는 실제 TxDone 틱 기준이라 LBT 지연·지터가 정확도에 영향 없음. 각 센서의 비콘 RxDone으로 마스터 시각을 추정.
 2. **STATUS = 비콘 앵커 + 고정 위상 + 재해시 오프셋(조정자 없는 충돌 내성).** 센서는 `STATUS_PERIOD_S(=5)` 비콘마다 한 번, **고정 위상의 비콘**(`prev_seq % 5 == 자기ID % 5` — 매 주기 같은 1/5 비콘)에 얹어, 그 **비콘 RxDone(`prev_l_rx`)으로부터의 오프셋** `offset = STATUS_GAP_GUARD_MS + hash(자기 ID, 주기) mod STATUS_GAP_SPAN_MS` (=200~700ms) 시점에 송신. 위상이 고정이라 **간격이 규칙적 ~5초 ±0.25초**(지터로 STALE 창에 근접하지 않음) — 옛 슬롯과 같은 규칙성이되 슬롯 번호 없이 칩 ID로 자가 배치. 비콘 간격(~1s)의 가드된 중앙에 놓이므로 **송신(=수신 불가) 중에 비콘이 도착하지 않는다** — SX1262는 반이중이라 송신 중엔 귀가 먹고, STATUS를 비콘 위에 얹으면 그 비콘을 놓친다(예전 절대-위상 방식의 회귀; 원래 슬롯 설계가 비콘-상대였던 이유). 오프셋만 **주기마다 재해시**라 같은 위상을 공유한 두 센서도 영구 충돌이 안 된다(자가회복). 송신 직전 **LBT/CAD**가 드문 동일-주기 근접 충돌을 지연으로 전환(busy면 그 주기 건너뜀 — STATUS는 유실 관대). 비콘(동기) 충돌은 앵커링으로 **구조적으로 0**, 센서-대-센서 STATUS 충돌만 드물게 남고 그건 유실 관대·자가회복.
-3. **EVENT = 비동기 LBT + 종단 간 인계 확인.** 센서 ISR 캡처 링 뒤의 pending 큐(8개)가 이벤트 시각을 보존하고, LBT+120ms 무선 ACK를 성공할 때까지 80ms+jitter로 재시도한다(최대 보존 2.5초). 마스터는 이벤트를 RAM 큐(16개)에 넣은 **뒤에만** 무선 ACK하고, USB `E`를 반복한다. 브리지는 서버가 insert/dedupe한 정확한 `(node, seq, tick)`을 응답한 뒤 `C`로 확인하며, 그때만 마스터가 큐에서 제거한다. 큐 포화·만료는 `event_drop`/`queue_overflow`에 sticky로 남고 경기 품질을 닫는다. 재전송은 ev_seq·ev_master_t 고정, ctr 갱신으로 다시 봉인한다(§2.11).
+3. **EVENT = 비동기 LBT + 종단 간 인계 확인.** 센서 ISR 캡처 링 뒤의 pending 큐(8개)가 이벤트 시각을 보존하고, LBT+120ms 무선 ACK를 성공할 때까지 80ms+jitter로 재시도한다(최대 보존 2.5초). 마스터는 이벤트를 RAM 큐(16개)에 넣은 **뒤에만** 무선 ACK하고, USB `E`를 반복한다. 브리지는 서버가 insert/dedupe한 정확한 `(node, seq, tick, master_boot_id, sensor_boot_id)`을 응답한 뒤 `C`로 확인하며, 그때만 마스터가 큐에서 제거한다. 센서의 큐 포화·만료는 유실 범위를 별도 EVENT로 ACK까지 보존한다. 마스터 큐 포화는 ACK를 보류해 센서 재시도를 유도하며 그 자체로 캡처 유실을 뜻하지 않는다. 누적 카운터는 진단용이다. 재전송은 ev_seq·ev_master_t 고정, ctr 갱신으로 다시 봉인한다(§2.11).
 
 ### 2.9 캘리브레이션 (T_air_ref)
 고정 길이 → airtime 결정론. T_air_ref = TxDone↔RxDone 고정지연. 근거리 1회 측정 후 config.h `T_AIR_REF_TICKS`에 저장(현재 0 — 분할 타이밍엔 영향 없음, §2.5).
@@ -123,7 +122,7 @@ AEAD + 압축 헤더(다운링크 8B / 업링크 12B + MAC 16B)로 가장 큰 �
 - **보안 관측(§2.11):** 조용히 버려지던 거부를 카운터로 노출 → 위조/키불일치/replay 탐지 가능. 글로벌 `auth_drop`(AEAD 검증 실패 — node 귀속 불가)는 node 0 자기보고 D 라인의 `sec_drop` 슬롯에, 센서별 `sec_drop`(인증후 replay/freshness/session-binding 거부)는 각 D 라인에, `provisioned`(키 보유 여부)는 모든 D 라인에 실린다. 카운터는 마스터가 USB로만 보고(공중 패킷·에어타임 불변). 서버는 ingest에서 증가분/미프로비저닝을 `wireless.security` 로그로 남긴다(`/api/logs`).
 
 ### 2.11 무선 보안 — AEAD (기밀성 + 인증 + 재전송 방어)
-raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과나 신호등(SSR) 제어를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
+raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
 
 - **원시(primitive):** XChaCha20-Poly1305 AEAD (Monocypher, vendored 단일 파일). 직접 조합한 암호 대신 검증된 1-함수 AEAD로 기밀성·무결성·송신자 인증을 한 번에.
 - **키 — 런타임 프로비저닝(컴파일 안 함):** 플릿 공유 PSK 256-bit를 **빌드에 박지 않는다**. 각 보드의 예약 flash 페이지(`0xF3000`, keystore.c, magic+CRC32 검증)에 저장되고 부팅 시 로드되며, **USB 시리얼 `K <64hex>` 명령(write-only)으로 보드마다 1회 주입**한다(§8). → CI는 **키 없는 앱**만 빌드하므로 public repo 아티팩트가 노출돼도 안전. 키는 운영자 로컬에만 존재(repo·CI·채팅 금지). 마스터+전 센서 동일 키 필수(다르면 전 패킷 MAC 실패). 키 회전 = 보드별 재주입. flash 페이지는 앱 영역 최상단(linker FLASH에서 제외)이라 앱 DFU에도 보존.
@@ -145,7 +144,6 @@ raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BE
 | MCU | **SuperMini nRF52840** (nice!nano 핀호환). 크리스털·DEC·DCC·3.3V LDO·충전기 모듈 내장 |
 | 라디오 | **Ra-01SH** (SX1262), u.FL 안테나. 클럭/매칭/RF스위치 내장 |
 | 전원 | **18650(보호셀) 상시** → VBAT. USB는 충전+PC데이터. 12V는 VBAT에서 부스트 |
-| 신호등 | 외부 **SSR(SRS1-B1203-1) ×2**(적/녹). 보드는 SSR 제어전압(12V, ~10mA)만 |
 | 라디오 노이즈 | 부스트는 VBAT에서 → 라디오는 LDO 뒤 3.3V(LDO가 부스트 리플 격리) → **FB 페라이트 불요** |
 
 ### SuperMini 패드 ↔ nRF52840 (물리 위치 — 레이아웃 참고)
@@ -188,8 +186,6 @@ inner 3: P1.01/02/03 · 배터리: B+/B− · **온보드 LED = P0.15**.
 | LoRa TXEN | P1.04 | 11 | 1 | RF 스위치 TX en |
 | LoRa RXEN | P0.24 | 8 | 0 | RF 스위치 RX en (P0.24 분압 0201 미실장) |
 | **SENSOR IN** | **P1.11** | 22 | **1** | **GPIOTE 캡처**(falling) — PORT 비트, 센서 역할 |
-| **신호등 RED** | P0.29 | 18 | 0 | GPIO out → SSR 적 |
-| **신호등 GREEN** | P0.02 | 19 | 0 | GPIO out → SSR 녹 |
 | 상태 LED | P0.15 | (온보드) | 0 | 온보드 LED (펌웨어 표시) |
 | 라디오 전원 | `3V3` | 16 | — | RA_VCC |
 | 배터리 | `BAT+` | 13/29 | — | VBAT |
@@ -205,11 +201,11 @@ inner 3: P1.01/02/03 · 배터리: B+/B− · **온보드 LED = P0.15**.
                       └─→ TPS61040 부스트 ─[L1/D1, R1·R2]─ +12V
 3V3 ─[100n+10µ]─→ Ra-01SH VCC        (LDO 뒤라 부스트 리플 격리, 페라이트 불요)
 3V3 ─→ 센서 풀업(R3)
-+12V ─→ 센서 커넥터 V+  /  신호등 드라이버 레일 (둘 다, 역할에 따라 사용)
++12V ─→ 센서 커넥터 V+
 USB ─→ (마스터) PC 데이터 + 충전 / (센서) 충전·플래시
 ```
-- 부스트 입력 = **VBAT** → 마스터도 배터리 상시(USB 충전). 부스트 출력 = 1.233×(1+1M/110k) = **12.4V** (센서 12–24V·SSR 4–30V 둘 다 범위 내).
-- 12V 부스트는 **공용**: 센서 역할 = 센서 급전, 마스터 역할 = SSR 제어전압. 동시 사용 안 함.
+- 부스트 입력 = **VBAT** → 마스터도 배터리 상시(USB 충전). 부스트 출력 = 1.233×(1+1M/110k) = **12.4V** (센서 12–24V 범위 내).
+- 12V 부스트는 센서 급전에 사용한다.
 
 ---
 
@@ -252,19 +248,6 @@ J_SENSOR(Molex 5569-04A1): 1 V+ ←+12V ; 2 NC ; 3 OUT ; 4 GND
 ```
 NPN OC: 평소 풀업 H, 검출 시 GND 싱크 → falling 캡처. R4+D2(BAT54S 클램프)가 2m 케이블 ESD/트랜지언트 보호. (옵토 불요 — 센서가 보드와 전원·GND 공유.)
 
-### 6.4 신호등 SSR 드라이버 — 마스터 역할 (색당 하이사이드 2-BJT)
-```
-[적] RED(P0.29) ─[R 10k]─ Q1n(MMBT3904) B ; Q1n E→GND ; Q1n C ─ Q1p(MMBT3906) B
-     +12V ─[R 10k]─ Q1p B ; Q1p E→+12V ; Q1p C ─[R 100Ω]─ RD
-[녹] GREEN(P0.02) → Q2n(MMBT3904) / Q2p(MMBT3906) → GN  (동일)
-
-J_LIGHT(Molex 5569-04A1): 1 GND ; 2 NC ; 3 RD ; 4 GN     ← 옛 J5와 동일
-  → 외부 SSR(SRS1-B1203-1) ×2: 적 control(+)=RD, 녹 control(+)=GN, 둘 다 control(−)=GND
-  → SSR이 AC 220V를 신호등 적/녹 램프로 스위칭
-```
-하이사이드 2-BJT(P-FET Vgs 한계 회피, BJT는 Basic 부품). GPIO HIGH → NPN on → PNP on → 12V를 RD/GN으로. 신호등은 적 XOR 녹.
-
----
 
 ## 7. BOM (단일 보드 — 전부 실장)
 
@@ -284,13 +267,9 @@ LCSC#·분류 = JLCPCB API(`preferredComponentFlag`). Basic·Preferred = 셋업 
 | R3/R4 | 4.7k / 330Ω | 0603 | Basic | 센서 풀업/직렬 |
 | D2 | BAT54S 클램프 | (C7420333) | **Pref** | 센서 입력 보호 |
 | C9 | 100pF | 0603 | Basic | 센서 핀 RF 바이패스 |
-| Q1n·Q2n | NPN | MMBT3904 ×2 | C20526 · **Basic** | 신호등 드라이버 |
-| Q1p·Q2p | PNP | MMBT3906 ×2 | **C7420354 · Preferred** | 신호등 하이사이드 (공급사 주의: 타 MMBT3906은 Extended) |
 | R(드라이버) | 10k ×4, 100Ω ×2 | 0603 | Basic | base/직렬 |
 | J_SENSOR | 센서 커넥터 | Molex 5569-04A1 | (Ext 예상) | [V+,NC,OUT,GND] 옛 J3/4 호환 |
-| J_LIGHT | 신호등 커넥터 | Molex 5569-04A1 | (Ext 예상) | [GND,NC,RD,GN] 옛 J5 호환 |
 | BT1 | 보호 18650 + 홀더 | — | off-board | 상시 장착 |
-| — | SSR ×2 | Autonics SRS1-B1203-1 | off-board | 4–30VDC 제어 / 90–240VAC 3A |
 | — | 센서 | Autonics BA2M-DDT | off-board | 12V NPN OC 1ms |
 | ANT | u.FL→SMA + 920MHz 휩 | — | off-board | ~2dBi |
 
@@ -302,16 +281,17 @@ LCSC#·분류 = JLCPCB API(`preferredComponentFlag`). Basic·Preferred = 셋업 
 
 RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_SETTLE_MS 안에 USB 호스트(PC)가 enumerate하면 마스터, 아니면 센서. VBUS 전원만으로는 판정하지 않는다(센서도 충전·플래시 때 USB에 꽂히므로 — 더미 충전기는 enumerate하지 않음). **역할은 부팅 시 1회만 판정한다 — 실시간 재확인/자동 리셋은 없다.** (호스트가 CDC 포트를 점유하지 않으면 USB가 suspend되며 `tud_mounted()`가 false로 떨어지는데, 거기에 자동 리셋을 걸었더니 마스터가 주기적으로 재부팅해 비콘 seq가 리셋되고 동기가 깨졌다 — 폐기. 역할 변경은 보드 리셋/전원 사이클로.) 구현은 §2 프로토콜 + 아래 사양대로 (실제 코드는 펌웨어 프로젝트에 — 이 문서엔 사양만).
 
-- **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE(타임스탬프 시점은 CPU 무관). SENSOR GPIOTE ISR이 CC 값을 16칸 링버퍼로 옮겨 송신/ACK 대기 중 후속 엣지가 앞 값을 덮지 못하게 하며, overflow는 sticky fault로 보고한다. GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13).
+- **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE(타임스탬프 시점은 CPU 무관). SENSOR GPIOTE ISR이 CC 값을 16칸 링버퍼로 옮겨 송신/ACK 대기 중 후속 엣지가 앞 값을 덮지 못하게 하며, overflow는 누적 진단과 해당 캡처 순번·시각의 유실 범위로 보고한다. GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13).
 - **클럭 fail-closed**: 부팅 후 실제 HFCLK source가 Xtal인지 확인하고, RC면 radio/TIMER1 계측을 시작하지 않는다. USB SOF 캡처는 마스터 HFXO의 상대 ppm 진단만 하며 타임베이스를 discipline하지 않는다(§2.9).
 - **라디오/SPI**: 할당 핀으로 커스텀 SPIClass. **`setRfSwitchPins(RXEN,TXEN)` 필수**. `begin(…, tcxoVoltage)`(내부 TCXO). 부팅 시 **EXT_POWER(P0.13) HIGH**.
 - **센서 역할**: 자기 칩 ID로 송신(별도 등록 단계 없음, §2.3) → 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(LBT+ACK+재전송) + 비콘 앵커 해시-오프셋으로 STATUS 주기 송신(§2.8). 모든 송신 전 LBT(§2.8).
 - **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 PSK는 컴파일하지 않고 flash keystore(`0xF3000`)에서 로드 — 시리얼 `K` 명령으로 보드별 주입. 부팅 시 `sec_init()`가 boot_id 시드 + 키 로드. 구현 `src/secure.{h,c}` + `src/keystore.{h,c}`.
 - **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
-  - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tmaster_tick> <flags> <rssi> <snr>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned> <sync_valid> <skew_valid> <XTAL|RC> <sync_age_ms> <capture_overflow> <event_drop> <queue_depth> <queue_overflow> <usb_ref_valid> <usb_ref_ppm>` · `L <RED|GREEN|OFF> <tick>` · `A <cmd> OK` · `X <reason>`.
-  - PC→마스터: `G` · `R` · `O` · `?ID` · `?STATUS` · `PING` · `K <64hex>` · `C <node8hex> <ev_seq> <tmaster_tick>`(서버 저장 확인; 정확한 큐 head만 제거).
+  - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tick> <flags> <rssi> <snr> <master_boot_id> <sensor_boot_id> <capture_seq> <end_seq> <end_tick> <sync_age_ms>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned> <sync_valid> <skew_valid> <XTAL|RC> <sync_age_ms> <capture_overflow> <event_drop> <queue_depth> <queue_overflow> <usb_ref_valid> <usb_ref_ppm> <sensor_boot_id> <master_boot_id>`.
+  - PC→마스터: `?ID`, `?STATUS`, `PING`, `K <64hex>`, `T <request_id>`(현재 tick·boot ID 응답), `C <0|node8hex> <ev_seq> <tick> <master_boot_id> <sensor_boot_id>`(서버 저장 확인; 정확한 큐 head만 제거).
   - **프로비저닝:** `K`/`?ID`/`PING`은 **센서도 수용**(역할·무선 상태 무관). 각 보드를 USB로 꽂아 `K <64hex>` 1회 전송 → keystore에 기록·즉시 활성. 키 read-back 명령 없음(시리얼 유출 불가).
+  - USB 노드 ID는 마스터 `0`, 센서 8자리 hex다. EVENT·진단·서버 ACK에서 같은 표기를 사용한다.
   - 64-bit tick은 십진수 그대로(절단 없음). 상태 = 온보드 LED(P0.15).
 - NFC핀(P0.09/0.10)을 GPIO로 쓰면 **NFC 비활성화(UICR)** 필요.
 - **펌웨어 업로드 (DFU)**: 부트로더 = nice!nano(Adafruit nRF52, S140 v6.1.1). 앱은 **0x26000**에 링크(S140 user-app base; `linker/nrf52840_app.ld`). 키스토어 페이지 `0xF3000`은 linker FLASH 길이에서 제외돼 앱 DFU에 보존(§2.11).
@@ -326,22 +306,22 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
 
 ## 9. 운용 (단일 마스터 / 멀티 경기)
 - 마스터 1개·채널 1개·타임베이스 1개. 모든 센서가 같은 마스터 tick으로 보고되므로 어떤 센서쌍의 분할도 정밀.
-- 마스터에 USB로 연결된 PC 1대가 **브리지**: 모든 node의 이벤트·진단을 수집해 서버로 push하고 물리 SSR을 구동. 단 **제어는 브리지 전용이 아니다** — 서버가 권위 상태(경기별 세션·기록)를 갖고, 경기별 **독점 lease**를 잡은 클라이언트면 비-브리지 PC도 그 경기를 제어한다(가상은 서버 arm, 물리는 다운링크로 브리지가 SSR 구동). 기록은 서버가 ingest 이벤트로 직접 계산·저장.
-- 여러 경기를 동시에 돌리되 어느 센서가 어느 경기·역할인지는 **서버 측 매핑 설정**으로 정한다(센서 칩 ID 기준). 신호등은 기본 가상이며 무선 설정에서 **지정한 1개 경기만 실제 SSR 램프를 구동**한다(표시용). 전 경기 측정 t0는 **출발 센서**이고 green은 경기 arm일 뿐이다. 센서 등록은 자동(§2.3) — 별도 프로비저닝/번호 배정 없이 칩 ID로 식별되고, 첫 패킷에서 마스터가 등록해 진단을 보내는 즉시 매핑 UI에 나타난다.
-- green/arm은 필수 역할 매핑, 브리지·마스터·센서 STATUS freshness, HFXO, sync/skew, beacon gap, 캡처/전달 큐 상태를 서버에서 모두 검사하며 하나라도 불명확하면 409로 거부한다. 진행 중 상태가 악화되어도 즉시 disarm/red 처리하고 감사 로그를 남긴다. 자동 중단은 경기·run·전체 원인을 `wireless:quality-fault` SSE로 모든 무선 화면에 전달해 토스트와 고정 경고로 표시한다. 마지막 경고는 SSE 재연결에도 복원되고, 품질 검사를 통과한 다음 GREEN에서만 서버 상태가 해제된다(화면의 확인 버튼은 로컬 표시만 닫음).
-- 서버 기록 엔진은 64-bit tick을 `BigInt`로 먼저 빼고 최종 구간에서 한 번만 ms 반올림한다. 경기별 넓은 물리 범위(가속 1~30초, 스키드패드 lap/결과 5~120초, 오토크로스·내구 5~300초)를 벗어난 구간은 raw 이벤트만 보존하고 결과 저장은 중단한다.
+- USB 브리지 한 대가 모든 센서 증거를 전달한다. 각 경기 lease 보유자는 어느 PC에서나 시작·정지·초기화한다. 팀·이벤트·필수 센서 역할은 START 시 런에 고정한다.
+- START는 최신 동기·HFXO·skew 및 건강한 checkpoint와 마스터 시각을 확인한다. 비콘 누락 횟수·누적 캡처 오류·큐 역압 카운터만으로 시작을 막거나 진행 런을 중단하지 않는다. 오래된 진단·미도착 캡처는 수집하면서 확인을 기다린다.
+- 센서 ISR은 손실된 엣지를 포함하여 `capture_seq`를 증가시킨다. 정상 캡처(flags=15), 유실 범위(16), checkpoint(32), 시각 불명(64)은 기존 EVENT ACK/재전송 큐를 공유한다. 캡처의 `end_seq/end_tick`은 자기 값이고 유실은 범위 끝이다. checkpoint는 앞선 증거가 ACK되고 ISR 큐도 비었을 때만 주기적으로 생성한다. 누적 진단은 손실 증거를 대체하지 않는다.
+- 서버는 모든 소스의 연속 순번과 checkpoint로 검증된 구간만 계산한다. ACK만 유실되어 정상 캡처와 유실 통보가 겹치면 실제 캡처를 우선한다. 확인 전에는 `pending`; 실제 유실·시계 오류·boot 변경은 계측을 해제하고 영향 구간을 `invalid`로 표시하되, 이전 런의 증거 검증은 유지한다. 오류 이전의 정상 구간은 증거 도착 순서와 서버 재시작에 관계없이 확정하며, 완주가 검증되면 런의 오류 표시를 해제한다. 명시적 정지·초기화·판정 확정 또는 새 START는 이전 런의 추가 검증을 종료한다. 검증 대기에는 시간 제한을 두지 않는다. 다음 정상 START로 복구한다. 센서 HFXO 오류 뒤에는 기존 offset/skew를 폐기하고 새 동기 샘플을 확보한 후 정상 캡처를 재개한다. 마스터 HFXO 오류 후 회복은 타임베이스 세션을 갱신해 센서 재동기를 유도하며, 이전 세션 큐의 서버 ACK는 계속 처리한다.
+- 공식 결과는 서버가 원시 tick 차이를 구한 후 한 번 ms 반올림한다. 경기별 최소·최대 시간 제한은 없다. 원시 차이가 양수이면 0ms로 반올림되어도 허용한다. 브라우저는 서버 결과·랩을 표시하며 독자적으로 공식 결과를 산출하지 않는다.
+- 원본 증거·런 상태·공식 기록·판정은 한 SQLite 트랜잭션으로 반영한다. 성공 후에만 ACK/SSE를 발행한다. 런 상태는 DB에서 읽고 해당 트랜잭션에서 바뀐 런만 저장한다.
+- v9는 v8과 호환되지 않는다. 서버·웹 브리지·마스터·전 센서 펌웨어를 함께 갱신한다. 업그레이드 때 검증 증거가 없는 진행 런은 닫고 기존 공식 기록은 보존한다.
 
 ---
 
 ## 10. 검증·확인 (Open items)
-- [ ] SuperMini LDO 전류 헤드룸 — 라디오(~60mA TX) + 부스트(센서 12V@15mA / SSR 12V@~10mA). 통상 ~300mA급, 실측 확인.
-- [ ] SSR(SRS1-B1203-1) 제어 입력전류 — 12V에서 실제 mA(LDO·부스트 버짓).
+- [ ] SuperMini LDO 전류 헤드룸 — 라디오(~60mA TX) + 부스트(센서 12V@15mA). 통상 ~300mA급, 실측 확인.
 - [ ] TXEN/RXEN 구동(setRfSwitchPins) — 실제 모듈 동작 확인.
 - [ ] 부스트 PFM 안정성 실측.
 - [ ] BA2M-DDT 12V 하한 / 온보드 LED(P0.15) 극성.
-- [ ] Molex 5569-04A1 JLC 카테고리 확인 (MMBT3904=C20526 Basic, MMBT3906=C7420354 Preferred 확인됨).
 - [ ] T_air_ref 실측(§2.9).
-- [ ] P0.02/P0.29가 SuperMini에서 자유 GPIO인지 실물 확인.
 - [ ] **배포 전 키 주입**(§2.11) — `openssl rand -hex 32`로 생성한 1개 키를 각 보드에 시리얼 `K <64hex>`로 주입(마스터+전 센서 동일). 키는 로컬 전용, repo/CI 금지. 미주입 보드는 무선 inert.
 
 ---
@@ -350,7 +330,11 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
 - 프로젝트: `device/wireless/hardware/fsk-traffic.kicad_sch`. 라이브러리 `device/wireless/hardware/lib/`:
   - 심볼 `SuperMini_NRF52840.kicad_sym` → **`SuperMini_nRF52840`(또는 `nice_nano`, 동일)** 배치.
   - 풋프린트 `SuperMini_NRF52840.kicad_mod`.
-- A1 결선은 **핀 이름(P0.xx)** 으로. Ra-01SH·SSR·Molex 커넥터 심볼/풋프린트는 별도 추가 필요.
+- A1 결선은 **핀 이름(P0.xx)** 으로. Ra-01SH·센서 커넥터 심볼/풋프린트는 별도 추가 필요.
 
 ## 12. 범위 밖
 PC측 수집/분석 SW, KiCad lib_id 실매핑, 기구/방수, 인증(KC), 세트 간 절대시각 정렬.
+
+## 정확도 검증 절차
+
+소프트웨어 테스트 통과는 실물 정확도 교정 결과가 아니다. 배포 전 외부 기준 타이머와 동일 펄스를 센서 입력에 공급해 START/FINISH와 다중 랩의 원시 tick 차이를 비교한다. 짧은 구간과 긴 구간, 비콘 직후와 직전, 온도 변화, 비콘 연속 누락, 최대 노드 수·전송 부하, USB/HTTP 지연·재연결 조건을 반복한다. 조건별 표본 수·평균 오차·최대 절대 오차·분산을 기록하고 offset, skew, HFXO/USB SOF 진단을 함께 보존한다. TxDone/RxDone 고정 편차는 외부 기준으로 측정한 뒤에만 보정한다. 유실·시계 전환·재부팅을 주입해 영향 구간의 보류/무효 판정과 다음 START 복구를 확인한다. 합격 오차 예산과 외부 기준기의 불확도를 별도로 명시하며 실측 없이 1ms 정확도를 보장하지 않는다.

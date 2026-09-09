@@ -1,8 +1,9 @@
+import { withWirelessClock } from "../../helpers/wireless-clock.mjs";
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
-import { healthyWirelessBatch } from "../../helpers/wireless-fixtures.mjs";
+import { healthyWirelessBatch, wirelessBrowserRequest } from "../../helpers/wireless-fixtures.mjs";
 
 // 서버 권위 기록 엔진(traffic/index.mjs)의 무선 ingest 계약 검증. 하드웨어 없이 ingest로 직접 구동
 // (wireless-accel.spec.mjs와 동일 계약: events:[{ node_id, master_tick, ev_seq, rssi, snr }]).
@@ -16,6 +17,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
   test("endurance multi-lap appends to a single record and broadcasts updates", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await ctx.newPage();
+    const wireless = wirelessBrowserRequest(page.request);
 
     const stamp = Date.now();
     const NODE = `e2e-end-${stamp}`;
@@ -30,28 +32,34 @@ test.describe("Wireless record engine (ingest contract)", () => {
         data: { event_type: "내구", role: "start" },
       });
       expect(mapRes.status()).toBe(200);
-      const health = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
+      const health = await wireless.post("/competition/api/v1/traffic/wireless/ingest", {
         data: healthyWirelessBatch([NODE]),
       });
       expect(health.status()).toBe(200);
 
-      // bind-at-arm: arm green 본문에 team·event_name을 실어 귀속을 고정(엔진이 run.bound 사용).
-      const armRes = await page.request.post("/competition/api/v1/traffic/wireless/arm", {
-        data: { event_type: "내구", action: "green", green_tick: ms(0), team: TEAM, event_name: EVENT },
-      });
+      // bind-at-arm: start 본문에 team·event_name을 실어 귀속을 고정(엔진이 run.bound 사용).
+      const stateResponse = await page.request.get("/competition/api/v1/traffic/wireless/state");
+      const cookies = (await page.request.storageState()).cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
+      const armRes = await withWirelessClock({
+        url: new URL("/competition/api/v1/traffic/events", stateResponse.url()).href,
+        cookie: cookies,
+        respond: data => wireless.post("/competition/api/v1/traffic/wireless/clock", { data }),
+      }, () => wireless.post("/competition/api/v1/traffic/wireless/arm", {
+        data: { event_type: "내구", action: "start", start_tick: ms(0), team: TEAM, event_name: EVENT },
+      }));
       expect(armRes.status()).toBe(200);
       expect((await armRes.json()).armed).toBe(true);
 
       // 첫 통과 = t0(출발선, 기록 없음). 이후 통과마다 1랩이 기록 1건에 누적된다.
-      // t0 @ 0ms, lap1 끝 @ 5000ms(랩=5000), lap2 끝 @ 12000ms(랩=7000).
+      // t0 @ 0ms, lap1 끝 @ 4999.6ms, lap2 끝 @ 11999.2ms.
       // ev_seq/master_tick으로 멱등. 디바운스(기본 300ms)보다 큰 간격이라 모두 수용.
-      const ingest = (seq, atMs) => page.request.post("/competition/api/v1/traffic/wireless/ingest", {
-        data: { events: [{ node_id: NODE, master_tick: ms(atMs), ev_seq: seq, rssi: -60, snr: 9 }] },
+      const ingest = (seq, atMs) => wireless.post("/competition/api/v1/traffic/wireless/ingest", {
+        data: { events: [{ master_boot_id: 1, node_id: NODE, master_tick: ms(atMs), ev_seq: seq, rssi: -60, snr: 9 }] },
       });
 
       let r = await ingest(1, 0);      // t0
       expect(r.status()).toBe(200);
-      r = await ingest(2, 5000);       // lap1 = 5000ms → INSERT
+      r = await ingest(2, 4999.6);       // lap1 rounds to 5000ms → INSERT
       expect(r.status()).toBe(200);
 
       // 첫 랩 후 기록 1건이 생긴다(type=내구). 폴링으로 엔진 동기 저장 대기.
@@ -74,7 +82,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
       await expect(page.getByTestId("record-quick-edit")).toBeVisible({ timeout: 8000 });
       await expect(page.getByText("저장된 기록 후처리", { exact: true })).toBeVisible();
 
-      r = await ingest(3, 12000);      // lap2 = 7000ms → 같은 행 UPDATE
+      r = await ingest(3, 11999.2);      // lap2 rounds to 7000ms; total rounds to 11999ms
       expect(r.status()).toBe(200);
 
       // 같은 단일 기록에 누적: 행 수는 그대로 1건, 총합·랩 목록이 갱신된다.
@@ -84,24 +92,25 @@ test.describe("Wireless record engine (ingest contract)", () => {
         const rows = (await res.json()).filter((row) => row.type === "내구");
         if (rows.length !== 1) return `rows=${rows.length}`;
         return rows[0].result;
-      }, { timeout: 8000 }).toBe(12000); // 5000 + 7000
+      }, { timeout: 8000 }).toBe(11999); // Round the raw total once, not the sum of rounded laps.
+
+      await expect(page.locator(".total-row")).toContainText("00:11.999");
 
       const afterLap2 = await (await page.request.get(`/competition/api/v1/traffic/records/${RECORD}`)).json();
       const enduranceRows = afterLap2.filter((row) => row.type === "내구");
       expect(enduranceRows.length).toBe(1);            // 멀티랩이 1건에 누적(다중 행 아님)
       expect(enduranceRows[0].detail).toBe("00:05.000 / 00:07.000");
 
-      // 이 화면은 과거 이벤트를 재생하지 않으므로 ingest(3)이 로컬 t0가 된다. 다음 통과로
-      // 로컬 타이밍 행도 만든 뒤, reset 응답만으로 캐시와 복구 편집기가 함께 지워지는지 본다.
-      r = await ingest(4, 20000);      // 로컬 lap1 = 8000ms, 서버 lap3 = 8000ms
+      // 서버가 확인한 전체 랩 목록을 복구하고 reset 응답만으로 초기화한다.
+      r = await ingest(4, 20000);      // lap3 rounds to 8001ms
       expect(r.status()).toBe(200);
-      await expect(page.locator(".lap-table tbody tr")).toHaveCount(1, { timeout: 5000 });
+      await expect(page.locator(".lap-table tbody tr")).toHaveCount(3, { timeout: 5000 });
 
       // 저장 이후 화면을 연 클라이언트가 복구한 저장 행과 이후 수신한 로컬 랩을 함께 초기화할 수 있다.
-      await page.request.post("/competition/api/v1/traffic/wireless/arm", {
-        data: { event_type: "내구", action: "off" },
+      await wireless.post("/competition/api/v1/traffic/wireless/arm", {
+        data: { event_type: "내구", action: "stop" },
       });
-      await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
+      await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
       await expect(page.getByTestId("record-quick-edit")).toBeVisible();
       await page.getByRole("button", { name: "제어", exact: true }).click();
       await expect(page.getByRole("button", { name: "제어 해제", exact: true })).toBeVisible({ timeout: 5000 });
@@ -124,11 +133,13 @@ test.describe("Wireless record engine (ingest contract)", () => {
           body: JSON.stringify({
             ...beforeResetSession,
             armed: false,
-            light_color: "off",
+            start_tick: null,
+            result: null,
+            lap_times: [],
+            finished: false,
             run_id: null,
             saved_record_name: null,
             saved_record_rowid: null,
-            reset_pending: false,
             updated_at: new Date().toISOString(),
           }),
         });
@@ -151,7 +162,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
       // admin으로 lease를 먼저 회수한 뒤 실제 reset을 수행한다.
       const releaseRes = await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("내구")}`);
       expect(releaseRes.status()).toBe(200);
-      const resetRes = await page.request.post("/competition/api/v1/traffic/wireless/arm", {
+      const resetRes = await wireless.post("/competition/api/v1/traffic/wireless/arm", {
         data: { event_type: "내구", action: "reset" },
       });
       expect(resetRes.status()).toBe(200);
@@ -161,7 +172,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
       expect(resetSession.saved_record_name).toBeNull();
       expect(resetSession.saved_record_rowid).toBeNull();
     } finally {
-      await page.request.post("/competition/api/v1/traffic/wireless/arm", { data: { event_type: "내구", action: "off" } }).catch(() => {});
+      await wireless.post("/competition/api/v1/traffic/wireless/arm", { data: { event_type: "내구", action: "stop" } }).catch(() => {});
       await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("내구")}`).catch(() => {});
       await page.request.delete(`/competition/api/v1/traffic/records/${RECORD}`).catch(() => {});
       await page.request.delete(`/competition/api/v1/traffic/wireless/mapping/${NODE}`).catch(() => {});
@@ -172,20 +183,21 @@ test.describe("Wireless record engine (ingest contract)", () => {
   test("ingest is idempotent for the same (node_id, ev_seq, master_tick)", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await ctx.newPage();
+    const wireless = wirelessBrowserRequest(page.request);
     const NODE = `e2e-idem-${Date.now()}`;
 
     try {
-      const event = { node_id: NODE, master_tick: ms(1000), ev_seq: 1, rssi: -55, snr: 8 };
+      const event = { master_boot_id: 1, node_id: NODE, master_tick: ms(1000), ev_seq: 1, rssi: -55, snr: 8 };
 
       // 첫 ingest: 저장됨.
-      const first = await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [event] } });
+      const first = await wireless.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [event] } });
       expect(first.status()).toBe(200);
       const firstBody = await first.json();
       expect(firstBody.stored).toBe(1);
       expect(firstBody.deduped).toBe(0);
 
       // 동일 (node_id, ev_seq, master_tick) 재전송: dedup → 저장 0, deduped 1.
-      const second = await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [event] } });
+      const second = await wireless.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [event] } });
       expect(second.status()).toBe(200);
       const secondBody = await second.json();
       expect(secondBody.stored).toBe(0);
@@ -199,18 +211,20 @@ test.describe("Wireless record engine (ingest contract)", () => {
   test("ingest rejects bad/missing fields per-event without failing the whole batch", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await ctx.newPage();
+    const wireless = wirelessBrowserRequest(page.request);
     const GOOD = `e2e-good-${Date.now()}`;
 
     try {
       // 한 배치에 정상 1건 + 잘못된 node_id 1건(공백은 validateNodeId 실패) + master_tick 누락 1건.
       const batch = {
+        checkpoints: false, // Exercise only the three explicit records, without synthetic proof packets.
         events: [
-          { node_id: GOOD, master_tick: ms(2000), ev_seq: 1, rssi: -60, snr: 9 }, // 정상
-          { node_id: "bad id with spaces", master_tick: ms(2000), ev_seq: 2 },     // node_id 거부
-          { node_id: `e2e-nomt-${Date.now()}`, ev_seq: 3 },                         // master_tick 누락 거부
+          { master_boot_id: 1, node_id: GOOD, master_tick: ms(2000), ev_seq: 1, rssi: -60, snr: 9 }, // 정상
+          { master_boot_id: 1, node_id: "bad id with spaces", master_tick: ms(2000), ev_seq: 2 },     // node_id 거부
+          { master_boot_id: 1, node_id: `e2e-nomt-${Date.now()}`, ev_seq: 3 },                         // master_tick 누락 거부
         ],
       };
-      const res = await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: batch });
+      const res = await wireless.post("/competition/api/v1/traffic/wireless/ingest", { data: batch });
       expect(res.status()).toBe(200); // 부분 거부여도 배치 전체는 실패하지 않음.
       const body = await res.json();
       expect(body.stored).toBe(1);    // 정상 1건은 저장
@@ -223,6 +237,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
   test("lease claims exclusively; a different controller gets 409; admin can force-release", async ({ browser }) => {
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     const page = await ctx.newPage();
+    const wireless = wirelessBrowserRequest(page.request);
     // "내구"를 사용: 다른 spec 파일은 "내구"를 건드리지 않고(같은 파일의 endurance 테스트는 직렬 실행),
     // lease 보유가 다른 종목(가속/스키드패드/오토크로스)의 병렬 select/arm을 409로 막지 않게 격리.
     // 각 lease는 X-Session-Id로 컨트롤러를 구분(wirelessActor: email#sid).
@@ -236,18 +251,18 @@ test.describe("Wireless record engine (ingest contract)", () => {
       await page.request.delete(PATH).catch(() => {});
 
       // 컨트롤러 A가 점유.
-      const claimA = await page.request.post(PATH, { headers: { "X-Session-Id": sidA } });
+      const claimA = await wireless.post(PATH, { headers: { "X-Session-Id": sidA } });
       expect(claimA.status()).toBe(200);
       const sessA = await claimA.json();
       expect(sessA.controller).toBeTruthy();
 
       // 다른 세션(B)이 점유 시도 → 409(다른 사용자가 제어 중).
-      const claimB = await page.request.post(PATH, { headers: { "X-Session-Id": sidB } });
+      const claimB = await wireless.post(PATH, { headers: { "X-Session-Id": sidB } });
       expect(claimB.status()).toBe(409);
       expect(await claimB.text()).toContain("제어 중");
 
       // 같은 세션(A) 재요청은 heartbeat → 200(점유 연장).
-      const heartbeatA = await page.request.post(PATH, { headers: { "X-Session-Id": sidA } });
+      const heartbeatA = await wireless.post(PATH, { headers: { "X-Session-Id": sidA } });
       expect(heartbeatA.status()).toBe(200);
 
       // admin 강제 해제(보유자 무관) → controller 비워짐.
@@ -257,7 +272,7 @@ test.describe("Wireless record engine (ingest contract)", () => {
       expect(released.controller).toBeNull();
 
       // 해제 후 B가 점유 가능 → 200.
-      const claimBAfter = await page.request.post(PATH, { headers: { "X-Session-Id": sidB } });
+      const claimBAfter = await wireless.post(PATH, { headers: { "X-Session-Id": sidB } });
       expect(claimBAfter.status()).toBe(200);
     } finally {
       await page.request.delete(PATH).catch(() => {});

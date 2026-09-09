@@ -12,9 +12,10 @@ import {
   masterTickDeltaMs,
   masterTickDistanceBelowMs,
   masterTickDurationsMs,
-  measurementWithinLimits,
 } from "./lib/event-timing.mjs";
+import { verifyCaptures, CAPTURE_CHECKPOINT, CAPTURE_LOSS, WIRELESS_PROTOCOL_VERSION } from "./lib/wireless-capture-integrity.mjs";
 import { currentCompetitionYear } from "../shared/competition-year.mjs";
+import { createWirelessClock } from "./lib/wireless-clock.mjs";
 import { access, principalHasPermission } from "../shared/access-control.js";
 
 const CONTROLLER_MAX_ROWS = 100000;
@@ -89,7 +90,7 @@ function createRecordTable(table = "record", { teamId = false } = {}) {
     cones INTEGER DEFAULT 0,
     oc INTEGER DEFAULT 0,
     scoreboard INTEGER DEFAULT 1${teamId ? ",\n    team_id INTEGER" : ""},
-    CHECK(result IS NULL OR (typeof(result) = 'integer' AND result > 0)),
+    CHECK(result IS NULL OR (typeof(result) = 'integer' AND result >= 0)),
     CHECK(status IS NOT NULL OR result IS NOT NULL)
   );`);
 }
@@ -103,7 +104,8 @@ if (!recordTable) {
   // status가 없거나 옛 invalidated/source result NOT NULL 제약이 남은 DB를 한 번에 최종
   // 스키마로 재구성한다. 예상 밖 결과값은 CHECK에 기대어 부분 게시하지 않고 transaction 전체를 중단한다.
   const resultColumn = info.find((column) => column.name === "result");
-  if (!columns.has("status") || columns.has("invalidated") || resultColumn?.notnull) {
+  if (!columns.has("status") || columns.has("invalidated") || resultColumn?.notnull
+    || /result > 0/.test(db.prepare("SELECT sql FROM sqlite_master WHERE name = 'record'").get().sql)) {
     db.transaction(() => {
       if (!columns.has("legacy_rowid")) {
         db.exec("ALTER TABLE record ADD COLUMN legacy_rowid INTEGER");
@@ -186,23 +188,26 @@ db.exec("DROP INDEX IF EXISTS idx_wevent_server_time");
     })();
   }
 }
-// 멱등 dedup 키. ev_seq는 2바이트(DESIGN §9)라 65536에서 wrap하고 노드 재부팅 시 0부터
-// 재시작하므로 (node_id, ev_seq)만으로는 재사용된 seq의 새 이벤트가 옛 행과 충돌해 조용히
-// 버려졌다. master_tick(ev_master_t)은 재전송에도 보존되고 이벤트마다 고유(DESIGN §9)이므로
-// 키에 포함하면 재전송 멱등성은 유지하면서 재부팅/wrap 충돌은 사라진다.
-// 기존 2-컬럼 인덱스가 있으면 마이그레이션(컬럼이 다를 때만 재생성).
+// v9 evidence is retained with each raw event, including reliable checkpoints
+// and loss ranges. Old rows remain readable but cannot certify a new run.
 {
-  const cols = db.prepare("SELECT name FROM pragma_index_info('idx_wevent_dedupe')").all().map((r) => r.name);
-  if (cols.length && !cols.includes("master_tick")) {
+  const columns = new Set(db.prepare("PRAGMA table_info(wireless_event)").all().map(c => c.name));
+  for (const [name, type] of Object.entries({master_boot_id: "INTEGER", sensor_boot_id: "INTEGER",
+    capture_seq: "INTEGER", end_seq: "INTEGER", end_tick: "TEXT", flags: "INTEGER", sync_age_ms: "INTEGER"})) {
+    if (!columns.has(name)) db.exec(`ALTER TABLE wireless_event ADD COLUMN ${name} ${type}`);
+  }
+  const index = db.prepare("SELECT name FROM pragma_index_info('idx_wevent_dedupe')").all();
+  if (!index.some(c => c.name === "sensor_boot_id")) {
     db.exec("DROP INDEX IF EXISTS idx_wevent_dedupe");
+    db.exec("CREATE UNIQUE INDEX idx_wevent_dedupe ON wireless_event(node_id, ev_seq, master_tick, master_boot_id, sensor_boot_id)");
   }
 }
-db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_wevent_dedupe ON wireless_event(node_id, ev_seq, master_tick)");
 
 function pruneWirelessEvents() {
   const row = db.prepare("SELECT MAX(id) AS m FROM wireless_event").get();
   if (row && row.m > RETAIN_EVENTS) {
-    const cutoff = row.m - RETAIN_EVENTS;
+    const active = db.prepare("SELECT MIN(json_extract(engine_state, '$.cursorId')) AS id FROM wireless_session WHERE engine_state IS NOT NULL AND json_extract(engine_state, '$.closed') = 0").get();
+    const cutoff = Math.min(row.m - RETAIN_EVENTS, active.id ?? Infinity);
     const removed = db.prepare("DELETE FROM wireless_event WHERE id <= ?").run(cutoff).changes;
     return { removed, cutoff };
   }
@@ -278,6 +283,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS wireless_session (
   if (!columns.has("saved_record_name")) db.exec("ALTER TABLE wireless_session ADD COLUMN saved_record_name TEXT");
   if (!columns.has("saved_record_rowid")) db.exec("ALTER TABLE wireless_session ADD COLUMN saved_record_rowid INTEGER");
   if (!columns.has("reset_pending")) db.exec("ALTER TABLE wireless_session ADD COLUMN reset_pending INTEGER NOT NULL DEFAULT 0");
+  if (!columns.has("engine_state")) db.exec("ALTER TABLE wireless_session ADD COLUMN engine_state TEXT");
   const insert = db.prepare("INSERT OR IGNORE INTO wireless_session (event_type) VALUES (?)");
   for (const type of EVENT_TYPES) insert.run(type);
   // 폐지 경기 세션행 정리 — idempotent.
@@ -344,9 +350,21 @@ app.get("/api/time", (req, res) => res.json({ now: Date.now() }));
 /* ============================================
    SSE (Server-Sent Events) 설정
    ============================================ */
-const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSse } = createSSEManager(200, { logger });
+const { broadcast: broadcastSSEEvent, handler: sseHandler, close: closeSseStream } = createSSEManager(200, { logger });
+const wirelessClock = createWirelessClock({ send: (command) => broadcastEvent("wireless:command", command) });
+const pendingArmRequests = new Map();
+const readWirelessClock = options.readWirelessClock || (() => wirelessClock.read());
+function closeSse() {
+  wirelessClock.close();
+  closeSseStream();
+}
 
+let timingContext = null;
 function broadcastEvent(event, data) {
+  if (timingContext) {
+    timingContext.notifications.push([event, structuredClone(data)]);
+    return;
+  }
   broadcastSSEEvent(event, data);
   options.onEvent?.(event, data);
 }
@@ -452,18 +470,18 @@ function getRecordVisibility() {
 /* ============================================
    무선 계측: 실시간 상태(메모리) + 헬퍼
    ============================================ */
-// node별 최신 진단(실시간, 미영속). _provWarned는 중복 보안 경고 억제용 내부 필드.
+// Latest diagnostics; active runs checkpoint their relevant nodes for recovery.
+// _provWarned suppresses duplicate provisioning warnings.
 const liveTelemetry = new Map();
 // 경기 중 자동 중단 사유. 프로세스 생존 중 SSE 재연결/화면 이동으로 경고가
-// 사라지지 않게 init/state에도 포함하고, 품질을 통과한 다음 GREEN에서만 해제한다.
-const liveQualityFaults = new Map();
+// 사라지지 않게 init/state에도 포함하고, 품질을 통과한 다음 START에서만 해제한다.
 const liveAttempts = new Map();
 let bridgeOnline = false;
 let lastBridgeSeen = 0;
 let lastBridgeSeenIso = null;
 
 function getLightState() {
-  return db.prepare("SELECT owner_event, owner_actor, light_color, green_tick, bridge_online, debounce_ms, updated_at FROM wireless_light WHERE id = 1").get();
+  return db.prepare("SELECT bridge_online, debounce_ms, updated_at FROM wireless_light WHERE id = 1").get();
 }
 function getMapping() {
   return db.prepare("SELECT node_id, event_type, role, label, enabled, updated_at FROM wireless_mapping ORDER BY event_type, role").all();
@@ -480,7 +498,7 @@ function getBridgeState() {
   return { online: bridgeOnline, last_seen: lastBridgeSeenIso };
 }
 function getLiveQualityFaults() {
-  return [...liveQualityFaults.values()];
+  return getSessions().map(session => getRun(session.event_type)?.fault).filter(Boolean);
 }
 
 function liveAttemptPayload(attempt, now = Date.now()) {
@@ -508,13 +526,15 @@ function publishWirelessQualityFault(eventType, runId, reasons, kind = "quality"
     occurred_at: new Date().toISOString(),
     reasons: Array.isArray(reasons) ? reasons : [],
   };
-  liveQualityFaults.set(eventType, fault);
+  const run = getRun(eventType);
+  if (run) run.fault = fault;
   broadcastEvent("wireless:quality-fault", fault);
   return fault;
 }
 
 function clearWirelessQualityFault(eventType) {
-  if (!liveQualityFaults.delete(eventType)) return;
+  const run = getRun(eventType);
+  if (run) delete run.fault;
   broadcastEvent("wireless:quality-fault", { event_type: eventType, cleared: true });
 }
 
@@ -526,20 +546,18 @@ function telemetryAgeMs(telemetry, now = Date.now()) {
 function wirelessQuality(eventType) {
   const reasons = [];
   const now = Date.now();
-  if (!bridgeOnline || now - lastBridgeSeen > WIRELESS_STATUS_MAX_AGE_MS) {
+  if (!timingContext?.bridge && (!bridgeOnline || now - lastBridgeSeen > WIRELESS_STATUS_MAX_AGE_MS)) {
     reasons.push({ node_id: "0", reason: "마스터 브리지가 연결되어 있지 않습니다." });
   }
 
-  const master = liveTelemetry.get("0");
+  const master = timingContext?.telemetry.get("0") || liveTelemetry.get("0");
   if (!master || telemetryAgeMs(master, now) > WIRELESS_STATUS_MAX_AGE_MS) {
     reasons.push({ node_id: "0", reason: "마스터 상태 보고가 없거나 오래되었습니다." });
   } else {
     if (master.link_state !== "online") reasons.push({ node_id: "0", reason: "마스터 계측기가 정상 상태가 아닙니다." });
     if (master.clock_source !== "xtal") reasons.push({ node_id: "0", reason: "마스터 HFXO가 확인되지 않았습니다." });
     if (master.provisioned !== 1) reasons.push({ node_id: "0", reason: "마스터 무선 키가 준비되지 않았습니다." });
-    if (!Number.isFinite(master.queue_overflow) || master.queue_overflow !== 0) {
-      reasons.push({ node_id: "0", reason: "마스터 이벤트 큐 오류가 있습니다." });
-    }
+
   }
 
   const mappings = getMapping().filter((row) => row.enabled !== 0 && row.event_type === eventType);
@@ -551,7 +569,7 @@ function wirelessQuality(eventType) {
   }
 
   for (const mapping of mappings) {
-    const telemetry = liveTelemetry.get(String(mapping.node_id));
+    const telemetry = timingContext?.telemetry.get(String(mapping.node_id)) || liveTelemetry.get(String(mapping.node_id));
     const node = String(mapping.node_id);
     if (!telemetry || telemetryAgeMs(telemetry, now) > WIRELESS_STATUS_MAX_AGE_MS) {
       reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 상태 보고가 없거나 오래되었습니다.` });
@@ -560,23 +578,14 @@ function wirelessQuality(eventType) {
     if (telemetry.link_state !== "online") reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 링크가 정상이 아닙니다.` });
     if (telemetry.provisioned !== 1) reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 무선 키가 준비되지 않았습니다.` });
     if (telemetry.clock_source !== "xtal") reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 HFXO가 확인되지 않았습니다.` });
-    const effectiveSyncAge = Number.isFinite(telemetry.sync_age_ms)
-      ? telemetry.sync_age_ms + telemetryAgeMs(telemetry, now)
-      : Infinity;
-    if (telemetry.sync_valid !== 1 || effectiveSyncAge > WIRELESS_SYNC_MAX_AGE_MS) {
+    if (telemetry.sync_valid !== 1 || !Number.isFinite(telemetry.sync_age_ms) || telemetry.sync_age_ms > WIRELESS_SYNC_MAX_AGE_MS) {
       reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 동기가 유효하지 않습니다.` });
     }
     if (telemetry.skew_valid !== 1 || !Number.isFinite(telemetry.skew_ppm)
       || Math.abs(telemetry.skew_ppm) > WIRELESS_MAX_SKEW_PPM) {
       reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 skew가 유효하지 않습니다.` });
     }
-    if (!Number.isFinite(telemetry.beacon_gap) || telemetry.beacon_gap !== 0) {
-      reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 비콘 누락이 진행 중입니다.` });
-    }
-    if (!Number.isFinite(telemetry.capture_overflow) || telemetry.capture_overflow !== 0
-      || !Number.isFinite(telemetry.event_drop) || telemetry.event_drop !== 0) {
-      reasons.push({ node_id: node, role: mapping.role, reason: `${node} 센서 캡처 또는 전달 오류가 있습니다.` });
-    }
+
   }
   return { ok: reasons.length === 0, reasons, mappings };
 }
@@ -597,32 +606,14 @@ function rejectWirelessQuality(req, res, action, eventType) {
 }
 
 function enforceArmedWirelessQuality(req) {
+  // Missing diagnostics are uncertainty, not evidence that a capture was lost.
   for (const session of getSessions()) {
     if (!session.armed) continue;
-    const quality = wirelessQuality(session.event_type);
-    if (quality.ok) continue;
-    const result = dbRun(() => {
-      db.prepare(`
-        UPDATE wireless_session
-        SET armed = 0, light_color = 'red', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE event_type = ? AND armed = 1
-      `).run(session.event_type);
-      return getSession(session.event_type);
-    });
-    logger.warn(req, "wireless.quality_fault", {
-      error: quality.reasons[0]?.reason || "계측 품질이 유효하지 않습니다.",
-      event_type: session.event_type,
-      run_id: session.run_id ?? null,
-      quality_reasons: quality.reasons,
-    }, session.event_type);
-    if (!result.success) continue;
-    const run = engineRun.get(session.event_type);
-    if (run) run.saved = true;
-    broadcastEvent("wireless:session", result.result);
-    publishWirelessQualityFault(session.event_type, session.run_id, quality.reasons);
-    const light = getLightState();
-    if (light.owner_event === session.event_type && bridgeOnline) {
-      broadcastEvent("wireless:command", { event_type: session.event_type, action: "off", reason: "quality_fault" });
+    const run = getRun(session.event_type);
+    if (!run || run.closed || wirelessQuality(session.event_type).ok) continue;
+    if (run.verification !== "pending") {
+      run.verification = "pending";
+      broadcastEvent("wireless:session", getSession(session.event_type));
     }
   }
 }
@@ -632,22 +623,26 @@ const LEASE_TTL_MS = 30000; // heartbeat로 갱신. 제어 탭이 죽으면 이 
 function getSessions() {
   const now = Date.now();
   return db
-    .prepare("SELECT event_type, armed, light_color, green_tick, armed_at, run_id, saved_record_name, saved_record_rowid, reset_pending, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
+    .prepare("SELECT event_type, armed, armed_at, run_id, saved_record_name, saved_record_rowid, team_json, event_name, controller, lease_expires_at, updated_at FROM wireless_session ORDER BY event_type")
     .all()
     .map((r) => {
       const expired = r.lease_expires_at && Date.parse(r.lease_expires_at) <= now;
       let team = null;
       if (r.team_json) { try { team = JSON.parse(r.team_json); } catch { team = null; } }
+      const run = getRun(r.event_type);
       return {
+        verification: run?.verification ?? null,
+        finished: run?.closed ?? false,
+        result: run?.result ?? null,
+        lap_times: (run?.lapTicks || []).map(value => masterTickDurationsMs([value])),
         event_type: r.event_type,
         armed: !!r.armed,
-        light_color: r.light_color,
-        green_tick: r.green_tick,
+        start_tick: run?.boundaryTick ?? null,
+        master_boot_id: run?.masterBootId ?? null,
         armed_at: r.armed_at,
         run_id: r.run_id,
         saved_record_name: r.saved_record_name,
         saved_record_rowid: r.saved_record_rowid,
-        reset_pending: !!r.reset_pending,
         team,
         event_name: r.event_name,
         controller: expired ? null : r.controller,
@@ -733,9 +728,8 @@ function runMutationPreflight(req, res, {
 
 /* ── 서버 권위 기록 엔진 ──────────────────────────────────────────────
  * ingest로 들어온 타이밍 이벤트를 매핑·세션으로 라우팅해 서버가 직접 기록을 계산·저장한다.
- * 클라(StartFinishView/SkidpadView)의 onSensor 로직과 동일 의미: start/finish(accel·오토크로스),
- * skidpad lap2+lap4 합산. green=arm이라 t0는 출발 센서. 디바운스는 클라와 같은 tick 기준.
- * 세션에 team·event_name(선택 공유)이 있을 때만 persist — 없으면 표시만(클라가 라이브 계산).
+ * 가속·오토크로스는 출발→도착, 스키드패드는 lap2+lap4. 원시 tick 기준으로 검증한다.
+ * 팀·이벤트가 선택되지 않은 테스트 계측도 같은 서버 결과를 표시하되 기록 행은 저장하지 않는다.
  */
 function clockStr(ms) {
   if (ms < 0) ms = 0;
@@ -744,29 +738,81 @@ function clockStr(ms) {
   const ms3 = String(ms % 1000).padStart(3, "0");
   return `${m}:${s}.${ms3}`;
 }
-// 경기별 런 상태(메모리). arm(green)에서 리셋. 서버 재기동 중 진행 런은 유실(드문 엣지) — 멱등
-// ingest라 재전송돼도 dedupe되어 중복 저장 없음.
-const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, lastTick, lapCount, lap2, bound }
-// bound = arm 시점에 고정된 귀속 스냅샷 {team, event_name}|null. 가상 경기는 arm 본문으로
-// atomic 바인딩되어 arm 후 세션 선택이 바뀌어도 기록은 arm 시점 팀에 귀속된다(bind-at-arm).
-// null(물리 경기·서버 재기동 후 lazy 리셋)이면 저장 시 live 세션으로 폴백.
-function resetEngineRun(eventType, bound = null, runId = null) {
-  // laps/recordName/recordRowid: 내구는 랩을 기록 1건에 이어붙이므로 누적 랩과 그 기록 행을 추적.
-  engineRun.set(eventType, {
-    runId,
-    debounce: {},
-    startTick: null,
-    saved: false,
-    lastTick: null,
-    lapCount: 0,
-    lap2: null,
-    bound,
-    lapTicks: [],
-    laps: [],
-    recordName: null,
-    recordRowid: null,
+// SQLite owns run state. A request edits only its local drafts; failed writes
+// discard them without restoring caches or attempting another database write.
+function encodeRun(run) {
+  return JSON.stringify(run, (_key, value) => typeof value === "bigint" ? String(value) : value);
+}
+function getRun(eventType) {
+  if (timingContext?.runs.has(eventType)) return timingContext.runs.get(eventType);
+  const row = db.prepare("SELECT run_id, engine_state FROM wireless_session WHERE event_type = ?").get(eventType);
+  let run = row?.engine_state ? JSON.parse(row.engine_state) : null;
+  if (run?.runId !== row?.run_id) run = null;
+  if (run) {
+    run.lapTicks = (run.lapTicks || []).map(BigInt);
+  }
+  if (timingContext) timingContext.runs.set(eventType, run);
+  return run;
+}
+function setRun(eventType, run) {
+  if (!timingContext) throw new Error("Run changes require a timing transaction");
+  timingContext.runs.set(eventType, run);
+}
+function timingTransaction(work) {
+  if (timingContext) throw new Error("Nested timing transaction");
+  const context = { runs: new Map(), telemetry: new Map(), bridge: null, notifications: [] };
+  timingContext = context;
+  const result = dbRun(() => db.transaction(() => {
+    const value = work();
+    const update = db.prepare("UPDATE wireless_session SET engine_state = ? WHERE event_type = ? AND engine_state IS NOT ?");
+    for (const [eventType, run] of context.runs) {
+      const encoded = run ? encodeRun(run) : null;
+      update.run(encoded, eventType, encoded);
+    }
+    return value;
+  })());
+  timingContext = null;
+  if (result.success) {
+    for (const [node, state] of context.telemetry) liveTelemetry.set(node, state);
+    if (context.bridge) commitBridgeSeen(context.bridge);
+    for (const [event, data] of context.notifications) broadcastEvent(event, data);
+  }
+  return result;
+}
+function resetEngineRun(eventType, bound = null, runId = null, clock = null) {
+  const nodes = {};
+  let cursorId = getLastEventId();
+  if (clock) {
+    for (const mapping of getMapping().filter(row => row.event_type === eventType && row.enabled !== 0)) {
+      const checkpoints = db.prepare("SELECT * FROM wireless_event WHERE node_id = ? AND master_boot_id = ? AND (flags & ?) != 0 ORDER BY id DESC")
+        .all(mapping.node_id, clock.master_boot_id, CAPTURE_CHECKPOINT);
+      const checkpoint = checkpoints.find(row => BigInt(row.master_tick) <= BigInt(clock.master_tick));
+      const currentBoot = liveTelemetry.get(String(mapping.node_id))?.sensor_boot_id;
+      if (!checkpoint || (currentBoot != null && checkpoint.sensor_boot_id !== currentBoot) || (checkpoint.flags & 15) !== 15 || telemetryAgeMs({ last_seen: checkpoint.server_time }) > WIRELESS_STATUS_MAX_AGE_MS) {
+        const error = new Error(`${mapping.node_id} 센서의 최신 캡처 확인을 기다린 뒤 다시 시작하세요.`);
+        error.status = 409;
+        throw error;
+      }
+      nodes[mapping.node_id] = { boot: checkpoint.sensor_boot_id, seq: checkpoint.capture_seq, role: mapping.role };
+      cursorId = Math.min(cursorId, checkpoint.id);
+    }
+  }
+  setRun(eventType, {
+    version: WIRELESS_PROTOCOL_VERSION, runId, boundaryTick: clock?.master_tick ?? null,
+    masterBootId: clock?.master_boot_id ?? null, nodes, cursorId, bound,
+    closed: false, verification: "pending", lapTicks: [], result: null,
+    recordName: null, recordRowid: null,
   });
 }
+
+// An older in-flight run has no v9 source frontier. Preserve official records,
+// but do not join new captures onto unverifiable pre-upgrade state.
+const interruptedRuns = db.prepare("SELECT event_type, run_id FROM wireless_session WHERE armed = 1 AND (engine_state IS NULL OR json_extract(engine_state, '$.version') IS NOT ?)").all(WIRELESS_PROTOCOL_VERSION);
+if (interruptedRuns.length) {
+  db.prepare("UPDATE wireless_session SET armed = 0, engine_state = NULL WHERE armed = 1 AND (engine_state IS NULL OR json_extract(engine_state, '$.version') IS NOT ?)").run(WIRELESS_PROTOCOL_VERSION);
+  logger.warn(null, "wireless.run.recovery", { error: "기존 계측에 캡처 검증 정보가 없어 중단했습니다.", runs: interruptedRuns }, "wireless");
+}
+
 function currentRecordYear() {
   return currentCompetitionYear();
 }
@@ -811,263 +857,109 @@ const SYS_ACTOR = { email: "system", name: "system", role: "admin" };
 // 선택 정보(team·event_name) 자체가 없으면 = 테스트 모드 → 조용히 skip(경고 없음).
 // 선택은 됐는데 검증 실패(잘못된 팀/이름) → warn 로그(유선의 POST /api/records와 동일 검증).
 function engineSaveRecord(eventType, binding, result, detail, audit = null, status = null) {
-  const auditLog = (level, logDetail, target) => {
-    if (audit?.req) logger[level](audit.req, "wireless.record", logDetail, target);
-    else logger[level](null, "wireless.record", logDetail, target, SYS_ACTOR);
-  };
-  const t = binding?.team;
-  if (!binding?.event_name || !t) return false; // 미선택 = 테스트 모드(조용히)
-  const nv = validateRecordName(binding.event_name);
-  if (!nv.valid) {
-    auditLog("warn", { error: nv.error, event_name: binding.event_name }, "record");
-    return false;
-  }
-  // 유선 저장과 동일 검증 재사용 — 무선이라고 약식 검증하지 않는다.
-  const data = {
-    time: new Date().toISOString(), type: eventType, entry: t,
-    result: result ?? null, status, detail: detail ?? null,
-  };
-  const dv = validateRecordData(data);
-  if (!dv.valid) {
-    auditLog("warn", { error: dv.error, event_type: eventType }, nv.value);
-    return false;
-  }
-  const name = `FSK ${currentCompetitionYear()} ${nv.value}`;
-  const run = engineRun.get(eventType);
-  const r = dbRun(() => db.transaction(() => {
-    const record = insertRecordRow(name, data);
-    if (run?.runId) {
-      db.prepare(`
-        UPDATE wireless_session
-        SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE event_type = ? AND run_id = ?
-      `).run(name, record.rowid, eventType, run.runId);
-    }
-    return record;
-  })());
-  if (!r.success) {
-    auditLog("warn", { error: r.internalError || r.error, event_type: eventType }, name);
-    return false;
-  }
-  auditLog("log", { type: eventType, result: result ?? null, status, num: r.result.num }, name);
-  if (run?.runId) broadcastEvent("wireless:session", getSession(eventType));
-  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run?.runId ?? null });
-  return { name, record: r.result };
+  if (!binding?.event_name || !binding?.team) return false;
+  const nameCheck = validateRecordName(binding.event_name);
+  if (!nameCheck.valid) throw new Error(nameCheck.error);
+  const data = { time: new Date().toISOString(), type: eventType, entry: binding.team, result, status, detail };
+  const valid = validateRecordData(data, { allowRoundedZero: true });
+  if (!valid.valid) throw new Error(valid.error);
+  const name = `FSK ${currentCompetitionYear()} ${nameCheck.value}`;
+  const run = getRun(eventType);
+  const record = insertRecordRow(name, data);
+  run.recordName = name;
+  run.recordRowid = record.rowid;
+  db.prepare("UPDATE wireless_session SET saved_record_name = ?, saved_record_rowid = ? WHERE event_type = ? AND run_id = ?")
+    .run(name, record.rowid, eventType, run.runId);
+  logger.log(audit?.req ?? null, "wireless.record", { type: eventType, run_id: run.runId, after: record }, name, audit?.req ? undefined : SYS_ACTOR);
+  broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record, event_type: eventType, run_id: run.runId });
+  return { name, record };
 }
-// 내구: 랩을 기록 1건에 이어붙인다. run.laps 전체로 result(총합)·detail(랩 목록)을 매 랩 갱신 —
-// 첫 저장은 INSERT(rowid 보관), 이후는 같은 행 UPDATE. 귀속(team+event_name) 없으면 skip(테스트 모드).
 function enduranceUpsertRecord(eventType, binding, run) {
-  const t = binding?.team;
-  if (!binding?.event_name || !t) return; // 미선택 = 테스트 모드(표시만)
-  const nv = validateRecordName(binding.event_name);
-  if (!nv.valid) {
-    logger.warn(null, "wireless.record", { error: nv.error, event_name: binding.event_name }, "record", SYS_ACTOR);
-    return;
-  }
+  if (!binding?.event_name || !binding?.team || !run.lapTicks.length) return;
   const total = masterTickDurationsMs(run.lapTicks);
-  const detail = formatEnduranceDetail(run.laps);
+  const detail = formatEnduranceDetail(run.lapTicks.map(ticks => masterTickDurationsMs([ticks])));
+  const before = run.recordName && getRecordRow(run.recordName, run.recordRowid);
+  if (!before) { engineSaveRecord(eventType, binding, total, detail); return; }
+  if (before.result === total && before.detail === detail) return;
+  db.prepare("UPDATE record SET result = ?, detail = ? WHERE name = ? AND legacy_rowid = ?").run(total, detail, run.recordName, run.recordRowid);
+  const after = getRecordRow(run.recordName, run.recordRowid);
+  logger.log(null, "wireless.record", { event_type: eventType, run_id: run.runId, before, after }, run.recordName, SYS_ACTOR);
+  broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: after, event_type: eventType, run_id: run.runId });
+}
 
-  if (run.recordRowid == null) {
-    // 첫 랩: 유선 저장과 동일 검증 후 INSERT, rowid/테이블명 보관.
-    const name = `FSK ${currentCompetitionYear()} ${nv.value}`;
-    const data = { time: new Date().toISOString(), type: eventType, entry: t, result: total, detail };
-    const dv = validateRecordData(data);
-    if (!dv.valid) {
-      logger.warn(null, "wireless.record", { error: dv.error, event_type: eventType }, nv.value, SYS_ACTOR);
-      return;
+function invalidateRun(eventType, run, reasons, { awaitEvidence = false } = {}) {
+  // Disarming blocks a new interval; closing also prevents late proof recovery.
+  run.closed = !awaitEvidence;
+  run.verification = "invalid";
+  db.prepare("UPDATE wireless_session SET armed = 0 WHERE event_type = ? AND armed != 0").run(eventType);
+  if (!run.fault) {
+    publishWirelessQualityFault(eventType, run.runId, reasons);
+    logger.warn(null, "wireless.quality_fault", { error: reasons[0]?.reason, event_type: eventType, run_id: run.runId, reasons }, eventType, SYS_ACTOR);
+  }
+}
+function processRecordEngine(rows, onlyEventType = null) {
+  if (!rows.length) return;
+  for (const session of getSessions()) {
+    const et = session.event_type;
+    if (onlyEventType && et !== onlyEventType) continue;
+    const run = getRun(et);
+    if (!run) {
+      if (session.armed) throw new Error("진행 중인 계측의 영속 상태가 없습니다.");
+      continue;
     }
-    const r = dbRun(() => db.transaction(() => {
-      const record = insertRecordRow(name, data);
-      if (run.runId) {
-        db.prepare(`
-          UPDATE wireless_session
-          SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-          WHERE event_type = ? AND run_id = ?
-        `).run(name, record.rowid, eventType, run.runId);
-      }
-      return record;
-    })());
-    if (!r.success) {
-      logger.warn(null, "wireless.record", { error: r.internalError || r.error, event_type: eventType }, name, SYS_ACTOR);
-      return;
-    }
-    run.recordName = name;
-    run.recordRowid = r.result.rowid;
-    logger.log(null, "wireless.record", { type: eventType, result: total, num: r.result.num, laps: run.laps.length }, name, SYS_ACTOR);
-    if (run.runId) broadcastEvent("wireless:session", getSession(eventType));
-    broadcastEvent("records", { type: "add", name, recordFiles: getRecordFiles(), record: r.result, event_type: eventType, run_id: run.runId ?? null });
-  } else {
-    // 이후 랩: 같은 행 UPDATE(총합·랩 목록).
-    const r = dbRun(() => {
-      const before = getRecordRow(run.recordName, run.recordRowid);
-      if (!before) {
-        const error = new Error("내구 기록을 찾을 수 없습니다.");
-        error.status = 404;
-        throw error;
-      }
-      const update = db.prepare("UPDATE record SET result = ?, detail = ? WHERE name = ? AND legacy_rowid = ?")
-        .run(total, detail, run.recordName, run.recordRowid);
-      if (update.changes !== 1) throw new Error("내구 기록 갱신 대상이 변경되었습니다.");
-      return { before, after: getRecordRow(run.recordName, run.recordRowid) };
+    if (run.closed || !rows.some(row => run.nodes[row.node_id] || row.node_id === "0")) continue;
+    const evidence = db.prepare("SELECT * FROM wireless_event WHERE id > ? ORDER BY id").all(run.cursorId);
+    const verified = verifyCaptures(run, evidence);
+    const debounce = {};
+    const accepted = verified.events.filter(ev => {
+      const last = debounce[ev.node_id];
+      if (last != null && masterTickDistanceBelowMs(ev.master_tick, last, getDebounceMs())) return false;
+      debounce[ev.node_id] = ev.master_tick;
+      return true;
     });
-    if (!r.success) {
-      logger.warn(null, "wireless.record", {
-        error: r.internalError || r.error,
-        event_type: eventType,
-        run_id: run.runId ?? null,
-        rowid: run.recordRowid,
-      }, run.recordName, SYS_ACTOR);
-      return;
-    }
-    logger.log(null, "wireless.record", {
-      type: eventType,
-      run_id: run.runId ?? null,
-      rowid: run.recordRowid,
-      team_num: r.result.after.num,
-      lap_count: run.laps.length,
-      lap_detail: detail,
-      before: { result: r.result.before.result, detail: r.result.before.detail },
-      after: { result: r.result.after.result, detail: r.result.after.detail },
-    }, run.recordName, SYS_ACTOR);
-    broadcastEvent("records", { type: "update", name: run.recordName, field: "result", recordFiles: getRecordFiles(), record: r.result.after, event_type: eventType, run_id: run.runId ?? null });
-  }
-}
-
-function failWirelessMeasurement(eventType, run, durationMs, phase) {
-  if (run.saved) return;
-  const result = dbRun(() => {
-    db.prepare(`
-      UPDATE wireless_session
-      SET armed = 0, light_color = 'red', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-      WHERE event_type = ?
-    `).run(eventType);
-    return { session: getSession(eventType), light: getLightState() };
-  });
-  if (!result.success) {
-    logger.warn(null, "wireless.measurement_fault", {
-      event_type: eventType,
-      run_id: run.runId ?? null,
-      duration_ms: durationMs,
-      measurement_phase: phase,
-      phase: "database_mutation",
-      error: result.internalError || result.error,
-      reason: "측정 이상 처리 중 세션을 중단하지 못했습니다.",
-    }, eventType, SYS_ACTOR);
-    return;
-  }
-  // 세션이 실제로 red/disarm된 뒤에만 엔진 런을 닫는다. DB 실패 때 먼저
-  // saved를 세우면 UI는 green인데 이후 이벤트만 영구 무시하는 split-brain이 된다.
-  run.saved = true;
-  logger.warn(null, "wireless.measurement_fault", {
-    event_type: eventType,
-    run_id: run.runId ?? null,
-    duration_ms: durationMs,
-    phase,
-    error: "측정 구간이 허용된 물리 범위를 벗어났습니다.",
-  }, eventType, SYS_ACTOR);
-  broadcastEvent("wireless:session", result.result.session);
-  publishWirelessQualityFault(eventType, run.runId, [{
-    node_id: null,
-    reason: `측정 구간이 허용된 물리 범위를 벗어났습니다 (${durationMs} ms, ${phase}).`,
-  }], "measurement");
-  if (result.result.light.owner_event === eventType && bridgeOnline) {
-    broadcastEvent("wireless:command", { event_type: eventType, action: "off", reason: "measurement_fault" });
-  }
-}
-
-// 새로 삽입된 이벤트들을 라우팅해 기록 계산. (dedupe된 재전송은 inserted에 없으므로 재처리 안 됨.)
-function processRecordEngine(rows) {
-  if (!rows || !rows.length) return;
-  const maps = getMapping();
-  const windowMs = getDebounceMs();
-  // 세션을 한 번만 읽어 맵으로(이전: 이벤트×매핑마다 getSession() 전체 스캔 + JSON.parse → 핫패스 낭비).
-  const sessByType = new Map(getSessions().map((s) => [s.event_type, s]));
-  for (const ev of rows) {
-    const node = String(ev.node_id);
-    const tick = String(ev.master_tick);
-    for (const m of maps) {
-      if (m.node_id !== node || m.enabled === 0) continue;
-      const et = m.event_type;
-      const sess = sessByType.get(et);
-      if (!sess || !sess.armed) continue;
-      const sensor = m.role === "finish" ? 2 : 1;
-      if (!engineRun.has(et)) {
-        resetEngineRun(et, null, sess.run_id);
-        const recovered = sess.saved_record_name && sess.saved_record_rowid != null
-          ? getRecordRow(sess.saved_record_name, sess.saved_record_rowid)
-          : null;
-        if (recovered) {
-          // A restart cannot reconstruct all timing edges safely. Preserve the
-          // already-persisted raw attempt and require an explicit reset rather
-          // than reopening it or overwriting an endurance total.
-          const recoveredRun = engineRun.get(et);
-          recoveredRun.recordName = sess.saved_record_name;
-          recoveredRun.recordRowid = sess.saved_record_rowid;
-          recoveredRun.saved = true;
-        }
+    let result = null;
+    let detail = null;
+    let complete = false;
+    let invalidDuration = false;
+    const laps = [];
+    if (et === "내구" || et === "스키드패드") {
+      const crossings = accepted.filter(ev => ev.role === "start");
+      for (let i = 1; i < crossings.length; i++) {
+        const duration = masterTickDelta(crossings[i].master_tick, crossings[i - 1].master_tick);
+        if (duration <= 0n) { invalidDuration = true; break; }
+        laps.push(duration);
       }
-      const run = engineRun.get(et);
-      // 원시 tick 기준 디바운스: 절대시각을 각각 ms 반올림하지 않는다.
-      const lastAcc = run.debounce[sensor];
-      if (lastAcc != null && masterTickDistanceBelowMs(tick, lastAcc, windowMs)) continue;
-      run.debounce[sensor] = tick;
-
-      if (et === "스키드패드") {
-        if (sensor !== 1) continue;
-        if (run.lastTick == null) { run.lastTick = tick; continue; } // 첫 크로싱=출발선
-        const lapTicks = masterTickDelta(tick, run.lastTick);
-        const lap = masterTickDeltaMs(tick, run.lastTick);
-        run.lastTick = tick;
-        run.lapCount += 1;
-        if (lapTicks < 0n || !measurementWithinLimits(et, lap)) {
-          failWirelessMeasurement(et, run, lap, `lap${run.lapCount}`);
-          continue;
-        }
-        if (run.lapCount === 2) { run.lap2 = lapTicks; continue; }
-        if (run.lapCount === 4 && run.lap2 != null && !run.saved) {
-          const total = masterTickDurationsMs([run.lap2, lapTicks]);
-          const lap2Ms = masterTickDurationsMs([run.lap2]);
-          // 귀속은 arm 시점 스냅샷(run.bound) 우선, 없으면 live 세션 폴백(물리 경기 등).
-          if (!measurementWithinLimits(et, total)) {
-            failWirelessMeasurement(et, run, total, "lap2+lap4");
-          } else if (engineSaveRecord(et, run.bound || sess, total, `${clockStr(lap2Ms)} / ${clockStr(lap)}`)) {
-            run.saved = true;
-          }
-        }
-      } else if (et === "내구") {
-        // 단일 센서 멀티랩. 첫 통과=출발선(t0), 이후 통과마다 1랩을 기록 1건에 이어붙인다.
-        if (sensor !== 1) continue;
-        if (run.saved) continue; // 판정 또는 정상 기록으로 확정된 런은 랩을 더 이어붙이지 않는다.
-        if (run.lastTick == null) { run.lastTick = tick; continue; } // 첫 크로싱=출발선
-        const lapTicks = masterTickDelta(tick, run.lastTick);
-        const lap = masterTickDeltaMs(tick, run.lastTick);
-        run.lastTick = tick;
-        if (lapTicks < 0n || !measurementWithinLimits(et, lap)) {
-          failWirelessMeasurement(et, run, lap, `lap${run.lapCount + 1}`);
-          continue;
-        }
-        run.lapTicks.push(lapTicks);
-        run.laps.push(lap);
-        run.lapCount += 1;
-        // 귀속은 arm 시점 스냅샷(run.bound) 우선, 없으면 live 세션 폴백. 미선택이면 표시만(저장 skip).
-        enduranceUpsertRecord(et, run.bound || sess, run);
-      } else {
-        // accel·오토크로스: 출발(1) 래치 → 도착(2) 기록.
-        if (sensor === 1 && run.startTick == null) {
-          run.startTick = tick;
-        } else if (sensor === 2 && run.startTick != null && !run.saved) {
-          const resultTicks = masterTickDelta(tick, run.startTick);
-          const result = masterTickDeltaMs(tick, run.startTick);
-          // 음수/역순 가드: 도착이 출발보다 앞선 tick이면(재전송·재정렬) 저장하지 않는다.
-          // 귀속은 arm 시점 스냅샷(run.bound) 우선, 없으면 live 세션 폴백(물리 경기 등).
-          if (resultTicks < 0n || !measurementWithinLimits(et, result)) {
-            failWirelessMeasurement(et, run, result, "start-finish");
-          } else if (engineSaveRecord(et, run.bound || sess, result, null)) {
-            run.saved = true;
-          }
-        }
+      if (et === "내구" && laps.length) result = masterTickDurationsMs(laps);
+      if (et === "스키드패드" && laps.length >= 4) {
+        result = masterTickDurationsMs([laps[1], laps[3]]);
+        detail = `${clockStr(masterTickDurationsMs([laps[1]]))} / ${clockStr(masterTickDurationsMs([laps[3]]))}`;
+        complete = true;
+      }
+    } else {
+      const start = accepted.find(ev => ev.role === "start");
+      const finish = accepted.find(ev => ev.role === "finish");
+      if (start && finish) {
+        const duration = masterTickDelta(finish.master_tick, start.master_tick);
+        invalidDuration = duration <= 0n;
+        if (!invalidDuration) { result = masterTickDeltaMs(finish.master_tick, start.master_tick); complete = true; }
       }
     }
+    run.lapTicks = laps;
+    run.result = result;
+    run.verification = !complete && run.fault ? "invalid" : result == null ? "pending" : "verified";
+    if (result != null && !invalidDuration) {
+      if (et === "내구") enduranceUpsertRecord(et, run.bound, run);
+      else if (complete) engineSaveRecord(et, run.bound, result, detail);
+    }
+    if (complete) {
+      run.closed = true;
+      if (run.fault) clearWirelessQualityFault(et);
+    }
+    // A completed, verified interval before a later fault stays official.
+    if (!complete && (verified.fault || invalidDuration)) {
+      invalidateRun(et, run, [verified.fault || { node_id: null, reason: "출발·도착의 원시 시간차가 양수가 아닙니다." }], { awaitEvidence: !!verified.fault && !invalidDuration });
+    }
+    broadcastEvent("wireless:session", getSession(et));
   }
 }
 // 최신 무선 이벤트 id. 클라이언트가 (재)연결 시 백필 기준점으로 사용.
@@ -1107,6 +999,9 @@ function tickToText(v) {
     && BigInt(v) <= ((1n << 64n) - 1n)) return v;
   return undefined;
 }
+function validBootId(value) {
+  return Number.isInteger(value) && value >= 0 && value <= 0xffffffff;
+}
 const ALLOWED_ROLE = /^(start|finish|lane[1-9])$/;
 
 // 브리지 오프라인 감지(15s 무수신). 백그라운드라 logger는 actorOverride 사용.
@@ -1119,7 +1014,8 @@ function runBridgeWatch() {
       // 명시적 offline 신고(POST /bridge/offline)와 달리 워치독 감지는 브리지가 예기치 않게
       // 죽었다는 뜻 — 운영자가 레벨 필터로 찾아야 하므로 warn.
       logger.warn(null, "wireless.bridge", { online: false, watchdog: true, last_seen: lastBridgeSeenIso }, "bridge", SYS_ACTOR);
-      enforceArmedWirelessQuality(null);
+      const quality = timingTransaction(() => enforceArmedWirelessQuality(null));
+      if (!quality.success) throw new Error(quality.error);
     } catch (e) {
       logger.warn(null, "wireless.bridge", { error: e.message || String(e), online: false }, "bridge", SYS_ACTOR);
       // try 본문이 DB 작업이라 위 logger INSERT도 같이 실패했을 수 있다 — 콘솔 폴백 유지(정책 예외).
@@ -1273,7 +1169,7 @@ function tableExists(name) {
   return recordFileExists(name);
 }
 
-function validateRecordData(data) {
+function validateRecordData(data, { allowRoundedZero = false } = {}) {
   if (!data || typeof data !== "object") {
     return { valid: false, error: "올바르지 않은 기록 데이터입니다." };
   }
@@ -1294,7 +1190,7 @@ function validateRecordData(data) {
     return { valid: false, error: "판정은 DNS, DNF, DSQ 또는 비움이어야 합니다." };
   }
   const result = data.result == null ? null : data.result;
-  if (result !== null && (!Number.isInteger(result) || result <= 0)) {
+  if (result !== null && (!Number.isInteger(result) || result < 0 || (result === 0 && !allowRoundedZero))) {
     return { valid: false, error: "측정시간은 양의 정수(ms) 또는 비움이어야 합니다." };
   }
   if (status === null && result === null) {
@@ -1715,7 +1611,8 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
   });
   if (!preflight.ok) return;
 
-  const result = dbRun(() => {
+  const execute = field === "status" ? timingTransaction : dbRun;
+  const result = execute(() => {
     const row = db.prepare(`
       SELECT num, result, status, scoreboard, detail, cones, oc
       FROM record WHERE name = ? AND legacy_rowid = ?
@@ -1733,6 +1630,12 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
         throw err;
       }
       db.prepare("UPDATE record SET status = ? WHERE name = ? AND legacy_rowid = ?").run(value, name, rowid);
+      const sessions = db.prepare(`SELECT event_type, run_id FROM wireless_session
+        WHERE saved_record_name = ? AND saved_record_rowid = ?`).all(name, rowid);
+      for (const session of sessions) {
+        const run = getRun(session.event_type);
+        if (run?.runId === session.run_id) run.closed = true;
+      }
       return { num: row.num, result: row.result, status: value, scoreboard: row.scoreboard };
     } else if (field === "scoreboard") {
       const newStatus = row.scoreboard ? 0 : 1;
@@ -1776,29 +1679,6 @@ app.patch("/api/records/:name/:rowid", (req, res) => {
     updateAudit.after = { result: result.result.result, status: result.result.status };
   }
   logger.log(req, "record.update", updateAudit, name);
-
-  if (field === "status") {
-    // Quick edit uses the generic record PATCH route. If the row belongs to a
-    // live wireless run (notably a partial endurance record), finalize the
-    // server-side engine too so later sensor packets cannot mutate raw timing.
-    const sessionLookup = dbRun(() => db.prepare(`
-        SELECT event_type, run_id FROM wireless_session
-        WHERE saved_record_name = ? AND saved_record_rowid = ?
-      `).all(name, rowid));
-    if (!sessionLookup.success) {
-      logger.warn(req, "record.update", {
-        error: sessionLookup.internalError || sessionLookup.error,
-        rowid,
-        field,
-        phase: "wireless_engine_finalize",
-      }, name);
-    } else {
-      for (const session of sessionLookup.result) {
-        const run = engineRun.get(session.event_type);
-        if (run && run.runId === session.run_id) run.saved = true;
-      }
-    }
-  }
 
   // SSE 브로드캐스트 (업데이트된 전체 행 포함)
   try {
@@ -1895,12 +1775,6 @@ app.delete("/api/records/:name/:rowid", (req, res) => {
 
   logger.log(req, "record.row_delete", { rowid, before: result.result.before }, name);
   for (const { event_type: eventType, run_id: runId } of result.result.affectedSessions) {
-    const run = engineRun.get(eventType);
-    if (run && run.runId === runId && run.recordName === name && run.recordRowid === rowid) {
-      run.recordName = null;
-      run.recordRowid = null;
-      run.saved = false;
-    }
     broadcastEvent("wireless:session", getSession(eventType));
   }
   broadcastEvent("records", {
@@ -2072,6 +1946,26 @@ app.put("/api/event-modes/:type", (req, res) => {
 
 // POST /api/wireless/ingest - 브리지가 모든 센서의 타이밍 이벤트 + 진단을 push.
 // 성공은 로그하지 않음(텔레메트리 firehose); 실패·브리지 전환만 로그.
+app.post("/api/wireless/clock", (req, res) => {
+  const { request_id, master_boot_id } = req.body || {};
+  const master_tick = tickToText(req.body?.master_tick);
+  if (typeof request_id !== "string" || !/^[a-f0-9]{32}$/.test(request_id)
+    || master_tick == null || !validBootId(master_boot_id)) {
+    return rejectMutation(req, res, {
+      action: "wireless.clock", status: 400, message: "마스터 시각 응답이 올바르지 않습니다.",
+      target: "bridge", operation: "clock", context: { request_id, master_boot_id },
+    });
+  }
+  if (!wirelessClock.accept({ request_id, master_tick, master_boot_id })) {
+    return rejectMutation(req, res, {
+      action: "wireless.clock", status: 409, message: "만료되었거나 처리된 마스터 시각 응답입니다.",
+      target: "bridge", operation: "clock", context: { request_id, master_boot_id },
+    });
+  }
+  logger.log(req, "wireless.clock", { request_id, master_boot_id, master_tick }, "bridge");
+  res.json({ ok: true });
+});
+
 app.post("/api/wireless/ingest", (req, res) => {
   const body = req.body || {};
   const events = Array.isArray(body.events) ? body.events : [];
@@ -2087,7 +1981,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     });
   }
 
-  const result = dbRun(() => db.transaction(() => {
+  const result = timingTransaction(() => {
     const bridge = stageBridgeSeen();
     const inserted = [];
     const acknowledged = [];
@@ -2095,8 +1989,8 @@ app.post("/api/wireless/ingest", (req, res) => {
     let rejected = 0;
     const reasons = {}; // 사유별 카운트(로깅용)
     const reject = (why) => { rejected++; reasons[why] = (reasons[why] || 0) + 1; };
-    const ins = db.prepare("INSERT OR IGNORE INTO wireless_event (node_id, master_tick, ev_seq, rssi, snr, link_state) VALUES (?, ?, ?, ?, ?, ?)");
-    const sel = db.prepare("SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state FROM wireless_event WHERE id = ?");
+    const ins = db.prepare("INSERT OR IGNORE INTO wireless_event (node_id, master_tick, ev_seq, rssi, snr, link_state, master_boot_id, sensor_boot_id, capture_seq, end_seq, end_tick, flags, sync_age_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
+    const sel = db.prepare("SELECT * FROM wireless_event WHERE id = ?");
     // 불량 항목 하나가 배치 전체를 날리지 않도록 throw 대신 skip — 시리얼 라인 깨짐 등으로
     // 한 줄이 망가져도 같은 flush에 묶인 정상 이벤트는 저장·broadcast된다.
     for (const e of events) {
@@ -2106,14 +2000,23 @@ app.post("/api/wireless/ingest", (req, res) => {
       // 취급하므로 누락된 key를 저장하면 재전송 멱등성이 깨진다.
       if (tick === undefined || tick === null) { reject("master_tick"); continue; }
       if (!Number.isInteger(e.ev_seq) || e.ev_seq < 0 || e.ev_seq > 0xffff) { reject("ev_seq"); continue; }
+      if (!validBootId(e.master_boot_id)) { reject("master_boot_id"); continue; }
+      if (!validBootId(e.sensor_boot_id) || !validBootId(e.capture_seq) || !validBootId(e.end_seq)
+        || tickToText(e.end_tick) == null || !Number.isInteger(e.flags) || e.flags < 0 || e.flags > 127
+        || !Number.isInteger(e.sync_age_ms) || e.sync_age_ms < 0 || e.sync_age_ms > 65535
+        || ((e.end_seq - e.capture_seq) >>> 0) >= 0x80000000
+        || (!(e.flags & CAPTURE_LOSS) && (e.end_seq !== e.capture_seq || e.end_tick !== tick))
+        || ((e.flags & CAPTURE_LOSS) && (e.flags & CAPTURE_CHECKPOINT))) {
+        reject("capture_evidence"); continue;
+      }
       const evSeq = e.ev_seq;
       const rssi = typeof e.rssi === "number" ? e.rssi : null;
       const snr = typeof e.snr === "number" ? e.snr : null;
       const link = typeof e.link_state === "string" ? e.link_state : null;
-      const info = ins.run(String(e.node_id), tick, evSeq, rssi, snr, link);
+      const info = ins.run(String(e.node_id), tick, evSeq, rssi, snr, link, e.master_boot_id, e.sensor_boot_id, e.capture_seq, e.end_seq, e.end_tick, e.flags, e.sync_age_ms);
       if (info.changes > 0) { inserted.push(sel.get(Number(info.lastInsertRowid))); }
-      else { deduped++; }
-      acknowledged.push({ node_id: String(e.node_id), master_tick: tick, ev_seq: evSeq });
+      else if (!(e.flags & CAPTURE_CHECKPOINT)) { deduped++; }
+      acknowledged.push({ node_id: String(e.node_id), master_tick: tick, ev_seq: evSeq, master_boot_id: e.master_boot_id, sensor_boot_id: e.sensor_boot_id });
     }
 
     const now = Date.now();
@@ -2172,6 +2075,8 @@ app.post("/api/wireless/ingest", (req, res) => {
       if (provisioned === 0 && !provWarned) { secLog.push({ node, unprovisioned: true }); provWarned = true; }
       else if (provisioned === 1) { provWarned = false; }
       const health = {
+        sensor_boot_id: validBootId(t.sensor_boot_id) ? t.sensor_boot_id : null,
+        master_boot_id: validBootId(t.master_boot_id) ? t.master_boot_id : null,
         sync_valid: syncValid,
         skew_valid: skewValid,
         clock_source: clockSource,
@@ -2187,6 +2092,24 @@ app.post("/api/wireless/ingest", (req, res) => {
       stagedTelemetry.set(node, entry);
       tOut.push({ node_id: node, rssi, snr, offset_us: offset, skew_ppm: skew, latency_ms: lat, rx_miss: rxMiss, beacon_gap: gap, temp_c10: tempC10, batt_mv: battMv, sec_drop: secDrop, provisioned, ...health, link_state: link, last_seen: lastSeenIso });
     }
+    timingContext.bridge = bridge;
+    timingContext.telemetry = stagedTelemetry;
+    if (tOut.length) broadcastEvent("wireless:telemetry", { telemetry: tOut });
+    enforceArmedWirelessQuality(req);
+    if (inserted.length) {
+      broadcastEvent("wireless:event", { events: inserted });
+      processRecordEngine(inserted);
+    }
+    const masterBoot = stagedTelemetry.get("0")?.master_boot_id;
+    if (masterBoot != null) {
+      for (const session of getSessions()) {
+        const run = getRun(session.event_type);
+        if (session.armed && run && !run.closed && run.masterBootId !== masterBoot) {
+          invalidateRun(session.event_type, run, [{ node_id: "0", reason: "마스터가 계측 중 재부팅되었습니다." }], { awaitEvidence: true });
+          broadcastEvent("wireless:session", getSession(session.event_type));
+        }
+      }
+    }
     return {
       bridge,
       inserted,
@@ -2198,7 +2121,7 @@ app.post("/api/wireless/ingest", (req, res) => {
       telemetryState: [...stagedTelemetry],
       security: secLog,
     };
-  })());
+  });
 
   if (!result.success) {
     const error = result.internalError || result.error;
@@ -2213,8 +2136,7 @@ app.post("/api/wireless/ingest", (req, res) => {
     return res.status(result.status).send(result.error);
   }
 
-  const transitioned = commitBridgeSeen(result.result.bridge);
-  for (const [node, state] of result.result.telemetryState) liveTelemetry.set(node, state);
+  const transitioned = result.result.bridge.transitioned;
   if (transitioned) {
     logger.log(req, "wireless.bridge", { online: true, last_seen: lastBridgeSeenIso }, "bridge");
   }
@@ -2244,114 +2166,12 @@ app.post("/api/wireless/ingest", (req, res) => {
                       : { node: s.node, sec_drop: s.sec_drop, delta: s.delta },
       `node ${s.node}`);
   }
-  if (result.result.telemetry.length > 0) {
-    broadcastEvent("wireless:telemetry", { telemetry: result.result.telemetry });
-  }
-  // 텔레메트리가 없는 2초 heartbeat에서도 age를 다시 계산한다. 같은 배치에
-  // 상태 악화와 이벤트가 있으면 세션을 먼저 닫아 고장 이벤트가 엔진에 못 들어간다.
-  enforceArmedWirelessQuality(req);
-  if (result.result.inserted.length > 0) {
-    broadcastEvent("wireless:event", { events: result.result.inserted });
-    // 서버 권위 기록 엔진: 새 이벤트로 기록 계산·저장(세션에 선택 정보 있을 때만 persist).
-    try { processRecordEngine(result.result.inserted); }
-    catch (e) { logger.warn(req, "wireless.record.engine", { error: e.message || String(e) }, "engine"); }
-  }
   res.json({
-    stored: result.result.inserted.length,
+    stored: result.result.inserted.filter(event => !(event.flags & CAPTURE_CHECKPOINT)).length,
     deduped: result.result.deduped,
     rejected: result.result.rejected,
     acknowledged: result.result.acknowledged,
   });
-});
-
-// POST /api/wireless/light - 브리지(콘솔)가 현재 신호등 색 + green tick 보고.
-app.post("/api/wireless/light", (req, res) => {
-  const { color } = req.body || {};
-  const allowed = ["red", "green", "yellow", "off"];
-  if (typeof color !== "string" || !allowed.includes(color)) {
-    return res.status(400).send("올바르지 않은 신호등 색입니다.");
-  }
-  const gt = tickToText(req.body?.green_tick);
-  if (gt === undefined) return res.status(400).send("green_tick이 올바르지 않습니다.");
-  const gtParam = color === "green" ? gt : null; // green tick은 green일 때만 갱신
-
-  if (color === "green") {
-    const currentLight = getLightState();
-    const currentSession = currentLight.owner_event ? getSession(currentLight.owner_event) : null;
-    // reset_pending 중인 지연 green은 아래 트랜잭션이 기존대로 무시한다. 새 물리 run을
-    // 여는 green만 가상 arm/원격 command와 동일한 계측 preflight를 통과해야 한다.
-    if (currentLight.owner_event && !currentSession?.reset_pending
-      && rejectWirelessQuality(req, res, "wireless.light", currentLight.owner_event)) return;
-  }
-
-  const result = dbRun(() => db.transaction(() => {
-    const bridge = stageBridgeSeen();
-    db.prepare("UPDATE wireless_light SET light_color = ?, green_tick = COALESCE(?, green_tick), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1").run(color, gtParam);
-    const light = getLightState();
-    // 물리 지정 경기의 arm 상태를 세션에도 반영(green=arm). 전 클라가 wireless:session으로 공유.
-    let session = null;
-    let resetFinalized = false;
-    let pendingGreenIgnored = false;
-    let openedRun = null;
-    if (light.owner_event) {
-      const cur = db.prepare("SELECT armed, light_color, green_tick, reset_pending FROM wireless_session WHERE event_type = ?").get(light.owner_event);
-      if (color === "off" && cur?.reset_pending) {
-        // 물리 초기화는 마스터가 실제 OFF를 보고한 시점에만 확정한다. 이 세션 갱신이
-        // 모든 관찰자와 재접속 클라이언트에서 이전 편집 카드를 폐기하는 권위 신호다.
-        db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(light.owner_event);
-        resetFinalized = true;
-      } else if (color === "green" && cur?.reset_pending) {
-        // 초기화 요청 이후 지연되거나 예기치 않게 도착한 green 보고가 이전 런을 새 run_id로
-        // 바꾸지 못하게 한다. pending은 오직 실제 OFF 보고만 해제할 수 있다.
-        pendingGreenIgnored = true;
-      } else if (color === "green") {
-        // 중복 L green 방어: 이미 같은 green(또는 tick 미동봉 재보고)으로 armed면 런을 리셋하지 않는다.
-        // (마스터의 재전송/바운스가 진행 중 측정 런을 날리는 것을 막음.)
-        const dup = cur && cur.armed && cur.light_color === "green" && (gtParam == null || cur.green_tick === gtParam);
-        if (!dup) {
-          const runId = crypto.randomUUID();
-          db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = COALESCE(?, green_tick), armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-            .run(gtParam, new Date().toISOString(), runId, light.owner_event);
-          openedRun = { eventType: light.owner_event, runId };
-        }
-      } else {
-        db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(color === "red" ? "red" : "off", light.owner_event);
-      }
-      session = getSession(light.owner_event);
-    }
-    return { bridge, light, session, resetFinalized, pendingGreenIgnored, openedRun };
-  })());
-  if (!result.success) {
-    logger.warn(req, "wireless.light", {
-      error: result.internalError || result.error,
-      color,
-      phase: "database_mutation",
-      requested_bridge_online: true,
-    }, "light");
-    return res.status(result.status).send(result.error);
-  }
-  if (commitBridgeSeen(result.result.bridge)) {
-    logger.log(req, "wireless.bridge", { online: true, last_seen: lastBridgeSeenIso }, "bridge");
-  }
-  if (result.result.openedRun) {
-    resetEngineRun(result.result.openedRun.eventType, null, result.result.openedRun.runId);
-    clearWirelessQualityFault(result.result.openedRun.eventType);
-  }
-  if (result.result.pendingGreenIgnored) {
-    logger.warn(req, "wireless.light", {
-      error: "초기화 OFF 확인 대기 중 green 보고를 무시했습니다.",
-      reason: "reset_pending",
-      color,
-      reset_pending: true,
-    }, result.result.session?.event_type || "light");
-  }
-  logger.log(req, "wireless.light", { color, green_tick: gtParam }, "light");
-  if (result.result.resetFinalized && result.result.session) engineRun.delete(result.result.session.event_type);
-  broadcastEvent("wireless:light", result.result.light);
-  if (result.result.session) broadcastEvent("wireless:session", result.result.session);
-  res.json(result.result.light);
 });
 
 // POST /api/wireless/bridge/offline - 브리지(콘솔)가 연결 해제 시 즉시 오프라인 보고.
@@ -2376,34 +2196,10 @@ app.post("/api/wireless/bridge/offline", (req, res) => {
     lastBridgeSeen = 0;
     broadcastEvent("wireless:bridge", getBridgeState());
     logger.log(req, "wireless.bridge", { online: false, last_seen: lastBridgeSeenIso }, "bridge");
-    enforceArmedWirelessQuality(req);
+    const quality = timingTransaction(() => enforceArmedWirelessQuality(req));
+    if (!quality.success) return res.status(quality.status).send(quality.error);
   }
   res.json(getBridgeState());
-});
-
-// PUT /api/wireless/physical-event - 물리(실제) 신호등을 사용할 경기 지정. null = 없음.
-// 기본은 모든 경기가 가상 신호등으로 동작하고, 지정된 경기만 마스터의 SSR을 실제 제어.
-// owner_event = 지정된 경기(런타임 점유가 아니라 설정).
-app.put("/api/wireless/physical-event", (req, res) => {
-  const ev = req.body?.event_type;
-  const value = ev == null ? null : ev;
-  if (value !== null && !(typeof value === "string" && EVENT_TYPES.includes(value))) {
-    return res.status(400).send("올바르지 않은 종목입니다.");
-  }
-  const result = dbRun(() => {
-    const prev = db.prepare("SELECT owner_event FROM wireless_light WHERE id = 1").get();
-    db.prepare(
-      "UPDATE wireless_light SET owner_event = ?, owner_actor = ?, light_color = CASE WHEN ? IS NULL THEN 'off' ELSE light_color END, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 1",
-    ).run(value, req.user?.email || null, value);
-    return { row: getLightState(), prev: prev?.owner_event || null };
-  });
-  if (!result.success) {
-    logger.warn(req, "wireless.physical_event", { error: result.internalError || result.error, requested: value });
-    return res.status(result.status).send(result.error);
-  }
-  logger.log(req, "wireless.physical_event", { event_type: value, prev: result.result.prev });
-  broadcastEvent("wireless:light", result.result.row);
-  res.json(result.result.row);
 });
 
 // PUT /api/wireless/debounce - 센서 디바운스 창(ms) 설정. 무선 공용 설정이라 wireless_light에
@@ -2426,10 +2222,8 @@ app.put("/api/wireless/debounce", (req, res) => {
   res.json(result.result);
 });
 
-// POST /api/wireless/arm - 경기 arm/disarm(green=arm). 가상 경기는 이걸로 전 클라 공유.
-// (물리 지정 경기는 실제 SSR이 마스터 L 보고로 /api/wireless/light를 통해 세션에 반영된다.)
-// body: { event_type, action: "green"|"red"|"off"|"reset", green_tick?, team?, event_name? }
-app.post("/api/wireless/arm", (req, res) => {
+// Wireless timing control. The master only supplies captures and clock responses.
+app.post("/api/wireless/arm", async (req, res) => {
   const { event_type, action } = req.body || {};
   if (typeof event_type !== "string" || !EVENT_TYPES.includes(event_type)) {
     return rejectMutation(req, res, {
@@ -2438,7 +2232,7 @@ app.post("/api/wireless/arm", (req, res) => {
       operation: action ?? "arm", context: { event_type: event_type ?? null },
     });
   }
-  if (!["green", "red", "off", "reset"].includes(action)) {
+  if (!["start", "stop", "reset"].includes(action)) {
     return rejectMutation(req, res, {
       action: "wireless.arm", status: 400, message: "올바르지 않은 동작입니다.",
       target: event_type, operation: action ?? "arm", context: { event_type },
@@ -2448,7 +2242,7 @@ app.post("/api/wireless/arm", (req, res) => {
   const sessionPreflight = runMutationPreflight(req, res, {
     action: "wireless.arm", operation: action, target: event_type,
     context: { event_type },
-    lookup: () => ({ session: getSession(event_type), light: getLightState() }),
+    lookup: () => ({ session: getSession(event_type) }),
     failureMessage: "무선 세션 상태를 확인할 수 없습니다.",
   });
   if (!sessionPreflight.ok) return;
@@ -2461,38 +2255,27 @@ app.post("/api/wireless/arm", (req, res) => {
       context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor },
     });
   }
-  if (action === "reset" && sessionPreflight.value.light?.owner_event === event_type) {
+  if (action === "start" && sess?.armed) {
     return rejectMutation(req, res, {
       action: "wireless.arm", status: 409,
-      message: "물리 신호등 지정 경기는 마스터의 OFF 확인으로만 초기화할 수 있습니다.",
+      message: "진행 중인 경기를 정지하거나 초기화한 뒤 다시 시작하세요.",
       target: event_type, operation: action,
-      context: { event_type, owner_event: sessionPreflight.value.light.owner_event, reset_pending: !!sess?.reset_pending },
+      context: { event_type, run_id: sess.run_id, armed: true },
     });
   }
-  if (action === "green" && sess?.reset_pending) {
-    return rejectMutation(req, res, {
-      action: "wireless.arm", status: 409,
-      message: "초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.",
-      target: event_type, operation: action,
-      context: { event_type, reset_pending: true, run_id: sess.run_id ?? null },
-    });
-  }
-  let green_tick = null;
-  if (action === "green") {
-    green_tick = tickToText(req.body?.green_tick);
-    if (green_tick === undefined) {
+  let start_tick = null;
+  if (action === "start") {
+    start_tick = tickToText(req.body?.start_tick);
+    if (start_tick === undefined) {
       return rejectMutation(req, res, {
-        action: "wireless.arm", status: 400, message: "green_tick이 올바르지 않습니다.",
-        target: event_type, operation: action, context: { event_type, green_tick: req.body?.green_tick ?? null },
+        action: "wireless.arm", status: 400, message: "start_tick이 올바르지 않습니다.",
+        target: event_type, operation: action, context: { event_type, start_tick: req.body?.start_tick ?? null },
       });
     }
   }
-  // bind-at-arm: green 요청 본문에 team·event_name이 실려 오면 arm과 atomic하게 바인딩한다.
-  // 본문에 없으면(구형 클라/기타 호출) 세션 선택을 건드리지 않고 live 세션으로 폴백(bound=null).
-  // → /select POST와 /arm POST의 도착 순서 레이스와 무관하게 귀속이 정확하고, arm 후 선택이
-  //   바뀌어도 기록은 arm 시점 팀에 귀속된다(엔진이 run.bound 우선 사용).
+  // START 본문의 선택 또는 현재 세션의 선택을 런에 고정한다.
   const body = req.body || {};
-  const hasSel = action === "green" && ("team" in body || "event_name" in body);
+  const hasSel = action === "start" && ("team" in body || "event_name" in body);
   let bound = null;
   if (hasSel) {
     const v = validateSelectionRequest(req, res, "wireless.arm", event_type, body);
@@ -2506,40 +2289,70 @@ app.post("/api/wireless/arm", (req, res) => {
     }
     bound = { team: v.team, event_name: v.event_name };
   }
-  if (action === "green" && rejectWirelessQuality(req, res, "wireless.arm", event_type)) return;
-  const runId = action === "green" ? crypto.randomUUID() : null;
-  const result = dbRun(() => {
-    if (action === "green") {
-      if (hasSel) {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, team_json = ?, event_name = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(green_tick, bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), runId, event_type);
-      } else {
-        db.prepare("UPDATE wireless_session SET armed = 1, light_color = 'green', green_tick = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-          .run(green_tick, new Date().toISOString(), runId, event_type);
+  let clock = null;
+  let clockEventCursor = null;
+  if (action === "start") {
+    if (rejectWirelessQuality(req, res, "wireless.arm", event_type)) return;
+    bound ||= { team: sess.team, event_name: sess.event_name };
+    clockEventCursor = getLastEventId();
+    const request = {};
+    pendingArmRequests.set(event_type, request);
+    try {
+      clock = await readWirelessClock({ event_type, start_tick });
+      if (pendingArmRequests.get(event_type) !== request) {
+        throw new Error("시각 확인 중 경기 제어 요청이 변경되었습니다. 다시 시작하세요.");
       }
+      if (tickToText(clock?.master_tick) == null || !validBootId(clock?.master_boot_id)) {
+        throw new Error("마스터 시각 응답이 올바르지 않습니다.");
+      }
+    } catch (error) {
+      return rejectMutation(req, res, {
+        action: "wireless.arm", status: 409, message: error.message,
+        target: event_type, operation: action, context: { event_type, quality_reasons: request.qualityFailure },
+      });
+    } finally {
+      if (pendingArmRequests.get(event_type) === request) pendingArmRequests.delete(event_type);
+    }
+    const current = getSession(event_type);
+    if (current.armed || current.run_id !== sess.run_id
+      || (current.controller && current.controller !== actor)) {
+      return rejectMutation(req, res, {
+        action: "wireless.arm", status: 409, message: "시각 확인 중 경기 상태가 변경되었습니다. 다시 시작하세요.",
+        target: event_type, operation: action, context: { event_type },
+      });
+    }
+    if (rejectWirelessQuality(req, res, "wireless.arm", event_type)) return;
+    start_tick = clock.master_tick;
+  }
+  const runId = action === "start" ? crypto.randomUUID() : null;
+  const result = timingTransaction(() => {
+    if (action === "start") {
+      db.prepare("UPDATE wireless_session SET armed = 1, team_json = ?, event_name = ?, armed_at = ?, run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+        .run(bound.team ? JSON.stringify(bound.team) : null, bound.event_name, new Date().toISOString(), runId, event_type);
     } else if (action === "reset") {
-      // 가상 경기 초기화는 한 번의 권위 세션 전환으로 OFF + 런 식별자 폐기를 확정한다.
-      // 일반 OFF는 사용자가 계속 편집할 수 있도록 식별자를 보존한다.
-      db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'off', run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, reset_pending = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
+      db.prepare("UPDATE wireless_session SET armed = 0, run_id = NULL, saved_record_name = NULL, saved_record_rowid = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
         .run(event_type);
     } else {
-      // red = 정지(표시는 적색), off = 소등(grey). 둘 다 disarm.
-      db.prepare("UPDATE wireless_session SET armed = 0, light_color = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?")
-        .run(action === "red" ? "red" : "off", event_type);
+      db.prepare("UPDATE wireless_session SET armed = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(event_type);
+      const run = getRun(event_type);
+      if (run) run.closed = true;
     }
+    if (action === "start") {
+      resetEngineRun(event_type, bound, runId, clock);
+      clearWirelessQualityFault(event_type);
+      // A bridge may ingest an edge after the hardware capture but before its
+      // clock HTTP response. Apply that committed edge to this new run once.
+      const duringClock = db.prepare("SELECT * FROM wireless_event WHERE id > ? ORDER BY id").all(clockEventCursor);
+      processRecordEngine(duringClock, event_type);
+    } else if (action === "reset") setRun(event_type, null);
     return getSession(event_type);
   });
   if (!result.success) {
     logger.warn(req, "wireless.arm", { error: result.internalError || result.error, event_type, action }, event_type);
     return res.status(result.status).send(result.error);
   }
-  // 세션 변경이 확정된 뒤에만 새 런을 연다. DB 실패 시 기존 엔진/편집 대상도 유지된다.
-  if (action === "green") {
-    resetEngineRun(event_type, bound, runId);
-    clearWirelessQualityFault(event_type);
-  }
-  else if (action === "reset") engineRun.delete(event_type);
-  logger.log(req, "wireless.arm", { action, green_tick, before: sess, after: result.result }, event_type);
+  pendingArmRequests.delete(event_type);
+  logger.log(req, "wireless.arm", { action, start_tick, before: sess, after: result.result }, event_type);
   broadcastEvent("wireless:session", result.result);
   res.json(result.result);
 });
@@ -2591,7 +2404,7 @@ app.post("/api/wireless/select", (req, res) => {
     if (selectionChanged && !sess?.armed) {
       db.prepare(`
         UPDATE wireless_session
-        SET team_json = ?, event_name = ?, run_id = NULL,
+        SET team_json = ?, event_name = ?, run_id = NULL, engine_state = NULL,
             saved_record_name = NULL, saved_record_rowid = NULL,
             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
         WHERE event_type = ?
@@ -2611,7 +2424,6 @@ app.post("/api/wireless/select", (req, res) => {
     before: { team: sess?.team ?? null, event_name: sess?.event_name ?? null },
     after: { team: result.result?.team ?? null, event_name: result.result?.event_name ?? null },
   }, event_type);
-  if (selectionChanged && !sess?.armed) engineRun.delete(event_type);
   broadcastEvent("wireless:session", result.result);
   res.json(result.result);
 });
@@ -2655,197 +2467,52 @@ app.post("/api/wireless/status", (req, res) => {
       target: event_type, operation: "classify", context: { event_type, team: sess?.team ?? null, event_name: sess?.event_name ?? null, requested_status: status },
     });
   }
-  let run = engineRun.get(event_type);
-  let selectionChanged = false;
-  if (run && !sess.armed) {
-    const boundTeam = run.bound?.team;
-    selectionChanged = run.bound?.event_name !== sess.event_name
-      || Number(boundTeam?.teamId ?? boundTeam?.id ?? 0) !== Number(sess.team?.teamId ?? sess.team?.id ?? 0)
-      || Number(boundTeam?.num ?? 0) !== Number(sess.team?.num ?? 0);
-    if (selectionChanged) run = null;
-  }
-  let runId = selectionChanged ? null : (run?.runId ?? sess.run_id ?? null);
-  if (!run && sess.run_id && sess.saved_record_name
-    && !getRecordRow(sess.saved_record_name, sess.saved_record_rowid)) runId = null;
-  if (!runId) {
-    runId = crypto.randomUUID();
-    const initialized = dbRun(() => {
-      db.prepare(`
-        UPDATE wireless_session
-        SET run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL,
-            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE event_type = ?
-      `).run(runId, event_type);
-    });
-    if (!initialized.success) {
-      logger.warn(req, "wireless.status", { error: initialized.internalError || initialized.error, event_type, status }, event_type);
-      return res.status(initialized.status).send(initialized.error);
+  const result = timingTransaction(() => {
+    let run = getRun(event_type);
+    const changed = run && !sess.armed && (
+      run.bound?.event_name !== sess.event_name
+      || Number(run.bound?.team?.teamId ?? run.bound?.team?.id ?? run.bound?.team?.num)
+        !== Number(sess.team?.teamId ?? sess.team?.id ?? sess.team?.num));
+    if (changed) run = null;
+    if (!run) {
+      const runId = crypto.randomUUID();
+      db.prepare("UPDATE wireless_session SET run_id = ?, saved_record_name = NULL, saved_record_rowid = NULL WHERE event_type = ?")
+        .run(runId, event_type);
+      resetEngineRun(event_type, { team: sess.team, event_name: sess.event_name }, runId);
+      run = getRun(event_type);
     }
-    resetEngineRun(event_type, { team: sess.team, event_name: sess.event_name }, runId);
-    run = engineRun.get(event_type);
-  } else if (!run) {
-    resetEngineRun(event_type, { team: sess.team, event_name: sess.event_name }, runId);
-    run = engineRun.get(event_type);
-  }
-
-  let targetName = run?.recordName ?? sess.saved_record_name ?? null;
-  let targetRowid = run?.recordRowid ?? sess.saved_record_rowid ?? null;
-  if (targetName && targetRowid != null && !getRecordRow(targetName, targetRowid)) {
-    targetName = null;
-    targetRowid = null;
-    run.recordName = null;
-    run.recordRowid = null;
-    run.saved = false;
-  }
-  let saved;
-  if (targetName && targetRowid != null) {
-    const targetYear = recordYearFromName(targetName);
-    const targetRecord = getRecordRow(targetName, targetRowid);
-    if (targetYear !== currentRecordYear() || !targetRecord || !isTeamActive(db, targetYear, targetRecord.num)) {
-      return rejectMutation(req, res, {
-        action: "wireless.status", status: 409,
-        message: "현재 연도의 활성 팀 기록만 판정할 수 있습니다.",
-        target: targetName, operation: "classify",
-        context: { event_type, requested_status: status, record_name: targetName, record_rowid: targetRowid, record_year: targetYear },
-      });
-    }
-    const r = dbRun(() => {
-      const before = getRecordRow(targetName, targetRowid);
-      if (!before) {
-        const error = new Error("현재 런의 저장 기록을 찾을 수 없습니다.");
-        error.status = 404;
+    const name = run.recordName ?? (changed ? null : sess.saved_record_name);
+    const rowid = run.recordRowid ?? (changed ? null : sess.saved_record_rowid);
+    const before = name && rowid != null ? getRecordRow(name, rowid) : null;
+    let saved;
+    if (before) {
+      const year = recordYearFromName(name);
+      if (year !== currentRecordYear() || !isTeamActive(db, year, before.num)) {
+        const error = new Error("현재 연도의 활성 팀 기록만 판정할 수 있습니다.");
+        error.status = 409;
         throw error;
       }
-      db.prepare("UPDATE record SET status = ? WHERE name = ? AND legacy_rowid = ?").run(status, targetName, targetRowid);
-      db.prepare(`
-        UPDATE wireless_session
-        SET saved_record_name = ?, saved_record_rowid = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE event_type = ? AND run_id = ?
-      `).run(targetName, targetRowid, event_type, runId);
-      return { before, after: getRecordRow(targetName, targetRowid) };
-    });
-    if (!r.success) {
-      logger.warn(req, "wireless.record", { error: r.internalError || r.error, event_type, status, run_id: runId }, targetName);
-      return res.status(r.status).send(r.error);
-    }
-    saved = { name: targetName, record: r.result.after };
-    logger.log(req, "wireless.record", {
-      type: event_type, run_id: runId, num: r.result.after.num,
-      before: { result: r.result.before.result, status: r.result.before.status },
-      after: { result: r.result.after.result, status: r.result.after.status },
-    }, targetName);
-    broadcastEvent("records", {
-      type: "update", name: targetName, field: "status", recordFiles: getRecordFiles(),
-      record: r.result.after, event_type, run_id: runId,
-    });
-  } else {
-    saved = engineSaveRecord(event_type, run?.bound || sess, null, null, { req }, status);
-    if (!saved) {
-      return rejectMutation(req, res, {
-        action: "wireless.status", status: 500, message: `${status} 판정 저장에 실패했습니다.`,
-        target: event_type, operation: "classify",
-        context: { event_type, status, team: run?.bound?.team ?? sess.team, event_name: run?.bound?.event_name ?? sess.event_name },
-      });
+      db.prepare("UPDATE record SET status = ? WHERE name = ? AND legacy_rowid = ?").run(status, name, rowid);
+      saved = { name, record: getRecordRow(name, rowid) };
+      broadcastEvent("records", { type: "update", name, field: "status", recordFiles: getRecordFiles(), record: saved.record, event_type, run_id: run.runId });
+    } else {
+      saved = engineSaveRecord(event_type, run.bound, null, null, { req }, status);
+      if (!saved) throw new Error("판정 저장에 필요한 선택 정보가 없습니다.");
     }
     run.recordName = saved.name;
     run.recordRowid = saved.record.rowid;
-  }
-  run.saved = true;
-  logger.log(req, "wireless.status", {
-    event_type,
-    status,
-    run_id: runId,
-    team: run.bound?.team ?? sess.team,
-    event_name: run.bound?.event_name ?? sess.event_name,
-    record_name: saved.name,
-    record_rowid: saved.record.rowid,
-  }, event_type);
-  const session = getSession(event_type);
-  broadcastEvent("wireless:session", session);
-  res.json({ name: saved.name, record: saved.record, session });
-});
-
-// POST /api/wireless/command - 비-브리지 컨트롤러가 물리 신호등(SSR)을 원격 제어. 서버가 브리지로
-// 내려보내고(wireless:command), 브리지가 시리얼로 마스터에 전달. 물리 지정 경기에만 허용.
-// (가상 경기는 /api/wireless/arm으로 서버 상태만 바꾸면 되므로 다운링크 불필요.)
-app.post("/api/wireless/command", (req, res) => {
-  const { event_type, action } = req.body || {};
-  if (typeof event_type !== "string" || !EVENT_TYPES.includes(event_type)) {
-    return rejectMutation(req, res, {
-      action: "wireless.command", status: 400, message: "올바르지 않은 종목입니다.",
-      target: typeof event_type === "string" ? event_type : "wireless", operation: action ?? "command",
-      context: { event_type: event_type ?? null },
-    });
-  }
-  if (!["green", "red", "off", "reset"].includes(action)) {
-    return rejectMutation(req, res, {
-      action: "wireless.command", status: 400, message: "올바르지 않은 동작입니다.",
-      target: event_type, operation: action ?? "command", context: { event_type },
-    });
-  }
-  const statePreflight = runMutationPreflight(req, res, {
-    action: "wireless.command", operation: action, target: event_type,
-    context: { event_type },
-    lookup: () => ({ session: getSession(event_type), light: getLightState() }),
-    failureMessage: "무선 제어 상태를 확인할 수 없습니다.",
+    run.closed = true;
+    db.prepare("UPDATE wireless_session SET saved_record_name = ?, saved_record_rowid = ? WHERE event_type = ?")
+      .run(saved.name, saved.record.rowid, event_type);
+    logger.log(req, "wireless.status", { event_type, status, run_id: run.runId, before, after: saved.record }, saved.name);
+    return { ...saved, session: getSession(event_type) };
   });
-  if (!statePreflight.ok) return;
-  const sess = statePreflight.value.session;
-  const actor = wirelessActor(req);
-  if (sess?.controller && sess.controller !== actor) {
-    const message = `다른 사용자가 제어 중입니다: ${controllerEmail(sess.controller)}`;
-    return rejectMutation(req, res, {
-      action: "wireless.command", status: 409, message, target: event_type, operation: action,
-      context: { event_type, controller: controllerEmail(sess.controller), requested_actor: actor },
-    });
+  if (!result.success) {
+    logger.warn(req, "wireless.status", { error: result.internalError || result.error, event_type, status }, event_type);
+    return res.status(result.status).send(result.error);
   }
-  const light = statePreflight.value.light;
-  if (light.owner_event !== event_type) {
-    return rejectMutation(req, res, {
-      action: "wireless.command", status: 409, message: "물리 신호등 지정 경기가 아닙니다.",
-      target: event_type, operation: action, context: { event_type, owner_event: light.owner_event ?? null },
-    });
-  }
-  if (action === "green" && sess?.reset_pending) {
-    return rejectMutation(req, res, {
-      action: "wireless.command", status: 409,
-      message: "초기화 OFF 확인이 완료될 때까지 녹색등을 켤 수 없습니다.",
-      target: event_type, operation: action,
-      context: { event_type, reset_pending: true, run_id: sess.run_id ?? null },
-    });
-  }
-  if (!bridgeOnline) {
-    return rejectMutation(req, res, {
-      action: "wireless.command", status: 409, message: "마스터에 연결된 브리지가 없습니다.",
-      target: event_type, operation: action, context: { event_type, bridge_online: false },
-    });
-  }
-  if (action === "green" && rejectWirelessQuality(req, res, "wireless.command", event_type)) return;
-  let resetAfter = null;
-  if (action === "reset") {
-    const pending = dbRun(() => {
-      db.prepare("UPDATE wireless_session SET reset_pending = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE event_type = ?").run(event_type);
-      return getSession(event_type);
-    });
-    if (!pending.success) {
-      logger.warn(req, "wireless.command", { error: pending.internalError || pending.error, event_type, action }, event_type);
-      return res.status(pending.status).send(pending.error);
-    }
-    resetAfter = pending.result;
-  }
-  logger.log(req, "wireless.command", {
-    action,
-    ...(action === "reset" ? {
-      before: { reset_pending: sess?.reset_pending ?? 0 },
-      after: { reset_pending: resetAfter?.reset_pending ?? 1 },
-    } : {}),
-  }, event_type);
-  // 물리 초기화는 마스터의 OFF 확인 전까지 pending이다. 요청한 화면뿐 아니라 관찰자와
-  // 재접속 화면도 이 중간 상태를 알아야 편집기를 잠그고 완료로 오인하지 않는다.
-  if (resetAfter) broadcastEvent("wireless:session", resetAfter);
-  // 브리지가 SSE로 받아 시리얼로 전달(실행 직전 isPhysical 재검사 — TOCTOU 방어).
-  broadcastEvent("wireless:command", { event_type, action });
-  res.json({ ok: true, session: resetAfter });
+  broadcastEvent("wireless:session", result.result.session);
+  res.json(result.result);
 });
 
 // POST /api/wireless/lease/:event - 경기 독점 제어 lease 획득/갱신(heartbeat). A안.
@@ -3020,7 +2687,7 @@ app.get("/api/wireless/events", (req, res) => {
   if (!Number.isFinite(limit)) limit = 200;
   limit = Math.max(1, Math.min(limit, 1000));
   const result = dbRun(() =>
-    db.prepare("SELECT id, node_id, master_tick, ev_seq, server_time, rssi, snr, link_state FROM wireless_event WHERE id > ? ORDER BY id ASC LIMIT ?").all(sinceId, limit),
+    db.prepare("SELECT * FROM wireless_event WHERE id > ? ORDER BY id ASC LIMIT ?").all(sinceId, limit),
   );
   if (!result.success) return res.status(result.status).send(result.error);
   res.json(result.result);

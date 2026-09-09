@@ -2,7 +2,13 @@ import crypto from "node:crypto";
 import { assertCanonicalTeamReferences } from "./team-references.mjs";
 
 export function normalizeSchemaSql(sql) {
-  return String(sql || "").trim().replace(/\s+/g, " ")
+  let normalized = String(sql || "").trim().replace(/\s+/g, " ");
+  // Canonical team references are installed after Traffic on a fresh database.
+  // An upgrade already has team_id when Traffic appends engine_state.
+  if (/^CREATE TABLE wireless_session\s*\(/i.test(normalized)) {
+    normalized = normalized.replace(", engine_state TEXT, team_id INTEGER)", ", team_id INTEGER, engine_state TEXT)");
+  }
+  return normalized
     // Traffic rebuilds the table through ALTER TABLE ... RENAME TO record;
     // SQLite persists that equivalent declaration with a quoted table name.
     .replace(/^CREATE TABLE "record"(?=\s*\()/i, "CREATE TABLE record")
@@ -24,7 +30,7 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 131,
-  sha256: "6ea17b5f529d947108915839bb104a90c27089eb639d3d67f7149376bc904e64",
+  sha256: "f471b647b9b5b9e61bed1fd5d5d85c50521b13ea1a77644590a130425586795f",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
@@ -42,6 +48,20 @@ const upgradeColumns = (columns = {}) => Object.freeze({
   ...columns,
 });
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    // v8 predecessor: no source capture evidence; record milliseconds were strictly positive.
+    objectCount: 131,
+    sha256: "b5b96a3190c97edd14e8319db6e38615257b4974f02da06d3f2973760e63e748",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
+  Object.freeze({
+    // Traffic adds persisted run state and the master boot to event identity.
+    objectCount: 131,
+    sha256: "6ea17b5f529d947108915839bb104a90c27089eb639d3d67f7149376bc904e64",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
   Object.freeze({
     // The earlier Queue preview committed its inspection-column ALTERs before
     // copying global settings and dropping the settings table. Queue can use

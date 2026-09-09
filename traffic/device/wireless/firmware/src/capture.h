@@ -23,10 +23,11 @@ uint64_t capture_now64(void);
 int capture_dio1_get(uint64_t *tick);
 
 /* Pop the oldest SENSOR falling edge from the ISR-backed ring buffer. */
-int capture_sensor_get(uint64_t *tick);
+int capture_sensor_get(uint64_t *tick, uint32_t *seq, int *clock_xtal);
+int capture_sensor_loss(uint64_t *first_tick, uint64_t *last_tick, uint32_t *first_seq, uint32_t *last_seq);
+int capture_sensor_checkpoint(uint64_t *tick, uint32_t *seq);
 
-/* Sticky ring overflow counter. Any non-zero value invalidates timing until the
- * sensor is rebooted, so a dropped physical edge cannot become a valid run. */
+/* Lifetime diagnostic only; loss ranges carry the affected capture boundaries. */
 uint16_t capture_sensor_overflow(void);
 
 /* Master-only USB clock monitor. PPI captures each USBD SOF into a spare TIMER1

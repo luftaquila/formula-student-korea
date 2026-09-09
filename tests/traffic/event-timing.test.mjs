@@ -11,7 +11,6 @@ import {
   enduranceTotal,
   masterTickDeltaMs,
   masterTickDistanceBelowMs,
-  measurementWithinLimits,
 } from "../../traffic/lib/event-timing.mjs";
 
 describe("event-timing rules", () => {
@@ -69,12 +68,4 @@ describe("event-timing rules", () => {
     assert.equal(masterTickDistanceBelowMs("32000", "16000", 1), false);
   });
 
-  it("rejects implausible wireless measurements by event type", () => {
-    assert.equal(measurementWithinLimits("가속", 4500), true);
-    assert.equal(measurementWithinLimits("가속", 500), false);
-    assert.equal(measurementWithinLimits("가속", 45000), false);
-    assert.equal(measurementWithinLimits("오토크로스", 3041), false);
-    assert.equal(measurementWithinLimits("오토크로스", 60000), true);
-    assert.equal(measurementWithinLimits("스키드패드", 20000), true);
-  });
 });

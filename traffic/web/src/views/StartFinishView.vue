@@ -34,6 +34,7 @@ const activeLiveAttempt = ref(null);
 const measurementRunKey = ref(0);
 
 async function onSensor({ sensor, tick }) {
+  if (props.wireless) return;
   if (attemptFinalized.value) return;
   // 모든 센서에 쿨다운 적용
   serial.setSensorCooldown(sensor);
@@ -108,7 +109,7 @@ const canStopLight = computed(() => (props.wireless ? isController.value : seria
 // 무선 경기 세션(서버 권위 선택·arm). 관찰자 뷰가 컨트롤러의 팀·이벤트명을 미러.
 const session = computed(() => serial.session);
 const resetSubmitting = ref(false);
-const resetInProgress = computed(() => props.wireless && (resetSubmitting.value || !!session.value?.reset_pending));
+const resetInProgress = computed(() => props.wireless && resetSubmitting.value);
 function clearMeasurement() {
   measurementRunKey.value += 1;
   startRecord.value = null;
@@ -127,6 +128,7 @@ watch(session, (s, previous) => {
     clearMeasurement();
     if (s.saved_record_name) attemptFinalized.value = true;
   } else if (previous?.saved_record_name && !s.saved_record_name) attemptFinalized.value = false;
+  displayRecord.value = s.result == null ? null : { result: s.result, time: msToClockStr(s.result) };
 }, { immediate: true });
 const startRecords = computed(() => serial.records.filter((r) => r.sensor === 1));
 const endRecords = computed(() => serial.records.filter((r) => r.sensor === 2));
@@ -192,7 +194,6 @@ function handleGreen() {
   if (!props.wireless) {
     beginRun();
   }
-  // 무선: arm 직전 현재 선택을 서버 세션에 flush(물리 경기 귀속 + 관찰자 미러). 가상 경기는
   // 추가로 sendGreen에 선택을 실어 arm 본문으로 bind-at-arm(레이스 무관 귀속 고정).
   if (props.wireless) serial.selectEvent?.(selectedEntry.value, eventName.value.trim() || null);
   serial.sendGreen(selectedEntry.value, eventName.value.trim() || null);
@@ -277,7 +278,7 @@ onUnmounted(() => clearTimeout(selectTimer));
               <circle cx="12" cy="8" r="2" />
               <circle cx="12" cy="16" r="2" />
             </svg>
-            신호등 제어<span v-if="wireless"> ({{ serial.isPhysical ? "물리" : "가상" }})</span>
+            {{ wireless ? "계측 제어" : "신호등 제어" }}
           </h3>
         </div>
         <div class="card-body">
@@ -292,11 +293,12 @@ onUnmounted(() => clearTimeout(selectTimer));
           </div>
           <div class="btn-group">
             <button class="btn btn-success" :disabled="!lightReady || serial.green.active || resetInProgress" @click="handleGreen">
-              녹색등
+              {{ wireless ? "시작" : "녹색등" }}
             </button>
             <button
               class="btn btn-ghost"
               :disabled="!canStopLight || serial.lightColor === 'grey'"
+              v-if="!wireless"
               @click="handleOff"
             >
               OFF
@@ -306,7 +308,7 @@ onUnmounted(() => clearTimeout(selectTimer));
               :disabled="!canStopLight || serial.lightColor === 'red'"
               @click="handleRed"
             >
-              적색등
+              {{ wireless ? "중단" : "적색등" }}
             </button>
           </div>
         </div>
@@ -359,7 +361,7 @@ onUnmounted(() => clearTimeout(selectTimer));
             :disabled="!isController || resetSubmitting || (!serial.records.length && !serial.green.active && !recentRecord)"
             @click="handleReset"
           >
-            {{ resetSubmitting ? "초기화 요청 중…" : (session?.reset_pending ? "OFF 확인 대기 · 다시 전송" : "초기화") }}
+            {{ resetSubmitting ? "초기화 요청 중…" : "초기화" }}
           </button>
         </div>
       </div>
@@ -374,6 +376,7 @@ onUnmounted(() => clearTimeout(selectTimer));
         <div class="timer-display">
           <span class="traffic-light" :class="serial.lightColor"></span>
           <span class="clock">{{ serial.clockDisplay }}</span>
+          <span v-if="wireless && session?.verification === 'pending'" role="status">기록 확인 중</span>
         </div>
       </div>
 
@@ -431,7 +434,7 @@ onUnmounted(() => clearTimeout(selectTimer));
             v-if="recentRecord"
             :record="recentRecord"
             :disabled="resetInProgress"
-            :disabled-message="resetInProgress ? '마스터의 OFF 확인을 기다리는 중입니다. 기록 편집은 확인 후 종료됩니다.' : ''"
+            :disabled-message="resetInProgress ? '초기화 처리 중입니다.' : ''"
             @update="mergeRecord"
             @remove="clearRecord(); attemptFinalized = false"
             @finalize="attemptFinalized = $event"

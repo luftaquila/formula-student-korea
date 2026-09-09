@@ -12,9 +12,6 @@ import WirelessOverviewView from "./WirelessOverviewView.vue";
 useSSE();
 const store = useWirelessStore();
 
-function onPhysical(e) {
-  store.setPhysicalEvent(e.target.value || null);
-}
 
 function onDebounce(e) {
   const v = Math.max(0, Math.min(5000, parseInt(e.target.value, 10) || 0));
@@ -57,17 +54,6 @@ async function simTelemetry() {
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-header"><h3>🚦 물리 신호등</h3></div>
-        <div class="card-body">
-          <div class="form-group">
-            <select class="form-input" :value="store.physicalKey || ''" data-testid="physical-event" @change="onPhysical">
-              <option value="">없음 (전부 가상)</option>
-              <option v-for="k in store.WIRELESS_EVENTS" :key="k" :value="k">{{ store.EVENT_TYPE[k] }}</option>
-            </select>
-          </div>
-        </div>
-      </div>
     </div>
 
     <WirelessMappingCard />
