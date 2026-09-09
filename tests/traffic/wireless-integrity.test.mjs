@@ -306,3 +306,38 @@ test("active runs reject rearm before clock capture; stopping allows one new run
   assert.notEqual(next.run_id, original.run_id);
   assert.deepEqual(f.records().map(row => row.result), [5000]);
 });
+
+for (const relevant of [true, false]) {
+  test(`pending arm ${relevant ? "latches a relevant" : "ignores an unrelated"} quality fault despite later recovery`, async t => {
+    const requested = Promise.withResolvers();
+    const clock = Promise.withResolvers();
+    let clockCalls = 0;
+    const f = await fixture(t, options => {
+      if (++clockCalls > 1) return readWirelessClock(options);
+      requested.resolve();
+      return clock.promise;
+    });
+    const arming = f.client.post("/api/wireless/arm", {
+      body: {
+        event_type: "가속", action: "green",
+        team: { num: 1, univ: "Integrity University", team: "Team A" }, event_name: "INTEGRITY",
+      }, cookie,
+    });
+    await requested.promise;
+    await f.ingest([edge("AABB0001", 100000, 1)], [
+      healthy(relevant ? "AABB0001" : "UNMAPPED", { beacon_gap: 1 }),
+    ]);
+    await f.refresh();
+    clock.resolve({ master_tick: tick(99900), master_boot_id: 1 });
+    const response = await arming;
+    assert.equal(response.status, relevant ? 409 : 200);
+    await f.ingest([edge("AABB0002", 105000, 1)]);
+    assert.deepEqual(f.records().map(row => row.result), relevant ? [] : [5000]);
+    if (relevant) {
+      // The failure belongs to that request, not a later healthy attempt.
+      await f.arm(110000);
+      await f.ingest([edge("AABB0001", 120000, 2), edge("AABB0002", 125000, 2)]);
+      assert.deepEqual(f.records().map(row => row.result), [5000]);
+    }
+  });
+}

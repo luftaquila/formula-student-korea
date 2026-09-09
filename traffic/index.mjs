@@ -619,6 +619,13 @@ function rejectWirelessQuality(req, res, action, eventType) {
 }
 
 function enforceArmedWirelessQuality(req) {
+  // These requests may later consume edges captured during the clock round
+  // trip. Observed faults must survive subsequent healthy diagnostic deltas.
+  for (const [eventType, request] of pendingArmRequests) {
+    if (request.qualityFailure) continue;
+    const quality = wirelessQuality(eventType);
+    if (!quality.ok) request.qualityFailure = quality.reasons;
+  }
   for (const session of getSessions()) {
     if (!session.armed) continue;
     const run = engineRun.get(session.event_type);
@@ -2683,13 +2690,16 @@ app.post("/api/wireless/arm", async (req, res) => {
       if (pendingArmRequests.get(event_type) !== request) {
         throw new Error("시각 확인 중 경기 제어 요청이 변경되었습니다. 다시 시작하세요.");
       }
+      if (request.qualityFailure) {
+        throw new Error(`시각 확인 중 계측 품질 오류가 발생했습니다: ${request.qualityFailure[0].reason}`);
+      }
       if (tickToText(clock?.master_tick) == null || !validBootId(clock?.master_boot_id)) {
         throw new Error("마스터 시각 응답이 올바르지 않습니다.");
       }
     } catch (error) {
       return rejectMutation(req, res, {
         action: "wireless.arm", status: 409, message: error.message,
-        target: event_type, operation: action, context: { event_type },
+        target: event_type, operation: action, context: { event_type, quality_reasons: request.qualityFailure },
       });
     } finally {
       if (pendingArmRequests.get(event_type) === request) pendingArmRequests.delete(event_type);
