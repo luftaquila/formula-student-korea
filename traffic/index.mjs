@@ -473,7 +473,8 @@ function getRecordVisibility() {
 /* ============================================
    무선 계측: 실시간 상태(메모리) + 헬퍼
    ============================================ */
-// node별 최신 진단(실시간, 미영속). _provWarned는 중복 보안 경고 억제용 내부 필드.
+// Latest diagnostics; active runs checkpoint their relevant nodes for recovery.
+// _provWarned suppresses duplicate provisioning warnings.
 const liveTelemetry = new Map();
 // 경기 중 자동 중단 사유. 프로세스 생존 중 SSE 재연결/화면 이동으로 경고가
 // 사라지지 않게 init/state에도 포함하고, 품질을 통과한 다음 GREEN에서만 해제한다.
@@ -776,7 +777,7 @@ function clockStr(ms) {
 }
 // Captured edges and run state commit together; restart resumes the same run.
 const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, lastTick, lapCount, lap2, bound }
-for (const row of db.prepare("SELECT event_type, run_id, saved_record_name, saved_record_rowid, engine_state FROM wireless_session WHERE engine_state IS NOT NULL").all()) {
+for (const row of db.prepare("SELECT event_type, armed, run_id, saved_record_name, saved_record_rowid, engine_state FROM wireless_session WHERE engine_state IS NOT NULL").all()) {
   const run = JSON.parse(row.engine_state);
   if (!row.run_id || run.runId !== row.run_id) continue;
   const record = row.saved_record_name && getRecordRow(row.saved_record_name, row.saved_record_rowid);
@@ -784,6 +785,24 @@ for (const row of db.prepare("SELECT event_type, run_id, saved_record_name, save
   run.lap2 = run.lap2 == null ? null : BigInt(run.lap2);
   run.lapTicks = (run.lapTicks || []).map(BigInt);
   engineRun.set(row.event_type, run);
+  if (row.armed && !run.saved && run.diagnostics) {
+    // Retain the original receive times. Recovery must not grant stale sync or
+    // link state a new TTL, and newer diagnostic deltas still take precedence.
+    for (const [node, diagnostic] of run.diagnostics.telemetry) {
+      const previous = liveTelemetry.get(node);
+      if (!previous || Date.parse(diagnostic.last_seen) > Date.parse(previous.last_seen)) {
+        liveTelemetry.set(node, diagnostic);
+      }
+    }
+    const bridge = run.diagnostics.bridge;
+    const seenAt = Date.parse(bridge.last_seen);
+    if (bridge.online && getLightState().bridge_online && seenAt > lastBridgeSeen
+      && Date.now() - seenAt <= WIRELESS_STATUS_MAX_AGE_MS) {
+      bridgeOnline = true;
+      lastBridgeSeen = seenAt;
+      lastBridgeSeenIso = bridge.last_seen;
+    }
+  }
 }
 // A pre-upgrade in-flight run has no trustworthy capture boundary/state.
 const interruptedRuns = db.prepare("SELECT event_type, run_id FROM wireless_session WHERE armed = 1 AND engine_state IS NULL").all();
@@ -794,8 +813,14 @@ if (interruptedRuns.length) {
 
 function saveEngineRuns() {
   const update = db.prepare("UPDATE wireless_session SET engine_state = ? WHERE event_type = ? AND run_id = ?");
+  const mappings = getMapping();
   for (const [eventType, run] of engineRun) {
-    update.run(JSON.stringify(run, (_key, value) => typeof value === "bigint" ? String(value) : value), eventType, run.runId);
+    const nodes = new Set(["0", ...mappings.filter(row => row.event_type === eventType && row.enabled !== 0).map(row => row.node_id)]);
+    const diagnostics = {
+      telemetry: [...liveTelemetry].filter(([node]) => nodes.has(node)),
+      bridge: getBridgeState(),
+    };
+    update.run(JSON.stringify({ ...run, diagnostics }, (_key, value) => typeof value === "bigint" ? String(value) : value), eventType, run.runId);
   }
 }
 

@@ -52,7 +52,11 @@ async function fixture(t, clockReader = readWirelessClock) {
     get db() { return state.db; },
     get client() { return client; },
     post, refresh,
-    async restart() { await close(); await open(); await refresh(); },
+    async restart({ refreshHealth = true } = {}) {
+      await close();
+      await open();
+      if (refreshHealth) await refresh();
+    },
     arm: (ms = 90000) => post("/api/wireless/arm", {
       event_type: "가속", action: "green", green_tick: tick(ms),
       team: { num: 1, univ: "Integrity University", team: "Team A" }, event_name: "INTEGRITY",
@@ -223,3 +227,49 @@ for (const classify of ["status", "patch"]) {
     assert.deepEqual(f.records().map(row => row.result), [120000]);
   });
 }
+
+
+for (const partialRefresh of [false, true]) {
+  test(`restart accepts a queued finish with ${partialRefresh ? "partial" : "no"} fresh diagnostic deltas`, async t => {
+    const f = await fixture(t);
+    await f.arm();
+    await f.ingest([edge("AABB0001", 100000, 1)]);
+    await f.restart({ refreshHealth: false });
+    if (partialRefresh) await f.ingest([], [healthy("AABB0002")]);
+    const finish = edge("AABB0002", 105000, 1);
+    const delivered = await f.ingest([finish]);
+    assert.equal(delivered.acknowledged.length, 1);
+    assert.deepEqual(f.records().map(row => row.result), [5000]);
+    // A bridge sends per-node deltas, not a guaranteed complete health snapshot.
+    for (const node of ["AABB0002", "0", "AABB0001"]) await f.ingest([], [healthy(node)]);
+    const retry = await f.ingest([finish]);
+    assert.equal(retry.deduped, 1);
+    assert.deepEqual(f.records().map(row => row.result), [5000]);
+  });
+}
+
+test("restart preserves diagnostic age and rejects an expired healthy snapshot", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+  const f = await fixture(t);
+  await f.arm();
+  await f.ingest([edge("AABB0001", 100000, 1)]);
+  t.mock.timers.tick(13000);
+  await f.restart({ refreshHealth: false });
+  await f.ingest([edge("AABB0002", 105000, 1)]);
+  assert.equal(f.records().length, 0);
+  await f.refresh();
+  await f.ingest([edge("AABB0002", 105000, 1)]);
+  assert.equal(f.records().length, 0, "fresh diagnostics cannot revive a stopped run");
+});
+
+test("a real quality fault in the first post-restart batch overrides restored healthy diagnostics", async t => {
+  const f = await fixture(t);
+  await f.arm();
+  await f.ingest([edge("AABB0001", 100000, 1)]);
+  await f.restart({ refreshHealth: false });
+  await f.ingest([edge("AABB0002", 105000, 1)], [healthy("AABB0002", { event_drop: 1 })]);
+  assert.equal(f.records().length, 0);
+  await f.refresh();
+  await f.ingest([edge("AABB0002", 106000, 2)]);
+  assert.equal(f.records().length, 0);
+});
