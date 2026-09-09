@@ -22,16 +22,6 @@ export const TIMING_RULES = {
 export const MASTER_TICKS_PER_MS = 16000n;
 const MASTER_TICK_MAX = (1n << 64n) - 1n;
 
-// Fail-closed plausibility limits for automatically persisted wireless results.
-// These are deliberately broad enough for competition operation while rejecting
-// the sub-second/multi-second false records caused by missing or shifted edges.
-export const WIRELESS_MEASUREMENT_LIMITS_MS = Object.freeze({
-  "가속": Object.freeze({ min: 1000, max: 30000 }),
-  "스키드패드": Object.freeze({ min: 5000, max: 120000 }),
-  "오토크로스": Object.freeze({ min: 5000, max: 300000 }),
-  "내구": Object.freeze({ min: 5000, max: 300000 }),
-});
-
 function masterTick(value) {
   let tick;
   if (typeof value === "bigint") tick = value;
@@ -63,12 +53,6 @@ export function masterTickDistanceBelowMs(a, b, windowMs) {
   const delta = masterTick(a) - masterTick(b);
   const distance = delta < 0n ? -delta : delta;
   return distance < BigInt(windowMs) * MASTER_TICKS_PER_MS;
-}
-
-export function measurementWithinLimits(eventType, durationMs) {
-  const limits = WIRELESS_MEASUREMENT_LIMITS_MS[eventType];
-  return !!limits && Number.isInteger(durationMs)
-    && durationMs >= limits.min && durationMs <= limits.max;
 }
 
 export function ruleFor(mode) {

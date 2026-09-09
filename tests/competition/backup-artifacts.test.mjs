@@ -329,9 +329,26 @@ function removeEnduranceDriverNames(dbPath) {
   writer.close();
 }
 
-function removeWirelessRunState(dbPath) {
+function removeWirelessRunState(dbPath, { keepRunState = false } = {}) {
   const writer = new Database(dbPath);
-  if (writer.pragma("table_info(wireless_session)").some(({ name }) => name === "engine_state")) {
+  if (writer.pragma("table_info(wireless_event)").some(({name}) => name === "sensor_boot_id")) {
+    writer.exec("DROP INDEX idx_wevent_dedupe");
+    for (const column of ["sensor_boot_id", "capture_seq", "end_seq", "end_tick", "flags", "sync_age_ms"]) {
+      writer.exec(`ALTER TABLE wireless_event DROP COLUMN ${column}`);
+    }
+    writer.exec("CREATE UNIQUE INDEX idx_wevent_dedupe ON wireless_event(node_id, ev_seq, master_tick, master_boot_id)");
+    // Restore the exact deployed predecessor in this generated fixture only.
+    const sql = writer.prepare("SELECT sql FROM sqlite_master WHERE name = 'record'").get().sql;
+    const indexes = writer.prepare("SELECT sql FROM sqlite_master WHERE tbl_name = 'record' AND type IN ('index', 'trigger') AND sql IS NOT NULL").all();
+    writer.transaction(() => {
+      writer.exec('ALTER TABLE record RENAME TO record_v9_fixture');
+      writer.exec(sql.replace('result >= 0', 'result > 0'));
+      writer.exec('INSERT INTO record SELECT * FROM record_v9_fixture');
+      writer.exec('DROP TABLE record_v9_fixture');
+      for (const index of indexes) writer.exec(index.sql);
+    })();
+  }
+  if (!keepRunState && writer.pragma("table_info(wireless_session)").some(({ name }) => name === "engine_state")) {
     writer.exec(`
       ALTER TABLE wireless_session DROP COLUMN engine_state;
       DROP INDEX idx_wevent_dedupe;
@@ -1058,6 +1075,26 @@ describe("Competition backup/restore artifact validation", () => {
     }
     const result = validateDatabase(dbPath);
     assert.equal(result.status, 0, result.stderr);
+  });
+
+  it("validates the exact v8 predecessor read-only and upgrades its capture evidence schema", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-v8-upgrade-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+    removeWirelessRunState(dbPath, { keepRunState: true });
+    const reader = new Database(dbPath, { readonly: true });
+    assert.equal(competitionSchemaContractDigest(captureCompetitionSchemaContract(reader)),
+      "b5b96a3190c97edd14e8319db6e38615257b4974f02da06d3f2973760e63e748");
+    reader.close();
+    const before = fs.readFileSync(dbPath);
+    const validation = validateDatabase(dbPath);
+    assert.equal(validation.status, 0, validation.stderr);
+    assert.equal(Buffer.compare(before, fs.readFileSync(dbPath)), 0);
+    createCompetitionUnit(dbPath, uploads);
+    const current = validateDatabase(dbPath);
+    assert.equal(current.status, 0, current.stderr);
   });
 
   it("validates and repairs every committed Queue settings preview state", () => {

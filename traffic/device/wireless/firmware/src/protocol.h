@@ -37,9 +37,7 @@
 #define PKT_TYPE_ACK      0x03u
 #define PKT_TYPE_STATUS   0x04u
 
-#define PROTO_VER   8u  /* 8: ACK binds the sensor boot and exact event timestamp;
-                         * 7: fail-closed sync/clock/capture health in EVENT + STATUS;
-                         * 6: compact wire; 5: chip-id identity + hashed-phase STATUS */
+#define PROTO_VER   9u  /* source sequence, loss ranges, and reliable checkpoints */
 
 /* Type byte = (PROTO_VER << 4) | PKT_TYPE_*. Both nibbles are authenticated as
  * AEAD associated data and the type half feeds the nonce. PROTO_VER must stay <= 15. */
@@ -82,7 +80,14 @@ typedef struct __attribute__((packed)) {
     uint32_t master_boot_id; /* complete master boot_id (session binding) */
     uint16_t sync_age_ms;    /* age of the offset anchor when the edge was captured */
     uint8_t  flags;
+    uint32_t capture_seq;
+    uint32_t end_seq;
+    uint64_t end_tick;
 } event_pl_t;
+
+#define EVENT_LOSS 0x10u
+#define EVENT_CHECKPOINT 0x20u
+#define EVENT_TIME_UNKNOWN 0x40u
 
 #define HEALTH_SYNC_VALID 0x01u
 #define HEALTH_SKEW_VALID 0x02u
@@ -132,6 +137,9 @@ typedef struct __attribute__((packed)) {
 #define WIRE_EVENT    SEC_WIRE_LEN(SEC_HDR_UL, sizeof(event_pl_t))
 #define WIRE_ACK      SEC_WIRE_LEN(SEC_HDR_DL, sizeof(ack_pl_t))
 #define WIRE_STATUS   SEC_WIRE_LEN(SEC_HDR_UL, sizeof(status_pl_t))
-#define WIRE_MAX      64 /* RX buffer size; largest sealed packet is WIRE_STATUS */
+#define WIRE_MAX      64 /* RX buffer size; largest sealed packet is WIRE_EVENT */
+
+_Static_assert(WIRE_EVENT <= WIRE_MAX, "EVENT must fit the radio frame");
+_Static_assert(WIRE_STATUS <= WIRE_MAX, "STATUS must fit the radio frame");
 
 #endif /* PROTOCOL_H */

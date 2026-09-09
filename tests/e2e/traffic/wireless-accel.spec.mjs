@@ -1,3 +1,4 @@
+import { withWirelessClock } from "../../helpers/wireless-clock.mjs";
 import { currentCompetitionYear } from "../../../shared/competition-year.mjs";
 import { test, expect } from "@playwright/test";
 import {
@@ -9,7 +10,7 @@ import {
   waitForPageReady,
 } from "../helpers/utils.mjs";
 import { trafficEntry } from "../helpers/traffic.mjs";
-import { healthyWirelessBatch } from "../../helpers/wireless-fixtures.mjs";
+import { healthyWirelessBatch, wirelessBrowserRequest } from "../../helpers/wireless-fixtures.mjs";
 
 const YEAR = currentCompetitionYear();
 const EVENT = "E2E-WL-Accel";
@@ -24,6 +25,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
   test.beforeEach(async ({ page }) => {
     // 이전 실패/재시도에서 남은 같은 계정의 lease와 기록을 권위 API로 정리한다.
     await page.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("가속")}`).catch(() => {});
+    await page.request.post("/competition/api/v1/traffic/wireless/arm", { data: { event_type: "가속", action: "stop" } });
     await page.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${EVENT}`).catch(() => {});
   });
 
@@ -33,13 +35,13 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await p.request.delete(`/competition/api/v1/traffic/records/FSK ${YEAR} ${EVENT}`).catch(() => {});
     await p.request.delete(`/competition/api/v1/traffic/wireless/mapping/${NODE_S}`).catch(() => {});
     await p.request.delete(`/competition/api/v1/traffic/wireless/mapping/${NODE_F}`).catch(() => {});
-    await p.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } }).catch(() => {});
     await p.request.delete(`/competition/api/v1/traffic/wireless/lease/${encodeURIComponent("가속")}`).catch(() => {});
     await ctx.close();
   });
 
   test("server engine saves and reliably reconnects the matching accel record", async ({ page, browser }) => {
     // 재시도도 별도 센서 이벤트가 되도록 매 실행마다 고유 tick/sequence를 사용한다.
+    const wireless = wirelessBrowserRequest(page.request);
     const tickBase = BigInt(Date.now()) * 16000n;
     const finishTick = tickBase + 160000000n;
     const eventSequence = Date.now() % 0x10000;
@@ -48,7 +50,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.request.put(`/competition/api/v1/traffic/wireless/mapping/${NODE_S}`, { data: { event_type: "가속", role: "start" } });
     await page.request.put(`/competition/api/v1/traffic/wireless/mapping/${NODE_F}`, { data: { event_type: "가속", role: "finish" } });
 
-    await installSSEEventProbe(page, ["init", "wireless:light"]);
+    await installSSEEventProbe(page, ["init", "wireless:session"]);
     await page.goto("/traffic/wireless/accel");
     await waitForPageReady(page);
     const observerContext = await browser.newContext({ storageState: storageStatePath("admin") });
@@ -65,15 +67,17 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await page.request.post("/competition/api/v1/traffic/wireless/select", {
       data: { event_type: "가속", team: await trafficEntry(1), event_name: EVENT },
     });
-    const health = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
+    const health = await wireless.post("/competition/api/v1/traffic/wireless/ingest", {
       data: healthyWirelessBatch([NODE_S, NODE_F]),
     });
     expect(health.status()).toBe(200);
-    // 가속을 물리 경기로 지정 + green(=arm). 서버가 세션에 arm 미러.
-    await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "가속" } });
-    const green = await page.request.post("/competition/api/v1/traffic/wireless/light", {
-      data: { master_boot_id: 1, color: "green", green_tick: tickBase.toString() },
-    });
+    const cookies = (await page.request.storageState()).cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
+    const green = await withWirelessClock({
+      url: new URL("/competition/api/v1/traffic/events", page.url()).href, cookie: cookies, tick: tickBase.toString(),
+      respond: data => page.request.post("/competition/api/v1/traffic/wireless/clock", { data }),
+    }, () => wireless.post("/competition/api/v1/traffic/wireless/arm", {
+      data: { event_type: "가속", action: "start", start_tick: tickBase.toString() },
+    }));
     expect(green.status()).toBe(200);
 
     // 클라이언트가 SSE로 green 반영
@@ -81,7 +85,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await scoreboardPage.getByLabel("기록 파일").selectOption(`FSK ${YEAR} ${EVENT}`);
 
     // 출발은 온라인 상태에서 수신한다.
-    const startIngest = await page.request.post("/competition/api/v1/traffic/wireless/ingest", {
+    const startIngest = await wireless.post("/competition/api/v1/traffic/wireless/ingest", {
       data: { events: [{ master_boot_id: 1, node_id: NODE_S, master_tick: tickBase.toString(), ev_seq: eventSequence, rssi: -60, snr: 9 }] },
     });
     expect(startIngest.status()).toBe(200);
@@ -101,7 +105,7 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     // 끊는 시점을 보장하지 않으므로 오류 경로를 직접 발생시킨다.
     const initCountBeforeReconnect = await sseEventCount(page, "init");
     await forceSSEReconnect(page);
-    const finishIngest = await observerPage.request.post("/competition/api/v1/traffic/wireless/ingest", {
+    const finishIngest = await wireless.post("/competition/api/v1/traffic/wireless/ingest", {
       data: { events: [{ master_boot_id: 1, node_id: NODE_F, master_tick: finishTick.toString(), ev_seq: eventSequence, rssi: -61, snr: 9 }] },
     });
     expect(finishIngest.status()).toBe(200);
@@ -132,10 +136,10 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
     await expect(latePage.locator(".saved-section")).toContainText("00:10.000");
     await expect(latePage.locator(".records-section .record-item")).toHaveCount(0);
 
-    // 도착 후 적색등으로 전환되어도 현재 런의 편집 카드는 유지된다.
-    const red = await expectSSEEventAfter(page, "wireless:light", () => page.request.post(
-      "/competition/api/v1/traffic/wireless/light",
-      { data: { color: "red" } },
+    // 정지 후에도 저장된 기록의 편집 카드는 유지된다.
+    const red = await expectSSEEventAfter(page, "wireless:session", () => page.request.post(
+      "/competition/api/v1/traffic/wireless/arm",
+      { data: { event_type: "가속", action: "stop" } },
     ));
     expect(red.status()).toBe(200);
     await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
@@ -172,83 +176,32 @@ test.describe("Wireless acceleration measurement (client routing)", () => {
       return { engineCones: engine?.cones, manualCones: manual?.cones };
     }, { timeout: 5000 }).toEqual({ engineCones: 1, manualCones: 0 });
 
-    // OFF 요청이 실패해 서버 세션이 red인 채라면 낙관적 grey 상태에서도 편집 카드는 유지된다.
-    await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } });
     await page.getByRole("button", { name: "제어", exact: true }).click();
-    await expect(page.getByRole("button", { name: "제어 해제", exact: true })).toBeVisible({ timeout: 5000 });
-    await page.route("**/competition/api/v1/traffic/wireless/arm", async (route) => {
-      const body = route.request().postDataJSON();
-      if (body?.action === "off") await route.fulfill({ status: 503, body: "OFF failed" });
-      else await route.continue();
-    });
-    await page.getByRole("button", { name: "OFF", exact: true }).click();
-    await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
-    await expect(quickEdit).toBeVisible();
-
-    await page.unrouteAll({ behavior: "wait" });
-    await page.getByRole("button", { name: "OFF", exact: true }).click();
-    await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
-    await expect(quickEdit).toBeVisible();
-
-    // 같은 종료 런에서 색만 다시 red로 바뀌어도 카드는 유지되지만 런 수신은 다시 열리지 않는다.
-    await page.getByRole("button", { name: "적색등", exact: true }).click();
-    await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
-    await expect(quickEdit).toBeVisible();
-
-    // 물리 초기화 요청만 수락된 동안에는 저장 기록을 유지·잠그고 OFF 확인 대기를 명시한다.
-    await page.request.post("/competition/api/v1/traffic/wireless/ingest", { data: { events: [] } });
-    await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: "가속" } });
-    // 응답을 보류해 pending SSE → OFF 확정 SSE → 과거 명령 응답 순서를 결정적으로 만든다.
-    // 요청 응답이 마지막에 도착해도 확정된 세션을 이전 pending 스냅샷으로 덮으면 안 된다.
-    let markResetAccepted;
-    const resetAccepted = new Promise((resolve) => { markResetAccepted = resolve; });
-    let releaseResetResponse;
-    const resetResponseRelease = new Promise((resolve) => { releaseResetResponse = resolve; });
-    await page.route("**/competition/api/v1/traffic/wireless/command", async (route) => {
-      const body = route.request().postDataJSON();
-      if (body?.action !== "reset") return route.continue();
+    await expect(page.getByRole("button", { name: "제어 해제", exact: true })).toBeVisible();
+    // Delay the HTTP response until the committed reset has already arrived over SSE.
+    let accepted;
+    const committed = new Promise(resolve => { accepted = resolve; });
+    let release;
+    const responseGate = new Promise(resolve => { release = resolve; });
+    const routePattern = "**/competition/api/v1/traffic/wireless/arm";
+    await page.route(routePattern, async route => {
+      if (route.request().postDataJSON()?.action !== "reset") return route.continue();
       const response = await route.fetch();
-      markResetAccepted();
-      await resetResponseRelease;
+      accepted();
+      await responseGate;
       await route.fulfill({ response });
     });
-    const resetClick = page.getByRole("button", { name: "초기화", exact: true }).click();
-    await resetAccepted;
-    await resetClick;
-    await expect(quickEdit.locator('[data-status="DSQ"]')).toBeDisabled();
-    await expect(observerPage.getByText("마스터의 OFF 확인을 기다리는 중입니다.", { exact: false })).toBeVisible({ timeout: 5000 });
-    await expect(observerPage.getByTestId("record-quick-edit").locator('[data-status="DSQ"]')).toBeDisabled();
-    await expect(latePage.getByText("마스터의 OFF 확인을 기다리는 중입니다.", { exact: false })).toBeVisible({ timeout: 5000 });
-    await expect(latePage.getByTestId("record-quick-edit").locator('[data-status="DSQ"]')).toBeDisabled();
-    await expect(page.getByRole("button", { name: "녹색등", exact: true })).toBeDisabled();
-    const pendingState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
-    const pendingSession = pendingState.sessions.find((session) => session.event_type === "가속");
-    expect(pendingSession.reset_pending).toBe(true);
-    expect(pendingSession.run_id).not.toBeNull();
-
-    // 마스터의 실제 OFF 보고가 초기화를 확정하면 모든 화면에서 카드를 제거한다.
-    await page.request.post("/competition/api/v1/traffic/wireless/light", { data: { color: "off" } });
-    await expect(page.locator(".traffic-light.grey")).toBeVisible({ timeout: 5000 });
-    await expect(quickEdit).not.toBeVisible();
+    await page.getByRole("button", { name: "초기화", exact: true }).click();
+    await committed;
     await expect(observerQuickEdit).not.toBeVisible();
     await expect(lateQuickEdit).not.toBeVisible();
-    await expect(observerPage.locator(".records-section .record-item")).toHaveCount(0);
+    release();
+    await expect(quickEdit).not.toBeVisible();
+    await expect(page.getByRole("button", { name: "초기화", exact: true })).toBeDisabled();
     await expect(observerPage.locator(".clock")).toHaveText("00:00.000");
     const resetState = await (await page.request.get("/competition/api/v1/traffic/wireless/state")).json();
-    const resetSession = resetState.sessions.find((session) => session.event_type === "가속");
-    expect(resetSession.run_id).toBeNull();
-    expect(resetSession.saved_record_name).toBeNull();
-    expect(resetSession.saved_record_rowid).toBeNull();
-    expect(resetSession.reset_pending).toBe(false);
-    releaseResetResponse();
-    await expect(page.getByRole("button", { name: "녹색등", exact: true })).toBeEnabled({ timeout: 5000 });
-    await expect(page.getByRole("button", { name: "초기화", exact: true })).toBeDisabled();
-    await expect(quickEdit).not.toBeVisible();
-    await page.unroute("**/competition/api/v1/traffic/wireless/command");
-    await page.request.put("/competition/api/v1/traffic/wireless/physical-event", { data: { event_type: null } });
-    await page.getByRole("button", { name: "적색등", exact: true }).click();
-    await expect(page.locator(".traffic-light.red")).toBeVisible({ timeout: 5000 });
-    await expect(quickEdit).not.toBeVisible();
+    expect(resetState.sessions.find(session => session.event_type === "가속").run_id).toBeNull();
+    await page.unroute(routePattern);
     await lateContext.close();
     await observerContext.close();
     await scoreboardContext.close();

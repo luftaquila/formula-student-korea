@@ -3,8 +3,8 @@
  * SuperMini nRF52840 GPIO numbering: P0.n == n, P1.n == 32 + n.
  * PIN(port, n) matches Nordic's NRF_GPIO_PIN_MAP(port, n).
  *
- * Single board, role chosen by firmware (node_id): master drives the lights
- * over the SSR outputs and talks to the PC over USB; sensor captures events and
+ * Single board, role chosen by firmware (node_id): master talks to the PC
+ * over USB; sensor captures events and
  * reports over LoRa. Capture pins (DIO1, SENSOR) are on port 1 — GPIOTE PSEL
  * must include the port bit (handled in the capture module, Stage 3).
  */
@@ -30,10 +30,6 @@
 
 /* Sensor input (BA2M NPN open-collector, falling edge) — sensor role */
 #define PIN_SENSOR_IN  PIN(1, 11) /* GPIOTE capture (falling) — port 1 */
-
-/* Traffic light SSR drive (high-side 2-BJT per colour) — master role */
-#define PIN_LIGHT_RED   PIN(0, 29)
-#define PIN_LIGHT_GREEN PIN(0, 2)
 
 /* VCC enable gate — must be driven HIGH at boot (DESIGN.md §8) */
 #define PIN_EXT_POWER  PIN(0, 13)

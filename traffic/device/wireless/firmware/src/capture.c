@@ -1,6 +1,7 @@
 #include "capture.h"
 
 #include "config.h"
+#include "board.h"
 #include "gpio.h"
 #include "nrf.h"
 
@@ -23,6 +24,11 @@
 #define SENS_PRT (PIN_SENSOR_IN / 32u) /* 1 */
 
 static volatile uint32_t s_sensor_queue[SENSOR_QUEUE_LEN];
+static volatile uint32_t s_sensor_seq_queue[SENSOR_QUEUE_LEN];
+static volatile uint8_t s_sensor_clock_queue[SENSOR_QUEUE_LEN];
+static volatile uint32_t s_sensor_seq;
+static volatile uint32_t s_loss_first_seq, s_loss_last_seq, s_loss_first_tick, s_loss_last_tick;
+static volatile int s_loss_pending;
 static volatile uint8_t s_sensor_head;
 static volatile uint8_t s_sensor_tail;
 static volatile uint16_t s_sensor_overflow;
@@ -31,12 +37,17 @@ void GPIOTE_IRQHandler(void)
 {
     if (NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS]) {
         NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS] = 0;
+        uint32_t seq = ++s_sensor_seq;
         uint8_t head = s_sensor_head;
         uint8_t next = (uint8_t)((head + 1u) & (SENSOR_QUEUE_LEN - 1u));
         if (next == s_sensor_tail) {
             if (s_sensor_overflow != UINT16_MAX) { s_sensor_overflow++; }
+            if (!s_loss_pending) { s_loss_first_seq = seq; s_loss_first_tick = NRF_TIMER1->CC[CAP_CC_SENS]; }
+            s_loss_last_seq = seq; s_loss_last_tick = NRF_TIMER1->CC[CAP_CC_SENS]; s_loss_pending = 1;
         } else {
             s_sensor_queue[head] = NRF_TIMER1->CC[CAP_CC_SENS];
+            s_sensor_seq_queue[head] = seq;
+            s_sensor_clock_queue[head] = board_hfclk_xtal();
             __DMB();
             s_sensor_head = next;
         }
@@ -120,15 +131,38 @@ int capture_dio1_get(uint64_t *tick)
     return 1;
 }
 
-int capture_sensor_get(uint64_t *tick)
+int capture_sensor_get(uint64_t *tick, uint32_t *seq, int *clock_xtal)
 {
     uint8_t tail = s_sensor_tail;
     if (tail == s_sensor_head) { return 0; }
     uint32_t low = s_sensor_queue[tail];
+    *seq = s_sensor_seq_queue[tail];
+    *clock_xtal = s_sensor_clock_queue[tail];
     __DMB();
     s_sensor_tail = (uint8_t)((tail + 1u) & (SENSOR_QUEUE_LEN - 1u));
     *tick = widen(low);
     return 1;
+}
+
+int capture_sensor_loss(uint64_t *first_tick, uint64_t *last_tick, uint32_t *first_seq, uint32_t *last_seq)
+{
+    NVIC_DisableIRQ(GPIOTE_IRQn);
+    if (!s_loss_pending) { NVIC_EnableIRQ(GPIOTE_IRQn); return 0; }
+    *first_tick = widen(s_loss_first_tick); *last_tick = widen(s_loss_last_tick);
+    *first_seq = s_loss_first_seq; *last_seq = s_loss_last_seq;
+    s_loss_pending = 0;
+    NVIC_EnableIRQ(GPIOTE_IRQn);
+    return 1;
+}
+
+int capture_sensor_checkpoint(uint64_t *tick, uint32_t *seq)
+{
+    NVIC_DisableIRQ(GPIOTE_IRQn);
+    *tick = capture_now64();
+    int empty = s_sensor_head == s_sensor_tail && !s_loss_pending && !NRF_GPIOTE->EVENTS_IN[CAP_GPIOTE_SENS];
+    *seq = s_sensor_seq;
+    NVIC_EnableIRQ(GPIOTE_IRQn);
+    return empty;
 }
 
 uint16_t capture_sensor_overflow(void)

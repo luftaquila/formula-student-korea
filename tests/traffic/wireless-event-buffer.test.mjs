@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createWirelessEventBuffer } from "../../traffic/lib/wireless-event-buffer.mjs";
 
 const session = {
-  event_type: "가속", armed: true, run_id: "run-1", master_boot_id: 7, green_tick: "1000",
+  event_type: "가속", armed: true, run_id: "run-1", master_boot_id: 7, start_tick: "1000",
 };
 const edge = (id, tick = "1100", boot = 7) => ({ id, master_tick: tick, master_boot_id: boot });
 
@@ -26,7 +26,7 @@ test("buffered events remain fenced by boot and capture boundary for each run", 
   const received = [];
   buffer.replay(session, e => received.push(e.id));
   assert.deepEqual(received, [3]);
-  buffer.replay({ ...session, run_id: "run-2", green_tick: "1150", master_boot_id: 8 }, e => received.push(e.id));
+  buffer.replay({ ...session, run_id: "run-2", start_tick: "1150", master_boot_id: 8 }, e => received.push(e.id));
   assert.deepEqual(received, [3, 2]);
 });
 

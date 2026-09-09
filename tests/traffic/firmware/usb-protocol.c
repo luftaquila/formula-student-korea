@@ -20,14 +20,18 @@ int main(void) {
     assert(command("T short") == PU_CMD_BAD);
     pu_emit_clock(token, UINT64_MAX, UINT32_MAX);
     assert(strcmp(output, "T 0123456789abcdef0123456789abcdef 18446744073709551615 4294967295\n") == 0);
-    assert(command("C AABB0001 65535 18446744073709551615 4294967295") == PU_CMD_EVENT_ACK);
+    assert(command("C AABB0001 65535 18446744073709551615 4294967295 42") == PU_CMD_EVENT_ACK);
     assert(pu_event_ack_node() == 0xAABB0001 && pu_event_ack_seq() == UINT16_MAX);
     assert(pu_event_ack_tick() == UINT64_MAX && pu_event_ack_boot() == UINT32_MAX);
     assert(command("C AABB0001 1 100") == PU_CMD_BAD);
     assert(command("C AABB0001 1 100 4294967296") == PU_CMD_BAD);
-    pu_emit_event(0xAABB0001, UINT16_MAX, UINT64_MAX, 15, -60, 9, UINT32_MAX);
-    assert(strcmp(output, "E AABB0001 65535 18446744073709551615 15 -60.00 9.00 4294967295\n") == 0);
-    pu_emit_light(PU_LIGHT_GREEN, UINT64_MAX, UINT32_MAX);
-    assert(strcmp(output, "L GREEN 18446744073709551615 4294967295\n") == 0);
+    event_pl_t event = { .ev_seq = UINT16_MAX, .ev_master_t = UINT64_MAX, .master_boot_id = UINT32_MAX,
+        .flags = 47, .capture_seq = UINT32_MAX, .end_seq = UINT32_MAX, .end_tick = UINT64_MAX, .sync_age_ms = 7 };
+    assert(pu_event_ack_sensor_boot() == 42);
+    pu_emit_event(0xAABB0001, &event, 42, -60, 9);
+    assert(strcmp(output, "E AABB0001 65535 18446744073709551615 47 -60.00 9.00 4294967295 42 4294967295 4294967295 18446744073709551615 7\n") == 0);
+    assert(command("G") == PU_CMD_BAD);
+    assert(command("R") == PU_CMD_BAD);
+    assert(command("O") == PU_CMD_BAD);
     return 0;
 }

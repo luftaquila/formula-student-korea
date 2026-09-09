@@ -126,13 +126,6 @@ export async function ingestWireless(batch) {
   return res.json();
 }
 
-export async function reportLight(state) {
-  const res = await request("/api/wireless/light", {
-    method: "POST",
-    body: JSON.stringify(state),
-  });
-  return res.json();
-}
 
 export async function reportWirelessClock(clock) {
   const res = await request("/api/wireless/clock", { method: "POST", body: JSON.stringify(clock) });
@@ -144,14 +137,6 @@ export async function reportBridgeOffline() {
   await request("/api/wireless/bridge/offline", { method: "POST" });
 }
 
-// 물리 신호등을 사용할 경기 지정(eventType=null → 없음, 전부 가상).
-export async function putPhysicalEvent(eventType) {
-  const res = await request("/api/wireless/physical-event", {
-    method: "PUT",
-    body: JSON.stringify({ event_type: eventType }),
-  });
-  return res.json();
-}
 
 // 센서 디바운스 창(ms) 설정. 무선 공용(서버 저장 + SSE 공유).
 export async function putWirelessDebounce(ms) {
@@ -167,7 +152,7 @@ export async function fetchWirelessEvents(since = 0, limit = 200) {
   return res.json();
 }
 
-// 경기 arm/disarm/reset(green=arm). 가상 경기를 전 클라에 공유. body: {event_type, action, green_tick?, team?, event_name?}
+// 경기 시작·정지·초기화. body: {event_type, action, team?, event_name?}
 export async function armWirelessEvent(body) {
   const res = await ctrlRequest("/api/wireless/arm", {
     method: "POST",
@@ -206,11 +191,5 @@ export async function statusWirelessEvent(eventType, status) {
     method: "POST",
     body: JSON.stringify({ event_type: eventType, status }),
   });
-  return res.json();
-}
-
-// 물리 신호등 원격 제어(비-브리지 컨트롤러 → 서버 → 브리지 시리얼). 물리 지정 경기만.
-export async function commandWirelessPhysical(eventType, action) {
-  const res = await ctrlRequest("/api/wireless/command", { method: "POST", body: JSON.stringify({ event_type: eventType, action }) });
   return res.json();
 }

@@ -1,6 +1,5 @@
 import { createRouter, createWebHistory } from "vue-router";
 import { useSerialStore } from "../stores/serial";
-import { useWirelessStore } from "../stores/wireless";
 import { hasPermission } from "@shared/officialsStore.js";
 
 const routes = [
@@ -94,17 +93,7 @@ router.beforeEach((to, from) => {
   if (serial.green.active && to.path !== from.path) {
     return false;
   }
-  // 무선: 브리지(콘솔) 탭에서 점유 중인 경기의 신호등이 green이면 그 이벤트 화면을 못 떠나게 막는다.
-  const wireless = useWirelessStore();
-  if (
-    wireless.bridgeIsSelf &&
-    wireless.physicalKey &&
-    wireless.lightColorFor(wireless.physicalKey) === "green" &&
-    from.path.startsWith("/wireless/") &&
-    to.path !== from.path
-  ) {
-    return false;
-  }
+
 });
 
 export default router;

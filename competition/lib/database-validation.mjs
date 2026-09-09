@@ -30,7 +30,7 @@ export function captureCompetitionSchemaContract(db) {
 
 export const COMPETITION_SCHEMA_CONTRACT = Object.freeze({
   objectCount: 131,
-  sha256: "b5b96a3190c97edd14e8319db6e38615257b4974f02da06d3f2973760e63e748",
+  sha256: "f471b647b9b5b9e61bed1fd5d5d85c50521b13ea1a77644590a130425586795f",
 });
 
 // Deployment validates a read-only snapshot before the runtime gets a chance
@@ -48,6 +48,13 @@ const upgradeColumns = (columns = {}) => Object.freeze({
   ...columns,
 });
 const UPGRADABLE_SCHEMA_CONTRACTS = Object.freeze([
+  Object.freeze({
+    // v8 predecessor: no source capture evidence; record milliseconds were strictly positive.
+    objectCount: 131,
+    sha256: "b5b96a3190c97edd14e8319db6e38615257b4974f02da06d3f2973760e63e748",
+    allowedMissingTables: Object.freeze([]),
+    allowedMissingColumns: Object.freeze({}),
+  }),
   Object.freeze({
     // Traffic adds persisted run state and the master boot to event identity.
     objectCount: 131,

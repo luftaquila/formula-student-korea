@@ -21,4 +21,6 @@ test('an edge during initial skew acquisition does not poison later synchronized
 test('authenticated ACK from an old master session cannot evict the pending event', t => runFirmware(t, 'ack.c'));
 test('USB capture boundaries and event acknowledgements preserve full tick and boot identity', t => runFirmware(t, 'usb-protocol.c'));
 
-test("a clock fault after synchronization remains a measurement fault after clock recovery", t => runFirmware(t, "firmware.c", ["fault"]));
+test("a capture clock fault is reliably reported and does not block later healthy captures", t => runFirmware(t, "firmware.c", ["fault"]));
+test('master backpressure preserves events and clock renewal preserves old-session acknowledgements', t => runFirmware(t, 'master-queue.c'));
+test('ISR overflow retains the lost capture range and the next edge recovers without reboot', t => runFirmware(t, 'capture-queue.c'));

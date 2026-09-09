@@ -14,7 +14,7 @@ export function createWirelessEventBuffer(capacity = 4096) {
       }
     },
     replay(session, deliver) {
-      if (!session?.armed || !session.run_id || session.green_tick == null) return;
+      if (!session?.armed || !session.run_id || session.start_tick == null) return;
       let delivery = deliveries.get(session.event_type);
       if (delivery?.runId !== session.run_id) {
         delivery = { runId: session.run_id, ids: new Set() };
@@ -22,7 +22,7 @@ export function createWirelessEventBuffer(capacity = 4096) {
       }
       for (const event of events.values()) {
         if (delivery.ids.has(event.id) || event.master_boot_id !== session.master_boot_id
-          || BigInt(event.master_tick) < BigInt(session.green_tick)) continue;
+          || BigInt(event.master_tick) < BigInt(session.start_tick)) continue;
         delivery.ids.add(event.id);
         deliver(event);
       }

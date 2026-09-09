@@ -24,7 +24,6 @@ const cards = computed(() =>
       eventName: sess?.event_name || "",
       team: sess?.team || null,
       controller: store.controllerFor(mode),
-      isPhysical: store.isPhysical(mode),
     };
   }),
 );
@@ -45,7 +44,6 @@ const cards = computed(() =>
           <span class="traffic-light" :class="c.color"></span>
           <h3 class="ov-title">
             {{ c.label }}
-            <span v-if="c.isPhysical" class="ov-phys" title="물리 신호등 경기">🚦</span>
           </h3>
           <span class="ov-status" :class="c.armed ? 'on' : 'off'">{{ c.armed ? "측정 중" : "대기" }}</span>
         </div>
