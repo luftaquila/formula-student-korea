@@ -273,3 +273,36 @@ test("a real quality fault in the first post-restart batch overrides restored he
   await f.ingest([edge("AABB0002", 106000, 2)]);
   assert.equal(f.records().length, 0);
 });
+
+test("active runs reject rearm before clock capture; stopping allows one new run to own in-flight edges", async t => {
+  const requested = Promise.withResolvers();
+  const clock = Promise.withResolvers();
+  let clockCalls = 0;
+  let delayClock = false;
+  const f = await fixture(t, options => {
+    clockCalls++;
+    if (!delayClock) return readWirelessClock(options);
+    requested.resolve();
+    return clock.promise;
+  });
+  const original = await f.arm(90000);
+  await f.ingest([edge("AABB0001", 100000, 1)]);
+  const rejected = await f.client.post("/api/wireless/arm", {
+    body: { event_type: "가속", action: "green", green_tick: tick(110000) }, cookie,
+  });
+  assert.equal(rejected.status, 409);
+  assert.equal(clockCalls, 1, "rejected rearm must not request a hardware boundary");
+  const state = await (await f.client.get("/api/wireless/state", { cookie })).json();
+  assert.equal(state.sessions.find(s => s.event_type === "가속").run_id, original.run_id);
+
+  await f.post("/api/wireless/arm", { event_type: "가속", action: "off" });
+  delayClock = true;
+  const arming = f.arm(110000);
+  await requested.promise;
+  await f.ingest([edge("AABB0001", 120000, 2), edge("AABB0002", 125000, 1)]);
+  assert.equal(f.records().length, 0);
+  clock.resolve({ master_tick: tick(110000), master_boot_id: 1 });
+  const next = await arming;
+  assert.notEqual(next.run_id, original.run_id);
+  assert.deepEqual(f.records().map(row => row.result), [5000]);
+});

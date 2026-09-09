@@ -2625,6 +2625,14 @@ app.post("/api/wireless/arm", async (req, res) => {
       context: { event_type, owner_event: sessionPreflight.value.light.owner_event, reset_pending: !!sess?.reset_pending },
     });
   }
+  if (action === "green" && sess?.armed) {
+    return rejectMutation(req, res, {
+      action: "wireless.arm", status: 409,
+      message: "진행 중인 경기를 정지하거나 초기화한 뒤 다시 시작하세요.",
+      target: event_type, operation: action,
+      context: { event_type, run_id: sess.run_id, armed: true },
+    });
+  }
   if (action === "green" && sess?.reset_pending) {
     return rejectMutation(req, res, {
       action: "wireless.arm", status: 409,
@@ -2687,7 +2695,7 @@ app.post("/api/wireless/arm", async (req, res) => {
       if (pendingArmRequests.get(event_type) === request) pendingArmRequests.delete(event_type);
     }
     const current = getSession(event_type);
-    if (current.run_id !== sess.run_id || current.reset_pending
+    if (current.armed || current.run_id !== sess.run_id || current.reset_pending
       || (current.controller && current.controller !== actor)) {
       return rejectMutation(req, res, {
         action: "wireless.arm", status: 409, message: "시각 확인 중 경기 상태가 변경되었습니다. 다시 시작하세요.",

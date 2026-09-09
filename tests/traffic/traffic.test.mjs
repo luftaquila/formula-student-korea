@@ -1341,6 +1341,8 @@ describe('Wireless sessions & arm', () => {
   });
 
   it('POST /api/wireless/arm green arms the event with light_color green', async () => {
+    const stopped = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'off' }, cookie: adminCookie });
+    assert.equal(stopped.status, 200);
     await refreshWirelessQuality('가속');
     const res = await client.post('/api/wireless/arm', { body: { event_type: '가속', action: 'green', green_tick: '16000000' }, cookie: adminCookie });
     assert.equal(res.status, 200);
