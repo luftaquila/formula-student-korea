@@ -618,7 +618,7 @@ function rejectWirelessQuality(req, res, action, eventType) {
   return true;
 }
 
-function enforceArmedWirelessQuality(req) {
+function enforceArmedWirelessQuality(req, eventTypes = null) {
   // These requests may later consume edges captured during the clock round
   // trip. Observed faults must survive subsequent healthy diagnostic deltas.
   for (const [eventType, request] of pendingArmRequests) {
@@ -627,6 +627,7 @@ function enforceArmedWirelessQuality(req) {
     if (!quality.ok) request.qualityFailure = quality.reasons;
   }
   for (const session of getSessions()) {
+    if (eventTypes && !eventTypes.has(session.event_type)) continue;
     if (!session.armed) continue;
     const run = engineRun.get(session.event_type);
     const quality = run?.qualityFailure
@@ -784,6 +785,7 @@ function clockStr(ms) {
 }
 // Captured edges and run state commit together; restart resumes the same run.
 const engineRun = new Map(); // event_type -> { debounce:{}, startTick, saved, lastTick, lapCount, lap2, bound }
+const recoveringEvents = new Set();
 for (const row of db.prepare("SELECT event_type, armed, run_id, saved_record_name, saved_record_rowid, engine_state FROM wireless_session WHERE engine_state IS NOT NULL").all()) {
   const run = JSON.parse(row.engine_state);
   if (!row.run_id || run.runId !== row.run_id) continue;
@@ -792,6 +794,7 @@ for (const row of db.prepare("SELECT event_type, armed, run_id, saved_record_nam
   run.lap2 = run.lap2 == null ? null : BigInt(run.lap2);
   run.lapTicks = (run.lapTicks || []).map(BigInt);
   engineRun.set(row.event_type, run);
+  if (row.armed && !run.saved) recoveringEvents.add(row.event_type);
   if (row.armed && !run.saved && run.diagnostics) {
     // Retain the original receive times. Recovery must not grant stale sync or
     // link state a new TTL, and newer diagnostic deltas still take precedence.
@@ -816,6 +819,12 @@ const interruptedRuns = db.prepare("SELECT event_type, run_id FROM wireless_sess
 if (interruptedRuns.length) {
   db.prepare("UPDATE wireless_session SET armed = 0, light_color = 'red' WHERE armed = 1 AND engine_state IS NULL").run();
   logger.warn(null, "wireless.run.recovery", { error: "기존 런의 계측 상태가 없어 중단했습니다.", runs: interruptedRuns }, "wireless");
+}
+// Validate before any new diagnostic sample can replace the persisted evidence.
+// Stop state must commit before this application can start accepting requests.
+if (recoveringEvents.size) {
+  const recovery = timingTransaction(() => enforceArmedWirelessQuality(null, recoveringEvents));
+  if (!recovery.success) throw new Error(`무선 런 복구 상태 저장 실패: ${recovery.internalError || recovery.error}`);
 }
 
 function saveEngineRuns() {

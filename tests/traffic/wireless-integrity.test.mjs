@@ -248,19 +248,26 @@ for (const partialRefresh of [false, true]) {
   });
 }
 
-test("restart preserves diagnostic age and rejects an expired healthy snapshot", async t => {
-  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-  const f = await fixture(t);
-  await f.arm();
-  await f.ingest([edge("AABB0001", 100000, 1)]);
-  t.mock.timers.tick(13000);
-  await f.restart({ refreshHealth: false });
-  await f.ingest([edge("AABB0002", 105000, 1)]);
-  assert.equal(f.records().length, 0);
-  await f.refresh();
-  await f.ingest([edge("AABB0002", 105000, 1)]);
-  assert.equal(f.records().length, 0, "fresh diagnostics cannot revive a stopped run");
-});
+for (const refreshHealth of [false, true]) {
+  test(`restart stops expired diagnostics before ${refreshHealth ? "healthy refresh" : "queued finish"}`, async t => {
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    const f = await fixture(t);
+    await f.arm();
+    await f.ingest([edge("AABB0001", 100000, 1)]);
+    t.mock.timers.tick(13000);
+    await f.restart({ refreshHealth });
+    const state = await (await f.client.get("/api/wireless/state", { cookie })).json();
+    assert.equal(state.sessions.find(s => s.event_type === "가속").armed, false);
+    await f.ingest([edge("AABB0002", 105000, 1)]);
+    assert.equal(f.records().length, 0);
+    await f.refresh();
+    await f.ingest([edge("AABB0002", 105000, 1)]);
+    assert.equal(f.records().length, 0, "fresh diagnostics cannot revive a stopped run");
+    await f.restart();
+    await f.ingest([edge("AABB0002", 106000, 2)]);
+    assert.equal(f.records().length, 0, "the recovery stop survives another restart");
+  });
+}
 
 test("a real quality fault in the first post-restart batch overrides restored healthy diagnostics", async t => {
   const f = await fixture(t);
