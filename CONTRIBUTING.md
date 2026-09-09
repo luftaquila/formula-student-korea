@@ -1,25 +1,15 @@
 # Contributing
 
-This is the single source of truth for development, testing, review, and deployment
-workflow. Product behavior belongs in the [user guide](docs/user-guide.md), runtime
-boundaries in the [architecture](docs/architecture.md), and HTTP contracts in the
-[API reference](docs/api.md).
+Development and deployment workflow. See [Architecture](docs/architecture.md) for
+service ownership and the [API reference](docs/api.md) for contracts.
 
-## Repository layout
-
-- `competition/` deploys Teams, Queue, Registration, Inspection, Traffic, Score, and
-  Documents as one process and database. Their top-level directories contain module
-  factories and web applications, not separate deployments.
-- `auth/`, `calendar/`, `course/`, and `email/` are supporting services; `shared/`
-  contains common server code and `tests/` mirrors service boundaries.
-- Hardware work is documented under `rover/` and `traffic/device/`.
+Competition module factories support tests but share one deployment. Hardware:
+[rover](rover/README.md), [timing devices](traffic/DESIGN.md).
 
 ## Local development
 
-Use Node.js 22 and the repository-pinned pnpm version. Enable Corepack if needed,
-then install the entire workspace once from the repository root. Service startup
-needs `.env` based on `.env.example`; tests inject their own dependencies where
-possible.
+Use Node.js 22, the pinned pnpm version, and `.env` based on `.env.example`.
+Install from the workspace root:
 
 ```bash
 corepack enable
@@ -33,14 +23,9 @@ pnpm --dir entry/web run build
 node competition/index.mjs      # replace competition for a supporting service
 ```
 
-Competition is the deployed owner of its seven domains. Their application factories
-remain directly usable by tests, but do not run them as standalone services.
-
 The root `Makefile` and `compose.yml` are not deployment interfaces for the k3s
 servers. Do not use `make deploy`, `make restart`, `make backup`, or `make restore`
 against the live k3s environment.
-
-For rover work, follow [rover/README.md](rover/README.md).
 
 ## Testing
 
@@ -48,69 +33,51 @@ For rover work, follow [rover/README.md](rover/README.md).
 - For a bug fix, first reproduce the defect and observe the test fail. Then apply the
   fix and observe the same test pass.
 - Run the narrowest relevant test first. Run all affected suites before handoff.
-- On shared hosts, use `pnpm test`, a `pnpm run test:<domain>` script, or
-  `node scripts/test.mjs tests/course/course-archive.test.mjs` for a single file.
-  Do not invoke `node --test` directly on these hosts. The runner requires Linux,
-  cgroup v2 and a working systemd user manager; it refuses to run
-  if the actual cgroup limits are missing. It limits the entire process tree to
-  1 GiB RAM, no swap, 256 tasks, and 10 minutes (then a 5-second kill grace),
-  with two concurrent test files and a 256 MiB V8 heap per Node process.
-  Unsupported local environments should use the CI runner instead of bypassing
-  isolation. These limits apply to tests, not application startup or builds.
-  GitHub-hosted CI uses its dedicated VM, two concurrent test files, the same
-  per-process heap cap, and a 15-minute unit-job timeout.
+- On shared hosts, run tests through `pnpm test`, `pnpm run test:<domain>`, or
+  `node scripts/test.mjs tests/course/course-archive.test.mjs`; never use
+  `node --test` directly. The runner requires Linux, cgroup v2, and a systemd user
+  manager, and refuses to run without enforced limits. Use CI if unsupported.
+  Test limits (not application/build limits):
+
+  | Limit | Shared host | GitHub-hosted CI |
+  |---|---|---|
+  | Concurrent files / V8 heap per process | 2 / 256 MiB | 2 / 256 MiB |
+  | Process tree | 1 GiB RAM, no swap, 256 tasks | Dedicated VM |
+  | Timeout | 10 min + 5 s kill grace | 15 min unit job |
+
 - Compare binary results using `Buffer.compare()` or `Buffer.equals()` and assert
   the scalar result. Do not pass large binaries to deep-equality assertions:
   formatting a failing diff can consume far more memory than the input.
 - Playwright E2E runs in CI only. Do not run it locally.
-- Register API response waits before the action that triggers them. Use Playwright
-  assertions or `expect.poll()` for eventual state; never synchronize API or SSE
-  behavior with `waitForTimeout` or another fixed sleep.
-- Keep parallel tests isolated with unique data. Do not assert a global exact count
-  when another shard can add records.
+- Isolate parallel tests; global counts must not depend on other shards.
 
 ### Test contract and synchronization
 
-- Assert externally observable behavior or an explicitly documented stable
-  contract at the lowest layer that can prove it. Reserve E2E tests for deployed
-  boundaries and critical user journeys instead of repeating unit or API coverage.
-- Do not use source text, function or variable names, CSS classes, internal markup
-  order, or implementation-specific copy and pixel values as a substitute for a
-  behavior assertion. When a Dockerfile, manifest, or migration is itself a shipped
-  contract, parse or execute it and assert its semantics rather than its formatting.
-- Exact copy, color, font, and position assertions require a documented public,
-  accessibility, or compatibility reason. Otherwise assert that information is
-  visible, usable, and not clipped or overflowing, with one representative visual
-  flow where it adds coverage.
-- Synchronize by registering the response or event waiter before its triggering
-  action, or use a web-first assertion, bounded condition poll, or fake clock. Do
-  not wait for cosmetic animation or notification disappearance. A bounded absence
-  wait is allowed only when absence throughout that exact documented interval is
-  the behavior under test.
-- A retry-only pass is a failure to fix, not an acceptable CI result. New tests must
-  remain deterministic with retries disabled and repeated execution.
-- Performance changes must include comparable before/after wall measurements and
-  CI run links. Drop an optimization that does not improve its target or that adds
-  flakiness or loses required behavior coverage.
+- Test behavior or documented contracts at the lowest practical layer. Reserve E2E
+  for deployed boundaries and critical journeys; avoid duplicate coverage.
+- Exact source, markup, copy, and visual assertions need a documented public,
+  accessibility, or compatibility requirement. Parse or execute shipped contracts
+  such as manifests instead of matching their formatting.
+- Register response/event waits before triggering actions. Use assertions, bounded
+  polls, or fake clocks; no fixed sleeps or cosmetic waits. Absence waits require
+  a documented interval.
+- Tests must pass without retries. Performance changes require comparable before/after
+  wall times and CI links; discard changes that fail to improve the target or lose
+  reliability or coverage.
 
 CI is defined in [.github/workflows/test.yml](.github/workflows/test.yml). Inspect a
 failed run with `gh run view <run-id> --log-failed`.
 
 ## Authentication and service calls
 
-- Human roles are `student`, `official`, and `admin`. Officials receive one explicit
-  list of service grants. Registration, Queue, Inspection, Documents, and Traffic
-  use none/operate/manage access levels; Course and Score use a single full-access
-  grant. Management permissions imply the matching operation permission. Admin
-  satisfies every human permission.
-- Non-auth services revalidate through Auth and fail closed; only HTTP `200` confirms
-  a user. Tests may inject `TRUST_JWT` through an application factory. Production
-  has no authentication bypass.
-- Caddy removes external `X-Internal-Service` and `Authuser` headers. Internal calls
-  use `X-Internal-Service` with `INTERNAL_SECRET`; the resulting internal principal
-  can access only routes that explicitly require internal authentication.
-- Competition modules communicate in-process. Do not add HTTP calls between them or
-  split them into separate runtime profiles.
+- Follow the [roles and permissions contract](docs/api.md#human-roles-and-permissions)
+  when changing access checks.
+- Non-auth services revalidate through Auth; only HTTP `200` confirms a user.
+  Tests may inject `TRUST_JWT` through an application factory; production has no bypass.
+- Caddy strips external `X-Internal-Service` and `Authuser` headers. Internal calls
+  use `X-Internal-Service` with `INTERNAL_SECRET`; the distinct internal principal
+  can access only explicitly internal routes.
+- Competition modules communicate in-process, without HTTP calls or separate profiles.
 
 ## Logging
 
@@ -142,9 +109,6 @@ host runs its own Flux reconciliation against its own manifest path.
 | `lufthafen` | Test | `https://test.luftaquila.io` | `clusters/lufthafen/apps/fsk/` |
 | `luftwolke` | Live | `https://fsk.luftaquila.io` | `clusters/luftwolke/apps/fsk/` |
 
-Change one or both paths deliberately; do not assume their configuration is
-identical. A command run on one host affects only that host's cluster.
-
 Repository structure is part of the deployment contract. When a top-level service
 or module path, shared-code boundary, Dockerfile, or image owner changes, update and
 test all of these in the same coordinated change:
@@ -174,12 +138,9 @@ cd /srv/k3s
 ./scripts/fsk-redeploy.sh <pull-request-number>
 ```
 
-The script checks out the PR in a separate worktree, maps changed paths to deployed
-images, builds `:dev` images into k3s containerd, deploys them, waits for readiness,
-and verifies the running image. A Competition-domain change must appear as the
-single `competition` image in the script's `Changed services` output; stop if an
-expected image is missing. Flux remains suspended so it does not overwrite the
-preview.
+The script builds `:dev` images from an isolated PR worktree, deploys them, and
+verifies readiness and running images. Competition changes must map to the single
+`competition` image. Flux stays suspended until promotion or restoration.
 
 ### Promote or restore main
 
@@ -206,8 +167,63 @@ Secrets are imperative Kubernetes Secrets and never belong in Git. Follow
 `/srv/k3s/README.md` for per-cluster bootstrap, secrets, infrastructure, and recovery
 operations instead of copying those procedures here.
 
+## Backup and restore
+
+Test and live run as separate k3s clusters managed by `/srv/k3s`. The scheduled jobs
+use the Competition image's `create-k3s-backup.mjs` to create and validate the FSK
+archive before publishing it:
+
+- `lufthafen` writes timestamped test archives below
+  `/mnt/hdd/backups/k3s/fsk/`.
+- `luftwolke` atomically publishes the live archive below the dated
+  `/srv/backups/` directory on `lufthafen`.
+
+The Compose-oriented `make backup` and `make restore` commands here are not k3s
+procedures. There is no supported k3s restore until `/srv/k3s` implements and
+restore-tests every restore gate below for the target environment.
+
+### Required backup unit
+
+- `competition.db` and its Documents upload tree
+- Auth, Calendar, Course, and Email SQLite databases
+- an exact manifest identifying every required database
+- FileBrowser's mounted payload when present; its private database remains outside
+  the Competition consistency contract
+
+The Competition database and uploads are one consistency unit. Quiesce Competition
+or use another reviewed mechanism that prevents database metadata and copied files
+from diverging. Use SQLite's online backup API for live databases; do not copy only
+the main database file while WAL writes can continue.
+
+### Backup gates
+
+Before publication, validate without modifying sources:
+
+1. Validate the exact database manifest and complete schemas.
+2. Run SQLite integrity and foreign-key checks.
+3. Validate canonical `competition_team` references.
+4. Reject missing, escaping, or symlinked referenced uploads.
+5. Verify the archive can be read and record its hash, source environment, and
+   creation time.
+
+Any missing member or failed check rejects the backup.
+
+### Restore gates
+
+1. Extract into a private staging directory without touching live data.
+2. Run all backup gates against the staged state.
+3. Stop the k3s writers only after staging passes.
+4. Replace the complete coordinated unit, with a reviewed rollback path for a
+   partial filesystem failure.
+5. Restart through the `/srv/k3s` workflow and verify readiness, authenticated
+   reads, a current KST-year mutation, historical read-only behavior, and referenced
+   uploads.
+
+Validation must fail closed before any live artifact is replaced. Never restore one
+Competition module or one supporting database independently.
+
 ## Handoff
 
-- Review `git diff` and `git diff --check`.
+- Review `git diff` for scope, API, boundary, migration, and logging regressions;
+  run `git diff --check`.
 - Report files changed, tests run, deployment actions, and remaining risk.
-- Do not claim a behavior or deployment is verified if its check was not run.

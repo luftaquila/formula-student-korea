@@ -1,15 +1,5 @@
 # LoRa 타이밍 시스템 — 설계 (단일 겸용 보드)
 
-KR920 LoRa 기반 시간동기 이벤트 측정 시스템. **MCU = SuperMini nRF52840** (nice!nano 핀호환).
-**하나의 PCB를 전부 실장**하고, **펌웨어로 역할만 전환**한다:
-
-- **마스터 역할** — USB로 PC 연결, LoRa 비콘 송신 + 모든 센서의 이벤트·진단 수집, USB 시리얼 출력.
-- **센서 역할** — 센서 1개 연결, 배터리 구동, 이벤트 HW 타임스탬프 → 마스터 시각 변환 → LoRa 송신 + 주기적 동기 진단 보고.
-
-> 보드는 **항상 18650 장착**. 마스터는 USB가 충전+PC데이터, 센서는 배터리 구동.
-
----
-
 ## 1. 시스템 개요 & 토폴로지
 
 - **마스터 1개 + 센서 최대 6개.** 전부 **하나의 채널**에서 **하나의 타임베이스**(마스터 TIMER1)를 공유.
@@ -24,16 +14,8 @@ KR920 LoRa 기반 시간동기 이벤트 측정 시스템. **MCU = SuperMini nRF
  (각자 고유 node_id, 마스터 비콘에 동기, 이벤트/진단 업링크)
 ```
 
-### 설계 근거 (요약)
-| 결정 | 이유 |
-|---|---|
-| LoRa 920MHz | 저높이(~50cm) 300m: 지면반사 손실 ~120dB → 2.4GHz 불가, LoRa 버짓만 감당 |
-| SX1262(SPI) | DIO1 엣지 HW 캡처 필요 → UART 투명전송 모듈 불가. KR920 +14dBm라 PA(-P) 불필요 |
-| nRF52840 | GPIOTE→PPI→TIMER HW 캡처가 결정론적 (C3 캡처 없음) |
-| 겸용 단일보드 | 한 BOM·한 어셈블리, 역할은 펌웨어. 재고·제작 단순 |
-| 타이밍 예산 ~1ms | 센서 응답 1ms가 바닥 |
-
----
+SX1262 DIO1과 nRF52840 GPIOTE→PPI→TIMER로 HW 타임스탬프를 캡처한다.
+UART 투명전송 모듈로 대체하지 않는다. 센서 응답 시간은 타이밍 오차 예산에 포함한다.
 
 ## 2. 무선 & 동기 프로토콜 (MCU 무관)
 
@@ -41,12 +23,12 @@ KR920 LoRa 기반 시간동기 이벤트 측정 시스템. **MCU = SuperMini nRF
 KR920, **SF7 / BW250** (심볼 512µs), 고정 길이 패킷. 출력 **EIRP ≤ +14dBm** (안테나 ~2dBi → conducted ~+12dBm).
 
 ### 2.2 채널 계획
-**단일 채널 921.3 MHz / BW250 / sync word 0x12.** 모든 노드(마스터 + 센서 전부)가 이 채널을 공유한다. SX1262는 한 번에 한 채널만 듣고 송신하므로(동시 다채널 불가) 채널 분리 대신 §2.8의 MAC(비콘 앵커 + 센서별 비콘-앵커 해시-오프셋 STATUS + 이벤트 CSMA)으로 충돌을 처리한다.
+**921.3 MHz / BW250 / sync word 0x12**를 모든 노드가 공유한다. SX1262는 동시 다채널 송수신을 지원하지 않으므로 §2.8의 비콘 앵커·STATUS 해시 오프셋·이벤트 CSMA로 충돌을 처리한다.
 
 ### 2.3 주소
-**안정 식별자 = 칩 고유 ID(FICR.DEVICEID, 64-bit).** 하드코딩 테이블은 폐기 — 어떤 보드를 추가하든 꽂거나(센서는 전원만 넣어도) 자동 등록된다. set_id도 폐기(패킷에 없음). 센서→경기·역할 매핑은 서버/PC 설정값이며 펌웨어는 관여하지 않는다.
+안정 식별자는 칩 고유 ID(FICR.DEVICEID, 64-bit)다. 정적 보드 테이블과 `set_id`는 없으며 센서→경기·역할 매핑은 서버/PC가 관리한다.
 
-공중 패킷의 `node_id`는 **송신자 자신의 ID** — 칩 ID(FICR.DEVICEID) 하위 32비트다(마스터는 예약 ID 0). 슬롯·번호 개념이 없고 핸드셰이크도 없다: 센서는 자기 ID로 바로 송신하고, 마스터는 **첫 인증 패킷에서 그 ID를 처음 보면 레지스트리에 자동 등록**한다(`node_find_or_add`). PSK(플릿 키)가 멤버십 게이트이므로 키를 가진 보드만 등록된다(§2.11).
+공중 패킷 `node_id`는 송신자 칩 ID 하위 32비트이며 마스터는 예약 ID 0을 쓴다. 센서는 핸드셰이크 없이 송신하고, 마스터는 첫 PSK 인증 패킷에서 ID를 자동 등록한다(`node_find_or_add`, §2.11).
 
 - 마스터 레지스트리는 `MAX_NODES(=7)` 엔트리의 **집합**(ID로 선형 탐색, 인덱스 의미 없음). 가득 차면 LOST 센서 자리를 회수, 그래도 없으면 신규는 무시.
 - 마스터는 USB로 센서를 **그 ID(하위 32비트, 8-hex)**로 보고하고, 자기 ID는 `I` 라인에 전체 16-hex로 노출한다(§8). 사용자는 번호를 보거나 지정하지 않는다.
@@ -68,7 +50,7 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
 
 공통 기준점 TxDone↔RxDone(둘 다 패킷 끝) → T_air_ref 작고 결정론적, 1회 캘리브레이션.
 
-**세션 경계.** 마스터가 재부팅하면 새 boot_id로 비콘이 오는데, 그 마스터 TIMER는 0부터 다시 시작하므로 옛 offset/skew는 폐기된 타임베이스 기준이다. 센서는 **새 boot_id를 보면(일반 비콘 누락과 구분) 동기를 끊고(have_off=0, offset 링·skew 리셋) 그 비콘을 새 baseline으로** 잡는다 → 다음 연속 비콘이 새 세션 offset을 만들 때까지 이벤트를 내보내지 않아, stale offset이 새 세션에 바인딩되는 일이 없다. (boot_id는 RNG라 0도 유효값이므로 `have_master_session` 플래그로 첫 접속을 판별; master_boot_id==0을 sentinel로 쓰지 않는다.) 일반 비콘 누락(같은 세션)은 추정기를 보존한다(§2.8).
+**세션 경계.** 새 마스터 `boot_id`를 받으면 `have_off=0`으로 설정하고 offset 링·skew를 초기화한다. 해당 비콘을 baseline으로 삼고 다음 연속 비콘으로 새 offset을 얻기 전에는 이벤트를 보내지 않는다. boot ID 0도 유효하므로 첫 접속은 `have_master_session`으로 판별한다. 같은 세션의 비콘 누락은 추정기를 보존한다(§2.8).
 
 **이벤트 timestamp의 skew 보정.** 이벤트 시각은 `master_t = cur_off + ev_tick + (ev_tick − sync_ref_tick)·skew/1e6`로 변환한다 — **클럭 자체는 안 건드리고 변환에만** 적용. `sync_ref_tick`은 cur_off를 계산한 비콘의 RxDone(앵커). offset-only 대비 비콘 간 drift(≈skew·Δt; 18ppm이면 ~18µs/s, 비콘 누락 시 누적)를 제거한다. EVENT는 `|skew| ≤ SKEW_CLAMP_PPM`, 샘플 ≥ `SKEW_MIN_SAMPLES`, 측정 span ≥ `SKEW_MIN_DL_TICKS`, 앵커 이후 외삽 ≤ `SKEW_MAX_EXTRAP_MS`, `ev_tick ≥ sync_ref_tick`을 모두 만족할 때만 생성한다. 진단용 raw skew는 STATUS에 i16 클램프로만 보고해 RC fallback(~10000ppm) 같은 고장을 숨기지 않는다.
 
@@ -87,27 +69,29 @@ master_time = offset + (local−L_ref)*(1+skew) + L_ref       (skew 보정 시)
   + MAC(16, Poly1305)
 → 와이어 길이: BEACON 33, EVENT 61, ACK 42, STATUS 51 (B)
 ```
-- 옛 CRC16은 폐기 — MAC이 비트오류 + 위변조를 모두 검출(§2.11).
+- MAC이 비트오류와 위변조를 검출한다(§2.11).
 - `vt` = 상위 니블 프로토콜 버전(현재 9) + 하위 니블 type. 별도 ver 바이트 없이 **모든 패킷이 버전 체크**를 받고, 불일치는 복호화 전에 거부.
 - 보안헤더의 `node_id`는 **송신자의 32비트 ID**인데 **업링크(EVENT/STATUS)에만 실린다.** 다운링크(BEACON/ACK)는 항상 마스터(0)이므로 양측이 암묵적으로 0을 논스에 넣고 와이어에선 생략 → 비콘·ACK에서 4B 절약. ACK의 **대상 센서는 페이로드** node_id(32비트)로 지정.
 - `ctr`은 와이어 24비트(2²⁴ seal = 1Hz로 194일, 세션 내 도달 불가; 논스엔 상위 0으로 확장).
 - EVENT의 ev_master_t = 노드가 미리 변환한 마스터 시각.
 - EVENT의 master_boot_id는 전체 uint32 세션 ID다. 센서 boot ID는 인증된 업링크 헤더에서 가져오며 USB·서버·ACK까지 보존한다.
-- 비콘 주기·STATUS 주기는 양 역할이 **config.h 상수로 공유**하므로 더 이상 on-air로 싣지 않는다(옛 period_ms/status_period_ms 폐기).
+- 비콘·STATUS 주기는 양 역할이 `config.h` 상수로 공유하며 패킷에는 싣지 않는다.
 - STATUS는 진단 필드를 right-size: skew_ppm은 i16(±32767ppm, 실 XO 충분), beacon_gap은 u8(255 포화).
 - STATUS = 센서가 비콘 앵커 해시-오프셋으로 보내는 주기 진단(§2.8, §2.10).
-- 역할은 USB(§8), 식별은 칩 ID로 정해진다 — 과거의 정적 DEVICEID 테이블(node_id.c)·over-air ID_SETUP 패킷은 모두 폐기.
+- 역할은 USB(§8), 식별은 칩 ID로 정하며 별도 ID 설정 패킷은 없다.
 
 ### 2.7 재동기 주기
-표준 크리스털(~40ppm), 예산 1ms. 비콘 주기 = 노드 sync 주기 = **1s**(§2.8 프레임 앵커), 양 역할이 config.h 상수로 공유(과거의 on-air period 필드는 폐기).
+표준 크리스털(~40ppm), 타이밍 예산 1ms에서 비콘·동기 주기는 **1s**다. 양 역할이 `config.h` 상수로 공유한다(§2.8).
 
 ### 2.8 충돌 처리 — 단일 채널 계층형 접근
 AEAD + 압축 헤더(다운링크 8B / 업링크 12B + MAC 16B)로 가장 큰 패킷(STATUS 51B)은 약 50ms, 비콘 33B는 ~36ms airtime(SF7/BW250/CR4-5). 세 종류 트래픽을 계층으로 분리해 서로 부딪치지 않게 한다:
 
-**LBT(KR920 공동사용 — 송신 전 신호감지).** 모든 송신(비콘·EVENT·STATUS·ACK)은 직전에 `radio_lbt_clear()`로 채널을 감지한다. 구현은 **SX1262 CAD(`scanChannel`)** — LBT 도입 전 펌웨어가 EVENT/STATUS 백오프에 쓰던 검증된 채널 감지라 false-busy가 없다(순간 RSSI 에너지 감지를 시도했으나 `startReceive` 직후 ~0 dBm 기본값을 읽어 비콘을 굶겨 폐기). LoRa 프리앰블이 실제로 감지될 때만 busy로 보고, 그 외(스캔 오류 포함)는 clear. **busy일 때의 처리는 패킷 성격에 따라 다르다:** 재전송이 있는 EVENT는 다음 ACK 재시도로 미루고, 유실 관대한 STATUS는 그 사이클을 건너뛴다(give-up). **하지만 비콘은 재전송이 없는 동기 앵커라 절대 포기하지 않는다 — best-effort LBT**: 감지 후 busy면 `BEACON_LBT_TRIES`회까지 `BEACON_LBT_GAP_MS` 간격으로 재감지(창 길이 ≈ STATUS 1개 에어타임)하여 진행 중인 피어 송신이 끝나길 기다린 뒤, 그래도 안 비면 송신한다. "송신 전 감지"는 모든 송신에 성립하고(give-up만 bounded wait로 대체) — 과거의 무조건 skip은 채널이 바쁠 때 비콘을 통째로 버려 모든 센서가 동시에 누락(rx_miss 동반증가)·링크가 STALE로 노화하던 회귀였다. 대기는 동기 정확도에 무해(동기는 실제 TxDone 틱 기준)하고 채널이 ~95% 비어 거의 0이다. **트레이드오프:** CAD는 *우리 SF의 LoRa 활동*만 감지(임의 에너지 아님) — RRA 고시가 −65dBm 에너지 임계 LBT를 요구하면, 하드웨어로 검증한 순간-RSSI 경로가 별도로 필요하다(현재 deferred). 이로써 KR920의 LBT 옵션을 만족해 1Hz 비콘 airtime이 듀티사이클 한도에 묶이지 않는다. 세 종류 트래픽을 계층으로 분리한다:
+**LBT(송신 전 감지).** 모든 송신은 `radio_lbt_clear()`의 SX1262 CAD(`scanChannel`)를 거친다. LoRa 프리앰블 감지만 busy이며 스캔 오류를 포함한 나머지는 clear다. EVENT는 busy면 ACK 재시도로 미루고 STATUS는 해당 주기를 건너뛴다. 비콘은 `BEACON_LBT_TRIES`회, `BEACON_LBT_GAP_MS` 간격으로 기다린 뒤 여전히 busy여도 송신한다. 비콘을 버리면 전체 센서의 동기가 노화되므로 재감지만 제한하고 송신은 포기하지 않는다. 동기는 실제 TxDone 기준이라 대기 지터의 영향을 받지 않는다.
 
-1. **비콘 = 동기 앵커.** 마스터가 매 1s 프레임에 best-effort LBT 후 송신(busy면 bounded wait, 끝까지 안 비면 송신 — 절대 skip 안 함). 동기는 실제 TxDone 틱 기준이라 LBT 지연·지터가 정확도에 영향 없음. 각 센서의 비콘 RxDone으로 마스터 시각을 추정.
-2. **STATUS = 비콘 앵커 + 고정 위상 + 재해시 오프셋(조정자 없는 충돌 내성).** 센서는 `STATUS_PERIOD_S(=5)` 비콘마다 한 번, **고정 위상의 비콘**(`prev_seq % 5 == 자기ID % 5` — 매 주기 같은 1/5 비콘)에 얹어, 그 **비콘 RxDone(`prev_l_rx`)으로부터의 오프셋** `offset = STATUS_GAP_GUARD_MS + hash(자기 ID, 주기) mod STATUS_GAP_SPAN_MS` (=200~700ms) 시점에 송신. 위상이 고정이라 **간격이 규칙적 ~5초 ±0.25초**(지터로 STALE 창에 근접하지 않음) — 옛 슬롯과 같은 규칙성이되 슬롯 번호 없이 칩 ID로 자가 배치. 비콘 간격(~1s)의 가드된 중앙에 놓이므로 **송신(=수신 불가) 중에 비콘이 도착하지 않는다** — SX1262는 반이중이라 송신 중엔 귀가 먹고, STATUS를 비콘 위에 얹으면 그 비콘을 놓친다(예전 절대-위상 방식의 회귀; 원래 슬롯 설계가 비콘-상대였던 이유). 오프셋만 **주기마다 재해시**라 같은 위상을 공유한 두 센서도 영구 충돌이 안 된다(자가회복). 송신 직전 **LBT/CAD**가 드문 동일-주기 근접 충돌을 지연으로 전환(busy면 그 주기 건너뜀 — STATUS는 유실 관대). 비콘(동기) 충돌은 앵커링으로 **구조적으로 0**, 센서-대-센서 STATUS 충돌만 드물게 남고 그건 유실 관대·자가회복.
+CAD는 같은 SF의 LoRa 활동만 감지한다. 순간 RSSI는 `startReceive` 직후 ~0 dBm을 읽는 문제로 제외했다. RRA 고시가 −65dBm 에너지 임계 LBT를 요구하면 하드웨어 검증된 RSSI 경로가 별도로 필요하며 현재 미구현이다. 기존 설계는 LBT 옵션을 전제로 1Hz 비콘을 운용한다.
+
+1. **비콘 = 동기 앵커.** 매 1s 프레임에 위 LBT 정책으로 송신한다. 센서는 RxDone과 마스터 TxDone으로 마스터 시각을 추정한다.
+2. **STATUS = 비콘 앵커 + 고정 위상 + 재해시 오프셋.** `STATUS_PERIOD_S(=5)`마다 `prev_seq % 5 == 자기ID % 5`인 비콘을 선택한다. RxDone(`prev_l_rx`) 후 `STATUS_GAP_GUARD_MS + hash(자기 ID, 주기) mod STATUS_GAP_SPAN_MS`(200~700ms)에 송신한다. 주기는 약 5초 ±0.25초이며 비콘 사이에 배치해 반이중 송신 중 비콘을 놓치지 않게 한다. 오프셋은 주기마다 재해시해 같은 위상 센서의 영구 충돌을 피한다. 직전 CAD가 busy면 해당 STATUS는 건너뛴다.
 3. **EVENT = 비동기 LBT + 종단 간 인계 확인.** 센서 ISR 캡처 링 뒤의 pending 큐(8개)가 이벤트 시각을 보존하고, LBT+120ms 무선 ACK를 성공할 때까지 80ms+jitter로 재시도한다(최대 보존 2.5초). 마스터는 이벤트를 RAM 큐(16개)에 넣은 **뒤에만** 무선 ACK하고, USB `E`를 반복한다. 브리지는 서버가 insert/dedupe한 정확한 `(node, seq, tick, master_boot_id, sensor_boot_id)`을 응답한 뒤 `C`로 확인하며, 그때만 마스터가 큐에서 제거한다. 센서의 큐 포화·만료는 유실 범위를 별도 EVENT로 ACK까지 보존한다. 마스터 큐 포화는 ACK를 보류해 센서 재시도를 유도하며 그 자체로 캡처 유실을 뜻하지 않는다. 누적 카운터는 진단용이다. 재전송은 ev_seq·ev_master_t 고정, ctr 갱신으로 다시 봉인한다(§2.11).
 
 ### 2.9 캘리브레이션 (T_air_ref)
@@ -122,17 +106,16 @@ AEAD + 압축 헤더(다운링크 8B / 업링크 12B + MAC 16B)로 가장 큰 �
 - **보안 관측(§2.11):** 조용히 버려지던 거부를 카운터로 노출 → 위조/키불일치/replay 탐지 가능. 글로벌 `auth_drop`(AEAD 검증 실패 — node 귀속 불가)는 node 0 자기보고 D 라인의 `sec_drop` 슬롯에, 센서별 `sec_drop`(인증후 replay/freshness/session-binding 거부)는 각 D 라인에, `provisioned`(키 보유 여부)는 모든 D 라인에 실린다. 카운터는 마스터가 USB로만 보고(공중 패킷·에어타임 불변). 서버는 ingest에서 증가분/미프로비저닝을 `wireless.security` 로그로 남긴다(`/api/logs`).
 
 ### 2.11 무선 보안 — AEAD (기밀성 + 인증 + 재전송 방어)
-raw LoRa는 평문이라 누구나 도청·위조할 수 있다. 위조 EVENT/BEACON으로 타이밍 결과를 교란할 수 있으므로 모든 공중 패킷을 봉인한다. (USB↔PC 구간은 유선 신뢰 구간이라 대상 아님.)
+모든 공중 패킷에 XChaCha20-Poly1305 AEAD(Monocypher)를 적용한다. USB↔PC는 신뢰 구간으로 취급한다.
 
-- **원시(primitive):** XChaCha20-Poly1305 AEAD (Monocypher, vendored 단일 파일). 직접 조합한 암호 대신 검증된 1-함수 AEAD로 기밀성·무결성·송신자 인증을 한 번에.
-- **키 — 런타임 프로비저닝(컴파일 안 함):** 플릿 공유 PSK 256-bit를 **빌드에 박지 않는다**. 각 보드의 예약 flash 페이지(`0xF3000`, keystore.c, magic+CRC32 검증)에 저장되고 부팅 시 로드되며, **USB 시리얼 `K <64hex>` 명령(write-only)으로 보드마다 1회 주입**한다(§8). → CI는 **키 없는 앱**만 빌드하므로 public repo 아티팩트가 노출돼도 안전. 키는 운영자 로컬에만 존재(repo·CI·채팅 금지). 마스터+전 센서 동일 키 필수(다르면 전 패킷 MAC 실패). 키 회전 = 보드별 재주입. flash 페이지는 앱 영역 최상단(linker FLASH에서 제외)이라 앱 DFU에도 보존.
-- **인증 대상(AD) vs 암호화:** 평문 보안헤더(vt/boot_id/ctr, 업링크는 +node_id)는 AEAD의 associated data로 인증만(라우팅·replay 판단을 복호화 전에). 페이로드(타임스탬프·offset 등)는 암호화. MAC 16B가 옛 CRC16을 대체.
+- **키:** 공통 플릿 PSK 256-bit를 USB `K <64hex>`로 보드별 주입한다(§8). `0xF3000` flash keystore에 magic+CRC32로 검증·저장하며 앱 DFU에도 보존한다. 키는 운영자 로컬에만 보관하고 빌드·repo·CI·채팅에 넣지 않는다. 회전 시 모든 보드에 재주입한다. read-back은 없다.
+- **인증 대상(AD) vs 암호화:** 평문 보안헤더(vt/boot_id/ctr, 업링크는 +node_id)는 AEAD의 associated data로 인증만(라우팅·replay 판단을 복호화 전에). 페이로드(타임스탬프·offset 등)는 암호화. MAC은 16B다.
 - **논스(절대 재사용 금지):** 24B = `domain | type | node_id | boot_id(4) | ctr(4)`. `ctr`은 송신마다 증가(부팅 내 유일), `boot_id`는 부팅마다 RNG 신규(재부팅 후 ctr가 0으로 돌아가도 논스 충돌 없음). node_id로 송신자 분리(다운링크는 마스터 0을 암묵 사용), domain으로 타용도와 분리. 와이어 `ctr`은 24비트로 보내되 논스엔 상위 0으로 확장하며, wrap 직전 seal을 거부해 논스 재사용을 원천 차단(2²⁴ seal=1Hz로 194일, 세션 내 도달 불가).
-- **재전송(replay) 방어 + 독립 재부팅 지원:** 수신자는 (송신자, 방향)별로 `(boot_id, max_ctr)`를 추적해 `ctr ≤ max_ctr`이면 거부. 마스터는 센서별, 센서는 마스터용 1개. **새 boot_id면 재기준(re-baseline)** — 이것이 마스터/센서의 독립 전원 재투입을 지원한다: 센서가 켜진 채 마스터를 뺐다 꽂으면(새 마스터 boot_id) 센서들이 비콘에서 재기준해 재동기하고, 반대로 마스터가 켜진 채 센서를 재부팅하면 마스터가 그 센서 창을 재기준한다. 어느 쪽을 언제 껐다 켜도 복구.
-- **EVENT 마스터 세션 바인딩:** EVENT는 자신이 동기된 마스터 세션 `master_boot_id`(비콘에서 학습)를 실어 보내고, 마스터는 그 값이 자기 현재 boot_id가 아니면 거부. → 이전 마스터 전원주기에 캡처한 EVENT는 재부팅 후에도 재전송 불가(재기준만으로는 못 막는 cross-reboot EVENT replay를 암호학적으로 차단).
-- **EVENT 신선도 백스톱:** 세션 바인딩 + replay 카운터에 더해, `ev_master_t`가 너무 과거(stale)거나 비현실적 미래면 거부. 정상 이벤트는 기껏 수ms 미래(동기오차)뿐이라 **비대칭** 창: 과거 `EVENT_FRESH_MS(3s)` / 미래 `EVENT_FUTURE_MS(250ms)`.
+- **Replay 방어:** 수신자는 (송신자, 방향)별 `(boot_id, max_ctr)`를 추적해 `ctr ≤ max_ctr`를 거부한다. 새 boot ID는 재기준하여 마스터·센서의 독립 재부팅을 지원한다. 마스터 재부팅 시 센서는 비콘으로 재동기하고, 센서 재부팅 시 마스터는 해당 센서의 창을 재기준한다.
+- **EVENT 세션:** `master_boot_id`가 현재 마스터 boot ID와 다르면 거부한다. 재부팅 전 캡처를 새 세션에서 재사용하지 않는다.
+- **EVENT 신선도:** 과거 `EVENT_FRESH_MS`(3s), 미래 `EVENT_FUTURE_MS`(250ms) 범위 밖의 `ev_master_t`를 거부한다.
 - **boot_id 엔트로피:** nRF52840 하드웨어 RNG(`NRF_RNG`, 바이어스 보정)로 부팅 시 32-bit 1회 시드(`sec_init`).
-- **미프로비저닝 동작:** 키가 없으면 `sec_provisioned()=0` → seal/unseal이 거부되어 보드는 무선 inert(비콘·이벤트 미전송, 잘못된 평문도 안 나감). 마스터는 USB로 `X noprov`를 주기 통지해 운영자가 알 수 있다. 시리얼 `K` 주입(+`sec_reload`) 즉시 활성(재부팅 불필요).
+- **미프로비저닝:** 키가 없으면 seal/unseal을 거부하고 무선 송신하지 않는다. 마스터는 `X noprov`를 주기 통지한다. `K` 주입과 `sec_reload` 후 재부팅 없이 활성화한다.
 - **남는 한계(문서화):** EVENT는 세션 바인딩으로 cross-reboot replay까지 차단. BEACON/STATUS/ACK는 재부팅 후 캡처본 1개가 재기준으로 수용될 여지는 있으나 타이밍 위조 가치 없음(비콘은 seq+1 연속성 게이트로 offset 오염 안 됨 → DoS급). 32-bit boot_id의 두 코너: ① 충돌 시 nonce 재사용 ② 마스터가 같은 boot_id로 재부팅하면 센서가 그 비콘을 거부(센서 재부팅 전까지) — 둘 다 ~2⁻³²라 무시 가능, boot_id를 64-bit로 넓히면 완전 제거(선택). 구현: `src/secure.{h,c}`.
 
 ---
@@ -273,20 +256,18 @@ LCSC#·분류 = JLCPCB API(`preferredComponentFlag`). Basic·Preferred = 셋업 
 | — | 센서 | Autonics BA2M-DDT | off-board | 12V NPN OC 1ms |
 | ANT | u.FL→SMA + 920MHz 휩 | — | off-board | ~2dBi |
 
-> JLC: 능동/수동 대부분 Basic/Preferred(무료). Molex 5569·MMBT는 카테고리 확인 필요. L1은 보유분 자가실장.
-
 ---
 
 ## 8. 펌웨어
 
-RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_SETTLE_MS 안에 USB 호스트(PC)가 enumerate하면 마스터, 아니면 센서. VBUS 전원만으로는 판정하지 않는다(센서도 충전·플래시 때 USB에 꽂히므로 — 더미 충전기는 enumerate하지 않음). **역할은 부팅 시 1회만 판정한다 — 실시간 재확인/자동 리셋은 없다.** (호스트가 CDC 포트를 점유하지 않으면 USB가 suspend되며 `tud_mounted()`가 false로 떨어지는데, 거기에 자동 리셋을 걸었더니 마스터가 주기적으로 재부팅해 비콘 seq가 리셋되고 동기가 깨졌다 — 폐기. 역할 변경은 보드 리셋/전원 사이클로.) 구현은 §2 프로토콜 + 아래 사양대로 (실제 코드는 펌웨어 프로젝트에 — 이 문서엔 사양만).
+RadioLib(커스텀 HAL) 기반. 부팅 후 `ROLE_SETTLE_MS` 안에 USB 호스트가 enumerate하면 마스터, 아니면 센서다. VBUS 전원만으로는 판정하지 않는다. 역할은 부팅 시 한 번 결정하며 변경하려면 리셋·전원 재투입이 필요하다. CDC 미점유 시 USB suspend로 `tud_mounted()`가 false가 될 수 있으므로 이를 자동 리셋 조건으로 쓰지 않는다.
 
 - **타임스탬프 캡처**: TIMER1 자유진행 16MHz = 공통 타임베이스. DIO1·SENSOR 엣지 → GPIOTE→PPI→TIMER CAPTURE(타임스탬프 시점은 CPU 무관). SENSOR GPIOTE ISR이 CC 값을 16칸 링버퍼로 옮겨 송신/ACK 대기 중 후속 엣지가 앞 값을 덮지 못하게 하며, overflow는 누적 진단과 해당 캡처 순번·시각의 유실 범위로 보고한다. GPIOTE PSEL 설정 시 **해당 핀의 PORT 비트 포함**(P1 핀이면 bit13).
 - **클럭 fail-closed**: 부팅 후 실제 HFCLK source가 Xtal인지 확인하고, RC면 radio/TIMER1 계측을 시작하지 않는다. USB SOF 캡처는 마스터 HFXO의 상대 ppm 진단만 하며 타임베이스를 discipline하지 않는다(§2.9).
 - **라디오/SPI**: 할당 핀으로 커스텀 SPIClass. **`setRfSwitchPins(RXEN,TXEN)` 필수**. `begin(…, tcxoVoltage)`(내부 TCXO). 부팅 시 **EXT_POWER(P0.13) HIGH**.
 - **센서 역할**: 자기 칩 ID로 송신(별도 등록 단계 없음, §2.3) → 비콘 동기 → 이벤트 캡처 → 마스터 시각 변환 → EVENT 송신(LBT+ACK+재전송) + 비콘 앵커 해시-오프셋으로 STATUS 주기 송신(§2.8). 모든 송신 전 LBT(§2.8).
 - **무선 보안(§2.11)**: 전 패킷 XChaCha20-Poly1305 AEAD 봉인(Monocypher). 플릿 PSK는 컴파일하지 않고 flash keystore(`0xF3000`)에서 로드 — 시리얼 `K` 명령으로 보드별 주입. 부팅 시 `sec_init()`가 boot_id 시드 + 키 로드. 구현 `src/secure.{h,c}` + `src/keystore.{h,c}`.
-- **USB 프로토콜 (FSK-WL, 줄단위 텍스트, 레거시 `$...!` 폐기)**:
+- **USB 프로토콜 (FSK-WL, 줄단위 텍스트)**:
   - VID `0x1999` / **PID `0x0515`** / product **"FSK-WL"**. 호스트는 연결 후 `?ID`를 보내고 `I FSK-WL …` 응답으로 장치를 확인(PID와 무관한 핸드셰이크). 레거시 유선 앱(PID 0x0514)과 상호 비매칭.
   - 마스터→PC: `I FSK-WL <fw> <devid16> <freq_mhz> <sf> <bw> <ticks_per_ms>` · `H <now_tick> <uptime_ms> <beacon_seq> <nseen>` · `E <node> <ev_seq> <tick> <flags> <rssi> <snr> <master_boot_id> <sensor_boot_id> <capture_seq> <end_seq> <end_tick> <sync_age_ms>` · `D <node> <OK|STALE|LOST> <offset_tick> <skew_ppm> <rx_miss> <beacon_gap> <last_seen_ms> <rssi> <snr> <lat_ms> <temp_c10> <batt_mv> <sec_drop> <provisioned> <sync_valid> <skew_valid> <XTAL|RC> <sync_age_ms> <capture_overflow> <event_drop> <queue_depth> <queue_overflow> <usb_ref_valid> <usb_ref_ppm> <sensor_boot_id> <master_boot_id>`.
   - PC→마스터: `?ID`, `?STATUS`, `PING`, `K <64hex>`, `T <request_id>`(현재 tick·boot ID 응답), `C <0|node8hex> <ev_seq> <tick> <master_boot_id> <sensor_boot_id>`(서버 저장 확인; 정확한 큐 head만 제거).
@@ -300,7 +281,7 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
     1. 펌웨어 = CI 아티팩트(`traffic-device.yml` → `traffic-device-firmware`의 `.bin`)를 `0x26000` 오프셋으로 hex 변환 → `adafruit-nrfutil dfu genpkg --dev-type 0x0052 --application <hex> pkg.zip`.
     2. **부트로더 진입(버튼 없이)**: 앱 CDC를 **1200 baud로 열고 DTR drop** → 앱이 `NRF_POWER->GPREGRET=0x57` 설정 후 리셋(`src/usb.c`). 부트로더가 새 `/dev/ttyACM*` + UF2 매스스토리지로 재등장. 앱이 행(hang)이면 물리 RST 더블탭.
     3. `adafruit-nrfutil dfu serial --package pkg.zip -p /dev/ttyACM<부트로더> -b 115200 --singlebank` → `Device programmed.` 후 앱이 부팅하며 FSK-WL CDC로 복귀.
-- **프로비저닝 절차 (§2.11·§10)**: `openssl rand -hex 32`로 플릿 키 1개 생성(마스터+전 센서 **동일** 키) → 운영자 로컬에만 보관(repo/CI/chat 금지) → 각 보드 플래시 후 앱 CDC(115200)로 `K <64hex>` 전송 → `A K OK`. write-only(read-back 없음). 미주입 마스터는 `X noprov` 주기 송신, 센서는 USB 무출력(명령 응답만).
+- **프로비저닝 절차:** `openssl rand -hex 32`로 공통 플릿 키를 생성해 로컬에만 보관한다(repo/CI/chat 금지). 보드별 플래시 후 앱 CDC(115200)에 `K <64hex>`를 보내 `A K OK`를 확인한다. 미주입 마스터는 `X noprov`, 센서는 명령 응답만 출력한다(보안 계약은 §2.11).
 
 ---
 
@@ -312,7 +293,7 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
 - 서버는 모든 소스의 연속 순번과 checkpoint로 검증된 구간만 계산한다. ACK만 유실되어 정상 캡처와 유실 통보가 겹치면 실제 캡처를 우선한다. 확인 전에는 `pending`; 실제 유실·시계 오류·boot 변경은 계측을 해제하고 영향 구간을 `invalid`로 표시하되, 이전 런의 증거 검증은 유지한다. 오류 이전의 정상 구간은 증거 도착 순서와 서버 재시작에 관계없이 확정하며, 완주가 검증되면 런의 오류 표시를 해제한다. 명시적 정지·초기화·판정 확정 또는 새 START는 이전 런의 추가 검증을 종료한다. 검증 대기에는 시간 제한을 두지 않는다. 다음 정상 START로 복구한다. 센서 HFXO 오류 뒤에는 기존 offset/skew를 폐기하고 새 동기 샘플을 확보한 후 정상 캡처를 재개한다. 마스터 HFXO 오류 후 회복은 타임베이스 세션을 갱신해 센서 재동기를 유도하며, 이전 세션 큐의 서버 ACK는 계속 처리한다.
 - 공식 결과는 서버가 원시 tick 차이를 구한 후 한 번 ms 반올림한다. 경기별 최소·최대 시간 제한은 없다. 원시 차이가 양수이면 0ms로 반올림되어도 허용한다. 브라우저는 서버 결과·랩을 표시하며 독자적으로 공식 결과를 산출하지 않는다.
 - 원본 증거·런 상태·공식 기록·판정은 한 SQLite 트랜잭션으로 반영한다. 성공 후에만 ACK/SSE를 발행한다. 런 상태는 DB에서 읽고 해당 트랜잭션에서 바뀐 런만 저장한다.
-- v9는 v8과 호환되지 않는다. 서버·웹 브리지·마스터·전 센서 펌웨어를 함께 갱신한다. 업그레이드 때 검증 증거가 없는 진행 런은 닫고 기존 공식 기록은 보존한다.
+- 프로토콜 변경 시 서버·웹 브리지·마스터·전 센서 펌웨어를 함께 갱신한다. 검증 증거가 없는 진행 런은 닫고 기존 공식 기록은 보존한다.
 
 ---
 
@@ -322,7 +303,7 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
 - [ ] 부스트 PFM 안정성 실측.
 - [ ] BA2M-DDT 12V 하한 / 온보드 LED(P0.15) 극성.
 - [ ] T_air_ref 실측(§2.9).
-- [ ] **배포 전 키 주입**(§2.11) — `openssl rand -hex 32`로 생성한 1개 키를 각 보드에 시리얼 `K <64hex>`로 주입(마스터+전 센서 동일). 키는 로컬 전용, repo/CI 금지. 미주입 보드는 무선 inert.
+- [ ] **배포 전 키 주입:** §8 절차로 마스터·전 센서에 같은 키를 주입한다. 미주입 보드는 무선 비활성이다.
 
 ---
 
@@ -331,9 +312,6 @@ RadioLib(커스텀 HAL) 기반. **역할은 USB로 분기** — 부팅 후 ROLE_
   - 심볼 `SuperMini_NRF52840.kicad_sym` → **`SuperMini_nRF52840`(또는 `nice_nano`, 동일)** 배치.
   - 풋프린트 `SuperMini_NRF52840.kicad_mod`.
 - A1 결선은 **핀 이름(P0.xx)** 으로. Ra-01SH·센서 커넥터 심볼/풋프린트는 별도 추가 필요.
-
-## 12. 범위 밖
-PC측 수집/분석 SW, KiCad lib_id 실매핑, 기구/방수, 인증(KC), 세트 간 절대시각 정렬.
 
 ## 정확도 검증 절차
 

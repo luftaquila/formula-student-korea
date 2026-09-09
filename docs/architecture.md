@@ -2,10 +2,13 @@
 
 ## Deployment topology
 
-`/srv/k3s` manages two independent clusters: `lufthafen` serves the test environment
-and `luftwolke` serves live. Each cluster reconciles its own
-`clusters/<hostname>/apps/fsk/` path and owns its own runtime state. Deployment and
-verification happen separately for each environment.
+Test and live are independent clusters with separate state and reconciliation.
+Hostnames, manifest paths, and procedures: [k3s deployment](../CONTRIBUTING.md#k3s-deployment).
+
+## Venue network
+
+Venue clients primarily use distinct mobile-carrier IPs, not a shared venue NAT.
+Use this topology when assessing per-IP limits unless evidence shows otherwise.
 
 ## System boundary
 
@@ -22,23 +25,45 @@ Competition-critical domains run as modules in one `competition` process, one de
 | `calendar` | Competition schedules | 11000 |
 | `files` | FileBrowser storage with Auth forward-auth | 8080 |
 
-Entry, Queue, Registration, Inspection, Traffic, Score, and Documents are not deployable legacy profiles. They have no runtime service URLs, HTTP fan-out, lifecycle outboxes, reconciliation, or copied team lists.
+Energy Meter, FileBrowser, and mediamtx share the clusters but have independent
+image or data ownership.
+
+Competition modules have no separate deployments or HTTP fan-out. Team data stays
+in the shared database; no copied rosters, lifecycle outboxes, or reconciliation.
 
 ## Public course viewing
 
-Course owns both the operational map at `/course` and the anonymous read-only view at `/course/public`. Publication is a private-by-default flag on the existing course row, not a separate copy or snapshot. Public routes under `/course/api/public` project only published course geometry and never read or return memos. The public viewer loads data on entry and retains that client-side view until manual refresh, without SSE or polling. Operational events, rover telemetry, snapshots, and mutations retain their existing permission gates. Both views share map geometry and browser-side archive generation, with annotation export available only through the operator path. Backup validation accepts the current schema and the exact pre-publication predecessor without modifying either; the runtime adds private defaults when an older database is restored.
+Course serves the operational map at `/course` and anonymous read-only map at
+`/course/public`. Publication is a private-by-default flag on the existing row.
+Public APIs read and expose only published geometry, never memos; the viewer refreshes
+manually, without SSE or polling. Operational events, telemetry, snapshots, and
+mutations retain their permission gates. Both views share geometry and browser
+archive generation; only operational exports include annotations.
+
+Backup validation accepts the current schema and its exact pre-publication
+predecessor without modifying either. Restoring an older database adds private
+defaults at runtime.
 
 ## Teams and years
 
 `competition_team` is the only team source of truth. Its `id` is the stable identity used by operational rows. Team number, university, team name, and vehicle-type name are mutable projections updated transactionally in the shared database.
 
-Competition years are interpreted in `Asia/Seoul`. Reads may select any valid year. Team, vehicle-type, and Inspection mutations may target the current or next KST year so the next competition roster and inspection sheets can be prepared in advance. Queue, Registration, Traffic, Score, and Documents mutations remain limited to the current KST year; writes outside each allowed window fail with `409 YEAR_READ_ONLY`. There is no draft/finalize state, roster version, snapshot, replacement version, or soft-delete inference.
+Competition years use `Asia/Seoul`. Reads accept any valid year; Team, vehicle-type,
+and Inspection writes accept the current or next year. Other Competition writes
+accept only the current year; violations return `409 YEAR_READ_ONLY`.
+There is no draft/finalize state, roster version, snapshot, or soft-delete inference.
 
 Teams are created individually or imported once into an empty current or next year. A full import is not a replacement operation. Teams are never deleted through the service; setting `active: false` preserves history and clears only transient Queue/Registration/Traffic state. A team can be edited later without changing its stable ID. Vehicle types are year-scoped and may be created, edited, or deleted in the current or next year.
 
-Registration queue rows reference only `competition_team.id`. Team number and labels are resolved from the canonical team at read time, so a renumber does not fork registration history. A team has at most one waiting row. The phone submitted at registration is used for advance SMS notification, not as a public lookup credential. Completing, canceling, or deactivating the team preserves its phone and timestamps as audit history while removing it from the active queue.
+Registration references `competition_team.id` and resolves labels at read time.
+Each team has at most one waiting row. Phones serve SMS notification, never public
+lookup authentication. Completion, cancellation, and deactivation retain phone and
+timestamps as history.
 
 ## Runtime communication
+
+Competition entries do not change while an event is in progress. Do not require
+event-day clients to refresh the entry roster solely to recover from a reconnect.
 
 The participant queue hub is `/queue`, which combines Registration and Inspection position lookup and publishes the visible Inspection queues. `/registration/` redirects to that hub; Registration operations remain at `/registration/manage` and `/registration/register`. The other stable UI locations are `/entry`, `/inspection`, `/traffic`, `/score`, and `/documents`. The only Competition API namespace is `/competition/api/v1`: Teams and vehicle types are flat resources, while the other domains use `/competition/api/v1/{module}/...`. Nested `/{module}/api/...`, standalone module APIs, and internal team lifecycle routes are absent and return `404`.
 
@@ -48,19 +73,36 @@ Traffic submits the stable `competition_team.id`; the server resolves that ID ag
 
 ## Inspection concurrent edits
 
-Inspection answers and memos have no numeric client or database version. A save includes the value last read by the editor as `expectedValue` or `expectedMemo`. If it differs from the current stored value, the server returns `409 INSPECTION_STALE_WRITE` and does not persist the request. The UI discards the stale local edit and tells the operator to refresh and retry. Saves for the same field are serialized in the browser; there is no local-storage draft or conflict-resolution UI.
+Inspection saves compare last-read values (`expectedValue` / `expectedMemo`) with
+stored values. Mismatches return `409 INSPECTION_STALE_WRITE` without persistence;
+the UI discards stale edits and requests a refresh. Browser saves for each field
+are serialized. No numeric versions, local-storage drafts, or conflict merging.
 
 ## Inspection rule references
 
-Inspection items store deterministic rule references in `sheet_template.rule_refs`. An item's stable `field_key` identifies the inspection question, while the rules site's semantic `rule_key` identifies a clause across editions. Clause numbers, citations, hashes, release tags, and final links are never accepted as authoritative client input: Competition resolves them from the schema v2 catalog at `RULES_BASE_URL`, whose manifest names the deployed `site_tag` and each document's immutable `release_tag`. The catalog is bounded, validated, cached for ten minutes, and is not part of service readiness. Mutations that consult the catalog log the site tag and document releases they were judged against.
+`sheet_template.rule_refs` links stable item `field_key` values to cross-edition
+`rule_key` values. Competition resolves clause metadata and URLs from the schema-v2
+catalog at `RULES_BASE_URL`; client-supplied metadata is not authoritative. The
+validated, bounded catalog cache lasts ten minutes and does not gate readiness.
+Catalog-dependent mutations log `site_tag` and document `release_tag` values.
 
-Single-item rule-reference edits also use value-based stale-write protection: the caller sends the complete `rule_refs` value it last read, and Competition compares it with the stored value inside the update transaction. A mismatch returns `409 INSPECTION_STALE_WRITE` without persistence; no numeric reference version or merge behavior is introduced.
+Rule-reference edits compare the complete last-read `rule_refs` inside the update
+transaction. Mismatches return `409 INSPECTION_STALE_WRITE` without persistence;
+there is no numeric version or merge.
 
-Only `verified` references expose links. The redirect endpoint resolves the stored key against the item's edition and requires an unchanged clause content hash, so a pure renumber follows the new anchor while a substantive change fails closed until a chief revalidates it. `needs_review` is visible but disabled; `no_direct_rule` is intentionally hidden. Year copying and explicit synchronization match items by `field_key`; no runtime LLM participates in lookup or approval.
+Only `verified` links open. Resolution requires the edition's stable key and
+unchanged content hash: renumbering follows the new anchor; changed content fails
+closed. `needs_review` is disabled and `no_direct_rule` hidden. Year copy/sync
+matches `field_key`; verification never uses a runtime LLM.
 
-Inline rule content uses the same stable-key and content-hash checks for every reference on an item. The server loads each distinct rule document through a bounded LRU keyed by its immutable release tag, parses each distinct document once per request, extracts all current catalog `clause_id` fragments from that shared AST, and returns them inside an inert JSON response. The browser then allowlists the extracted HTML and MathML before rendering it; stored clause numbers never drive resolution, and opening other items from the same release neither downloads nor transfers the full rulebook again.
+Inline content uses the same stable-key and content-hash checks. A bounded LRU
+caches documents by immutable release tag; each distinct document is parsed once
+per request. Resolved `clause_id` fragments are returned as inert JSON, then HTML
+and MathML are allowlisted in the browser. Stored clause numbers never drive
+resolution, and opening another item does not transfer the full rulebook again.
 
-Rollout, revalidation after a rulebook release, and year rollover steps are in the [rule links runbook](runbooks/inspection-rule-links.md).
+Catalog schema, reference mutations, and failure recovery:
+[Template Management](api.md#template-management).
 
 ## Documents files
 
@@ -70,16 +112,14 @@ The one-shot legacy migrator copies only files referenced by `submission_file` m
 
 ## Migration, backup, and rollback
 
-The completed cutover used the only migrator that understands the six legacy
-databases. It opened sources read-only, verified they did not change, bound data to
-stable team IDs, copied referenced uploads, validated the result, and published new
-artifacts create-if-absent. Current k3s deployment never reruns this migration.
+Migration opens sources read-only and verifies they remain unchanged. Bind rows to
+stable team IDs, copy only referenced uploads, and validate before publishing
+create-if-absent artifacts. k3s deployment must never rerun the legacy migration.
 
-Competition backup and restore require an exact manifest containing Competition,
-Auth, Calendar, Course, and Email. Validation covers complete schemas, SQLite
-integrity, foreign keys, canonical team references, and referenced uploads before
-publishing or replacing artifacts. FileBrowser's mounted payload may be copied, but
-its private database and lifecycle remain outside this coordinated state contract.
+Backup and restore validate one coordinated Competition, Auth, Calendar, Course,
+and Email state before publishing or replacing artifacts. FileBrowser payload may
+be included; its private database and lifecycle are outside this contract. Follow
+the [backup/restore gates](../CONTRIBUTING.md#backup-and-restore).
 
 Rollback never translates Competition writes into legacy schemas or restarts the
 retired writers. Restore a validated coordinated Competition backup and deploy an
@@ -87,36 +127,21 @@ application revision compatible with that state.
 
 ## Authentication and audit
 
-Human accounts use only `student`, `official`, and `admin`. An Official starts with
-no operational access and receives one explicit list of service grants. Registration,
-Queue, Inspection, Documents, and Traffic use none/operate/manage access levels.
-Course and Score use a single full-access grant; other single-action services use a
-single grant. Management permissions imply the matching operation permission; Admin
-satisfies every human permission. Queue (`queue.*`) and Inspection (`inspection.*`)
-are independent domains, so a grant in one never authorizes the other. Auth exposes
-the authoritative effective-permission snapshot, account real name, and an access
-revision; services revalidate it and fail closed, and stale access edits are rejected
-by revision. Inspection records that authoritative real name for inspector history
-and answer/memo editor labels instead of the Google account name carried by the JWT.
-The Queue operations UI exposes Inspection sheet links and accumulated inspector
-names only when the same user also has `inspection.operate`; Queue rank data itself
-continues to require only `queue.operate`.
+Auth owns roles, effective permissions, real names, and access revisions; services
+revalidate against it and reject stale access edits. See [roles and permissions](api.md#human-roles-and-permissions).
+Inspection records Auth's real name, not the JWT's Google name. Queue sheet links
+and inspector names require `inspection.operate` in addition to `queue.operate`.
 
-During the schema cutover, retired `staff`, `chief`, and `master` accounts become
-Officials with no grants; access must be assigned explicitly after migration.
+Migrating `staff`, `chief`, or `master` accounts must produce Officials with no
+grants; assign access explicitly after migration.
 
 `X-Internal-Service` creates a distinct internal principal, not an Admin. It is valid
 only for routes that explicitly require internal authentication. Caddy removes
 externally supplied internal-auth headers.
 
-Registration-only tablets use revocable device principals instead of human roles.
-An Admin creates a device with exactly one scope (`kiosk.queue.register` or
-`kiosk.registration.register`), and the tablet consumes a short-lived one-time
-pairing code to receive a long-lived HttpOnly, SameSite=Strict token. Auth stores only
-the token hash. A device can submit only the matching registration POST; it cannot
-read an operations board or alter settings. Revocation takes effect on its next request.
+Kiosk devices have one revocable scope and use a one-time pairing code to obtain
+an HttpOnly, SameSite=Strict token; Auth stores only its hash. Each device can submit
+only its scoped registration POST. Revocation applies on the next request.
 
-All Competition module logs live in the shared database with a module discriminator. Every successful mutation and every business, database, or integration failure records enough before/after context to audit destructive changes.
-
-See the [backup/restore contract](runbooks/backup-restore.md) and
-[ADR 0001](adr/0001-competition-modular-monolith.md).
+Competition logs share the database with a module discriminator and follow the
+[logging contract](../CONTRIBUTING.md#logging).

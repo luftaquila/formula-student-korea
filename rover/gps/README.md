@@ -1,36 +1,16 @@
 # FSK GPS-Registration Unit
 
-A lightweight **Raspberry Pi Zero 2 W + ZED-F9P** stand-in for the full
-[rover](../README.md), built for one job: **surveying cone coordinates**
-with RTK precision. Carry it to a cone, hit "좌표 요청" in the course UI,
-and it answers with the current RTK fix. No motors, no MCU, no autonomous
-driving — just GPS → server.
+Pi Zero 2 W + ZED-F9P supports position capture or a mutually exclusive
+[RTCM3 base-station mode](#base-station).
 
-## Why this exists (and how it differs from the rover)
+## Runtime choice
 
-The full rover is a Raspberry Pi 5 running **AlmaLinux 10 bootc** with the
-ROS 2 Jazzy pilot in a podman container. That stack does **not** fit on a
-Zero 2 W:
+The 512 MB Zero 2 W uses Raspberry Pi OS Lite (64-bit, Trixie), cloud-init, and a
+Python systemd service. It cannot use the Pi 4/5 bootc image or the full ROS stack.
+The agent shares the rover's [ROS-free GPS/NTRIP code](#code-reuse).
 
-- AlmaLinux's `bootc-images-rpi` supports only Pi 4 / Pi 5 (GPT/UEFI boot)
-  — the Pi-3-class Zero 2 W isn't a supported board.
-- 512 MB RAM can't host AlmaLinux + podman + ROS 2 Jazzy.
-
-So this unit runs **Raspberry Pi OS Lite (64-bit, Trixie)**, configured
-headless via **cloud-init**, with the agent as a plain `systemd` Python
-service — no ROS, no container. It still reuses the rover's proven,
-ROS-free GPS/NTRIP code (see [Code reuse](#code-reuse)).
-
-> **Two slots.** The unit connects with `?device=gps` and holds its **own**
-> slot on the course server, separate from the rover (`?device=rover`), so
-> both can be connected at once — the receiver is the **preferred** cone-capture
-> source, the rover the fallback. (Both still authenticate with the same
-> `INTERNAL_SECRET`.)
-
-> **Base station.** Beyond cone capture, this unit can act as an RTK **base
-> station**: survey a fixed point with NGII once, then reuse that coordinate to
-> emit RTCM3 corrections for the rover — no on-site internet needed. See
-> [Base station](#base-station).
+Its independent `?device=gps` slot authenticates with `INTERNAL_SECRET` and can
+coexist with the rover. Cone capture prefers the receiver.
 
 ## Hardware
 
@@ -42,8 +22,7 @@ ROS-free GPS/NTRIP code (see [Code reuse](#code-reuse)).
 
 ## Architecture
 
-One process (`gps_register.py`), four threads, `--network=host` style direct
-HTTP to the course server (port 10000):
+`gps_register.py` communicates directly with the Course server (port 10000):
 
 ```
                 course server  (/course)
@@ -60,18 +39,11 @@ HTTP to the course server (port 10000):
                    ZED-F9P (USB /dev/ttyGPS)
 ```
 
-- **serial loop** — opens `/dev/ttyGPS`, configures the F9P (UBX
-  NAV-PVT/HPPOSLLH/DOP on, NMEA off), parses fixes, reopens on USB drop,
-  and POSTs position every `POSITION_REPORT_INTERVAL` s.
-- **ntrip** — on the first 3D fix, fetches the NGII source table, picks the
-  nearest RTCM 3.2 base, and streams corrections back into the receiver.
-- **sse** — holds `/api/rover/stream?device=gps`; on `request-position` replies
-  with the current fix tagged with the request id, and handles the base-station
-  commands (`base-survey-start`/`base-survey-cancel`/`base-activate`/`base-stop`).
-  Other rover commands (execute-path, manual-control, calibrate-\*) are no-ops.
-- **telemetry** — every 3 s POSTs `fix_status`, NTRIP status, GPS accuracy,
-  plus `mode`/`base` (base-session state + relayed RTCM bytes) so the operator
-  UI shows live RTK quality. `nav_state` is always `IDLE`.
+The agent configures UBX NAV-PVT/HPPOSLLH/DOP with NMEA off, reopens dropped USB,
+and reports position at `POSITION_REPORT_INTERVAL`. The first 3D fix selects the
+nearest NGII RTCM 3.2 base. SSE handles position requests and base commands;
+driving/calibration commands are ignored. Telemetry every 3 s includes fix/NTRIP
+quality and base state, with `nav_state=IDLE`.
 
 ## Server endpoints used
 
@@ -87,23 +59,13 @@ All are internal-strict — the unit sends `X-Internal-Service: $INTERNAL_SECRET
 
 ## Base station
 
-Managed from the course UI's **GPS** tab (admin). Two steps:
-
-1. **Survey** a named point (`측량`): while NGII RTK is `rtk_fixed`, the unit
-   averages `NAV-HPPOSLLH` positions for the chosen duration (default 120 s) and
-   records the mean as the point's coordinate (`POST /api/rover/base/survey-result`).
-2. **Activate** it as the base (select **수신기 base station** + the point): the
-   server sends `base-activate`, the unit switches the F9P to **TMODE FIXED (LLH)**
-   at the surveyed coordinate and enables RTCM3 (MSM7 1077/1087/1097/1127 + 1005 +
-   1230) on USB. It extracts complete RTCM3 frames from the serial stream (see
-   `pilot/lib/rtcm_utils.py`) and relays them via `POST /api/rover/base/rtcm`; the
-   server forwards them to the rover over its SSE (`rtcm` event → GPS serial). No
-   NGII needed while acting as a fixed base.
-
-Cone-capture and base-station roles are mutually exclusive (`_mode`): in base mode
-the unit is not a position source, so cone capture falls back to the rover (which
-is now getting RTK from this base). Switching the source back to **NGII** sends
-`base-stop`, reverts TMODE, and resumes normal capture.
+- Survey requires NGII `rtk_fixed`; average `NAV-HPPOSLLH` over the requested
+  duration (default 120 s), then POST `/api/rover/base/survey-result`.
+- `base-activate` switches F9P to TMODE FIXED (LLH), enables USB RTCM3
+  MSM7 1077/1087/1097/1127 + 1005 + 1230, and relays complete frames through
+  `/api/rover/base/rtcm`. The server forwards them to the rover's `rtcm` SSE.
+- Base mode disables receiver position capture and NGII corrections; capture
+  falls back to the rover. `base-stop` reverts TMODE and restores capture.
 
 ## Provisioning
 
@@ -119,13 +81,12 @@ partition (`user-data` + `network-config`). The current card is set up with:
 | Wi-Fi | SSID `fsk-rover`, regulatory-domain `KR` (PSK on the card, not in git) |
 | Tailscale | installed + `tailscale up` on first boot (machine `fsk-rover-gps`); auto-reconnects every boot after |
 
-The Wi-Fi PSK and the Tailscale auth key live **only on the SD card's
-cloud-init** (`network-config` / `user-data` `runcmd`), never in git — same
-posture as the rover's placeholder `fsk-default.nmconnection`. Boot needs
-internet on the team Wi-Fi the first time so Tailscale can install + auth.
+Keep Wi-Fi and Tailscale keys only in the card's cloud-init files
+(`network-config` and `user-data`), never in Git. First boot needs internet to
+install and authenticate Tailscale.
 
-Boot, wait ~1–2 min for first-boot setup, then `ssh fsk@fsk-rover-gps.local`
-(or via Tailscale). Re-point Wi-Fi for a site with:
+After first-boot setup, connect with `ssh fsk@fsk-rover-gps.local` or Tailscale.
+Update Wi-Fi with:
 
 ```bash
 sudo nmcli connection modify <conn> 802-11-wireless.ssid 'MyAP' \
@@ -143,12 +104,10 @@ scripts/provision-gps.sh fsk-rover-gps.local \
                                        # brings Tailscale up via cloud-init
 ```
 
-Idempotent — it deploys `/opt/gps-register`, apt-installs
-`python3-serial`/`python3-requests` + Tailscale, writes
-`/etc/gps-register/gps.conf` (0600), installs the udev rule + systemd unit,
-and starts `gps-register.service`. Tailscale is normally already up from the
-first-boot cloud-init; `--tailscale-authkey` is only needed to (re-)auth if
-that failed (e.g. no internet on first boot).
+The idempotent script deploys `/opt/gps-register`, installs `python3-serial`,
+`python3-requests`, Tailscale, udev rules, and the systemd unit, writes
+`/etc/gps-register/gps.conf` (0600), and starts `gps-register.service`.
+Use `--tailscale-authkey` only if cloud-init authentication failed or re-auth is needed.
 
 ### 3. Verify
 
@@ -179,8 +138,7 @@ password `gnss`, mountpoint auto-selected (nearest RTCM 3.2 base).
 
 ## Code reuse
 
-The agent imports the rover's pure, ROS-free modules directly — single
-source of truth, no vendored copies in git:
+The agent imports ROS-free pilot modules without vendored copies:
 
 | Module | From |
 |--------|------|
