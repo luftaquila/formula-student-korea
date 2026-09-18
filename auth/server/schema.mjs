@@ -1,5 +1,6 @@
 import {
   addColumn,
+  rebuildTable,
   runMigrationOnce,
   normalizeTimestampColumn,
 } from "../../shared/server/db-setup.mjs";
@@ -233,6 +234,20 @@ CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pa
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 )`);
+
+  // 위 CREATE TABLE은 datetime('now') 기본값으로 굳은 기존 테이블을 고치지 못한다.
+  runMigrationOnce(db, "auth.applications_timestamp_default_utc.v1", () => {
+    rebuildTable(db, "applications", `(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  realname TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  affiliation TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+)`);
+  }, { transaction: false });
 
   // Preserve legacy free-form contacts instead of dropping production data.
   // The new sidebar model uses ops_display(user_id), so old rows cannot be

@@ -23,6 +23,73 @@ export function addColumn(db, table, columnDef) {
   }
 }
 
+// SQLite는 컬럼의 DEFAULT나 순서를 ALTER로 바꿀 수 없다. 스키마는 CREATE TABLE IF NOT
+// EXISTS로 만들어지므로 이미 존재하는 DB는 처음 만들어진 시점의 정의를 그대로 유지한다.
+// 따라서 코드의 정의를 고치면 새 DB와 운영 DB의 스키마가 갈라지고, 백업 아티팩트 검증이
+// <table:columns>로 실패한다. 공식 12단계 ALTER 절차대로 테이블을 재구축해 양쪽을 맞춘다.
+//
+// 재구축 중 외래키는 반드시 꺼야 한다. 켜진 상태의 DROP TABLE은 암묵적 DELETE를 돌려
+// ON DELETE CASCADE로 자식 행까지 지운다. PRAGMA foreign_keys는 트랜잭션 안에서 무시되므로
+// 호출자는 runMigrationOnce에 { transaction: false }를 넘겨야 한다.
+export function rebuildTable(db, table, bodySql) {
+  assertIdentifier(table);
+  if (db.inTransaction) {
+    throw new Error(`${table} 재구축은 트랜잭션 밖에서 실행해야 합니다`);
+  }
+  const temp = assertIdentifier(`${table}__rebuild`);
+  // 이미 정의가 일치하는 DB는 건드리지 않는다. 재구축은 sqlite_master에 저장된 DDL 원문을
+  // 바꾸므로, 스키마 원문으로 다이제스트를 만드는 competition 계약이 멀쩡한 DB에서 깨진다.
+  const layout = (name) => JSON.stringify(
+    db.prepare(`PRAGMA table_info(${name})`).all().map((entry) => [
+      entry.name,
+      String(entry.type || "").toUpperCase(),
+      Number(entry.notnull),
+      Number(entry.pk),
+      entry.dflt_value == null ? null : String(entry.dflt_value).toLowerCase().replace(/\s+/g, ""),
+    ]),
+  );
+  // AUTOINCREMENT 카운터는 테이블과 함께 사라진다. 복원하지 않으면 재구축 시점에 최대
+  // id보다 큰 값까지 쓰였던 DB에서 삭제된 id가 재사용된다.
+  const hasSequence = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'")
+    .get();
+  const previousSeq = hasSequence
+    ? db.prepare("SELECT seq FROM sqlite_sequence WHERE name = ?").get(table)?.seq
+    : undefined;
+  const foreignKeys = Number(db.pragma("foreign_keys", { simple: true })) === 1;
+  if (foreignKeys) db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec(`DROP TABLE IF EXISTS ${temp}`);
+      db.exec(`CREATE TABLE ${temp} ${bodySql}`);
+      if (layout(temp) === layout(table)) {
+        db.exec(`DROP TABLE ${temp}`);
+        return;
+      }
+      const next = db.prepare(`PRAGMA table_info(${temp})`).all().map((c) => c.name);
+      const previous = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+      // 새 정의에만 있는 컬럼은 DEFAULT로 채우고, 사라진 컬럼은 버린다.
+      const carried = next.filter((name) => previous.has(name)).map((name) => `"${name}"`).join(", ");
+      db.exec(`INSERT INTO ${temp} (${carried}) SELECT ${carried} FROM ${table}`);
+      db.exec(`DROP TABLE ${table}`);
+      db.exec(`ALTER TABLE ${temp} RENAME TO ${table}`);
+      if (previousSeq != null) {
+        // better-sqlite3는 평범한 JS 숫자를 REAL로 바인딩한다. seq가 실수로 남으면
+        // AUTOINCREMENT가 정수 카운터를 실수와 비교하게 되므로 정수로 되돌린다.
+        db.prepare(
+          "UPDATE sqlite_sequence SET seq = CAST(? AS INTEGER) WHERE name = ? AND seq < ?",
+        ).run(previousSeq, table, previousSeq);
+      }
+    })();
+  } finally {
+    if (foreignKeys) db.pragma("foreign_keys = ON");
+  }
+  const violations = db.pragma("foreign_key_check");
+  if (violations.length) {
+    throw new Error(`${table} 재구축 후 외래키 위반 ${violations.length}건이 남았습니다`);
+  }
+}
+
 // 레거시 텍스트 타임스탬프를 UTC ISO 문자열로 정규화한다.
 // 이미 `...Z` 또는 숫자 오프셋(`+09:00`)이 붙은 값은 그대로, 공백 구분
 // `YYYY-MM-DD HH:MM:SS` 레거시 값은 UTC로 해석한다. 파싱 실패 시 null.

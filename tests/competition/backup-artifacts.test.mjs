@@ -1591,6 +1591,117 @@ describe("Competition backup/restore artifact validation", () => {
     }
   });
 
+  // 위 테스트는 새로 만든 DB만 본다. 운영 DB는 CREATE TABLE IF NOT EXISTS로 만들어진 시점의
+  // 컬럼 순서·DEFAULT를 그대로 유지하므로, 정의를 바꾸면 신규 DB만 계약과 맞고 운영 DB는
+  // 조용히 어긋난 채 남아 백업 검증만 실패한다. 레거시 형태를 복원해 마이그레이션을 검증한다.
+  it("migrates a legacy support-service schema back onto the runtime contract", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-support-schema-drift-"));
+    roots.push(root);
+    const legacyLogs = `(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+      level TEXT NOT NULL DEFAULT 'info',
+      action TEXT NOT NULL,
+      actor_email TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      target TEXT,
+      detail TEXT,
+      ip TEXT,
+      module TEXT
+    )`;
+    const legacyTables = {
+      auth: {
+        applications: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          realname TEXT NOT NULL DEFAULT '',
+          phone TEXT NOT NULL DEFAULT '',
+          affiliation TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )`,
+      },
+      calendar: {},
+      course: {
+        course: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          reverse INTEGER NOT NULL DEFAULT 0,
+          start_cone_id INTEGER,
+          is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))
+        )`,
+        // alt는 뒤늦게 ADD COLUMN으로 붙어 운영 DB에서는 맨 끝에 있다.
+        cone: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          course_id INTEGER NOT NULL,
+          lat REAL NOT NULL,
+          lng REAL NOT NULL,
+          side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          alt REAL,
+          FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+        )`,
+      },
+      email: {
+        // recipient는 recipients JSON을 대체하며 ADD COLUMN으로 붙어 맨 끝에 있고,
+        // sent_at 기본값은 KST(+9h)를 직접 더하던 시절 그대로다.
+        email_log: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          error TEXT,
+          message_id TEXT,
+          html_content TEXT,
+          source TEXT NOT NULL DEFAULT 'manual',
+          sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+          sent_by TEXT,
+          recipient TEXT NOT NULL DEFAULT ''
+        )`,
+      },
+    };
+    const layoutMigrations = [
+      "shared.logs_timestamp_default_utc.v1",
+      "auth.applications_timestamp_default_utc.v1",
+      "course.course_column_layout_utc.v1",
+      "course.cone_column_layout_utc.v1",
+      "email.email_log_column_layout_utc.v1",
+    ];
+
+    for (const [service, createApp] of Object.entries(supportAppCreators)) {
+      const dbPath = path.join(root, `${service}.db`);
+      createApp({ dbPath, skipStaticValidation: true }).db.close();
+
+      const writer = new Database(dbPath);
+      writer.pragma("foreign_keys = OFF");
+      for (const [table, body] of Object.entries({ logs: legacyLogs, ...legacyTables[service] })) {
+        const columns = writer.prepare(`PRAGMA table_info(${table})`).all()
+          .map((entry) => `"${entry.name}"`).join(", ");
+        writer.exec(`CREATE TABLE "${table}__legacy" ${body}`);
+        writer.exec(`INSERT INTO "${table}__legacy" (${columns}) SELECT ${columns} FROM "${table}"`);
+        writer.exec(`DROP TABLE "${table}"`);
+        writer.exec(`ALTER TABLE "${table}__legacy" RENAME TO "${table}"`);
+      }
+      writer.prepare(
+        `DELETE FROM schema_migrations WHERE name IN (${layoutMigrations.map(() => "?").join(", ")})`,
+      ).run(...layoutMigrations);
+      writer.close();
+
+      assert.notEqual(
+        validateSupportDatabase(service, dbPath).status, 0,
+        `${service}: 레거시 스키마가 검증을 통과해 회귀 테스트가 무의미합니다`,
+      );
+
+      createApp({ dbPath, skipStaticValidation: true }).db.close();
+      const migrated = validateSupportDatabase(service, dbPath);
+      assert.equal(migrated.status, 0, `${service}: ${migrated.stdout}\n${migrated.stderr}`);
+    }
+  });
+
   it("rejects a Course backup missing durable mission protocol state", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-course-mission-schema-validator-"));
     roots.push(root);

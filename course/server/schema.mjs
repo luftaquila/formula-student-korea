@@ -1,4 +1,5 @@
 import {
+  rebuildTable,
   runMigrationOnce,
   setupRowCapRetention,
   normalizeTimestampColumn,
@@ -35,6 +36,21 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
       );
   }
 
+  // ALTER로 덧붙인 컬럼은 항상 끝에 붙고, 위 CREATE TABLE은 datetime('now')로 굳은 기본값을
+  // 고치지 못한다. 새로 만든 DB와 같은 정의가 되도록 재구축한다. course를 참조하는 cone·memo·
+  // course_snapshot·mission 등은 rebuildTable이 외래키를 끈 채 교체하므로 CASCADE로 지워지지 않는다.
+  runMigrationOnce(db, "course.course_column_layout_utc.v1", () => {
+    rebuildTable(db, "course", `(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  reverse INTEGER NOT NULL DEFAULT 0,
+  start_cone_id INTEGER,
+  is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))
+)`);
+  }, { transaction: false });
+
   db.exec(`CREATE TABLE IF NOT EXISTS cone (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   course_id INTEGER NOT NULL,
@@ -46,6 +62,23 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
 );`);
+
+  // alt는 뒤늦게 ALTER로 추가돼 기존 DB에서는 맨 끝에 있고, created_at/updated_at 기본값도
+  // datetime('now')로 굳어 있다. 아래 CREATE INDEX보다 앞에서 재구축해 인덱스가 새 테이블에
+  // 만들어지게 한다. 뒤따르는 alt ADD COLUMN 블록은 이미 컬럼이 있으므로 그대로 통과한다.
+  runMigrationOnce(db, "course.cone_column_layout_utc.v1", () => {
+    rebuildTable(db, "cone", `(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL,
+  alt REAL,
+  side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+)`);
+  }, { transaction: false });
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_cone_course ON cone(course_id);`);
 
