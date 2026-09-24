@@ -1,4 +1,4 @@
-import { runMigrationOnce, normalizeUtcTextTimestamp, rebuildTable, setupRowCapRetention } from "./db-setup.mjs";
+import { runMigrationOnce, normalizeTimestampColumn, normalizeUtcTextTimestamp, rebuildTable, setupRowCapRetention } from "./db-setup.mjs";
 import { createSecretChecker } from "./express-setup.mjs";
 import { currentCompetitionYear } from "../common/competition-year.mjs";
 
@@ -295,6 +295,12 @@ export function createLogger(db, serviceName, maxRows = 50000, { teamSource } = 
       const normalized = normalizeUtcTextTimestamp(row.timestamp);
       if (normalized && normalized !== row.timestamp) update.run(normalized, row.id);
     }
+  });
+
+  // The old default kept producing zone-less values after v1 had run. Revisit
+  // those rows once the default has been repaired, including on Competition.
+  runMigrationOnce(db, "shared.logs_timestamp_utc_after_default_repair.v2", () => {
+    normalizeTimestampColumn(db, "logs", "timestamp");
   });
 
   function getIP(req) {

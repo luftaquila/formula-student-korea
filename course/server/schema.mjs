@@ -334,6 +334,18 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
     }
   });
 
+  // A legacy default could still insert zone-less values after v1 ran.
+  runMigrationOnce(db, "course.timestamp_utc_after_default_repair.v2", () => {
+    for (const [table, column] of [
+      ["course", "created_at"],
+      ["course", "updated_at"],
+      ["cone", "created_at"],
+      ["cone", "updated_at"],
+    ]) {
+      normalizeTimestampColumn(db, table, column);
+    }
+  });
+
   // Durable mission protocol v2: stable waypoint identities, editable remaining
   // routes, command acknowledgements, and named route presets. The migration is
   // additive and backfills legacy coordinate arrays without deleting history.

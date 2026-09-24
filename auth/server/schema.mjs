@@ -294,6 +294,12 @@ CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pa
     }
   });
 
+  // Existing databases kept inserting datetime('now') values after v1 ran.
+  runMigrationOnce(db, "auth.applications_timestamp_utc_after_default_repair.v2", () => {
+    normalizeTimestampColumn(db, "applications", "created_at");
+    normalizeTimestampColumn(db, "applications", "updated_at");
+  });
+
   // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록
   const ADMIN_EMAIL = process.env.ADMIN_EMAIL;
 

@@ -107,10 +107,10 @@ export function normalizeUtcTextTimestamp(value) {
 // 주입하면 파싱 코어를 한 곳에서 공유할 수 있다.
 export function parseLegacyTimestamp(value, { naiveOffset = "Z" } = {}) {
   if (typeof value !== "string") return null;
-  const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
+  const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?(\.\d+)?(Z|[+-]\d{2}:?\d{2})?$/);
   if (!m) return null;
-  const [, yy, mo, dd, hh, mi, ss = "00", zone] = m;
-  const d = new Date(`${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${zone || naiveOffset}`);
+  const [, yy, mo, dd, hh, mi, ss = "00", fraction = "", zone] = m;
+  const d = new Date(`${yy}-${mo}-${dd}T${hh}:${mi}:${ss}${fraction}${zone || naiveOffset}`);
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 

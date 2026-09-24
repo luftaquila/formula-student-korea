@@ -1,4 +1,5 @@
 import {
+  normalizeTimestampColumn,
   parseLegacyTimestamp,
   rebuildTable,
   runMigrationOnce,
@@ -92,6 +93,13 @@ export function initializeSchema({ db, CONFIG_KEYS }) {
   sent_by TEXT
 )`);
   }, { transaction: false });
+
+  // The old +9 hour default stayed active after the first normalization.
+  // Values with an explicit zone are already UTC and retain their precision.
+  runMigrationOnce(db, "email.sent_at_utc_after_default_repair.v2", () => {
+    normalizeTimestampColumn(db, "email_log", "sent_at", (value) =>
+      /[zZ]$|[+-]\d{2}:?\d{2}$/.test(value) ? value : normalizeEmailSentAt(value));
+  });
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);
 

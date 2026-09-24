@@ -1021,6 +1021,54 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
+  it("accepts a Competition logs rebuild and normalizes rows written after the first timestamp migration", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-competition-logs-rebuild-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+
+    const writer = new Database(dbPath);
+    const columns = writer.prepare("PRAGMA table_info(logs)").all()
+      .map(({ name }) => `"${name}"`).join(", ");
+    writer.exec(`CREATE TABLE logs__legacy (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+      level TEXT NOT NULL DEFAULT 'info',
+      action TEXT NOT NULL,
+      actor_email TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      target TEXT,
+      detail TEXT,
+      ip TEXT,
+      module TEXT
+    )`);
+    writer.exec(`INSERT INTO logs__legacy (${columns}) SELECT ${columns} FROM logs`);
+    writer.exec("DROP TABLE logs; ALTER TABLE logs__legacy RENAME TO logs");
+    writer.prepare("INSERT INTO logs (timestamp, action, module) VALUES (?, ?, ?)")
+      .run("2026-09-24T00:00:00.000", "legacy.timestamp", "entry");
+    writer.prepare(`DELETE FROM schema_migrations WHERE name IN (
+      'shared.logs_timestamp_default_utc.v1',
+      'shared.logs_timestamp_utc_after_default_repair.v2'
+    )`).run();
+    writer.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath, uploadRoot: uploads, skipStaticValidation: true, validateUser: TRUST_JWT,
+    });
+    upgraded.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    assert.equal(reader.prepare("SELECT timestamp FROM logs WHERE action = 'legacy.timestamp'").get().timestamp,
+      "2026-09-24T00:00:00.000Z");
+    const contract = captureCompetitionSchemaContract(reader);
+    reader.close();
+    assert.equal(competitionSchemaContractDigest(contract), COMPETITION_SCHEMA_CONTRACT.sha256);
+    const result = validateDatabase(dbPath);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
   it("accepts a full Competition database and rejects a schema-shaped subset", () => {
     const fullRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-full-db-validator-"));
     roots.push(fullRoot);
@@ -1670,6 +1718,10 @@ describe("Competition backup/restore artifact validation", () => {
       "course.course_column_layout_utc.v1",
       "course.cone_column_layout_utc.v1",
       "email.email_log_column_layout_utc.v1",
+      "shared.logs_timestamp_utc_after_default_repair.v2",
+      "auth.applications_timestamp_utc_after_default_repair.v2",
+      "course.timestamp_utc_after_default_repair.v2",
+      "email.sent_at_utc_after_default_repair.v2",
     ];
 
     for (const [service, createApp] of Object.entries(supportAppCreators)) {
@@ -1686,6 +1738,26 @@ describe("Competition backup/restore artifact validation", () => {
         writer.exec(`DROP TABLE "${table}"`);
         writer.exec(`ALTER TABLE "${table}__legacy" RENAME TO "${table}"`);
       }
+      writer.prepare("INSERT INTO logs (timestamp, action, module) VALUES (?, ?, ?)")
+        .run("2026-09-24T00:00:00.000", "legacy.timestamp", service);
+      if (service === "auth") {
+        writer.prepare(`INSERT INTO applications
+          (email, created_at, updated_at) VALUES (?, ?, ?)`).run(
+          "legacy@example.org", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
+        );
+      } else if (service === "course") {
+        writer.prepare(`INSERT INTO course (id, name, created_at, updated_at)
+          VALUES (?, ?, ?, ?)`).run(999, "Legacy course", "2026-09-24 23:00:00", "2026-09-24 23:00:00");
+        writer.prepare(`INSERT INTO cone
+          (course_id, lat, lng, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
+          999, 35, 126, "left", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
+        );
+      } else if (service === "email") {
+        writer.prepare("INSERT INTO email_log (subject, sent_at) VALUES (?, ?)")
+          .run("Legacy email", "2026-09-24T09:00:00.123");
+        writer.prepare("INSERT INTO email_log (subject, sent_at) VALUES (?, ?)")
+          .run("UTC email", "2026-09-24T00:00:00.456Z");
+      }
       writer.prepare(
         `DELETE FROM schema_migrations WHERE name IN (${layoutMigrations.map(() => "?").join(", ")})`,
       ).run(...layoutMigrations);
@@ -1699,6 +1771,31 @@ describe("Competition backup/restore artifact validation", () => {
       createApp({ dbPath, skipStaticValidation: true }).db.close();
       const migrated = validateSupportDatabase(service, dbPath);
       assert.equal(migrated.status, 0, `${service}: ${migrated.stdout}\n${migrated.stderr}`);
+      const reader = new Database(dbPath, { readonly: true });
+      assert.equal(reader.prepare("SELECT timestamp FROM logs WHERE action = 'legacy.timestamp'").get().timestamp,
+        "2026-09-24T00:00:00.000Z", `${service}: existing log timestamps must be repaired`);
+      if (service === "auth") {
+        const row = reader.prepare("SELECT created_at, updated_at FROM applications WHERE email = ?")
+          .get("legacy@example.org");
+        assert.deepEqual(row, {
+          created_at: "2026-09-24T23:00:00.000Z",
+          updated_at: "2026-09-24T23:00:00.000Z",
+        });
+      } else if (service === "course") {
+        for (const table of ["course", "cone"]) {
+          const row = reader.prepare(`SELECT created_at, updated_at FROM ${table} WHERE ${table === "course" ? "id" : "course_id"} = 999`).get();
+          assert.deepEqual(row, {
+            created_at: "2026-09-24T23:00:00.000Z",
+            updated_at: "2026-09-24T23:00:00.000Z",
+          });
+        }
+      } else if (service === "email") {
+        assert.equal(reader.prepare("SELECT sent_at FROM email_log WHERE subject = 'Legacy email'").get().sent_at,
+          "2026-09-24T00:00:00.123Z");
+        assert.equal(reader.prepare("SELECT sent_at FROM email_log WHERE subject = 'UTC email'").get().sent_at,
+          "2026-09-24T00:00:00.456Z");
+      }
+      reader.close();
     }
   });
 

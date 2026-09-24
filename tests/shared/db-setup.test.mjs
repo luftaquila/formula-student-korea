@@ -5,7 +5,7 @@ import { tmpDbPath, cleanup } from '../helpers/test-utils.mjs';
 
 const require = createRequire(import.meta.url);
 const Database = require('../../auth/node_modules/better-sqlite3');
-import { createDatabase, addColumn, rebuildTable } from '../../shared/server/db-setup.mjs';
+import { createDatabase, addColumn, parseLegacyTimestamp, rebuildTable } from '../../shared/server/db-setup.mjs';
 
 let dbPath, db;
 
@@ -89,6 +89,15 @@ describe('assertIdentifier', () => {
     assert.throws(() => assertIdentifier('1abc'));
     assert.throws(() => assertIdentifier(''));
     assert.throws(() => assertIdentifier(null));
+  });
+});
+
+describe('parseLegacyTimestamp', () => {
+  it('retains fractional seconds when converting a legacy KST timestamp to UTC', () => {
+    assert.equal(
+      parseLegacyTimestamp('2026-09-24T09:00:00.123', { naiveOffset: '+09:00' }),
+      '2026-09-24T00:00:00.123Z',
+    );
   });
 });
 
