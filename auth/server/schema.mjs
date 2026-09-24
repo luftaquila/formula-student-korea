@@ -220,6 +220,16 @@ CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pa
   value TEXT NOT NULL
 )`);
 
+  // Older databases allowed NULL settings values. Keep their closed/default
+  // behavior while restoring the current NOT NULL schema contract.
+  runMigrationOnce(db, "auth.settings_value_not_null.v1", () => {
+    db.exec("UPDATE settings SET value = '' WHERE value IS NULL");
+    rebuildTable(db, "settings", `(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`);
+  }, { transaction: false });
+
   // 계정 신청 접수 기본값: 닫힘
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('applications_open', '0')").run();
 

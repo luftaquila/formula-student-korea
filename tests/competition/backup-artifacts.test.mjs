@@ -1660,6 +1660,10 @@ describe("Competition backup/restore artifact validation", () => {
     )`;
     const legacyTables = {
       auth: {
+        settings: `(
+          key TEXT PRIMARY KEY,
+          value TEXT
+        )`,
         applications: `(
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           email TEXT UNIQUE NOT NULL,
@@ -1694,6 +1698,19 @@ describe("Competition backup/restore artifact validation", () => {
           alt REAL,
           FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
         )`,
+        memo: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          course_id INTEGER NOT NULL,
+          lat REAL NOT NULL,
+          lng REAL NOT NULL,
+          width REAL NOT NULL,
+          height REAL NOT NULL,
+          content TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          rotation REAL NOT NULL DEFAULT 0,
+          FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+        )`,
       },
       email: {
         // recipient는 recipients JSON을 대체하며 ADD COLUMN으로 붙어 맨 끝에 있고,
@@ -1715,8 +1732,11 @@ describe("Competition backup/restore artifact validation", () => {
     const layoutMigrations = [
       "shared.logs_timestamp_default_utc.v1",
       "auth.applications_timestamp_default_utc.v1",
+      "auth.settings_value_not_null.v1",
       "course.course_column_layout_utc.v1",
       "course.cone_column_layout_utc.v1",
+      "course.memo_column_layout_utc.v1",
+      "course.memo_timestamp_utc_after_layout.v1",
       "email.email_log_column_layout_utc.v1",
       "shared.logs_timestamp_utc_after_default_repair.v2",
       "auth.applications_timestamp_utc_after_default_repair.v2",
@@ -1741,6 +1761,7 @@ describe("Competition backup/restore artifact validation", () => {
       writer.prepare("INSERT INTO logs (timestamp, action, module) VALUES (?, ?, ?)")
         .run("2026-09-24T00:00:00.000", "legacy.timestamp", service);
       if (service === "auth") {
+        writer.exec("UPDATE settings SET value = NULL WHERE key = 'applications_open'");
         writer.prepare(`INSERT INTO applications
           (email, created_at, updated_at) VALUES (?, ?, ?)`).run(
           "legacy@example.org", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
@@ -1751,6 +1772,11 @@ describe("Competition backup/restore artifact validation", () => {
         writer.prepare(`INSERT INTO cone
           (course_id, lat, lng, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
           999, 35, 126, "left", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
+        );
+        writer.prepare(`INSERT INTO memo
+          (course_id, lat, lng, width, height, rotation, content, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          999, 35, 126, 2, 1, 12.5, "Legacy memo", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
         );
       } else if (service === "email") {
         writer.prepare("INSERT INTO email_log (subject, sent_at) VALUES (?, ?)")
@@ -1775,6 +1801,7 @@ describe("Competition backup/restore artifact validation", () => {
       assert.equal(reader.prepare("SELECT timestamp FROM logs WHERE action = 'legacy.timestamp'").get().timestamp,
         "2026-09-24T00:00:00.000Z", `${service}: existing log timestamps must be repaired`);
       if (service === "auth") {
+        assert.equal(reader.prepare("SELECT value FROM settings WHERE key = 'applications_open'").get().value, "");
         const row = reader.prepare("SELECT created_at, updated_at FROM applications WHERE email = ?")
           .get("legacy@example.org");
         assert.deepEqual(row, {
@@ -1789,6 +1816,12 @@ describe("Competition backup/restore artifact validation", () => {
             updated_at: "2026-09-24T23:00:00.000Z",
           });
         }
+        assert.deepEqual(reader.prepare("SELECT rotation, content, created_at, updated_at FROM memo WHERE course_id = 999").get(), {
+          rotation: 12.5,
+          content: "Legacy memo",
+          created_at: "2026-09-24T23:00:00.000Z",
+          updated_at: "2026-09-24T23:00:00.000Z",
+        });
       } else if (service === "email") {
         assert.equal(reader.prepare("SELECT sent_at FROM email_log WHERE subject = 'Legacy email'").get().sent_at,
           "2026-09-24T00:00:00.123Z");

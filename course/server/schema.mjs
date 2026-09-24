@@ -111,6 +111,29 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
 );`);
 
+  // rotation added by ALTER is last on older databases, while fresh databases
+  // declare it before content. Rebuild before recreating the course index.
+  runMigrationOnce(db, "course.memo_column_layout_utc.v1", () => {
+    rebuildTable(db, "memo", `(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  course_id INTEGER NOT NULL,
+  lat REAL NOT NULL,
+  lng REAL NOT NULL,
+  width REAL NOT NULL,
+  height REAL NOT NULL,
+  rotation REAL NOT NULL DEFAULT 0,
+  content TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+)`);
+  }, { transaction: false });
+
+  runMigrationOnce(db, "course.memo_timestamp_utc_after_layout.v1", () => {
+    normalizeTimestampColumn(db, "memo", "created_at");
+    normalizeTimestampColumn(db, "memo", "updated_at");
+  });
+
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memo_course ON memo(course_id);`);
 
   // Ordered route guides are independent from cones: markers are physical map
