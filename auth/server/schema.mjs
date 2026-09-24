@@ -1,5 +1,6 @@
 import {
   addColumn,
+  rebuildTable,
   runMigrationOnce,
   normalizeTimestampColumn,
 } from "../../shared/server/db-setup.mjs";
@@ -219,6 +220,16 @@ CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pa
   value TEXT NOT NULL
 )`);
 
+  // Older databases allowed NULL settings values. Keep their closed/default
+  // behavior while restoring the current NOT NULL schema contract.
+  runMigrationOnce(db, "auth.settings_value_not_null.v1", () => {
+    db.exec("UPDATE settings SET value = '' WHERE value IS NULL");
+    rebuildTable(db, "settings", `(
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+)`);
+  }, { transaction: false });
+
   // 계정 신청 접수 기본값: 닫힘
   db.prepare("INSERT OR IGNORE INTO settings (key, value) VALUES ('applications_open', '0')").run();
 
@@ -233,6 +244,20 @@ CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pa
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 )`);
+
+  // 위 CREATE TABLE은 datetime('now') 기본값으로 굳은 기존 테이블을 고치지 못한다.
+  runMigrationOnce(db, "auth.applications_timestamp_default_utc.v1", () => {
+    rebuildTable(db, "applications", `(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  email TEXT UNIQUE NOT NULL,
+  name TEXT,
+  realname TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  affiliation TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+)`);
+  }, { transaction: false });
 
   // Preserve legacy free-form contacts instead of dropping production data.
   // The new sidebar model uses ops_display(user_id), so old rows cannot be
@@ -277,6 +302,12 @@ CREATE INDEX IF NOT EXISTS idx_kiosk_device_pairing_code_hash ON kiosk_device(pa
     ]) {
       normalizeTimestampColumn(db, table, column);
     }
+  });
+
+  // Existing databases kept inserting datetime('now') values after v1 ran.
+  runMigrationOnce(db, "auth.applications_timestamp_utc_after_default_repair.v2", () => {
+    normalizeTimestampColumn(db, "applications", "created_at");
+    normalizeTimestampColumn(db, "applications", "updated_at");
   });
 
   // Bootstrap: ADMIN_EMAIL이 DB에 없으면 admin으로 등록

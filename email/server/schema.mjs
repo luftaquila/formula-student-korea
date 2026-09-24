@@ -1,5 +1,7 @@
 import {
+  normalizeTimestampColumn,
   parseLegacyTimestamp,
+  rebuildTable,
   runMigrationOnce,
   setupRowCapRetention,
 } from "../../shared/server/db-setup.mjs";
@@ -72,6 +74,31 @@ export function initializeSchema({ db, CONFIG_KEYS }) {
       const normalized = normalizeEmailSentAt(row.sent_at);
       if (normalized && normalized !== row.sent_at) update.run(normalized, row.id);
     }
+  });
+
+  // recipient는 recipients JSON을 대체하며 ALTER로 추가돼 기존 DB에서는 맨 끝에 있고,
+  // sent_at 기본값도 KST(+9h) 시절 그대로다. 위 recipient 마이그레이션이 끝난 뒤, 아래
+  // CREATE INDEX보다 앞에서 재구축해 인덱스가 새 테이블에 만들어지게 한다.
+  runMigrationOnce(db, "email.email_log_column_layout_utc.v1", () => {
+    rebuildTable(db, "email_log", `(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  subject TEXT NOT NULL,
+  recipient TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'sent',
+  error TEXT,
+  message_id TEXT,
+  html_content TEXT,
+  source TEXT NOT NULL DEFAULT 'manual',
+  sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  sent_by TEXT
+)`);
+  }, { transaction: false });
+
+  // The old +9 hour default stayed active after the first normalization.
+  // Values with an explicit zone are already UTC and retain their precision.
+  runMigrationOnce(db, "email.sent_at_utc_after_default_repair.v2", () => {
+    normalizeTimestampColumn(db, "email_log", "sent_at", (value) =>
+      /[zZ]$|[+-]\d{2}:?\d{2}$/.test(value) ? value : normalizeEmailSentAt(value));
   });
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_el_sent_at ON email_log(sent_at)`);

@@ -8,6 +8,13 @@ export function normalizeSchemaSql(sql) {
   if (/^CREATE TABLE wireless_session\s*\(/i.test(normalized)) {
     normalized = normalized.replace(", engine_state TEXT, team_id INTEGER)", ", team_id INTEGER, engine_state TEXT)");
   }
+  // A logs rebuild preserves the table definition but SQLite quotes its new
+  // name and stores the inline module column with different comma placement.
+  if (/^CREATE TABLE "logs"(?=\s*\()/i.test(normalized)) {
+    normalized = normalized
+      .replace(/^CREATE TABLE "logs"/i, "CREATE TABLE logs")
+      .replace(/ip TEXT, module TEXT \)$/, "ip TEXT , module TEXT)");
+  }
   return normalized
     // Traffic rebuilds the table through ALTER TABLE ... RENAME TO record;
     // SQLite persists that equivalent declaration with a quoted table name.

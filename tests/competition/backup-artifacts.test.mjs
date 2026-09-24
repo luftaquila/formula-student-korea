@@ -1021,6 +1021,54 @@ describe("Competition backup/restore artifact validation", () => {
     assert.equal(result.status, 0, result.stderr);
   });
 
+  it("accepts a Competition logs rebuild and normalizes rows written after the first timestamp migration", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-competition-logs-rebuild-"));
+    roots.push(root);
+    const dbPath = path.join(root, "competition.db");
+    const uploads = path.join(root, "uploads");
+    createCompetitionUnit(dbPath, uploads);
+
+    const writer = new Database(dbPath);
+    const columns = writer.prepare("PRAGMA table_info(logs)").all()
+      .map(({ name }) => `"${name}"`).join(", ");
+    writer.exec(`CREATE TABLE logs__legacy (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+      level TEXT NOT NULL DEFAULT 'info',
+      action TEXT NOT NULL,
+      actor_email TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      target TEXT,
+      detail TEXT,
+      ip TEXT,
+      module TEXT
+    )`);
+    writer.exec(`INSERT INTO logs__legacy (${columns}) SELECT ${columns} FROM logs`);
+    writer.exec("DROP TABLE logs; ALTER TABLE logs__legacy RENAME TO logs");
+    writer.prepare("INSERT INTO logs (timestamp, action, module) VALUES (?, ?, ?)")
+      .run("2026-09-24T00:00:00.000", "legacy.timestamp", "entry");
+    writer.prepare(`DELETE FROM schema_migrations WHERE name IN (
+      'shared.logs_timestamp_default_utc.v1',
+      'shared.logs_timestamp_utc_after_default_repair.v2'
+    )`).run();
+    writer.close();
+
+    const upgraded = createCompetitionApp({
+      dbPath, uploadRoot: uploads, skipStaticValidation: true, validateUser: TRUST_JWT,
+    });
+    upgraded.close();
+
+    const reader = new Database(dbPath, { readonly: true });
+    assert.equal(reader.prepare("SELECT timestamp FROM logs WHERE action = 'legacy.timestamp'").get().timestamp,
+      "2026-09-24T00:00:00.000Z");
+    const contract = captureCompetitionSchemaContract(reader);
+    reader.close();
+    assert.equal(competitionSchemaContractDigest(contract), COMPETITION_SCHEMA_CONTRACT.sha256);
+    const result = validateDatabase(dbPath);
+    assert.equal(result.status, 0, result.stderr);
+  });
+
   it("accepts a full Competition database and rejects a schema-shaped subset", () => {
     const fullRoot = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-full-db-validator-"));
     roots.push(fullRoot);
@@ -1588,6 +1636,199 @@ describe("Competition backup/restore artifact validation", () => {
       created.db.close();
       const result = validateSupportDatabase(service, dbPath);
       assert.equal(result.status, 0, `${service}: ${result.stdout}\n${result.stderr}`);
+    }
+  });
+
+  // 위 테스트는 새로 만든 DB만 본다. 운영 DB는 CREATE TABLE IF NOT EXISTS로 만들어진 시점의
+  // 컬럼 순서·DEFAULT를 그대로 유지하므로, 정의를 바꾸면 신규 DB만 계약과 맞고 운영 DB는
+  // 조용히 어긋난 채 남아 백업 검증만 실패한다. 레거시 형태를 복원해 마이그레이션을 검증한다.
+  it("migrates a legacy support-service schema back onto the runtime contract", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-support-schema-drift-"));
+    roots.push(root);
+    const legacyLogs = `(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f', 'now')),
+      level TEXT NOT NULL DEFAULT 'info',
+      action TEXT NOT NULL,
+      actor_email TEXT,
+      actor_name TEXT,
+      actor_role TEXT,
+      target TEXT,
+      detail TEXT,
+      ip TEXT,
+      module TEXT
+    )`;
+    const legacyTables = {
+      auth: {
+        settings: `(
+          key TEXT PRIMARY KEY,
+          value TEXT
+        )`,
+        applications: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          email TEXT UNIQUE NOT NULL,
+          name TEXT,
+          realname TEXT NOT NULL DEFAULT '',
+          phone TEXT NOT NULL DEFAULT '',
+          affiliation TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )`,
+      },
+      calendar: {},
+      course: {
+        course: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          reverse INTEGER NOT NULL DEFAULT 0,
+          start_cone_id INTEGER,
+          is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))
+        )`,
+        // alt는 뒤늦게 ADD COLUMN으로 붙어 운영 DB에서는 맨 끝에 있다.
+        cone: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          course_id INTEGER NOT NULL,
+          lat REAL NOT NULL,
+          lng REAL NOT NULL,
+          side TEXT NOT NULL CHECK(side IN ('left', 'right', 'center')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+          alt REAL,
+          FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+        )`,
+        memo: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          course_id INTEGER NOT NULL,
+          lat REAL NOT NULL,
+          lng REAL NOT NULL,
+          width REAL NOT NULL,
+          height REAL NOT NULL,
+          content TEXT NOT NULL DEFAULT '',
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          rotation REAL NOT NULL DEFAULT 0,
+          FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+        )`,
+      },
+      email: {
+        // recipient는 recipients JSON을 대체하며 ADD COLUMN으로 붙어 맨 끝에 있고,
+        // sent_at 기본값은 KST(+9h)를 직접 더하던 시절 그대로다.
+        email_log: `(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          subject TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          error TEXT,
+          message_id TEXT,
+          html_content TEXT,
+          source TEXT NOT NULL DEFAULT 'manual',
+          sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%f','now','+9 hours')),
+          sent_by TEXT,
+          recipient TEXT NOT NULL DEFAULT ''
+        )`,
+      },
+    };
+    const layoutMigrations = [
+      "shared.logs_timestamp_default_utc.v1",
+      "auth.applications_timestamp_default_utc.v1",
+      "auth.settings_value_not_null.v1",
+      "course.course_column_layout_utc.v1",
+      "course.cone_column_layout_utc.v1",
+      "course.memo_column_layout_utc.v1",
+      "course.memo_timestamp_utc_after_layout.v1",
+      "email.email_log_column_layout_utc.v1",
+      "shared.logs_timestamp_utc_after_default_repair.v2",
+      "auth.applications_timestamp_utc_after_default_repair.v2",
+      "course.timestamp_utc_after_default_repair.v2",
+      "email.sent_at_utc_after_default_repair.v2",
+    ];
+
+    for (const [service, createApp] of Object.entries(supportAppCreators)) {
+      const dbPath = path.join(root, `${service}.db`);
+      createApp({ dbPath, skipStaticValidation: true }).db.close();
+
+      const writer = new Database(dbPath);
+      writer.pragma("foreign_keys = OFF");
+      for (const [table, body] of Object.entries({ logs: legacyLogs, ...legacyTables[service] })) {
+        const columns = writer.prepare(`PRAGMA table_info(${table})`).all()
+          .map((entry) => `"${entry.name}"`).join(", ");
+        writer.exec(`CREATE TABLE "${table}__legacy" ${body}`);
+        writer.exec(`INSERT INTO "${table}__legacy" (${columns}) SELECT ${columns} FROM "${table}"`);
+        writer.exec(`DROP TABLE "${table}"`);
+        writer.exec(`ALTER TABLE "${table}__legacy" RENAME TO "${table}"`);
+      }
+      writer.prepare("INSERT INTO logs (timestamp, action, module) VALUES (?, ?, ?)")
+        .run("2026-09-24T00:00:00.000", "legacy.timestamp", service);
+      if (service === "auth") {
+        writer.exec("UPDATE settings SET value = NULL WHERE key = 'applications_open'");
+        writer.prepare(`INSERT INTO applications
+          (email, created_at, updated_at) VALUES (?, ?, ?)`).run(
+          "legacy@example.org", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
+        );
+      } else if (service === "course") {
+        writer.prepare(`INSERT INTO course (id, name, created_at, updated_at)
+          VALUES (?, ?, ?, ?)`).run(999, "Legacy course", "2026-09-24 23:00:00", "2026-09-24 23:00:00");
+        writer.prepare(`INSERT INTO cone
+          (course_id, lat, lng, side, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`).run(
+          999, 35, 126, "left", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
+        );
+        writer.prepare(`INSERT INTO memo
+          (course_id, lat, lng, width, height, rotation, content, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+          999, 35, 126, 2, 1, 12.5, "Legacy memo", "2026-09-24 23:00:00", "2026-09-24 23:00:00",
+        );
+      } else if (service === "email") {
+        writer.prepare("INSERT INTO email_log (subject, sent_at) VALUES (?, ?)")
+          .run("Legacy email", "2026-09-24T09:00:00.123");
+        writer.prepare("INSERT INTO email_log (subject, sent_at) VALUES (?, ?)")
+          .run("UTC email", "2026-09-24T00:00:00.456Z");
+      }
+      writer.prepare(
+        `DELETE FROM schema_migrations WHERE name IN (${layoutMigrations.map(() => "?").join(", ")})`,
+      ).run(...layoutMigrations);
+      writer.close();
+
+      assert.notEqual(
+        validateSupportDatabase(service, dbPath).status, 0,
+        `${service}: 레거시 스키마가 검증을 통과해 회귀 테스트가 무의미합니다`,
+      );
+
+      createApp({ dbPath, skipStaticValidation: true }).db.close();
+      const migrated = validateSupportDatabase(service, dbPath);
+      assert.equal(migrated.status, 0, `${service}: ${migrated.stdout}\n${migrated.stderr}`);
+      const reader = new Database(dbPath, { readonly: true });
+      assert.equal(reader.prepare("SELECT timestamp FROM logs WHERE action = 'legacy.timestamp'").get().timestamp,
+        "2026-09-24T00:00:00.000Z", `${service}: existing log timestamps must be repaired`);
+      if (service === "auth") {
+        assert.equal(reader.prepare("SELECT value FROM settings WHERE key = 'applications_open'").get().value, "");
+        const row = reader.prepare("SELECT created_at, updated_at FROM applications WHERE email = ?")
+          .get("legacy@example.org");
+        assert.deepEqual(row, {
+          created_at: "2026-09-24T23:00:00.000Z",
+          updated_at: "2026-09-24T23:00:00.000Z",
+        });
+      } else if (service === "course") {
+        for (const table of ["course", "cone"]) {
+          const row = reader.prepare(`SELECT created_at, updated_at FROM ${table} WHERE ${table === "course" ? "id" : "course_id"} = 999`).get();
+          assert.deepEqual(row, {
+            created_at: "2026-09-24T23:00:00.000Z",
+            updated_at: "2026-09-24T23:00:00.000Z",
+          });
+        }
+        assert.deepEqual(reader.prepare("SELECT rotation, content, created_at, updated_at FROM memo WHERE course_id = 999").get(), {
+          rotation: 12.5,
+          content: "Legacy memo",
+          created_at: "2026-09-24T23:00:00.000Z",
+          updated_at: "2026-09-24T23:00:00.000Z",
+        });
+      } else if (service === "email") {
+        assert.equal(reader.prepare("SELECT sent_at FROM email_log WHERE subject = 'Legacy email'").get().sent_at,
+          "2026-09-24T00:00:00.123Z");
+        assert.equal(reader.prepare("SELECT sent_at FROM email_log WHERE subject = 'UTC email'").get().sent_at,
+          "2026-09-24T00:00:00.456Z");
+      }
+      reader.close();
     }
   });
 

@@ -1,4 +1,4 @@
-import { runMigrationOnce, normalizeUtcTextTimestamp, setupRowCapRetention } from "./db-setup.mjs";
+import { runMigrationOnce, normalizeTimestampColumn, normalizeUtcTextTimestamp, rebuildTable, setupRowCapRetention } from "./db-setup.mjs";
 import { createSecretChecker } from "./express-setup.mjs";
 import { currentCompetitionYear } from "../common/competition-year.mjs";
 
@@ -263,6 +263,26 @@ export function createLogger(db, serviceName, maxRows = 50000, { teamSource } = 
   // Databases created before the shared module column contain logs from the
   // factory that opened them, so backfill that known module deterministically.
   db.prepare("UPDATE logs SET module = ? WHERE module IS NULL OR module = ''").run(serviceName);
+
+  // timestamp의 기본값이 Z 없는 레거시 형태로 굳은 DB를 위 CREATE TABLE이 고치지 못한다.
+  // 재구축은 아래 CREATE INDEX보다 앞에 둬서 인덱스가 새 테이블에 다시 만들어지게 하고,
+  // 보존 트리거는 이 함수 끝의 setupRowCapRetention이 다시 만든다.
+  runMigrationOnce(db, "shared.logs_timestamp_default_utc.v1", () => {
+    rebuildTable(db, "logs", `(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    level TEXT NOT NULL DEFAULT 'info',
+    action TEXT NOT NULL,
+    actor_email TEXT,
+    actor_name TEXT,
+    actor_role TEXT,
+    target TEXT,
+    detail TEXT,
+    ip TEXT,
+    module TEXT
+  )`);
+  }, { transaction: false });
+
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_action ON logs(action)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_logs_module_timestamp ON logs(module, timestamp)");
@@ -275,6 +295,12 @@ export function createLogger(db, serviceName, maxRows = 50000, { teamSource } = 
       const normalized = normalizeUtcTextTimestamp(row.timestamp);
       if (normalized && normalized !== row.timestamp) update.run(normalized, row.id);
     }
+  });
+
+  // The old default kept producing zone-less values after v1 had run. Revisit
+  // those rows once the default has been repaired, including on Competition.
+  runMigrationOnce(db, "shared.logs_timestamp_utc_after_default_repair.v2", () => {
+    normalizeTimestampColumn(db, "logs", "timestamp");
   });
 
   function getIP(req) {
