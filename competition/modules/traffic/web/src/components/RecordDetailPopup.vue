@@ -39,8 +39,25 @@ const enduranceDetail = computed(() => {
   return { laps, complete: list.length === parsed.length };
 });
 const laps = computed(() => enduranceDetail.value?.laps ?? null);
+// 랩마다 직전 랩 대비 차이(ms)를 함께 둔다. 음수면 빨라진 것이다.
+const lapRows = computed(() => (laps.value?.list ?? []).map((ms, i, list) => ({
+  no: i + 1,
+  ms,
+  delta: i > 0 ? ms - list[i - 1] : null,
+  best: i + 1 === laps.value.bestIdx,
+})));
 // 랩으로 읽지 못한 부분(수동 메모 등)이 있으면 원문을 그대로 보여준다.
 const showRawDetail = computed(() => enduranceDetail.value != null && !enduranceDetail.value.complete);
+
+function formatDelta(ms) {
+  const sign = ms > 0 ? "+" : ms < 0 ? "-" : "±";
+  return `${sign}${(Math.abs(ms) / 1000).toFixed(3)}`;
+}
+
+function deltaClass(ms) {
+  if (ms == null || ms === 0) return "";
+  return ms < 0 ? "faster" : "slower";
+}
 
 function save() {
   if (!dirty.value || props.busy) return;
@@ -105,14 +122,15 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
           </div>
           <div class="lap-list">
             <div
-              v-for="(ms, i) in laps.list"
-              :key="i"
+              v-for="lap in lapRows"
+              :key="lap.no"
               class="lap-row"
-              :class="{ best: i + 1 === laps.bestIdx }"
+              :class="{ best: lap.best }"
             >
-              <span class="lpr-no">Lap {{ i + 1 }}</span>
-              <span class="lpr-t">{{ formatLapMs(ms) }}</span>
-              <span class="lpr-tag">{{ i + 1 === laps.bestIdx ? 'BEST' : '' }}</span>
+              <span class="lpr-no">Lap {{ lap.no }}</span>
+              <span class="lpr-t">{{ formatLapMs(lap.ms) }}</span>
+              <span class="lpr-delta" :class="deltaClass(lap.delta)">{{ lap.delta == null ? "-" : formatDelta(lap.delta) }}</span>
+              <span class="lpr-tag">{{ lap.best ? "BEST" : "" }}</span>
             </div>
           </div>
         </template>
@@ -239,7 +257,10 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
 }
 .lap-row {
   display: grid;
-  grid-template-columns: 4rem 1fr 3.5rem;
+  /* 고정폭 글꼴 기준 고정 트랙이라 모든 행의 열 위치와 간격이 같다. */
+  grid-template-columns: 6ch 9ch 7ch 4ch;
+  justify-content: space-between;
+  column-gap: 1rem;
   align-items: center;
   padding: 0.4rem 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.04);
@@ -253,10 +274,20 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
   font-weight: 700;
   color: var(--text-primary);
 }
+.lpr-delta {
+  text-align: right;
+  font-weight: 600;
+  color: var(--text-tertiary);
+}
+.lpr-delta.faster {
+  color: var(--accent-success);
+}
+.lpr-delta.slower {
+  color: var(--accent-danger);
+}
 .lpr-tag {
   text-align: right;
-  font-size: 0.6875rem;
-  font-weight: 700;
+  font-weight: 800;
   color: var(--accent-success);
 }
 .lap-row.best .lpr-t {
