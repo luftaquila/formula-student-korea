@@ -54,27 +54,12 @@ test.describe("Traffic record export", () => {
     await expect(page.locator(".data-table")).toBeVisible({ timeout: 5000 });
   });
 
-  test("exports records as CSV", async ({ page }) => {
+  test("exports records as Excel", async ({ page }) => {
     // Set up download listener
     const downloadPromise = page.waitForEvent("download");
 
-    // Click CSV download button
-    const csvBtn = page.locator("button.btn-secondary", { hasText: "CSV" });
-    await expect(csvBtn).toBeVisible();
-    await csvBtn.click();
-
-    // Verify download was triggered
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toContain("E2E-Export");
-    expect(download.suggestedFilename()).toMatch(/\.csv$/);
-  });
-
-  test("exports records as XLSX", async ({ page }) => {
-    // Set up download listener
-    const downloadPromise = page.waitForEvent("download");
-
-    // Click XLSX download button
-    const xlsxBtn = page.locator("button.btn-secondary", { hasText: "XLSX" });
+    // Click Excel download button
+    const xlsxBtn = page.locator("button.btn-secondary", { hasText: "Excel" });
     await expect(xlsxBtn).toBeVisible();
     await xlsxBtn.click();
 

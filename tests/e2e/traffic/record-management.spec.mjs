@@ -235,34 +235,46 @@ test.describe("Traffic record management", () => {
     expect(options).not.toContain(`FSK ${YEAR} ${tempName}`);
   });
 
-  test("inline edits detail field", async ({ page }) => {
+  test("edits a record detail in the popup", async ({ page }) => {
     const fileSelect = page.locator(".file-toolbar .form-select");
     await fileSelect.selectOption(`FSK ${YEAR} E2E-Records`);
 
     const table = page.locator(".data-table");
     await expect(table).toBeVisible({ timeout: 5000 });
 
-    // Click the detail cell of the first record
+    // Clicking the record time opens the detail popup.
     const firstRow = table.locator("tbody tr").first();
-    const detailCell = firstRow.locator(".detail-cell");
-    await detailCell.click();
+    const resultButton = firstRow.locator(".result-button");
+    const popup = page.getByTestId("record-detail-popup");
+    const detailInput = popup.getByTestId("record-detail-input");
+    const saveDetail = async (value) => {
+      await resultButton.click();
+      await expect(popup).toBeVisible();
+      const detailSavePromise = page.waitForResponse((res) =>
+        res.url().includes("/competition/api/v1/traffic/records/") && res.request().method() === "PATCH" && res.status() === 200);
+      await detailInput.fill(value);
+      await popup.getByTestId("record-detail-save").click();
+      await detailSavePromise;
+      await expect(popup).toBeHidden();
+    };
 
-    // The detail input should appear
-    const detailInput = detailCell.locator(".detail-input");
-    await expect(detailInput).toBeVisible();
-
-    // Pick a different value from current to guarantee save fires
+    await resultButton.click();
     const currentDetail = await detailInput.inputValue();
+    await popup.getByRole("button", { name: "취소" }).click();
+    await expect(popup).toBeHidden();
+    // Pick a different value from current to guarantee save fires
     const newDetail = currentDetail === "수정된 상세" ? "변경된 메모" : "수정된 상세";
 
-    // Edit the detail text
-    const detailSavePromise = page.waitForResponse((res) => res.url().includes("/competition/api/v1/traffic/records/") && res.status() === 200);
-    await detailInput.fill(newDetail);
-    await detailInput.blur();
-    await detailSavePromise;
+    await saveDetail(newDetail);
+    await expect(resultButton).toHaveClass(/has-detail/);
+    await resultButton.click();
+    await expect(detailInput).toHaveValue(newDetail);
+    await popup.getByRole("button", { name: "취소" }).click();
+    await expect(popup).toBeHidden();
 
-    // Verify the value is displayed
-    await expect(detailCell.locator(".detail-text")).toHaveText(newDetail);
+    // Clearing the detail removes the indicator.
+    await saveDetail("");
+    await expect(resultButton).not.toHaveClass(/has-detail/);
   });
 
   // Clean up the seeded record file after all tests
