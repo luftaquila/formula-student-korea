@@ -150,10 +150,11 @@ test.describe("Traffic record management", () => {
     await expect(secondRow).toHaveClass(/is-dsq/);
     await expect(dsqButton).toHaveAttribute("aria-pressed", "true");
 
-    // A timed row can be restored to normal without losing its raw result.
-    await secondRow.locator('[data-status="normal"]').click();
+    // Pressing the active verdict again restores a timed row to normal without losing its raw result.
+    await dsqButton.click();
 
     await expect(secondRow).not.toHaveClass(/is-dsq/);
+    await expect(dsqButton).toHaveAttribute("aria-pressed", "false");
   });
 
   test("adds a manual record via the add form", async ({ page }) => {

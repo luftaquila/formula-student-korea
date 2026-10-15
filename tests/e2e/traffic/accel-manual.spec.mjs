@@ -139,7 +139,7 @@ test.describe("Acceleration manual mode measurement", () => {
     await expect(scoreboard).toBeEnabled();
 
     // 정상 복원은 판정만 바꾸며 전광판 숨김 상태를 보존한다.
-    await page.getByTestId("record-quick-edit").locator('[data-status="normal"]').click();
+    await dsqStatus.click();
     await expect(dsqStatus).toHaveAttribute("aria-pressed", "false");
     await expect(scoreboard).toContainText("숨김");
   });

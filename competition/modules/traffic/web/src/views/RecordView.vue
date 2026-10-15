@@ -353,13 +353,12 @@ async function handleStatus(record, status) {
 }
 
 async function handleStatusCancel(record) {
-  if (!confirm("측정시간이 없는 판정 기록을 삭제할까요?")) return;
   try {
     await deleteRecordRow(selectedFile.value, record.rowid);
     records.value = records.value.filter((row) => row.rowid !== record.rowid);
     notyf.success("판정 기록을 삭제했습니다.");
   } catch (e) {
-    notyf.error(`판정 취소 실패: ${e.message}`);
+    notyf.error(`판정 해제 실패: ${e.message}`);
   }
 }
 
@@ -1489,7 +1488,7 @@ async function handleAddRecord() {
   font-size: 0.875rem;
 }
 
-.col-status { min-width: 250px; }
+.col-status { min-width: 190px; }
 .data-table tbody tr.is-dns { background: rgba(100, 116, 139, 0.05); }
 .data-table tbody tr.is-dnf { background: rgba(245, 158, 11, 0.05); }
 .data-table tbody tr.is-dsq { background: rgba(239, 68, 68, 0.05); }
@@ -1571,7 +1570,7 @@ async function handleAddRecord() {
   gap: 0.75rem;
 }
 
-.add-status-control { min-width: 260px; }
+.add-status-control { min-width: 195px; }
 
 .form-group {
   display: flex;

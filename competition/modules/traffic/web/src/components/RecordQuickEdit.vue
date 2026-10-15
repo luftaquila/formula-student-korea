@@ -129,7 +129,6 @@ async function selectStatus(status) {
 
 async function cancelStatus() {
   if (props.disabled || isStatusSaving.value) return;
-  if (!window.confirm("측정시간이 없는 판정 기록을 삭제할까요?")) return;
   pending.status = true;
   beginMutation();
   let succeeded = false;
@@ -139,7 +138,7 @@ async function cancelStatus() {
     emit("remove", { name: props.record.name, rowid: props.record.rowid });
     notyf.success("판정 기록을 삭제했습니다.");
   } catch (e) {
-    notyf.error(`판정 취소 실패: ${e.message}`);
+    notyf.error(`판정 해제 실패: ${e.message}`);
   } finally {
     pending.status = false;
     finishMutation(succeeded);

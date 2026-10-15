@@ -53,7 +53,7 @@ async function selectStatus(status) {
     // A measured attempt stays finalized even when its special status is
     // restored to normal. Starting another attempt requires an explicit reset.
     emit("finalize", status != null || props.record?.result != null, attempt, runKey);
-    notyf.success(`${status || "정상"} 판정을 저장했습니다.`);
+    notyf.success(status ? `${status} 판정을 저장했습니다.` : "판정을 해제했습니다.");
   } catch (e) {
     notyf.error(`판정 저장 실패: ${e.message}`);
   } finally {
@@ -63,7 +63,6 @@ async function selectStatus(status) {
 
 async function cancelStatus() {
   if (!props.record || busy.value || props.disabled) return;
-  if (!window.confirm("측정시간이 없는 판정 기록을 삭제할까요?")) return;
   const runKey = props.runKey;
   busy.value = true;
   try {
@@ -72,7 +71,7 @@ async function cancelStatus() {
     emit("finalize", false, null, runKey);
     notyf.success("판정 기록을 삭제했습니다.");
   } catch (e) {
-    notyf.error(`판정 취소 실패: ${e.message}`);
+    notyf.error(`판정 해제 실패: ${e.message}`);
   } finally {
     busy.value = false;
   }
