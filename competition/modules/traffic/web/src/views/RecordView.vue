@@ -16,6 +16,7 @@ import { useEntryStore } from "../stores/entry";
 import { msToClockStr } from "../stores/serial";
 import { useRoute } from "vue-router";
 import RecordStatusControl from "../components/RecordStatusControl.vue";
+import RecordDetailPopup from "../components/RecordDetailPopup.vue";
 import { permissionComputed } from "@shared/browser/officialsStore.js";
 
 
@@ -49,9 +50,12 @@ const addResultValue = computed(() => {
 });
 
 // 인라인 편집 상태
-const editingDetailId = ref(null);
 const editingConesId = ref(null);
 const editingOcId = ref(null);
+
+// 상세 팝업 상태
+const detailPopup = ref(null); // { name, rowid } | null
+const detailSaving = ref(false);
 
 // 유형 필터 (기본: 모두 선택)
 const typeFilters = ref({
@@ -81,7 +85,7 @@ onActivated(() => {
 
 onDeactivated(() => {
   isActive.value = false;
-  editingDetailId.value = null;
+  detailPopup.value = null;
   editingConesId.value = null;
   editingOcId.value = null;
 });
@@ -128,7 +132,7 @@ const sortedRecords = computed(() => {
 });
 
 function isEditingRow(rowid) {
-  return editingDetailId.value === rowid || editingConesId.value === rowid || editingOcId.value === rowid;
+  return editingConesId.value === rowid || editingOcId.value === rowid;
 }
 
 // 편집 종료 시 호출: 편집 중 보류된 SSE 갱신이 있고 그 행 편집이 끝났으면 데이터 재동기.
@@ -233,37 +237,6 @@ async function handleDelete() {
   }
 }
 
-function downloadCSV() {
-  if (!sortedRecords.value.length) return;
-
-  const headers = ["시간", "엔트리", "팀", "경기", "측정시간", "판정", "콘터치", "코스 이탈", "상세", "전광판"];
-  const rows = sortedRecords.value.map((r) => [
-    formatTime(r.time),
-    r.num,
-    `${r.univ} ${r.team}`,
-    r.type,
-    formatResult(r.result),
-    r.status || "정상",
-    r.cones || 0,
-    r.oc || 0,
-    r.detail || "",
-    r.scoreboard ? "Y" : "N",
-  ]);
-
-  // CSV 셀: 수식 인젝션 방지 — =,+,-,@,tab,CR로 시작하면 텍스트 마커(')를 접두.
-  const csvCell = (cell) => {
-    let s = String(cell ?? "");
-    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-    return `"${s.replace(/"/g, '""')}"`;
-  };
-  const csvContent = [headers, ...rows]
-    .map((row) => row.map(csvCell).join(","))
-    .join("\n");
-
-  const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
-  downloadBlob(blob, `${selectedFile.value}.csv`);
-}
-
 async function downloadXLSX() {
   if (!sortedRecords.value.length) return;
 
@@ -362,61 +335,42 @@ async function handleStatusCancel(record) {
   }
 }
 
-// 내구 기록의 detail은 랩 목록 문자열("MM:SS.mmm / ..."). 요약 표시 + 클릭 팝업용으로 파싱.
-const ENDURANCE_TYPE = "내구";
-const lapPopup = ref(null); // { num, team, laps[], count, best, bestIdx, avg, total } | null
-function clockToMs(s) {
-  const m = /^(\d+):(\d{2})\.(\d{3})$/.exec((s || "").trim());
-  return m ? (+m[1]) * 60000 + (+m[2]) * 1000 + (+m[3]) : null;
-}
-function enduranceStats(record) {
-  if (record.type !== ENDURANCE_TYPE || !record.detail) return null;
-  const laps = record.detail.split("/").map(clockToMs).filter((n) => n != null);
-  if (!laps.length) return null;
-  let best = laps[0], bestIdx = 0, sum = 0;
-  laps.forEach((ms, i) => { sum += ms; if (ms < best) { best = ms; bestIdx = i; } });
-  return { laps, count: laps.length, best, bestIdx: bestIdx + 1, avg: Math.round(sum / laps.length), total: sum };
-}
-// 내구 detail 셀 요약: "Best: MM:SS.mmm (#최고랩번호/총랩수)". 파싱 실패 시 원문 폴백.
-function enduranceSummary(record) {
-  const s = enduranceStats(record);
-  return s ? `Best: ${msToClockStr(s.best)} (#${s.bestIdx}/${s.count})` : (record.detail || "");
-}
-// 내구 detail 셀 클릭: 인라인 편집 대신 랩 목록 팝업. 그 외 종목은 기존 인라인 편집.
-function onDetailCellClick(record) {
-  if (record.type === ENDURANCE_TYPE) openLapPopup(record);
-  else startDetailEdit(record.rowid);
-}
-function openLapPopup(record) {
-  const s = enduranceStats(record);
-  if (!s) return;
-  lapPopup.value = { num: record.num, team: `${record.univ} ${record.team}`, ...s };
-}
-function closeLapPopup() { lapPopup.value = null; }
+// 기록 셀 클릭 → 상세 팝업. rowid는 파일별이므로 파일 이름과 함께 고정한다.
+const detailPopupRecord = computed(() => {
+  const key = detailPopup.value;
+  if (!key || key.name !== selectedFile.value) return null;
+  return records.value.find((r) => r.rowid === key.rowid) || null;
+});
+// 기록이 삭제되거나 파일이 바뀌면 팝업을 닫는다(같은 rowid가 다시 나타나도 재오픈하지 않음).
+watch(detailPopupRecord, (record) => {
+  if (!record) detailPopup.value = null;
+});
 
-function startDetailEdit(rowid) {
-  editingDetailId.value = rowid;
+function openDetailPopup(record) {
+  detailPopup.value = { name: selectedFile.value, rowid: record.rowid };
 }
 
-function detailInputRef(el) {
-  if (el) el.focus();
+function closeDetailPopup() {
+  detailPopup.value = null;
 }
 
-async function handleDetailChange(record, value) {
-  editingDetailId.value = null;
-  if (value !== (record.detail || '')) {
-    try {
-      const result = await updateRecord(selectedFile.value, record.rowid, "detail", value);
-      const idx = records.value.findIndex((r) => r.rowid === record.rowid);
-      if (idx !== -1) {
-        records.value[idx].detail = result.detail;
-      }
-    } catch (e) {
-      notyf.error(`상세 저장 실패: ${e.message}`);
+async function handleDetailSave(detail) {
+  const key = detailPopup.value;
+  if (!key || detailSaving.value) return;
+  detailSaving.value = true;
+  try {
+    const result = await updateRecord(key.name, key.rowid, "detail", detail);
+    const idx = records.value.findIndex((r) => r.rowid === key.rowid);
+    if (idx !== -1 && key.name === selectedFile.value) {
+      records.value[idx].detail = result.detail;
     }
+    if (detailPopup.value === key) detailPopup.value = null;
+    notyf.success("상세를 저장했습니다.");
+  } catch (e) {
+    notyf.error(`상세 저장 실패: ${e.message}`);
+  } finally {
+    detailSaving.value = false;
   }
-  // 쓰기 완료 후에 편집 중 보류된 SSE 갱신 반영(refetch가 방금 저장분을 포함 → 레이스 없음).
-  flushMissedUpdate(record.rowid);
 }
 
 function startConesEdit(rowid) {
@@ -575,21 +529,13 @@ async function handleAddRecord() {
           </select>
         </div>
         <div v-if="records.length" class="toolbar-right">
-          <button class="btn btn-secondary" @click="downloadCSV" title="CSV 다운로드">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
-              <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            CSV
-          </button>
           <button class="btn btn-secondary" @click="downloadXLSX" title="Excel 다운로드">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="btn-icon">
               <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
               <polyline points="7 10 12 15 17 10" />
               <line x1="12" y1="15" x2="12" y2="3" />
             </svg>
-            XLSX
+            Excel
           </button>
           <button
             v-if="canManage"
@@ -717,9 +663,6 @@ async function handleAddRecord() {
               <th class="sortable center col-shrink" @click="handleSort('oc')">
                 코스 이탈 <span class="sort-icon">{{ getSortIcon("oc") }}</span>
               </th>
-              <th class="sortable" @click="handleSort('detail')">
-                상세 <span class="sort-icon">{{ getSortIcon("detail") }}</span>
-              </th>
               <th class="center col-status">판정</th>
               <th class="center col-shrink">전광판</th>
             </tr>
@@ -739,7 +682,15 @@ async function handleAddRecord() {
                 <span class="type-badge" :class="getTypeClass(record.type)">{{ record.type }}</span>
               </td>
               <td class="result-cell center col-shrink">
-                {{ formatResult(record.result) }}
+                <button
+                  type="button"
+                  class="result-button"
+                  :class="{ 'has-detail': record.detail }"
+                  :title="record.detail ? `상세: ${record.detail}` : '상세 없음'"
+                  @click="openDetailPopup(record)"
+                >
+                  {{ formatResult(record.result) }}
+                </button>
               </td>
               <td class="penalty-cell center col-shrink" @click="startConesEdit(record.rowid)">
                 <input
@@ -766,25 +717,6 @@ async function handleAddRecord() {
                   @keyup.enter="$event.target.blur()"
                 />
                 <span v-else class="penalty-text">{{ record.oc || 0 }}</span>
-              </td>
-              <td class="detail-cell" @click="onDetailCellClick(record)">
-                <span
-                  v-if="record.type === ENDURANCE_TYPE"
-                  class="endurance-summary"
-                  title="랩 상세 보기"
-                >{{ enduranceSummary(record) }}</span>
-                <template v-else>
-                  <input
-                    v-if="editingDetailId === record.rowid"
-                    :ref="detailInputRef"
-                    class="detail-input"
-                    type="text"
-                    :value="record.detail || ''"
-                    @blur="handleDetailChange(record, $event.target.value)"
-                    @keyup.enter="$event.target.blur()"
-                  />
-                  <span v-else class="detail-text">{{ record.detail || '' }}</span>
-                </template>
               </td>
               <td class="center col-status">
                 <RecordStatusControl
@@ -821,36 +753,15 @@ async function handleAddRecord() {
       </div>
     </section>
 
-    <!-- 내구 랩 상세 팝업 -->
-    <div v-if="lapPopup" class="lap-popup-overlay" @click.self="closeLapPopup">
-      <div class="lap-popup">
-        <div class="lap-popup-header">
-          <div class="lap-popup-titles">
-            <h3>🏁 내구 랩 기록</h3>
-            <p class="lap-popup-team">#{{ lapPopup.num }} {{ lapPopup.team }}</p>
-          </div>
-          <button class="lap-popup-close" title="닫기" @click="closeLapPopup">✕</button>
-        </div>
-        <div class="lap-popup-stats">
-          <div class="lps-item"><span class="lps-k">총 랩</span><span class="lps-v">{{ lapPopup.count }}</span></div>
-          <div class="lps-item"><span class="lps-k">최고 랩</span><span class="lps-v">{{ msToClockStr(lapPopup.best) }} (#{{ lapPopup.bestIdx }})</span></div>
-          <div class="lps-item"><span class="lps-k">평균 랩</span><span class="lps-v">{{ msToClockStr(lapPopup.avg) }}</span></div>
-          <div class="lps-item"><span class="lps-k">총 시간</span><span class="lps-v">{{ msToClockStr(lapPopup.total) }}</span></div>
-        </div>
-        <div class="lap-popup-list">
-          <div
-            v-for="(ms, i) in lapPopup.laps"
-            :key="i"
-            class="lap-popup-row"
-            :class="{ best: i + 1 === lapPopup.bestIdx }"
-          >
-            <span class="lpr-no">Lap {{ i + 1 }}</span>
-            <span class="lpr-t">{{ msToClockStr(ms) }}</span>
-            <span class="lpr-tag">{{ i + 1 === lapPopup.bestIdx ? 'BEST' : '' }}</span>
-          </div>
-        </div>
-      </div>
-    </div>
+    <!-- 기록 상세 팝업 -->
+    <RecordDetailPopup
+      v-if="detailPopupRecord"
+      :key="`${detailPopup.name}:${detailPopup.rowid}`"
+      :record="detailPopupRecord"
+      :busy="detailSaving"
+      @save="handleDetailSave"
+      @close="closeDetailPopup"
+    />
   </div>
 </template>
 
@@ -1269,168 +1180,29 @@ async function handleAddRecord() {
   color: var(--accent-danger);
 }
 
-.detail-cell {
-  color: var(--text-primary);
-  font-size: 0.875rem;
-  cursor: text;
-  /* 긴 detail(내구 랩 목록 등)이 열을 무한정 넓혀 우측 액션 버튼을 밀어내지 않도록 폭을 제한. */
-  max-width: 320px;
-}
-
-.detail-text {
-  display: block;
-  min-width: 2em;
-  min-height: 1.25em;
-  max-width: 320px;
-  /* 길면 가로로 늘어나지 않고 줄바꿈 + 세로 스크롤(셀 안에서 처리). */
-  max-height: 3.4em;
-  overflow-y: auto;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-
-.detail-input {
-  width: 100%;
-  padding: 0.25rem 0.5rem;
-  background: transparent;
+.result-button {
+  padding: 0.2rem 0.45rem;
   border: 1px solid transparent;
   border-radius: 6px;
-  color: var(--text-primary);
-  font-size: 0.875rem;
+  background: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
   transition: all 0.2s ease;
 }
 
-.detail-input:hover {
+.result-button:hover {
   border-color: var(--border-color);
+  background: var(--bg-hover);
 }
 
-.detail-input:focus {
-  outline: none;
-  background: var(--bg-input);
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px rgba(94, 106, 210, 0.15);
-}
-
-/* 내구 detail 요약(클릭 → 팝업) */
-.endurance-summary {
-  cursor: pointer;
-  color: var(--accent-success);
-  font-weight: 600;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 0.8125rem;
-  white-space: nowrap;
-}
-.endurance-summary:hover {
-  text-decoration: underline;
-}
-
-/* 내구 랩 상세 팝업 */
-.lap-popup-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.55);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-  padding: 1rem;
-}
-.lap-popup {
-  background: var(--bg-card);
-  border-radius: 12px;
-  box-shadow: var(--shadow-card), 0 12px 40px rgba(0, 0, 0, 0.4);
-  width: 100%;
-  max-width: 420px;
-  max-height: 80vh;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.lap-popup-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
-}
-.lap-popup-titles {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  min-width: 0;
-}
-.lap-popup-header h3 {
-  font-size: 1rem;
-  font-weight: 700;
-}
-.lap-popup-team {
-  color: var(--text-secondary);
-  font-weight: 600;
-  font-size: 0.875rem;
-}
-.lap-popup-close {
-  background: none;
-  border: none;
-  cursor: pointer;
-  color: var(--text-tertiary);
-  font-size: 1.1rem;
-  line-height: 1;
-  padding: 0.25rem;
-  flex-shrink: 0;
-}
-.lap-popup-close:hover {
-  color: var(--text-primary);
-}
-.lap-popup-stats {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.6rem 1rem;
-  padding: 1rem 1.25rem;
-  border-bottom: 1px solid var(--border-color, rgba(255, 255, 255, 0.08));
-}
-.lps-item {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-.lps-k {
-  font-size: 0.75rem;
-  color: var(--text-tertiary);
-}
-.lps-v {
-  font-family: "JetBrains Mono", monospace;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-.lap-popup-list {
-  overflow-y: auto;
-  padding: 0.5rem 1.25rem 1rem;
-}
-.lap-popup-row {
-  display: grid;
-  grid-template-columns: 4rem 1fr 3.5rem;
-  align-items: center;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  font-family: "JetBrains Mono", monospace;
-}
-.lpr-no {
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-.lpr-t {
-  font-weight: 700;
-  color: var(--text-primary);
-}
-.lpr-tag {
-  text-align: right;
-  font-size: 0.6875rem;
-  font-weight: 700;
-  color: var(--accent-success);
-}
-.lap-popup-row.best .lpr-t {
-  color: var(--accent-success);
+/* 상세 있음 표시: 점선 밑줄. 폭을 차지하지 않아 기록 텍스트 정렬이 유지된다. */
+.result-button.has-detail {
+  text-decoration-line: underline;
+  text-decoration-style: dotted;
+  text-decoration-color: currentColor;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 4px;
 }
 
 .penalty-cell {

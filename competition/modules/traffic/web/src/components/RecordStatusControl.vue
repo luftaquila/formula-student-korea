@@ -73,7 +73,9 @@ function toggle(status) {
   cursor: pointer;
 }
 
-.status-option:hover:not(:disabled) { border-color: var(--border-focus); }
+.status-DNS:hover:not(:disabled) { border-color: #64748b; }
+.status-DNF:hover:not(:disabled) { border-color: #f59e0b; }
+.status-DSQ:hover:not(:disabled) { border-color: var(--accent-danger); }
 .status-option:disabled { cursor: not-allowed; opacity: 0.45; }
 .status-DNS.active { border-color: #64748b; background: rgba(100, 116, 139, 0.15); color: #94a3b8; }
 .status-DNF.active { border-color: #f59e0b; background: rgba(245, 158, 11, 0.13); color: #f59e0b; }

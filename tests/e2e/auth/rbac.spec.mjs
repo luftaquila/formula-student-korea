@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath } from "../helpers/utils.mjs";
+import { RESOURCES_DISCLOSURE_STORAGE_KEY } from "../../../shared/browser/persistent-disclosure.js";
 
 async function withPage(browser, storageState, callback) {
   const context = await browser.newContext(storageState ? { storageState } : {});
@@ -80,6 +81,8 @@ test.describe("Cross-application RBAC", () => {
       await expect(resources).toHaveAttribute("open", "");
       await resources.locator("summary").click();
       await expect(resources).not.toHaveAttribute("open", "");
+      // The page stores the state from the asynchronous toggle event; reload only after it is saved.
+      await expect.poll(() => page.evaluate((key) => localStorage.getItem(key), RESOURCES_DISCLOSURE_STORAGE_KEY)).toBe("closed");
       await page.reload();
       await expect(page.locator("main details.resources-section")).not.toHaveAttribute("open", "");
     });
