@@ -169,6 +169,19 @@ test("an edited draft survives another operator's save", async () => {
   } finally { c.unmount(); }
 });
 
+test("another operator's update does not pull focus back to the input", async () => {
+  const record = Vue.reactive({ ...skidpad });
+  const c = mount(record);
+  try {
+    const input = c.byTestId("record-detail-input");
+    assert.equal(input.focused, true);
+    input.focused = false; // e.g. Tab to 취소
+    record.status = "DSQ";
+    await Vue.nextTick();
+    assert.equal(input.focused, false);
+  } finally { c.unmount(); }
+});
+
 test("closes a clean popup from the close button, overlay, and Escape", () => {
   for (const action of ["clickClose", "clickOverlay", "escape"]) {
     const c = mount(skidpad);

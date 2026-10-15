@@ -13,6 +13,7 @@ const emit = defineEmits(["save", "close"]);
 
 const savedDetail = computed(() => props.record.detail || "");
 const draft = ref(savedDetail.value);
+const detailInput = ref(null);
 // 다른 운영자의 저장(SSE)은 손대지 않은 초안에만 반영한다. 수정 중인 초안은 유지한다.
 watch(savedDetail, (next, previous) => {
   if (draft.value === previous) draft.value = next;
@@ -69,15 +70,15 @@ function close() {
   emit("close");
 }
 
-function focusOnMount(el) {
-  if (el) el.focus();
-}
-
 function onKeydown(event) {
   if (event.key === "Escape") close();
 }
 
-onMounted(() => window.addEventListener("keydown", onKeydown));
+onMounted(() => {
+  window.addEventListener("keydown", onKeydown);
+  // 열 때 한 번만 포커스한다. 함수형 ref는 SSE 재렌더마다 호출되어 포커스를 빼앗는다.
+  detailInput.value?.focus();
+});
 onUnmounted(() => window.removeEventListener("keydown", onKeydown));
 </script>
 
@@ -98,7 +99,7 @@ onUnmounted(() => window.removeEventListener("keydown", onKeydown));
         <label class="form-label" for="record-detail-input">상세</label>
         <input
           id="record-detail-input"
-          :ref="focusOnMount"
+          ref="detailInput"
           v-model="draft"
           type="text"
           class="form-input"
