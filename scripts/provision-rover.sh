@@ -100,19 +100,7 @@ sudo install -d -m 755 /etc/pilot
 # what we want for a non-secret KEY=VALUE file. No explicit chmod —
 # sudoers.d/fsk only whitelists install/tee/podman/systemctl/nmcli/
 # tailscale/bootc.
-# Camera config for the dual-node "Stereo Vision" cam (each eye a separate
-# /dev/video node at 1280x720, NOT side-by-side):
-#  - CAMERA_HEIGHT=720 matches the eye resolution the cam actually delivers.
-#  - CAMERA_VIEW=full prevents the SBS-crop default (CAMERA_VIEW=left) from
-#    slicing a single eye in half (which looked portrait). NOTE: the perception
-#    node's dual layout streams the left eye whole regardless of CAMERA_VIEW —
-#    this only matters for the crop-based (SBS) image / STEREO_LAYOUT=sbs, where
-#    it must stay 'full'. Detection defaults to dual (left=video0, right=video2).
-# DETECT_FPS=8 pins the obstacle-detection rate on this rover. It matches the code
-# default (perception_node.py), so it's belt-and-suspenders — kept explicit here
-# alongside the other camera tuning. Bounded by the ~13 fps camera ceiling and the
-# single-thread SGBM cap while NAVIGATING (STEREO_CV_THREADS).
-printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\nCAMERA_VIEW=full\nCAMERA_HEIGHT=720\nDETECT_FPS=8\n' "$SERVER_URL" \
+printf 'SERVER_URL=%s\nROS_DOMAIN_ID=0\n' "$SERVER_URL" \
     | sudo tee /etc/pilot/pilot.conf >/dev/null
 
 echo "[rover] (re)creating podman secrets"
@@ -121,19 +109,15 @@ for s in internal-secret ntrip-username rover-secret; do
 done
 printf '%s' "$INTERNAL_SECRET" | sudo podman secret create internal-secret - >/dev/null
 printf '%s' "$NTRIP_USER"      | sudo podman secret create ntrip-username -  >/dev/null
-# rover-secret은 설정된 경우에만 생성한다. 존재하면 pilot-run/perception-run이 마운트해
+# rover-secret은 설정된 경우에만 생성한다. 존재하면 pilot-run이 마운트해
 # 장비가 X-Rover-Secret으로 인증한다(없으면 INTERNAL_SECRET 폴백).
 if [ -n "${ROVER_SECRET:-}" ]; then
     printf '%s' "$ROVER_SECRET" | sudo podman secret create rover-secret - >/dev/null
     echo "[rover] rover-secret created (device will use X-Rover-Secret)"
 fi
 
-echo "[rover] restarting pilot.service + perception.service"
+echo "[rover] restarting pilot.service"
 sudo systemctl restart pilot.service
-# perception.service shares /etc/pilot/pilot.conf + the internal-secret we just
-# (re)wrote, but it was started at boot before they existed — restart it too so
-# it picks up SERVER_URL/secret instead of sitting in its StartLimit lockout.
-sudo systemctl restart perception.service || true
 
 # Give the container a moment to settle before asserting health —
 # secret-driven crashes show up within ~10 s.
@@ -144,14 +128,6 @@ else
     echo "[rover] pilot.service: NOT active — recent log:" >&2
     sudo journalctl -u pilot.service -n 30 --no-pager >&2
     exit 1
-fi
-# perception is non-critical (camera streaming) — report but don't fail
-# provisioning if it isn't up (e.g. no camera attached yet).
-if sudo systemctl is-active --quiet perception.service; then
-    echo "[rover] perception.service: active"
-else
-    echo "[rover] perception.service: not active (camera optional) — recent log:"
-    sudo journalctl -u perception.service -n 10 --no-pager || true
 fi
 REMOTE
 } | ssh $SSH_OPTS "fsk@$HOST" \

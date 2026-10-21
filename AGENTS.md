@@ -18,7 +18,7 @@ Read the applicable references before work:
 - Roster loading and SSE recovery: [Runtime communication](docs/architecture.md#runtime-communication).
 - Deployment, repository paths, or image ownership: [k3s deployment](CONTRIBUTING.md#k3s-deployment).
 - Backup and restore: [validation gates](CONTRIBUTING.md#backup-and-restore).
-- Rover, GPS, perception, or timing hardware: component references in [README.md](README.md).
+- Rover, GPS, or timing hardware: component references in [README.md](README.md).
 - Completion: [Handoff](CONTRIBUTING.md#handoff).
 
 ## Project invariants

@@ -168,7 +168,6 @@ export function createCourseApp(options = {}) {
   });
 
   registerRoverRoutes(app, {
-    express,
     db,
     dbRun,
     logger,

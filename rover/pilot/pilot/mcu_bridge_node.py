@@ -781,8 +781,8 @@ class McuBridgeNode(Node):
         # keep filtering every manual command and the operator could never take
         # over to drive the rover to safety. The watchdog tripping means the
         # commander is confirmed gone, so dropping the lock to IDLE is safe: if
-        # the navigator comes back it re-publishes its own nav_state (the topic
-        # is latched TRANSIENT_LOCAL and it emits IDLE on boot), which
+        # the navigator comes back it re-publishes its own nav_state (it emits
+        # IDLE on boot and re-sends its state every second), which
         # _on_nav_state restores.
         self._nav_state = 'IDLE'
 

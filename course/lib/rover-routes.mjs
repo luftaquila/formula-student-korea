@@ -1,7 +1,7 @@
-// Rover·미션·카메라 서브시스템 라우트 (course/index.mjs에서 분리).
+// Rover·미션 서브시스템 라우트 (course/index.mjs에서 분리).
 //
 // course/index.mjs는 코스·콘 CRUD와 DB 스키마를 소유하고, 이 모듈은 /api/rover/*,
-// /api/missions* 전체와 관련 인메모리 상태(rover SSE 연결, 미션 추적, 카메라 릴레이)를
+// /api/missions* 전체와 관련 인메모리 상태(rover SSE 연결, 미션 추적)를
 // 소유한다. 모듈별 register 패턴으로 라우트와 상태를 명시적으로 연결한다.
 import crypto from "crypto";
 import { haversine } from "./geo.mjs";
@@ -34,7 +34,7 @@ const ROVER_POSITION_STALE_MS = 30 * 1000;
 const DEFAULT_DEVICE_STALE_MS = 15 * 1000;
 const DEFAULT_DEVICE_WATCHDOG_TICK_MS = 5 * 1000;
 
-export function registerRoverRoutes(app, { express, db, dbRun, logger, broadcastEvent: _broadcastRaw, getCourseById, getCones, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
+export function registerRoverRoutes(app, { db, dbRun, logger, broadcastEvent: _broadcastRaw, getCourseById, getCones, takeCourseSnapshot, validateCoordinate, validateAltitude, deviceStaleMs, deviceWatchdogTickMs }) {
 
   // Rover telemetry is visible only to connections with rover operation. The
   // same SSE also carries course-editing events, so filter the rover subset at
@@ -146,10 +146,9 @@ function startMission(waypoints, actor, courseId) {
   }
   if (prior != null) logger.warn(null, "mission.end.superseded", { mission_id: prior, actor }, "rover", SYS);
   currentMissionId = Number(r.result.lastInsertRowid);
-  // A fresh mission starts with a clean slate — never inherit a previous run's
-  // obstacle alert, and scope the resume grace window to THIS mission so a
-  // prior mission's resume can't suppress this one's pause reconcile.
-  roverState.obstacle = { active: false, at: 0, nearest_m: null };
+  // A fresh mission starts with a clean slate — scope the resume grace window to
+  // THIS mission so a prior mission's resume can't suppress this one's pause
+  // reconcile.
   roverLastResumeAt = 0;
   roverState.mission_progress = {
     mission_id: currentMissionId,
@@ -169,8 +168,6 @@ function endMission(status) {
     logger.warn(null, "mission.end", { error: e.message || String(e), status, mission_id: currentMissionId }, "rover", SYS);
   }
   currentMissionId = null;
-  // The mission is over — any obstacle hold is moot; clear the operator alert.
-  roverState.obstacle = { active: false, at: 0, nearest_m: null };
   roverState.mission_progress = {
     mission_id: null,
     waypoints: [],
@@ -309,25 +306,6 @@ const roverState = {
   battery: null, // { voltage, percent, source }
   ntrip: null, // { host, port, mountpoint, fail_count, last_error, last_correction_at, bytes_received }
   gps: null, // { h_acc, v_acc, altitude, speed, heading, num_sv, pdop, tdop } from rover GPS metrics
-  // Most recent driving-corridor obstacle reported by the perception node. The
-  // rover auto-pauses the mission LOCALLY over ROS; this only mirrors it for the
-  // operator UI (alert banner + auto-open camera). { active, at, nearest_m }
-  obstacle: { active: false, at: 0, nearest_m: null },
-  // UI-triggered stereo calibration progress/result, reported by the perception
-  // node. { status: idle|running|done|failed, phase, captured, target, rms,
-  // baseline_mm, pairs, error, at }
-  stereo_calibration: { status: "idle", at: 0 },
-  // UI-triggered ground calibration progress/result (above-ground detector's
-  // ground-depth curve). { status, phase, captured, target, near_m, far_m, rows,
-  // error, at }. Requires a stereo calibration first (metric depth).
-  ground_calibration: { status: "idle", at: 0 },
-  // Proximity (obstacle) detection operator on/off — operator toggle in the
-  // calibration modal's ground tab. Stored here so it broadcasts on rover:status
-  // (UI reflects it at once) and is re-sent to the perception node on every
-  // camera-control (re)connect. Default OFF — detection is opt-in per mission;
-  // the operator enables it from the ground tab. The rover env OBSTACLE_DETECTION
-  // stays the hard kill-switch below this (kept permissive so the toggle can arm).
-  obstacle_detection_enabled: false,
   // Session-scoped per-mission progress used for tab-close recovery — the
   // server acts as the source of truth so reloading the UI rebuilds the
   // executing/stopped view exactly.
@@ -520,21 +498,6 @@ const deviceLivenessWatchdog = setInterval(() => {
     logger.warn(null, "receiver.stream.stale", { silent_ms: now - receiverState.last_seen }, "receiver", SYS);
     broadcastRoverStatus();
   }
-  // Camera control is a one-way (server→perception) channel, so a dead peer is only
-  // detected on a failed write. If no camera events are flowing, a half-open socket
-  // would keep cameraControlClient set (camera_connected=true) indefinitely. Ping it
-  // each tick with an SSE comment — perception ignores ":"-prefixed lines (cloud_link)
-  // — so a broken socket eventually errors and the stale slot is torn down; the next
-  // /camera/status poll then reports camera_connected=false.
-  if (cameraControlClient) {
-    try {
-      cameraControlClient.write(": ping\n\n");
-    } catch {
-      try { cameraControlClient.end(); } catch {}
-      cameraControlClient = null;
-      logger.warn(null, "rover.camera.control_stale", null, "rover", SYS);
-    }
-  }
 }, DEVICE_WATCHDOG_TICK_MS);
 if (deviceLivenessWatchdog.unref) deviceLivenessWatchdog.unref();
 
@@ -595,9 +558,9 @@ app.get("/api/rover/stream", (req, res) => {
     receiverState.last_seen = Date.now();
     receiverState.last_disconnect_reason = null;
     receiverState.last_disconnect_at = 0;
-    // 수신기 커맨드 채널의 attach/clean detach 감사 — 카메라 control_connected/closed와
-    // 같은 이유다: replaced/stale만 로깅하면 정상 연결·해제 이력이 로그에 없어 "기기가
-    // 붙어 있긴 했나"를 triage할 수 없다. 재연결 처닝이 warn 필터를 채우지 않도록 info.
+    // 수신기 커맨드 채널의 attach/clean detach 감사 — replaced/stale만 로깅하면
+    // 정상 연결·해제 이력이 로그에 없어 "기기가 붙어 있긴 했나"를 triage할 수 없다.
+    // 재연결 처닝이 warn 필터를 채우지 않도록 info.
     logger.log(req, "receiver.stream.connected", null, "receiver");
     // A fresh connection can't be continuing a prior in-flight survey (the survey
     // worker lived in the previous session) — abort a stale "surveying" state.
@@ -720,9 +683,9 @@ app.get("/api/rover/stream", (req, res) => {
   roverState.last_disconnect_at = 0;
   // The rover boots the pump off; keep the UI toggle in sync on (re)connect.
   roverState.pump_on = false;
-  // 로버 커맨드 채널의 attach/clean detach 감사 — 카메라 control_connected/closed와
-  // 같은 이유다: replaced/stale만 로깅하면 정상 연결·해제 이력이 로그에 없어 "로버가
-  // 붙어 있긴 했나"를 triage할 수 없다. 재연결 처닝이 warn 필터를 채우지 않도록 info.
+  // 로버 커맨드 채널의 attach/clean detach 감사 — replaced/stale만 로깅하면
+  // 정상 연결·해제 이력이 로그에 없어 "로버가 붙어 있긴 했나"를 triage할 수 없다.
+  // 재연결 처닝이 warn 필터를 채우지 않도록 info.
   logger.log(req, "rover.stream.connected", null, "rover");
   broadcastRoverStatus();
 
@@ -1033,12 +996,12 @@ app.post("/api/rover/telemetry", (req, res) => {
     logger.log(req, "mission.resumed", { mission_id: currentMissionId, nav_state }, "rover");
   }
 
-  // Reflect a rover-initiated pause that we DIDN'T already record (the obstacle
-  // alert / pause command that would have flipped status was lost — e.g. an
-  // uplink blip while the rover paused itself locally on an obstacle). This is
-  // the running→paused direction only — it never auto-un-pauses (paused→running
-  // stays operator-driven). The grace window prevents a stale PAUSED frame in
-  // flight at resume time from bouncing a just-resumed mission back to paused.
+  // Reflect a rover PAUSED report that we DIDN'T already record (a rover-local
+  // hold, or a pause whose status update was lost — e.g. an uplink blip). This
+  // is the running→paused direction only — it never auto-un-pauses
+  // (paused→running stays operator-driven). The grace window prevents a stale
+  // PAUSED frame in flight at resume time from bouncing a just-resumed mission
+  // back to paused.
   if (currentMissionId != null
       && (roverState.mission_progress.status === "running"
           || roverState.mission_progress.status === "interrupted")
@@ -1046,17 +1009,11 @@ app.post("/api/rover/telemetry", (req, res) => {
       && (now - roverLastResumeAt) > ROVER_PAUSE_RECONCILE_GRACE_MS) {
     updateMissionStatus("paused", now);
     roverState.mission_progress.status = "paused";
-    // A rover reporting PAUSED that we didn't record as paused can only be an
-    // obstacle auto-pause (an operator pause goes through /api/rover/pause, which
-    // sets status=paused). This also rescues the 'interrupted + PAUSED' corner:
-    // an SSE drop marks the mission interrupted, then the rover pauses itself on
-    // an obstacle — without this it would stay interrupted (the reconnect
-    // interrupted→running flip needs an ACTIVE nav state, which PAUSED is not)
-    // and /api/rover/resume (requires 'paused') would 409. Raise the operator
-    // alert too — the lost-POST backup must not pause silently. nearest_m
-    // unknown on this path.
-    roverState.obstacle = { active: true, at: now, nearest_m: null };
-    broadcastEvent("rover:obstacle", { at: now, nearest_m: null, paused: true });
+    // This also rescues the 'interrupted + PAUSED' corner: an SSE drop marks the
+    // mission interrupted, then the rover reports PAUSED — without this it would
+    // stay interrupted (the reconnect interrupted→running flip needs an ACTIVE
+    // nav state, which PAUSED is not) and /api/rover/resume (requires 'paused')
+    // would 409.
     logger.warn(req, "mission.paused.reconciled", { mission_id: currentMissionId }, "rover");
   }
 
@@ -2295,158 +2252,12 @@ app.post("/api/rover/resume", (req, res) => {
   }
   updateMissionStatus("running");
   roverState.mission_progress.status = "running";
-  // Clear any obstacle hold and open the reconcile grace window so a stale
-  // PAUSED telemetry frame in flight can't immediately re-pause the mission.
-  roverState.obstacle = { active: false, at: 0, nearest_m: null };
+  // Open the reconcile grace window so a stale PAUSED telemetry frame in
+  // flight can't immediately re-pause the mission.
   roverLastResumeAt = Date.now();
   broadcastRoverStatus();
   logger.log(req, "rover.resume", { mission_id: currentMissionId }, "rover");
   res.json({ resumed: true });
-});
-
-// POST /api/rover/obstacle - perception이 주행 경로 장애물 감지 보고 (internal)
-// 로버는 이미 ROS로 미션을 로컬 PAUSE했다(서버 왕복·blip 무관). 이 엔드포인트는
-// 사람 대응 부분만 담당: (1) 미션 상태를 paused로 미러링해 재개 버튼을 활성화,
-// (2) 운영자에게 경보를 broadcast해 배너 + 카메라 자동 표시를 트리거한다.
-// pause-mission SSE는 보내지 않는다 — 로버가 스스로 멈췄으므로 중복 명령이다.
-app.post("/api/rover/obstacle", (req, res) => {
-  const body = req.body || {};
-  const nearest = typeof body.nearest_m === "number" ? body.nearest_m : null;
-  const at = Date.now();
-  // No active mission → nothing to pause, and an alert nothing could clear. A
-  // best-effort obstacle POST from the final NAVIGATING cycle can land just
-  // after the mission ended (endMission nulled currentMissionId); raising the
-  // persistent banner then would stick until the next mission (resume 409s).
-  // No-op, mirroring /api/rover/waypoint_reached.
-  if (currentMissionId == null) {
-    return res.json({ ok: true, paused: false });
-  }
-  // Drop a stale obstacle POST that was in flight when the operator just
-  // resumed: reflecting it would re-pause + re-alert a mission they deliberately
-  // resumed (the rover already cleared its local obstacle edge on resume). Same
-  // grace window the telemetry reconcile uses. If the obstacle genuinely
-  // persists, the rover re-pauses LOCALLY and the post-grace telemetry reconcile
-  // mirrors it — nothing is permanently lost.
-  if (at - roverLastResumeAt <= ROVER_PAUSE_RECONCILE_GRACE_MS) {
-    logger.log(req, "rover.obstacle", { ignored: "resume_grace" }, "rover");
-    return res.json({ ok: true, paused: false, ignored: true });
-  }
-  // Mirror the rover's local pause so /api/rover/resume (status==='paused') is
-  // reachable. From 'running' or 'interrupted' (the rover can pause itself on an
-  // obstacle while its mission SSE is briefly dropped); never command the rover.
-  let reflected = false;
-  if (currentMissionId != null
-      && (roverState.mission_progress.status === "running"
-          || roverState.mission_progress.status === "interrupted")) {
-    updateMissionStatus("paused", at);
-    roverState.mission_progress.status = "paused";
-    reflected = true;
-  }
-  roverState.obstacle = { active: true, at, nearest_m: nearest };
-  broadcastRoverStatus();
-  // Discrete alert: drives the one-shot banner + camera auto-open in the UI
-  // (late joiners still see it via roverState.obstacle in the status snapshot).
-  broadcastEvent("rover:obstacle", { at, nearest_m: nearest, paused: reflected });
-  logger.warn(req, "rover.obstacle",
-    { mission_id: currentMissionId, nearest_m: nearest, reflected }, "rover");
-  res.json({ ok: true, paused: reflected });
-});
-
-// POST /api/rover/calibrate-stereo - 운영자가 스테레오 카메라 교정 시작 (admin)
-// 명령을 perception의 카메라 control SSE로 보낸다 → 로버가 그 자리에서 양안으로
-// 체커보드를 수집·계산·저장하고 detector를 재로드한다. 진행/결과는 perception이
-// /api/rover/calibration-progress 로 회신해 UI에 표시된다.
-app.post("/api/rover/calibrate-stereo", (req, res) => {
-  const sq = Number(req.body?.square_m);
-  if (!Number.isFinite(sq) || sq < 0.005 || sq > 0.2) {
-    return res.status(400).send("정사각 한 칸 크기(square_m)는 0.005~0.2 m 범위의 숫자여야 합니다.");
-  }
-  if (!cameraControlClient) {
-    logger.warn(req, "rover.calibrate_stereo", { error: "perception_not_connected" }, "rover");
-    return res.status(503).send("카메라(perception)가 연결되어 있지 않습니다.");
-  }
-  if (!sendCameraControl("calibrate", { square_m: sq })) {
-    logger.warn(req, "rover.calibrate_stereo", { error: "write_failed" }, "rover");
-    return res.status(503).send("카메라 제어 채널 전송에 실패했습니다.");
-  }
-  roverState.stereo_calibration = {
-    status: "running", phase: "start", captured: 0, target: null,
-    rms: null, baseline_mm: null, pairs: null, error: null,
-    square_m: sq, at: Date.now(),
-  };
-  broadcastRoverStatus();
-  logger.log(req, "rover.calibrate_stereo", { square_m: sq }, "rover");
-  res.json({ ok: true });
-});
-
-// POST /api/rover/calibrate-ground - 운영자가 지면 교정 시작 (admin). above-ground
-// 검출기의 행별 기대 지면 깊이 곡선을 뜬다. 스테레오 교정(미터 깊이)이 선행돼야 하며,
-// 없으면 perception이 done ok:false로 회신한다. 진행/결과는 calibration-progress
-// (kind:"ground")로 회신돼 UI에 표시된다.
-app.post("/api/rover/calibrate-ground", (req, res) => {
-  let frames = Number(req.body?.frames);
-  frames = Number.isFinite(frames) ? Math.max(10, Math.min(120, Math.round(frames))) : 30;
-  if (!cameraControlClient) {
-    logger.warn(req, "rover.calibrate_ground", { error: "perception_not_connected" }, "rover");
-    return res.status(503).send("카메라(perception)가 연결되어 있지 않습니다.");
-  }
-  if (!sendCameraControl("calibrate-ground", { frames })) {
-    logger.warn(req, "rover.calibrate_ground", { error: "write_failed" }, "rover");
-    return res.status(503).send("카메라 제어 채널 전송에 실패했습니다.");
-  }
-  roverState.ground_calibration = {
-    status: "running", phase: "start", captured: 0, target: frames,
-    near_m: null, far_m: null, rows: null, error: null, at: Date.now(),
-  };
-  broadcastRoverStatus();
-  logger.log(req, "rover.calibrate_ground", { frames }, "rover");
-  res.json({ ok: true });
-});
-
-// POST /api/rover/calibration-progress - perception이 교정 진행/결과 보고 (internal).
-// kind:"ground"면 지면 교정, 아니면(기본) 스테레오 교정 상태로 라우팅한다.
-app.post("/api/rover/calibration-progress", (req, res) => {
-  const b = req.body || {};
-  const phase = typeof b.phase === "string" ? b.phase : "";
-  const done = phase === "done";
-  if (b.kind === "ground") {
-    roverState.ground_calibration = {
-      status: done ? (b.ok ? "done" : "failed") : "running",
-      phase,
-      captured: Number.isInteger(b.captured) ? b.captured : null,
-      target: Number.isInteger(b.target) ? b.target : null,
-      near_m: typeof b.near_m === "number" ? b.near_m : null,
-      far_m: typeof b.far_m === "number" ? b.far_m : null,
-      rows: Number.isInteger(b.rows) ? b.rows : null,
-      error: typeof b.error === "string" ? b.error.slice(0, 200) : null,
-      at: Date.now(),
-    };
-    broadcastRoverStatus();
-    if (done) {
-      logger.log(req, "rover.ground_calibration",
-        { ok: !!b.ok, near_m: b.near_m ?? null, far_m: b.far_m ?? null,
-          rows: b.rows ?? null, mode: b.mode ?? null, error: b.error ?? null }, "rover");
-    }
-    return res.json({ ok: true });
-  }
-  roverState.stereo_calibration = {
-    status: done ? (b.ok ? "done" : "failed") : "running",
-    phase,
-    captured: Number.isInteger(b.captured) ? b.captured : null,
-    target: Number.isInteger(b.target) ? b.target : null,
-    rms: typeof b.rms === "number" ? b.rms : null,
-    baseline_mm: typeof b.baseline_mm === "number" ? b.baseline_mm : null,
-    pairs: Number.isInteger(b.pairs) ? b.pairs : null,
-    error: typeof b.error === "string" ? b.error.slice(0, 200) : null,
-    at: Date.now(),
-  };
-  broadcastRoverStatus();
-  if (done) {
-    logger.log(req, "rover.calibration",
-      { ok: !!b.ok, rms: b.rms ?? null, rms_l: b.rms_l ?? null, rms_r: b.rms_r ?? null,
-        baseline_mm: b.baseline_mm ?? null, error: b.error ?? null }, "rover");
-  }
-  res.json({ ok: true });
 });
 
 // POST /api/rover/calibrate-battery - 배터리 전압 1점 게인 보정 (admin)
@@ -2809,390 +2620,6 @@ app.post("/api/rover/led-brightness", (req, res) => {
   logger.log(req, "rover.led_brightness", { brightness, connected: !!roverClient }, "rover");
   broadcastRoverStatus();
   res.json({ ok: true });
-});
-
-/* ============================================
-   Camera relay (rover → server → browser, MJPEG)
-   ============================================
-   In-memory only — frames are ephemeral, never touch the DB. Tailscale-free:
-   the rover's perception container pushes JPEG frames OUT to this server, and
-   admin browsers pull them from the same server as multipart/x-mixed-replace
-   (native <img> rendering). The rover only captures while someone is watching:
-   a viewer connecting/leaving toggles a camera-start/stop event on the rover's
-   control SSE. Separate from the pilot's /api/rover/stream so streaming load
-   never interferes with the mission command channel. */
-let cameraControlClient = null;   // perception container's control SSE (res)
-const cameraViewers = new Set();  // browser MJPEG multipart responses
-// WebRTC gating-only viewers (no MJPEG frames): they keep the rover capturing +
-// publishing the matching stream. Split by kind so the rover encodes each stream
-// (rover-2d mono/composite, rover-vr stereo) only while its viewer is present.
-const holdViewers2d = new Set();
-const holdViewersVr = new Set();
-let cameraLatestFrame = null;     // { buf, at } — last JPEG, replayed to new viewers
-// Operator toggled the both-eyes depth composite on. The composite is rendered
-// ON the rover (perception owns the cameras); this flag only records the desired
-// view mode so it can be (re)sent to the perception control channel — on the
-// toggle itself, and again if the perception container reconnects mid-session.
-let cameraDepthWanted = false;
-const CAMERA_FRAME_FRESH_MS = 2000;
-// Drop frames for a viewer whose socket is this far behind rather than buffering
-// JPEGs unboundedly — a slow viewer (cellular/phone) must never OOM the mission
-// server. ~4 MB ≈ several frames of headroom at our resolution.
-const CAMERA_VIEWER_MAX_BACKLOG = 4 * 1024 * 1024;
-// Bound the camera feature's footprint on the SHARED mission server.
-const MAX_CAMERA_VIEWERS = 8;                 // cap held-open MJPEG responses
-const CAMERA_MIN_FRAME_INTERVAL_MS = 40;      // relay ≤ ~25 fps regardless of rover
-let cameraLastRelayAt = 0;
-
-function sendCameraControl(event, data) {
-  if (!cameraControlClient) return false;
-  try {
-    cameraControlClient.write(`event: ${event}\ndata: ${data ? JSON.stringify(data) : "{}"}\n\n`);
-    return true;
-  } catch {
-    // perception 제어 채널이 죽었다. 슬롯을 비우면 close 핸들러의 control_closed 로그도
-    // 못 남으므로(guard가 false) 여기서 흔적을 남긴다. 비워진 슬롯이 이후 send를
-    // 즉시 false로 단락시키므로 teardown당 warn 1건 — 플러딩 없음.
-    logger.warn(null, "rover.camera.control_write_failed", { event }, "rover", SYS);
-    try { cameraControlClient.end(); } catch {}
-    cameraControlClient = null;
-    return false;
-  }
-}
-
-function removeCameraViewer(res) {
-  if (!cameraViewers.delete(res)) return;
-  // Last MJPEG viewer gone → release the cached frame so a stale image can't be
-  // replayed when the stream next reopens. (Depth is a 2D-view sub-mode and is
-  // cleared in syncCameraCapture once NO 2D viewer — MJPEG or WebRTC — remains.)
-  if (cameraViewers.size === 0) cameraLatestFrame = null;
-  // Always re-sync: emits mjpeg-off, and camera-stop only if no WebRTC hold remains.
-  syncCameraCapture();
-}
-
-// Capture while ANY viewer (MJPEG or WebRTC-hold) is watching; JPEG-encode only
-// while an actual MJPEG viewer is attached (a WebRTC-only session skips MJPEG).
-function syncCameraCapture() {
-  const watching = cameraViewers.size > 0 || holdViewers2d.size > 0 || holdViewersVr.size > 0;
-  sendCameraControl(watching ? "camera-start" : "camera-stop");
-  sendCameraControl(cameraViewers.size > 0 ? "mjpeg-on" : "mjpeg-off");
-  // Each WebRTC stream is encoded only while its viewer is present.
-  sendCameraControl(holdViewers2d.size > 0 ? "webrtc-2d-on" : "webrtc-2d-off");
-  sendCameraControl(holdViewersVr.size > 0 ? "webrtc-vr-on" : "webrtc-vr-off");
-  // Depth is a 2D-view sub-mode (baked into the rover's `out` frame, which feeds
-  // BOTH the MJPEG relay and rover-2d WebRTC). Clear it once no 2D viewer remains
-  // so the flag can't get stuck on across sessions.
-  if (cameraDepthWanted && cameraViewers.size === 0 && holdViewers2d.size === 0) {
-    cameraDepthWanted = false;
-    sendCameraControl("depth-off");
-  }
-}
-
-// GET /api/rover/camera/control - perception container SSE (internal-strict).
-// Receives camera-start / camera-stop so it captures only on demand.
-app.get("/api/rover/camera/control", (req, res) => {
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.write("event: connected\ndata: {}\n\n");
-  // Async socket errors (peer reset) don't throw — without a listener they'd
-  // crash the process. Drop the slot, and leave a trail: nulling the slot means
-  // the close handler's control_closed log can never fire for this connection.
-  res.on("error", () => {
-    if (cameraControlClient === res) {
-      cameraControlClient = null;
-      logger.warn(req, "rover.camera.control_write_failed", { reason: "socket_error" }, "rover");
-    }
-  });
-  if (cameraControlClient && cameraControlClient !== res) {
-    // Session takeover (e.g. a perception container replaced by auto-update) —
-    // leave an audit trail, mirroring /api/rover/stream's rover.stream.replaced.
-    logger.warn(req, "rover.camera.control_replaced", null, "rover");
-    try { cameraControlClient.end(); } catch {}
-  }
-  cameraControlClient = res;
-  // Audit the perception container's control-channel attach/detach. Without
-  // this there is NO log trail for "is the camera/perception process connected"
-  // (camera_connected lives only in the live /camera/status response), which
-  // makes "the camera shows nothing" hard to triage — connected vs. never
-  // attached look identical in the logs.
-  logger.log(req, "rover.camera.control_connected", null, "rover");
-  // If viewers are already waiting, start capturing immediately — and restore
-  // the depth view mode if it was on (covers a perception container that
-  // reconnected mid-session, e.g. after an auto-update, without the operator
-  // having to re-toggle).
-  // Re-sync the FULL desired state on every (re)connect. The perception node now
-  // keeps its last stream/depth/mjpeg state across an SSE blip (so a transient
-  // drop no longer tears down the WebRTC publisher), so send the current truth —
-  // camera-start/stop + mjpeg-on/off — to also cover a viewer that left while the
-  // SSE was down.
-  syncCameraCapture();
-  sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
-  // Re-assert the operator's proximity-detection toggle on every (re)connect. A
-  // fresh perception container boots with detection off, and the last state can
-  // otherwise be lost across a restart, so send the server's stored truth (only
-  // detect-on if the operator has enabled it).
-  sendCameraControl(roverState.obstacle_detection_enabled ? "detect-on" : "detect-off");
-  // 10s heartbeat (was 30s) to match /api/rover/stream — keeps the SSE alive
-  // through proxy idle-close so it doesn't drop every few minutes.
-  const heartbeat = setInterval(() => {
-    try { res.write(": heartbeat\n\n"); } catch {}
-  }, 10000);
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    if (cameraControlClient === res) {
-      cameraControlClient = null;
-      // A bare disconnect is a benign lifecycle event: the perception node
-      // reconnects (client backoff) and the server re-syncs the full desired
-      // state on reconnect, and WebRTC/stream survive the blip. It pairs with
-      // the info-level control_connected, so log at info — a redeploy or a
-      // flaky rover uplink otherwise floods the warn filter with reconnect
-      // churn. warn is reserved for a close that actually broke something
-      // (below).
-      // If a calibration was mid-run, the perception node that was running it is
-      // gone — mark it failed so the operator isn't locked out of retrying (the
-      // 교정 button is disabled while 'running' and nothing else would clear it).
-      const aborted = [];
-      if (roverState.stereo_calibration.status === "running") {
-        roverState.stereo_calibration = {
-          status: "failed", phase: "done",
-          error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
-        };
-        aborted.push("stereo");
-      }
-      if (roverState.ground_calibration.status === "running") {
-        roverState.ground_calibration = {
-          status: "failed", phase: "done",
-          error: "카메라(perception) 연결이 끊겼습니다.", at: Date.now(),
-        };
-        aborted.push("ground");
-      }
-      if (aborted.length) {
-        // This close DID break something the operator was waiting on: warn so it
-        // surfaces under the level filter, with which calibration(s) it killed.
-        logger.warn(req, "rover.camera.control_closed",
-          { aborted_calibration: aborted }, "rover");
-        broadcastRoverStatus();
-      } else {
-        logger.log(req, "rover.camera.control_closed", null, "rover");
-      }
-    }
-  });
-});
-
-// POST /api/rover/camera - JPEG frame upload (internal-strict, raw body).
-// express.raw only consumes image/jpeg; the global express.json skips it.
-app.post("/api/rover/camera", express.raw({ type: "image/jpeg", limit: "3mb" }), (req, res) => {
-  const buf = req.body;
-  if (!Buffer.isBuffer(buf) || buf.length === 0) {
-    return res.status(400).send("empty frame");
-  }
-  // Rate-cap the relay: drop frames arriving faster than ~25 fps so a fast or
-  // misbehaving rover (the rover self-caps, but defense in depth on the shared
-  // mission server) can't drive unbounded Buffer alloc + fan-out CPU here.
-  const now = Date.now();
-  if (now - cameraLastRelayAt < CAMERA_MIN_FRAME_INTERVAL_MS) {
-    return res.status(204).end();
-  }
-  cameraLastRelayAt = now;
-  cameraLatestFrame = { buf, at: now };
-  const header = Buffer.from(
-    `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${buf.length}\r\n\r\n`
-  );
-  for (const viewer of cameraViewers) {
-    // A viewer can close between its 'close' handler and this write; writing to
-    // an ended/destroyed response emits an async 'error' (uncatchable here), so
-    // skip + reap it. And bound memory: drop this frame for a backed-up viewer
-    // instead of queueing it.
-    if (viewer.writableEnded || viewer.destroyed) { removeCameraViewer(viewer); continue; }
-    if (viewer.writableLength > CAMERA_VIEWER_MAX_BACKLOG) continue;
-    try {
-      viewer.write(header);
-      viewer.write(buf);
-      viewer.write("\r\n");
-    } catch { removeCameraViewer(viewer); }
-  }
-  res.status(204).end();
-});
-
-// GET /api/rover/camera/stream - browser MJPEG viewer (admin).
-app.get("/api/rover/camera/stream", (req, res) => {
-  // Cap concurrent held-open MJPEG responses so a scripted/looping admin can't
-  // exhaust sockets/heap on the shared server (mirrors the SSE manager's cap).
-  if (cameraViewers.size >= MAX_CAMERA_VIEWERS) {
-    logger.warn(req, "rover.camera.view", { error: "too_many_viewers", viewers: cameraViewers.size }, "rover");
-    return res.status(503).send("카메라 시청자가 너무 많습니다.");
-  }
-  res.writeHead(200, {
-    "Content-Type": "multipart/x-mixed-replace; boundary=frame",
-    "Cache-Control": "no-cache, no-store, must-revalidate",
-    Pragma: "no-cache",
-    Connection: "keep-alive",
-  });
-  // Flush headers now: with no Content-Length, Node would otherwise hold the
-  // headers until the first body write, so a viewer that connects before any
-  // frame is pushed would see the request hang instead of an open MJPEG stream.
-  res.flushHeaders();
-  res.on("error", () => removeCameraViewer(res));
-  cameraViewers.add(res);
-  // Replay the most recent frame so a joining viewer sees something at once.
-  if (cameraLatestFrame && Date.now() - cameraLatestFrame.at < CAMERA_FRAME_FRESH_MS) {
-    try {
-      res.write(Buffer.from(
-        `--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${cameraLatestFrame.buf.length}\r\n\r\n`
-      ));
-      res.write(cameraLatestFrame.buf);
-      res.write("\r\n");
-    } catch { /* ignore */ }
-  }
-  if (cameraViewers.size === 1) syncCameraCapture(); // first viewer → start
-  logger.log(req, "rover.camera.view", { viewers: cameraViewers.size }, "rover");
-  req.on("close", () => removeCameraViewer(res));
-});
-
-// GET /api/rover/camera/hold - gating-only viewer (WebRTC/VR). Keeps the rover
-// capturing + WebRTC-publishing WITHOUT pulling MJPEG frames, so the rover skips
-// the JPEG encode+POST while only WebRTC viewers are watching. The browser holds
-// this open (SSE) for the duration of the VR/WebRTC session.
-app.get("/api/rover/camera/hold", (req, res) => {
-  // mode=vr → stereo (rover-vr); anything else → 2D mono/composite (rover-2d).
-  const set = req.query.mode === "vr" ? holdViewersVr : holdViewers2d;
-  if (set.size >= MAX_CAMERA_VIEWERS) {
-    logger.warn(req, "rover.camera.view", { error: "too_many_viewers", viewers: set.size }, "rover");
-    return res.status(503).send("too many viewers");
-  }
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive",
-  });
-  res.write("event: connected\ndata: {}\n\n");
-  res.on("error", () => { if (set.delete(res)) syncCameraCapture(); });
-  set.add(res);
-  syncCameraCapture();
-  const hb = setInterval(() => { try { res.write(": hb\n\n"); } catch {} }, 10000);
-  req.on("close", () => {
-    clearInterval(hb);
-    if (set.delete(res)) syncCameraCapture();
-  });
-});
-
-// GET /api/rover/camera/status - camera availability for the UI (admin).
-app.get("/api/rover/camera/status", (req, res) => {
-  res.json({
-    camera_connected: !!cameraControlClient,
-    viewers: cameraViewers.size,
-    depth: cameraDepthWanted,
-    // Server-COMPUTED age, never a raw server epoch: the client must not diff
-    // its own (possibly NTP-skewed) clock against a server timestamp — that
-    // mismatch paints a working stream as "신호 없음" or hides a dead one (the
-    // same client-clock trap as the course UI's "UPDATE Ns").
-    last_frame_age_ms: cameraLatestFrame ? (Date.now() - cameraLatestFrame.at) : null,
-  });
-});
-
-// POST /api/rover/camera/depth - toggle the both-eyes depth composite (admin).
-// The rover renders the composite (rectified left + depth heatmap + nearest
-// distance) itself; this only tells it which stream to send, so it's a no-op on
-// the pixels until an operator is actually watching. Persisted so a mid-session
-// perception reconnect restores the mode (see the control handler above).
-app.post("/api/rover/camera/depth", (req, res) => {
-  const on = !!(req.body && req.body.on);
-  // Depth is a sub-mode of an active 2D stream — the composite is baked into the
-  // rover's `out` frame, shared by the MJPEG relay AND rover-2d WebRTC. So gate on
-  // ANY 2D viewer (MJPEG cameraViewers OR WebRTC holdViewers2d); a WebRTC-only 2D
-  // panel has zero MJPEG viewers. Ignore an "on" with no 2D viewer so the flag
-  // can't get stuck true (it's only cleared on the last-2D-viewer-leave edge).
-  const has2dViewer = cameraViewers.size > 0 || holdViewers2d.size > 0;
-  cameraDepthWanted = on && has2dViewer;
-  const delivered = sendCameraControl(cameraDepthWanted ? "depth-on" : "depth-off");
-  const detail = { on, applied: cameraDepthWanted, delivered,
-    mjpegViewers: cameraViewers.size, webrtc2dViewers: holdViewers2d.size };
-  // We wanted depth on (a viewer is present) but couldn't reach perception → an
-  // inter-service delivery failure; warn per the logging policy so an operator can
-  // find "the depth view didn't apply" by level. Everything else is info.
-  if (cameraDepthWanted && !delivered) {
-    logger.warn(req, "rover.camera.depth", { ...detail, error: "perception_not_connected" }, "rover");
-  } else {
-    logger.log(req, "rover.camera.depth", detail, "rover");
-  }
-  res.json({ ok: true, depth: cameraDepthWanted, camera_connected: !!cameraControlClient });
-});
-
-// POST /api/rover/camera/detection - toggle proximity (obstacle) detection (admin).
-// Unlike depth (a live-view sub-mode gated on a viewer), detection is a mission
-// safety setting that applies whenever the rover is NAVIGATING — no viewer gate.
-// Stored in roverState (broadcast on rover:status → UI reflects it) and re-sent to
-// perception on every control (re)connect. The rover env OBSTACLE_DETECTION stays
-// the hard kill-switch; this is the operator's soft on/off on top of it.
-app.post("/api/rover/camera/detection", (req, res) => {
-  const on = !!(req.body && req.body.on);
-  roverState.obstacle_detection_enabled = on;
-  const wasConnected = !!cameraControlClient;
-  const delivered = sendCameraControl(on ? "detect-on" : "detect-off");
-  const detail = { on, delivered, camera_connected: wasConnected };
-  // The toggle is stored either way (re-synced to perception on its next control
-  // connect). Warn only when perception WAS connected but the write failed — a
-  // real inter-service delivery failure; a plain "perception offline" is benign
-  // because reconnect re-applies the stored state.
-  if (wasConnected && !delivered) {
-    logger.warn(req, "rover.camera.detection", { ...detail, error: "camera_control_write_failed" }, "rover");
-  } else {
-    logger.log(req, "rover.camera.detection", detail, "rover");
-  }
-  broadcastRoverStatus();
-  res.json({ ok: true, detection: on, camera_connected: !!cameraControlClient });
-});
-
-// GET /api/rover/map-tile - same-origin satellite tile proxy for the VR minimap
-// (admin). WebGL cannot texture a canvas tainted by cross-origin tiles, so the VR
-// view can't draw VWorld/Google tiles onto its minimap canvas directly — proxy
-// them here (server-side VWORLD_KEY, else a Google fallback) so the canvas stays
-// same-origin. z/x/y are slippy-map (XYZ) tile indices.
-//
-// 실패 warn은 실패 원인별로 60초에 한 번만 남긴다. 미니맵은 화면당 수십 장의
-// 타일을 요청하므로, VWORLD_KEY 만료 같은 지속 장애를 타일마다 기록하면 warn
-// 필터가 브라우저 요청 속도로 밀려난다. 억눌린 횟수는 다음 로그의 suppressed에 합산.
-const MAP_TILE_WARN_INTERVAL_MS = 60 * 1000;
-const mapTileWarnState = new Map(); // 실패 원인 키 → { at: 마지막 기록 시각, suppressed: 그 후 억눌린 횟수 }
-function warnMapTile(req, key, detail) {
-  const now = Date.now();
-  const state = mapTileWarnState.get(key);
-  if (state && now - state.at < MAP_TILE_WARN_INTERVAL_MS) {
-    state.suppressed += 1;
-    return;
-  }
-  const suppressed = state?.suppressed || 0;
-  mapTileWarnState.set(key, { at: now, suppressed: 0 });
-  logger.warn(req, "rover.map_tile", suppressed > 0 ? { ...detail, suppressed } : detail, "rover");
-}
-app.get("/api/rover/map-tile", async (req, res) => {
-  const z = Number(req.query.z), x = Number(req.query.x), y = Number(req.query.y);
-  const okInt = (v, hi) => Number.isInteger(v) && v >= 0 && v <= hi;
-  if (!okInt(z, 21) || !okInt(x, (1 << z) - 1) || !okInt(y, (1 << z) - 1)) {
-    return res.status(400).send("bad tile coords");
-  }
-  const key = process.env.VWORLD_KEY;
-  const url = key
-    ? `https://api.vworld.kr/req/wmts/1.0.0/${key}/Satellite/${z}/${y}/${x}.jpeg`
-    : `https://mt0.google.com/vt/lyrs=y&x=${x}&y=${y}&z=${z}&scale=2`;
-  try {
-    const upstream = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (!upstream.ok) {
-      warnMapTile(req, `upstream-${upstream.status}`, { error: `upstream ${upstream.status}`, z, x, y });
-      return res.status(502).send("tile upstream error");
-    }
-    res.set("Content-Type", upstream.headers.get("content-type") || "image/jpeg");
-    res.set("Cache-Control", "public, max-age=86400");
-    res.send(Buffer.from(await upstream.arrayBuffer()));
-  } catch (e) {
-    // 키는 에러 종류(TimeoutError 등)로 묶는다 — 메시지 원문은 타일 좌표가 섞여
-    // 키가 무한히 늘어나므로 detail에만 담는다.
-    warnMapTile(req, `fetch-${e?.name || "error"}`, { error: String(e?.message || e), z, x, y });
-    res.status(502).send("tile fetch failed");
-  }
 });
 
 }

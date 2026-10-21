@@ -122,7 +122,6 @@ def _install_ros_msgs():
         "Float32": type("Float32", (), {"__init__": lambda self: setattr(self, "data", 0.0)}),
         "Float64": type("Float64", (), {"__init__": lambda self: setattr(self, "data", 0.0)}),
         "Int32": type("Int32", (), {"__init__": lambda self: setattr(self, "data", 0)}),
-        "Bool": type("Bool", (), {"__init__": lambda self: setattr(self, "data", False)}),
         "Empty": type("Empty", (), {"__init__": lambda self: None}),
     })
     _install_stub("std_msgs", {"msg": std_msgs_msg})

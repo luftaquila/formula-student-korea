@@ -55,9 +55,6 @@ Bridge: `mcu_bridge_node`. Firmware CI: the `mcu` job in
 ## Architecture
 
 Five ROS 2 Jazzy nodes run in the rootful `pilot` container with `--network=host`.
-The separate [perception container](perception/README.md) shares the ROS graph,
-streams camera video, and publishes `/rover/perception/obstacle` for local mission
-pauses.
 
 ```
 course server (port 10000)
@@ -162,9 +159,8 @@ Fleet-wide identical: hardware, NTRIP endpoint, `rover_params.yaml`. Per-rover d
 
 | Image | Built by | Updates | Owns |
 |-------|----------|---------|------|
-| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, `perception.service` + `perception-run`, fsk user |
+| `ghcr.io/luftaquila/fsk-rover-host:{candidate,edge,vX.Y.Z}` | `host/Containerfile` | `bootc upgrade` (24 h, reboot) | AlmaLinux 10 + Pi 5 firmware/DTB, NM, sshd, tailscale, podman, udev, `pilot.service` + `pilot-run`, fsk user |
 | `ghcr.io/luftaquila/fsk-rover-pilot:{candidate,edge,vX.Y.Z}` | `pilot/Containerfile` | `podman auto-update` (24 h, in-place) | ROS 2 Jazzy + the five `pilot` nodes |
-| `ghcr.io/luftaquila/fsk-rover-perception:{candidate,edge,vX.Y.Z}` | `perception/Containerfile` | `podman auto-update` (24 h, in-place) | OpenCV camera streamer (WebRTC/aiortc + MJPEG fallback + VR stereo) + stereo obstacle detection (see `perception/`) |
 
 - Host base: `quay.io/almalinuxorg/almalinux-bootc-rpi:10`.
 - Stock `almalinux-bootc:10` lacks Pi 5 firmware and won't boot.
@@ -436,7 +432,6 @@ the jobs selected by the changed paths; manual runs select one `component`.
 | Component | Automatic trigger | Output |
 |-----------|-------------------|--------|
 | `pilot` | `pilot/**` | `fsk-rover-pilot` OCI; pytest gate |
-| `perception` | `perception/**` | `fsk-rover-perception` OCI; compileall + pytest gate |
 | `host` | `host/**` | `fsk-rover-host` OCI |
 | `sd` | none (manual only) | `fsk-rover-sd.img.xz` |
 | `mcu` | `mcu/**` | `rover_mcu.uf2` |

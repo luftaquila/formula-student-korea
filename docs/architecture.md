@@ -21,12 +21,12 @@ Competition-critical domains run as modules in one `competition` process, one de
 | `competition` | Teams, Queue, Registration, Inspection, Traffic, Score, Documents, and seven SPAs | 9200 |
 | `energymeter` | Energy meter viewer | 9800 |
 | `email` | Email/SMS provider integration | 9900 |
-| `course` | Course, rover, RTK GPS, camera, and teleoperation | 10000 |
+| `course` | Course, rover, RTK GPS, and teleoperation | 10000 |
 | `calendar` | Competition schedules | 11000 |
 | `files` | FileBrowser storage with Auth forward-auth | 8080 |
 
-Energy Meter, FileBrowser, and mediamtx share the clusters but have independent
-image or data ownership.
+Energy Meter and FileBrowser share the clusters but have independent image or
+data ownership.
 
 Competition modules have no separate deployments or HTTP fan-out. Team data stays
 in the shared database; no copied rosters, lifecycle outboxes, or reconciliation.

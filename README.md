@@ -6,5 +6,4 @@
 - [API reference](docs/api.md): public and supporting-service contracts
 - [Rover](rover/README.md): navigation, MCU, provisioning, and recovery
 - [GPS](rover/gps/README.md): receiver runtime, base station, and provisioning
-- [Perception](rover/perception/README.md): camera, depth detection, and calibration
 - [Timing hardware](competition/modules/traffic/DESIGN.md): wiring, wireless protocol, firmware, and verification
