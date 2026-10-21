@@ -6,7 +6,8 @@ import { storageStatePath } from "../helpers/utils.mjs";
 //   Course checkbox → course.manage, which includes course.operate
 //   rover.operate  → rover and missions
 //   admin          → logs
-//   internal-strict (deny even an admin browser) → /api/rover/stream
+//   internal-strict (deny even an admin browser) → /api/rover/stream,
+//     /mission-report, /base/rtcm, /base/survey-result
 //
 // All assertions go through APIRequestContext (ctx.request / page.request) so no
 // SSE stream is held open — a denied internal-strict GET returns its 403 (or a
@@ -104,15 +105,20 @@ test.describe("Course RBAC gates", () => {
   });
 
   test("internal-strict rover endpoints deny an admin browser (403)", async ({ browser }) => {
-    // Even a logged-in admin (no X-Internal-Service header, which Caddy would
-    // strip anyway off these paths) must be denied — these are rover-only.
-    // ctx.request buffers, so the 403 returns immediately; for /stream the
-    // gate denies BEFORE the handler writes the event-stream head, so this never
-    // hangs on a held-open SSE.
+    // Even a logged-in admin must be denied without an internal or rover secret
+    // — these are device-only. Caddy passes X-Internal-Service through on
+    // /course/api/rover/* (rovers authenticate with it), so this gate is the
+    // enforcing layer. The gate is method-independent and denies BEFORE any
+    // handler runs: ctx.request buffers, so the 403 returns immediately, and
+    // /stream never writes the event-stream head, so this never hangs on a
+    // held-open SSE.
     const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
     try {
       for (const path of [
         "/course/api/rover/stream",
+        "/course/api/rover/mission-report",
+        "/course/api/rover/base/rtcm",
+        "/course/api/rover/base/survey-result",
       ]) {
         const res = await ctx.request.get(path, { timeout: 8000 });
         expect(res.status(), `admin GET ${path}`).toBe(403);

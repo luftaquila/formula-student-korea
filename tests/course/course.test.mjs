@@ -1502,11 +1502,27 @@ describe('GET /api/rover/stream (auth)', () => {
     // Express 5 routes case and trailing-slash variants to the same handler, so
     // an exact-match gate would fall through to "admin" and let a browser admin
     // open the rover SSE (200). None of these variants may succeed for a
-    // non-internal caller (403 denied or 404 unrouted are both fine).
-    for (const path of ['/api/rover/stream/', '/api/rover/stream//', '/API/rover/stream']) {
-      const res = await client.get(path, { cookie: adminCookie });
-      assert.ok(res.status !== 200, `GET ${path} must NOT succeed for a browser admin (got ${res.status})`);
-      try { await res.body?.cancel(); } catch { /* ignore */ }
+    // non-internal caller (403 denied or 404 unrouted are both fine). Runs on
+    // an isolated server and always releases the body: a regressed gate would
+    // otherwise leave the browser holding the single rover SSE slot for the
+    // rest of the suite.
+    const localDbPath = tmpDbPath();
+    const local = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
+    const started = await startServer(local.app);
+    const localClient = createClient(started.baseUrl);
+    try {
+      for (const path of ['/api/rover/stream/', '/api/rover/stream//', '/API/rover/stream']) {
+        const res = await localClient.get(path, { cookie: adminCookie });
+        try {
+          assert.ok(res.status !== 200, `GET ${path} must NOT succeed for a browser admin (got ${res.status})`);
+        } finally {
+          try { await res.body?.cancel(); } catch { /* ignore */ }
+        }
+      }
+    } finally {
+      await stopServer(started.server);
+      local.db.close();
+      cleanup(localDbPath);
     }
   });
 });

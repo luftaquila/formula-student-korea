@@ -246,13 +246,7 @@ class NavigatorNode(Node):
 
         # Publishers.
         self._pub_velocity = self.create_publisher(Twist, '/rover/cmd/velocity', 10)
-        # Latched (TRANSIENT_LOCAL, depth 1): nav/state is a CURRENT-STATE topic,
-        # so a late-joining TRANSIENT_LOCAL subscriber gets the last state
-        # immediately. A TRANSIENT_LOCAL publisher is still compatible with the
-        # bridges' VOLATILE subscribers (offered durability >= requested).
-        state_qos = QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
-                               durability=DurabilityPolicy.TRANSIENT_LOCAL)
-        self._pub_state = self.create_publisher(String, '/rover/nav/state', state_qos)
+        self._pub_state = self.create_publisher(String, '/rover/nav/state', 10)
         mission_report_qos = QoSProfile(
             depth=10,
             reliability=ReliabilityPolicy.RELIABLE,

@@ -6232,7 +6232,7 @@ onUnmounted(() => {
                 <template v-else>
                   <!-- All always-on rover controls share ONE grid so they lay
                        out 2 per row (2×2). -->
-                  <div class="rover-controls rover-controls-grid">
+                  <div class="rover-controls rover-controls-grid two-col">
                     <!-- Row 1: 로버 추적 · 수동 제어 -->
                     <button
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
@@ -7448,10 +7448,12 @@ onUnmounted(() => {
 /* Rover controls */
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .rover-controls-grid {
-  /* minmax(0, 1fr) keeps both columns equal even when a label is wide,
+  /* minmax(0, 1fr) keeps all three columns equal even when a label is wide,
      instead of a long button stretching its column and breaking the row. */
-  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem;
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem;
 }
+/* The always-on rover controls are exactly four buttons → 2×2. */
+.rover-controls-grid.two-col { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .rover-controls-grid .btn { width: 100%; }
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
