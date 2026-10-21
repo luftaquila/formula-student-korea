@@ -71,8 +71,8 @@ def generate_launch_description():
     # clean. (spray/navigator/bridge are NOT gated — ros2 can restart them in
     # place without a full container bounce.)
     #
-    # gps_node is deliberately NOT gated: a missing or lost GPS (or camera) must
-    # never tear down the stack, because manual control needs neither. gps_node
+    # gps_node is deliberately NOT gated: a missing or lost GPS must never tear
+    # down the stack, because manual control doesn't need it. gps_node
     # starts non-fatally when no receiver is present and its _read_serial timer
     # keeps retrying the reopen (indefinite, backed-off recovery), so it
     # self-heals when the F9P is plugged in — all while manual control stays

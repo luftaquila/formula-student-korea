@@ -47,9 +47,10 @@ fi
 # ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST confines the DDS graph to loopback.
 # With --network=host on the open field Wi-Fi, the default (SUBNET) would let
 # ANY device on the AP join as a DDS participant and publish /rover/cmd/* —
-# motor commands as an unauthenticated network API. pilot and perception both
-# run --network=host on THIS host, so loopback discovery still lets them talk
-# while off-host participants are shut out.
+# motor commands as an unauthenticated network API. Every legitimate participant
+# (the pilot nodes, and `ros2` CLI via `podman exec pilot`, e.g. pid-tune) runs
+# on THIS host, so loopback discovery still lets them talk while off-host
+# participants are shut out.
 exec podman run \
     --name "$NAME" \
     --rm \

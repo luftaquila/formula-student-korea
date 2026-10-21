@@ -146,7 +146,7 @@ class GpsNode(Node):
         # at startup must NOT be fatal: gps_node is no longer a launch-gating
         # node (pilot.launch.py registers no OnProcessExit→Shutdown for it), so
         # crashing here would tear down the whole stack — including manual
-        # control, which needs only the MCU link, not GPS or the camera. If the
+        # control, which needs only the MCU link, not GPS. If the
         # open fails, start without it and let the _read_serial timer keep
         # retrying the reopen (it backs off and recovers gracefully); the node
         # stays up publishing no-fix until the receiver appears.

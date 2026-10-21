@@ -55,13 +55,12 @@ describe("CI workflow operational contracts", () => {
   it("routes all Rover automation through one component-aware workflow", () => {
     const roverWorkflowFiles = fs.readdirSync(".github/workflows")
       .filter((name) => name.startsWith("rover-") || name === "rover.yml");
-    const components = ["pilot", "perception", "host", "mcu", "gps"];
+    const components = ["pilot", "host", "mcu", "gps"];
     const dispatchComponents = [...components, "sd"];
     const pushPaths = [
       "rover/gps/**",
       "rover/host/**",
       "rover/mcu/**",
-      "rover/perception/**",
       "rover/pilot/**",
       ".github/workflows/rover.yml",
     ];
@@ -81,7 +80,7 @@ describe("CI workflow operational contracts", () => {
       const expectedCondition =
         `(github.event_name == 'workflow_dispatch' && inputs.component == '${component}') || `
         + `needs.changes.outputs.${component} == 'true'`;
-      const jobNames = component === "pilot" || component === "perception"
+      const jobNames = component === "pilot"
         ? [`${component}-verify`, component]
         : [component];
 
@@ -118,14 +117,12 @@ describe("CI workflow operational contracts", () => {
     );
     assert.deepEqual(roverWorkflow.jobs.sd.needs, "changes");
 
-    for (const component of ["pilot", "perception"]) {
-      const verify = roverWorkflow.jobs[`${component}-verify`];
-      const publish = roverWorkflow.jobs[component];
+    const pilotVerify = roverWorkflow.jobs["pilot-verify"];
+    const pilotPublish = roverWorkflow.jobs.pilot;
 
-      assert.equal(verify.concurrency.group, publish.concurrency.group);
-      assert.equal(verify.concurrency["cancel-in-progress"], true);
-      assert.equal(publish.concurrency["cancel-in-progress"], true);
-    }
+    assert.equal(pilotVerify.concurrency.group, pilotPublish.concurrency.group);
+    assert.equal(pilotVerify.concurrency["cancel-in-progress"], true);
+    assert.equal(pilotPublish.concurrency["cancel-in-progress"], true);
   });
 
   it("runs unit tests in Seoul time and preserves the UTC/KST year boundary", () => {
