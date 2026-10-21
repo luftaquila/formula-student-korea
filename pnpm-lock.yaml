@@ -273,9 +273,6 @@ importers:
       leaflet-rotate:
         specifier: ^0.2.8
         version: 0.2.8(leaflet@1.9.4)
-      three:
-        specifier: ^0.185.1
-        version: 0.185.1
       vue:
         specifier: ^3.5.26
         version: 3.5.42
@@ -1759,9 +1756,6 @@ packages:
 
   text-decoder@1.2.7:
     resolution: {integrity: sha512-vlLytXkeP4xvEq2otHeJfSQIRyWxo/oZGEbXrtEEF9Hnmrdly59sUbzZ/QgyWuLYHctCHxFF4tRQZNQ9k60ExQ==}
-
-  three@0.185.1:
-    resolution: {integrity: sha512-5aojFCXKwnjBRZvUnt3WFfEcvUJgkN5LlijRFN95hMy8WVkG4I0QNcJE+OuWvuJ0bOdStrbfXn0pkd6/QyiAlg==}
 
   tinyglobby@0.2.17:
     resolution: {integrity: sha512-wXR/dYpcqKmfWpEdZjiKJOwCNFndD0DMnrW/cYjVGttEkBfVgcLFHoNrlj47mjOVic9yyNu65alsgF4NQyTa2g==}
@@ -3323,8 +3317,6 @@ snapshots:
       b4a: 1.8.1
     transitivePeerDependencies:
       - react-native-b4a
-
-  three@0.185.1: {}
 
   tinyglobby@0.2.17:
     dependencies:

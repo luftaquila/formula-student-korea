@@ -1,6 +1,5 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted, nextTick, watch, inject } from "vue";
-import { useRouter } from "vue-router";
 import L from "leaflet";
 import { request } from "../api.js";
 import { createCourseBaseMap, courseCenterlineLayer } from "../lib/course-map.mjs";
@@ -63,7 +62,6 @@ import { haversine, formatCoord, formatLatLng, formatAlt } from "@lib/geo.mjs";
 import { resolveCourseRoute, ROUTE_MODE } from "@lib/route-mode.mjs";
 import { buildSideRanks } from "@lib/cone-index.mjs";
 import { permissionComputed } from "@shared/browser/officialsStore.js";
-import { useWhepStream } from "../composables/useWhepStream.js";
 import { useMeasureTools } from "../composables/useMeasureTools.js";
 import { useCourseImportExport } from "../composables/useCourseImportExport.js";
 import { useCourseSnapshots } from "../composables/useCourseSnapshots.js";
@@ -239,9 +237,6 @@ const roverStatus = ref({
   battery: null,
   ntrip: null,
   gps: null,
-  obstacle: { active: false, at: 0, nearest_m: null },
-  stereo_calibration: { status: "idle" },
-  ground_calibration: { status: "idle" },
   // GPS-receiver (fsk-rover-gps) sub-state — connected/mode/last_position/base.
   // Populated from the server's rover:status broadcast.
   receiver: null,
@@ -2692,153 +2687,9 @@ function closeCalibration() {
   }
 }
 
-// Print the stereo-calibration checkerboard. Geometry MUST match the command
-// shown in the modal: 9×6 inner corners = 10×7 squares, 25 mm. Squares are
-// foreground SVG <rect> fills (print regardless of the dialog's "Background
-// graphics" toggle) sized in mm via the viewBox, so they come out at true
-// scale when printed at 100%. Rendered in a hidden iframe (its own @page A4
-// landscape) so it doesn't disturb the app and isn't blocked like window.open.
-function printCheckerboard() {
-  const COLS = 10, ROWS = 7, SQ = 25;          // squares; 25 mm each
-  const W = COLS * SQ, H = ROWS * SQ;          // 250 × 175 mm
-  let rects = `<rect width="${W}" height="${H}" fill="#fff"/>`;
-  for (let r = 0; r < ROWS; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if ((r + c) % 2 === 0) {
-        rects += `<rect x="${c * SQ}" y="${r * SQ}" width="${SQ}" height="${SQ}" `
-               + `fill="#000" shape-rendering="crispEdges"/>`;
-      }
-    }
-  }
-  const board = `<svg class="board" viewBox="0 0 ${W} ${H}" width="${W}mm" height="${H}mm" `
-    + `xmlns="http://www.w3.org/2000/svg">${rects}</svg>`;
-  // Verification bar: line + ticks on top, label well below — one SVG, so the
-  // label can't overlap the line.
-  const ruler = `<svg class="ruler" viewBox="0 0 100 9" width="100mm" height="9mm" `
-    + `xmlns="http://www.w3.org/2000/svg">`
-    + `<line x1="0" y1="2.5" x2="100" y2="2.5" stroke="#000" stroke-width="0.4" shape-rendering="crispEdges"/>`
-    + `<line x1="0" y1="0.5" x2="0" y2="4.5" stroke="#000" stroke-width="0.4"/>`
-    + `<line x1="50" y1="1.2" x2="50" y2="3.8" stroke="#000" stroke-width="0.4"/>`
-    + `<line x1="100" y1="0.5" x2="100" y2="4.5" stroke="#000" stroke-width="0.4"/>`
-    + `<text x="50" y="8" text-anchor="middle" font-family="monospace" font-size="3" fill="#000">100 mm</text>`
-    + `</svg>`;
-  const html = `<!doctype html><html><head><meta charset="utf-8"><title>checkerboard</title>`
-    + `<style>`
-    + `@page { size: A4 landscape; margin: 0; }`
-    + `html,body { margin:0; background:#fff; }`
-    + `.sheet { display:flex; flex-direction:column; align-items:center; padding-top:10mm; }`
-    + `.ruler { margin-top:6mm; }`
-    + `svg { display:block; print-color-adjust:exact; -webkit-print-color-adjust:exact; }`
-    + `</style></head><body><div class="sheet">${board}${ruler}</div></body></html>`;
-
-  const iframe = document.createElement("iframe");
-  iframe.setAttribute("aria-hidden", "true");
-  iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;";
-  iframe.onload = () => {
-    const cleanup = () => iframe.remove();
-    try {
-      iframe.contentWindow.onafterprint = cleanup;
-      iframe.contentWindow.focus();
-      iframe.contentWindow.print();
-    } catch { /* ignore */ }
-    // Fallback only — remove well after any print dialog, never mid-preview.
-    setTimeout(cleanup, 60000);
-  };
-  iframe.srcdoc = html;
-  document.body.appendChild(iframe);
-}
-
-// Stereo calibration is triggered here and runs on the rover (perception owns
-// the cameras). Progress/result arrive via roverStatus.stereo_calibration.
-const stereoSquareMm = ref("25");
-const stereoSquareValid = computed(() => {
-  const v = parseFloat(stereoSquareMm.value);
-  return Number.isFinite(v) && v >= 5 && v <= 200;
-});
-const stereoCal = computed(() => roverStatus.value.stereo_calibration || { status: "idle" });
-
-async function startStereoCalibration() {
-  if (!stereoSquareValid.value) {
-    notifyWarn("한 칸 길이를 5~200 mm 범위로 입력하세요.");
-    return;
-  }
-  const square_m = parseFloat(stereoSquareMm.value) / 1000;
-  // Open the live view so the operator can aim the board while it collects.
-  startCamera();
-  try {
-    await request("/api/rover/calibrate-stereo", {
-      method: "POST",
-      body: JSON.stringify({ square_m }),
-    });
-  } catch (err) {
-    notifyError(`교정 시작 실패: ${err.message}`);
-  }
-}
-
-// Ground calibration fits the above-ground detector's per-row ground-depth curve
-// on flat empty ground. Needs a stereo calibration first (metric depth). Runs on
-// the rover; progress/result arrive via roverStatus.ground_calibration.
-const groundCal = computed(() => roverStatus.value.ground_calibration || { status: "idle" });
-
-// The calibration modal is tabbed (antenna / wheel / stereo / ground) so it no
-// longer scrolls as one long stack; this tracks the visible tab.
+// The calibration modal is tabbed (antenna / wheel) so it no longer scrolls
+// as one long stack; this tracks the visible tab.
 const calTab = ref("antenna");
-
-async function startGroundCalibration() {
-  // Live view so the operator can confirm the corridor is clean flat ground (an
-  // obstacle in view would corrupt the curve).
-  startCamera();
-  try {
-    await request("/api/rover/calibrate-ground", {
-      method: "POST",
-      body: JSON.stringify({ frames: 30 }),
-    });
-  } catch (err) {
-    notifyError(`지면 교정 시작 실패: ${err.message}`);
-  }
-}
-
-// Proximity (obstacle) detection operator on/off — toggle in the ground
-// tab. Server-stored (roverState.obstacle_detection_enabled), so it rides the
-// rover:status broadcast; the ref below is synced from it and flipped
-// optimistically like toggleDepth, reverting if the server call fails. Default
-// OFF (opt-in per mission) — reconciled to the server's truth on first status.
-const obstacleDetectOn = ref(false);
-// The operator's in-flight intent (true/false) while a toggle POST is pending,
-// else null. rover:status broadcasts arrive at GPS rate and also carry
-// obstacle_detection_enabled, so without this guard an in-flight status frame
-// (still carrying the pre-toggle value) would snap the checkbox back mid-toggle.
-let detectTogglePending = null;
-async function setObstacleDetection(on) {
-  const prev = obstacleDetectOn.value;
-  detectTogglePending = on;
-  obstacleDetectOn.value = on;               // optimistic
-  try {
-    await request("/api/rover/camera/detection", {
-      method: "POST",
-      body: JSON.stringify({ on }),
-    });
-  } catch (err) {
-    obstacleDetectOn.value = prev;
-    if (detectTogglePending === on) detectTogglePending = null;
-    notifyError(`근접 감지 설정 실패: ${err.message}`);
-  }
-}
-// Apply the server's detection state from a rover:status/status snapshot. While a
-// toggle is pending, ignore a stale frame that still carries the old value; clear
-// the guard once the server confirms the intended value (so a later real change
-// from another operator still syncs).
-function syncObstacleDetect(data) {
-  if (data.obstacle_detection_enabled === undefined) return;
-  const v = data.obstacle_detection_enabled !== false;
-  if (detectTogglePending === null) {
-    obstacleDetectOn.value = v;
-  } else if (v === detectTogglePending) {
-    obstacleDetectOn.value = v;
-    detectTogglePending = null;
-  }
-  // else: stale pre-toggle frame → ignore until the server catches up.
-}
 
 async function submitAntennaCal() {
   if (!antennaCalCanStart.value) return;
@@ -4715,18 +4566,6 @@ async function resumeMission() {
   openPreflight("resume");
 }
 
-// Perception flagged a driving-corridor obstacle. The rover ALREADY paused
-// itself locally over ROS (this is just the operator-facing half): jump to the
-// rover tab and auto-open the camera so the operator can see what's blocking,
-// then drive manually around it and resume. The persistent banner is driven by
-// roverStatus.obstacle.active (server-side, so a late-joining tab still sees it).
-function onObstacle(data) {
-  const dist = typeof data?.nearest_m === "number" ? ` (~${data.nearest_m.toFixed(1)} m)` : "";
-  notifyWarn(`주행 경로 장애물 감지${dist} — 미션 자동 일시정지. 카메라로 확인 후 수동으로 비켜 운전하고 재개하세요.`);
-  if (activeTab.value !== "rover") activeTab.value = "rover";
-  startCamera();
-}
-
 /* ── Manual control ───────────────────────────────── */
 function startManualControl() {
   if (manualAuthorityReleaseBusy.value) return;
@@ -4832,153 +4671,6 @@ async function sendControl() {
   }
 }
 
-/* ── Live camera (MJPEG) ──────────────────────────────
-   The <img> points at the server's multipart relay. Mounting it opens the
-   stream (server tells the rover to start capturing); unmounting closes it
-   (rover stops). cameraReqId cache-busts so re-opening starts a fresh stream. */
-const cameraOn = ref(false);
-const cameraError = ref(false);
-const cameraReqId = ref(0);
-// WebRTC is the PRIMARY 2D source (H.264, ~5-10× less uplink than MJPEG). We go
-// straight to it — no MJPEG-first hop. The MJPEG <img> is a pure fallback, opened
-// ONLY if WebRTC can't establish within a grace window or drops mid-session (e.g.
-// a restrictive network with no viable ICE path). `mjpegFallback` gates that.
-const mjpegFallback = ref(false);
-let webrtcFallbackTimer = null;
-const WEBRTC_FALLBACK_MS = 8000;   // WebRTC connect grace before falling back to MJPEG
-// Low-latency WebRTC (rover-2d mono/composite). Preferred when connected; the
-// MJPEG <img> stays as the fallback. The depth composite still works (the rover
-// renders it into this stream too, same as MJPEG).
-const cameraVideoEl = ref(null);
-const cameraImgEl = ref(null);   // MJPEG fallback — needs an explicit src-clear to abort
-const webrtc = useWhepStream();
-// Top-level ref so the template/watch auto-unwrap it. `connected` (track
-// negotiated, stable — no videoWidth blips) drives the MJPEG fallback and the
-// "no signal" notice, so both settle the instant the WebRTC track arrives/dies.
-const webrtcConnected = webrtc.connected;
-// Both-eyes depth composite toggle (rendered on the rover). Only meaningful while
-// the camera is on; the server resets it when the last viewer leaves. Kept in
-// sync with the server's reported state via pollCameraStatus (s.depth).
-const cameraDepthOn = ref(false);
-let cameraStatusPoll = null;
-let cameraLastOkAt = 0;            // last poll that saw fresh frames (ms)
-// 1×1 transparent GIF. Assigning this as the <img> src replaces (and thus aborts)
-// the in-flight MJPEG multipart load — a reliable teardown Chrome does NOT do when
-// the element is merely removed from the DOM.
-const BLANK_IMG = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
-const cameraStreamUrl = computed(() => {
-  // Open the MJPEG <img> ONLY as a fallback: WebRTC not negotiated AND the grace
-  // window elapsed / it dropped (mjpegFallback). Once WebRTC is `connected`, the
-  // fallback drops (→ mjpeg-off, rover stops JPEG) so a normal 2D session pays only
-  // the low-bandwidth H.264 and never the MJPEG-first hop.
-  if (!cameraOn.value || webrtc.connected.value || !mjpegFallback.value) return "";
-  const base = import.meta.env.PROD ? "/course" : "";
-  // cameraReqId is the cache-bust AND the reconnect lever: bumping it makes the
-  // <img> re-request a fresh stream (multipart/x-mixed-replace does NOT
-  // auto-reconnect after a server restart / dropped socket).
-  return `${base}/api/rover/camera/stream?t=${cameraReqId.value}`;
-});
-// Text shown over the (black) video box while nothing is rendering yet. Hidden once
-// WebRTC is PLAYING or the MJPEG fallback is visible; surfaces "연결 중…" during the
-// normal WebRTC negotiate/decode window and "카메라 신호 없음" when everything is dead.
-const cameraOverlayText = computed(() => {
-  if (!cameraOn.value || webrtc.playing.value) return "";
-  if (cameraError.value) return "카메라 신호 없음";
-  if (cameraStreamUrl.value) return "";   // MJPEG fallback is on-screen
-  return "연결 중…";
-});
-// The MJPEG <img> only fires `error` if the HTTP connection breaks — when it
-// stays open but no frames arrive (no camera / server restarted and the <img>
-// is now a dead socket) the box just sits black. Poll the status endpoint
-// (server-computed frame age, clock-skew-proof) to surface "신호 없음" AND to
-// self-heal a dead <img> by re-requesting the stream.
-async function pollCameraStatus() {
-  if (!cameraOn.value) return;
-  try {
-    const res = await request("/api/rover/camera/status", { method: "GET" });
-    const s = await res.json();
-    // Reflect the server's authoritative depth-mode state (it resets to off when
-    // the last viewer leaves, and a mid-session perception reconnect restores it).
-    cameraDepthOn.value = !!s.depth;
-    if (webrtc.connected.value) {
-      // WebRTC track negotiated — the MJPEG frame-age (stale by design once mjpeg
-      // is off) says nothing about health. Use `connected` (stable), not `playing`
-      // (videoWidth, which blips to 0 on a resolution change) so a momentary blip
-      // can't surface a phantom "카메라 신호 없음" behind the live video.
-      cameraError.value = false;
-      cameraLastOkAt = Date.now();
-    } else if (mjpegFallback.value) {
-      // MJPEG fallback is the active source — now its frame-age reflects health.
-      const healthy = s.camera_connected
-        && s.last_frame_age_ms != null && s.last_frame_age_ms < 3000;
-      cameraError.value = !healthy;
-      if (healthy) {
-        cameraLastOkAt = Date.now();
-      } else if (s.camera_connected && s.viewers === 0 && Date.now() - cameraLastOkAt > 5000) {
-        // Rover connected but server has ZERO viewers — our <img> socket died
-        // server-side (restart / proxy drop). Re-request to re-register + resume.
-        cameraReqId.value = Date.now();
-        cameraLastOkAt = Date.now();
-      }
-    } else {
-      // WebRTC still negotiating (no fallback yet) — a stale MJPEG age is expected
-      // (mjpeg is off), not a fault. Stay in the "연결 중…" state, not "신호 없음".
-      cameraError.value = false;
-    }
-  } catch { /* keep last known state */ }
-}
-function stopCameraStream() {
-  // Abort the MJPEG <img> BEFORE v-if unmounts it: Chrome does NOT cancel an
-  // in-flight multipart/x-mixed-replace load when the element is merely removed
-  // from the DOM, so a stop during the pre-WebRTC MJPEG phase would otherwise leak
-  // the socket (rover keeps sending JPEG) — and each reopen stacks another one.
-  // Swapping src to a blank data URI is a load the browser DOES abort the prior one for.
-  if (cameraImgEl.value) cameraImgEl.value.src = BLANK_IMG;
-  cameraOn.value = false;
-  cameraError.value = false;
-  mjpegFallback.value = false;
-  if (webrtcFallbackTimer) { clearTimeout(webrtcFallbackTimer); webrtcFallbackTimer = null; }
-  cameraDepthOn.value = false;   // server drops the depth mode when the last viewer leaves
-  if (cameraStatusPoll) { clearInterval(cameraStatusPoll); cameraStatusPoll = null; }
-  webrtc.stop();
-}
-// Idempotent "ensure the stream is on" — used by the toggle and by the obstacle
-// auto-open, which must not toggle a manually-opened stream back off.
-function startCamera() {
-  if (cameraOn.value) return;
-  cameraOn.value = true;
-  cameraError.value = false;
-  mjpegFallback.value = false;   // go straight to WebRTC; no MJPEG-first hop
-  cameraReqId.value = Date.now();
-  cameraLastOkAt = Date.now();   // grace the cold-start window before reconnecting
-  pollCameraStatus();
-  cameraStatusPoll = setInterval(pollCameraStatus, 2000);
-  // Fall back to the MJPEG <img> only if WebRTC hasn't negotiated within the grace
-  // window (e.g. a network with no viable ICE path) — the operator must never be
-  // left blind. Cleared the instant WebRTC connects (watch below).
-  if (webrtcFallbackTimer) clearTimeout(webrtcFallbackTimer);
-  webrtcFallbackTimer = setTimeout(() => {
-    if (cameraOn.value && !webrtc.connected.value) mjpegFallback.value = true;
-  }, WEBRTC_FALLBACK_MS);
-  // WebRTC (rover-2d) primary + gating hold. nextTick so the <video> ref exists
-  // (the panel is v-if="cameraOn").
-  const base = import.meta.env.PROD ? "/course" : "";
-  nextTick(() => {
-    webrtc.start(cameraVideoEl.value,
-      `${base}/api/rtc/rover-2d/whep`,
-      `${base}/api/rover/camera/hold?mode=2d`);
-  });
-}
-// WebRTC connect state drives the MJPEG fallback: connected → drop it (WebRTC is
-// the source); a mid-session DROP (was connected, now terminal failed/closed) →
-// re-raise it so the operator keeps a picture while WebRTC retries in the background.
-watch(webrtcConnected, (isConnected, was) => {
-  if (isConnected) mjpegFallback.value = false;
-  else if (was && cameraOn.value) mjpegFallback.value = true;
-});
-const router = useRouter();
-function goVr() { router.push("/vr"); }
-
 // Fullscreen toggle (status-strip button). The only way a normal tab can hide
 // the mobile browser chrome; hidden entirely where the API is absent (iOS
 // Safari has no Fullscreen API for non-video elements). isFullscreen tracks the
@@ -4995,48 +4687,6 @@ async function toggleFullscreen() {
     notifyWarn(`전체화면 전환 실패: ${e?.message || e}`);
   }
 }
-// Single camera button cycles three modes so there's no separate 거리 오버레이
-// button: off → plain 2D → depth overlay → off. Each mode has a distinct fill
-// (off = ghost, 2D = blue btn-primary, depth = violet) so switching to the
-// depth map gives feedback (the video plain-vs-heatmap corroborates it).
-function cycleCamera() {
-  if (!cameraOn.value) { startCamera(); return; }        // off → plain 2D
-  if (!cameraDepthOn.value) { toggleDepth(); return; }   // 2D → depth overlay
-  stopCameraStream();                                     // depth → off
-}
-// Toggle the both-eyes depth composite (rectified left + depth heatmap + nearest
-// distance). The rover renders it; this just flips the stream mode. Optimistic UI
-// update, corrected by the next status poll. No-op on the pixels if the rover has
-// no stereo calibration loaded (it falls back to the plain stream).
-async function toggleDepth() {
-  const next = !cameraDepthOn.value;
-  // Flip optimistically so the button colour changes the instant it's pressed
-  // (the request + rover re-render take a beat); revert if the server rejects.
-  // The next status poll reconciles with the rover's authoritative state.
-  cameraDepthOn.value = next;
-  try {
-    await request("/api/rover/camera/depth", {
-      method: "POST",
-      body: JSON.stringify({ on: next }),
-    });
-  } catch (e) {
-    cameraDepthOn.value = !next;
-    notifyWarn(`깊이 뷰 전환 실패: ${e?.message || e}`);
-  }
-}
-function onCameraError() {
-  cameraError.value = true;
-}
-// NOTE: camera health is judged solely by pollCameraStatus (the camera relay's own
-// status) — NOT by the mission SSE's rover.connected. Those are independent channels:
-// a transient mission-SSE blip used to eagerly paint the opaque "카메라 신호 없음"
-// over a perfectly healthy live feed until the next 2s poll cleared it. pollCameraStatus
-// (WebRTC connected → clear; MJPEG fallback → frame-age) already covers a real outage.
-// The rover panel is v-show (stays mounted), so leaving the tab would keep the
-// MJPEG <img> connected and the rover capturing invisibly. Stop on tab-leave.
-watch(activeTab, (tab) => {
-  if (tab !== "rover" && cameraOn.value) stopCameraStream();
-});
 
 async function togglePump() {
   if (pumpBusy.value) return;
@@ -5212,10 +4862,6 @@ function connectSSE() {
     if (missionStatus.hasActiveMissionSummary) {
       applyActiveMissionSummary(missionStatus.activeMissionSummary);
     }
-    // Keep the proximity-detection toggle in sync with the server's stored truth
-    // (covers another operator flipping it, or the initial snapshot), guarded
-    // against a stale frame snapping the checkbox back mid-toggle.
-    syncObstacleDetect(data);
     syncAppRoverStatus(data);
     // Draw BOTH device markers (rover + receiver) from the snapshot.
     syncDeviceMarkers(roverStatus.value);
@@ -5303,11 +4949,6 @@ function connectSSE() {
     })) return;
     if (!Number.isInteger(data?.waypoint) || !data.outcome) return;
     onSprayResult(data.waypoint, data.outcome);
-  });
-
-  eventSource.addEventListener("rover:obstacle", (e) => {
-    const data = parseSSE(e);
-    if (data) onObstacle(data);
   });
 
   // Base-station survey outcome — surface success/failure to the operator (a
@@ -5474,7 +5115,6 @@ async function fetchRoverStatus() {
     const data = await res.json();
     const missionStatus = splitMissionStatusPayload(data);
     roverStatus.value = { ...roverStatus.value, ...missionStatus.status };
-    syncObstacleDetect(missionStatus.status);
     syncAppRoverStatus(missionStatus.status);
     // Draw both device markers from the cached server-side snapshot on first
     // load — without this the map only shows them after the next live SSE frame.
@@ -5682,12 +5322,6 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  // Route navigation (e.g. the VR button → /vr) unmounts this view. Without this,
-  // the camera's WebRTC hold SSE + retry intervals + peer connection leak and the
-  // rover keeps encoding rover-2d with nobody watching (each open→leave→return
-  // stacks another orphan toward MAX_CAMERA_VIEWERS). watch(activeTab) only covers
-  // in-page tab switches, not route changes.
-  if (cameraOn.value) stopCameraStream();
   stopReplay();
   // MapView is the sole writer of the App-owned sseReconnecting ref; clear it
   // so the "reconnecting" badge can't stick on after this view tears down.
@@ -5700,7 +5334,6 @@ onUnmounted(() => {
   if (uiTickInterval) clearInterval(uiTickInterval);
   cancelMissionEndReconcile();
   if (controlInterval) clearInterval(controlInterval);
-  if (cameraStatusPoll) clearInterval(cameraStatusPoll);
   if (calStatusPollHandle) clearInterval(calStatusPollHandle);
   if (ledBrightnessTimer) clearTimeout(ledBrightnessTimer);
   if (pumpDurationTimer) clearTimeout(pumpDurationTimer);
@@ -5789,12 +5422,6 @@ onUnmounted(() => {
             </button>
             <button class="cal-tab" :class="{ active: calTab === 'wheel' }" @click="calTab = 'wheel'">
               휠<span v-if="wheelCalRunning" class="cal-tab-dot" title="진행 중"></span>
-            </button>
-            <button class="cal-tab" :class="{ active: calTab === 'stereo' }" @click="calTab = 'stereo'">
-              스테레오<span v-if="stereoCal.status === 'running'" class="cal-tab-dot" title="진행 중"></span>
-            </button>
-            <button class="cal-tab" :class="{ active: calTab === 'ground' }" @click="calTab = 'ground'">
-              지면<span v-if="groundCal.status === 'running'" class="cal-tab-dot" title="진행 중"></span>
             </button>
           </div>
 
@@ -5895,83 +5522,6 @@ onUnmounted(() => {
                 :disabled="wheelCalSubmitting || wheelCalRunning || !wheelCalCanStart"
                 @click="submitWheelCal"
               >{{ wheelCalSubmitting ? '전송 중...' : (wheelCalRunning ? '진행 중' : (wheelCalCanStart ? '시작' : wheelCalBtnLabel)) }}</button>
-            </div>
-          </section>
-
-          <section class="cal-section" v-show="calTab === 'stereo'">
-            <div class="cal-section-title">스테레오 카메라 교정</div>
-            <div class="cal-when">재실행 조건: 카메라를 다시 달거나 부딪혀 두 눈 위치가 틀어졌을 때</div>
-            <div class="cal-when">절차:</div>
-            <ol class="cal-steps">
-              <li>체커보드를 <b>A4 Landscape, 100% scale</b>로 인쇄.</li>
-              <li><b>100 mm 바</b> 길이를 자로 확인. 불일치 시 한 칸 길이를 아래에 입력.</li>
-              <li>휘지 않도록 단단하게 고정 후 <b>교정 실행</b>. 보드를 양쪽 카메라에 다양한 거리·각도로 비춤.</li>
-            </ol>
-            <label class="cal-manual-field cal-square-field">
-              <span>한 칸 길이 (mm)</span>
-              <input
-                type="number" step="0.1" min="5" max="200" inputmode="decimal"
-                v-model="stereoSquareMm" placeholder="25"
-              />
-            </label>
-            <div v-if="stereoCal.status === 'running'" class="modal-status">
-              교정 중… {{ stereoCal.captured != null
-                ? `수집 ${stereoCal.captured}${stereoCal.target ? ' / ' + stereoCal.target : ''} 쌍`
-                : '카메라 준비 중' }} — 보드를 양쪽 카메라에 다양한 각도로 비추세요.
-            </div>
-            <div v-else-if="stereoCal.status === 'done'" class="modal-status">
-              교정 완료 — RMS {{ stereoCal.rms ?? '—' }} px · baseline {{ stereoCal.baseline_mm ?? '—' }} mm · {{ stereoCal.pairs ?? '—' }}쌍
-            </div>
-            <div v-else-if="stereoCal.status === 'failed'" class="cal-error">
-              교정 실패: {{ stereoCal.error || '알 수 없는 오류' }}
-            </div>
-            <div class="cal-section-actions">
-              <button class="btn btn-ghost btn-sm" @click="printCheckerboard">
-                체커보드 인쇄
-              </button>
-              <button
-                class="btn btn-primary btn-sm"
-                :disabled="!roverStatus.connected || stereoCal.status === 'running' || !stereoSquareValid"
-                @click="startStereoCalibration"
-              >{{ stereoCal.status === 'running' ? '교정 중…' : '교정' }}</button>
-            </div>
-          </section>
-
-          <section class="cal-section" v-show="calTab === 'ground'">
-            <div class="cal-section-title">지면 교정 (장애물 감지 기준면)</div>
-            <label class="cal-toggle-field">
-              <span>근접 충돌 감지</span>
-              <input
-                type="checkbox"
-                :checked="obstacleDetectOn"
-                @change="setObstacleDetection($event.target.checked)"
-              />
-            </label>
-            <div class="cal-when">끄면 주행 중 스테레오 근접 장애물 감지와 자동 일시정지가 비활성화됩니다. (env <code>OBSTACLE_DETECTION=false</code>로 완전히 꺼둔 경우 여기서 켤 수 없습니다.)</div>
-            <div class="cal-when">재실행 조건: 카메라 높이·각도 변경 후 · 스테레오 재교정 후 · 새 노면 첫 주행</div>
-            <div class="cal-when">절차:</div>
-            <ol class="cal-steps">
-              <li><b>스테레오 카메라 교정</b>이 먼저 완료돼 있어야 합니다 (미터 깊이 필요).</li>
-              <li>로버를 <b>평평하고 빈 주행 노면</b>에 주행 자세로 두기 — 앞에 장애물·사람이 없어야 합니다.</li>
-              <li><b>지면 교정</b> 실행 — 카메라가 보는 노면의 행별 기대 깊이를 학습해, 그보다 가까운(솟은) 것만 장애물로 판정합니다.</li>
-            </ol>
-            <div v-if="groundCal.status === 'running'" class="modal-status">
-              지면 교정 중… {{ groundCal.captured != null
-                ? `수집 ${groundCal.captured}${groundCal.target ? ' / ' + groundCal.target : ''} 프레임`
-                : '카메라 준비 중' }} — 장애물 없는 빈 노면을 비추세요.
-            </div>
-            <div v-else-if="groundCal.status === 'done'" class="modal-status">
-              지면 교정 완료 — 근거리 {{ groundCal.near_m ?? '—' }} m · 원거리 {{ groundCal.far_m ?? '—' }} m · {{ groundCal.rows ?? '—' }}행
-            </div>
-            <div v-else-if="groundCal.status === 'failed'" class="cal-error">
-              지면 교정 실패: {{ groundCal.error || '알 수 없는 오류' }}
-            </div>
-            <div class="cal-section-actions">
-              <button
-                class="btn btn-primary btn-sm"
-                :disabled="!roverStatus.connected || groundCal.status === 'running'"
-                @click="startGroundCalibration"
-              >{{ groundCal.status === 'running' ? '교정 중…' : '지면 교정' }}</button>
             </div>
           </section>
         </div>
@@ -6681,31 +6231,20 @@ onUnmounted(() => {
                 </div>
                 <template v-else>
                   <!-- All always-on rover controls share ONE grid so they lay
-                       out 3 per row. The 카메라 button cycles off → 2D → depth
-                       overlay → off (blue = 2D, violet = depth); VR opens the
-                       headset teleop view (enabled even while offline). -->
+                       out 2 per row (2×2). -->
                   <div class="rover-controls rover-controls-grid">
-                    <!-- Row 1: 로버 추적 · 카메라 · 수동 제어 -->
+                    <!-- Row 1: 로버 추적 · 수동 제어 -->
                     <button
                       :class="['btn', 'btn-lg-touch', followRover ? 'btn-primary' : 'btn-ghost']"
                       :disabled="!roverStatus.connected"
                       @click="toggleFollowRover"
                     >로버 추적</button>
                     <button
-                      :class="['btn', 'btn-lg-touch', !cameraOn ? 'btn-ghost' : (cameraDepthOn ? 'camera-btn-depth' : 'btn-primary')]"
-                      :disabled="!roverStatus.connected"
-                      @click="cycleCamera"
-                    >카메라</button>
-                    <button
                       :class="['btn', 'btn-lg-touch', roverMode === 'manual' ? 'btn-primary' : 'btn-ghost']"
                       :disabled="manualAuthorityReleaseBusy || (roverMode !== 'manual' && (!roverStatus.connected || (activeMission && !missionHeld) || roverStatus.nav_state === 'EMERGENCY_STOP'))"
                       @click="roverMode === 'manual' ? stopManualControl() : startManualControl()"
                     >{{ manualAuthorityReleaseBusy ? '서버 제어 전환 중…' : '수동 제어' }}</button>
-                    <!-- Row 2: VR · 보정 · 경로 계산 -->
-                    <button
-                      class="btn btn-lg-touch btn-ghost"
-                      @click="goVr"
-                    >VR</button>
+                    <!-- Row 2: 보정 · 경로 계산 -->
                     <button
                       class="btn btn-lg-touch btn-ghost"
                       :disabled="!roverStatus.connected"
@@ -6716,17 +6255,6 @@ onUnmounted(() => {
                       @click="onPathBtn"
                       :disabled="pathButtonDisabled"
                     >{{ pathBtnLabel }}</button>
-                  </div>
-
-                  <!-- Obstacle alert — the rover auto-paused on a corridor
-                       obstacle. Persistent (driven by server state) so a tab
-                       opened after the event still sees it; clears on resume. -->
-                  <div v-if="roverStatus.obstacle && roverStatus.obstacle.active" class="obstacle-alert">
-                    <div class="obstacle-alert-title">
-                      ⚠ 주행 경로 장애물 — 미션 자동 일시정지됨<span
-                        v-if="roverStatus.obstacle.nearest_m != null"> (약 {{ roverStatus.obstacle.nearest_m.toFixed(1) }} m 앞)</span>
-                    </div>
-                    <div class="obstacle-alert-hint">카메라로 확인 후 수동 제어로 비켜 운전하고 재개하세요.</div>
                   </div>
 
                   <!-- Soft pause / resume — shown while a mission is in progress.
@@ -6745,21 +6273,6 @@ onUnmounted(() => {
                       :disabled="pauseBusy || !roverStatus.connected || !PAUSABLE_NAV.has(roverStatus.nav_state)"
                       @click="pauseMission"
                     >⏸ 일시정지</button>
-                  </div>
-                  <div v-if="cameraOn" class="camera-view">
-                    <!-- WebRTC (low-latency H.264) is the PRIMARY source — we connect
-                         straight to it ("연결 중…" over black during the brief
-                         negotiate/decode). The MJPEG <img> only appears as a fallback
-                         (mjpegFallback) if WebRTC can't establish or drops. The video
-                         is always rendered so it decodes (a display:none video may
-                         never reach playing). -->
-                    <video ref="cameraVideoEl" autoplay muted playsinline></video>
-                    <!-- The <img> stays MOUNTED; when WebRTC is playing we swap its
-                         src to a 1×1 blank so Chrome ABORTS the multipart/x-mixed-replace
-                         request (removing the element via v-if leaves that sticky
-                         connection open → the rover keeps sending JPEG = wasted uplink). -->
-                    <img ref="cameraImgEl" v-show="cameraStreamUrl" :src="cameraStreamUrl || BLANK_IMG" class="camera-fallback" alt="rover camera" @error="onCameraError" />
-                    <div v-if="cameraOverlayText" class="camera-error">{{ cameraOverlayText }}</div>
                   </div>
 
                   <div v-if="pathDistance > 0" class="path-info">
@@ -7240,19 +6753,8 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
-/* Stereo-calibration section: terse method steps + the shell command. */
-.cal-steps {
-  margin: 0.25rem 0 0.6rem;
-  padding-left: 1.2rem;
-  font-size: 0.82rem;
-  line-height: 1.5;
-  color: var(--text-primary);
-}
-.cal-steps li { margin: 0.2rem 0; }
-.cal-square-field { max-width: 12rem; margin: 0.3rem 0 0.6rem; }
-
-/* Tabbed calibration modal: one row of tabs switches between antenna / wheel /
-   stereo / ground so the modal no longer scrolls as one long stack. */
+/* Tabbed calibration modal: one row of tabs switches between antenna / wheel
+   so the modal no longer scrolls as one long stack. */
 .cal-tabs {
   display: flex;
   gap: 0.15rem;
@@ -7369,19 +6871,6 @@ onUnmounted(() => {
   border: 1px solid var(--border-color);
   background: var(--bg-primary); color: var(--text-primary);
   width: 100%; box-sizing: border-box;
-}
-/* Proximity-detection on/off row: label left, checkbox right (horizontal,
-   unlike .cal-manual-field's stacked number inputs). */
-.cal-toggle-field {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 0.75rem;
-  margin: 0.1rem 0 0.4rem;
-  font-size: 0.9rem; font-weight: 600;
-  color: var(--text-primary);
-  cursor: pointer;
-}
-.cal-toggle-field input {
-  width: 1.15rem; height: 1.15rem; flex: 0 0 auto; cursor: pointer;
 }
 .cal-section-title {
   font-size: 0.95rem; font-weight: 600;
@@ -7958,65 +7447,12 @@ onUnmounted(() => {
 
 /* Rover controls */
 .rover-controls { display: flex; flex-wrap: wrap; gap: 0.5rem; }
-.obstacle-alert {
-  margin: 0.5rem 0;
-  padding: 0.6rem 0.75rem;
-  border: 2px solid #ef4444;
-  border-radius: 6px;
-  background: color-mix(in srgb, #ef4444 14%, var(--bg-secondary));
-  color: var(--text-primary);
-}
-.obstacle-alert-title { font-weight: 700; font-size: 0.9rem; }
-.obstacle-alert-hint { margin-top: 0.25rem; font-size: 0.82rem; color: var(--text-secondary); }
-.camera-view {
-  margin-top: 0.5rem;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  overflow: hidden;
-  background: #000;
-  min-height: 80px;
-  position: relative;
-}
-/* Video always fills a 16:9 box (sized even with no frames yet, so the container
-   doesn't collapse); the MJPEG fallback overlays it until WebRTC is playing. */
-.camera-view video { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
-.camera-view img.camera-fallback { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-/* Overlay (absolute), NOT normal-flow: a normal-flow block would add its own
-   height to .camera-view, making the container taller than the video's 16:9 box —
-   the absolute MJPEG <img> (object-fit:contain) would then letterbox top/bottom
-   inside the taller box. Absolute inset:0 keeps the container at the video's
-   height, so no phantom bars whether or not this notice is shown. */
-.camera-error {
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #000;
-  color: var(--text-secondary);
-  font-size: 0.85rem;
-  text-align: center;
-}
 .rover-controls-grid {
-  /* minmax(0, 1fr) keeps all three columns equal even when a label is wide,
+  /* minmax(0, 1fr) keeps both columns equal even when a label is wide,
      instead of a long button stretching its column and breaking the row. */
-  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem;
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem;
 }
 .rover-controls-grid .btn { width: 100%; }
-
-/* Depth-map mode fill: a distinct violet so the camera button visibly changes
-   when cycling plain 2D (blue btn-primary) → depth overlay. */
-.camera-btn-depth {
-  background: #7c3aed;
-  color: #fff;
-  border-color: #7c3aed;
-}
-.camera-btn-depth:hover:not(:disabled) {
-  background: #8b5cf6;
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(124, 58, 237, 0.4);
-}
 
 .course-toolbar { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; }
 .course-toolbar .btn { flex: 1; min-width: 120px; }

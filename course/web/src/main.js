@@ -15,8 +15,6 @@ const routes = [
   { path: "/", component: () => import("./views/MapView.vue"), meta: { permission: "course.operate" } },
   { path: "/public", component: () => import("./views/PublicCourseView.vue"), meta: { public: true } },
   { path: "/missions", redirect: "/" },
-  // VR teleop (Meta Quest 3S, WebXR). Lazy so three.js stays out of the main bundle.
-  { path: "/vr", component: () => import("./views/VrView.vue"), meta: { permission: "rover.operate" } },
 ];
 
 const router = createRouter({
