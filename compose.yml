@@ -52,8 +52,8 @@ services:
       VWORLD_KEY: ${VWORLD_KEY:-}
       ROVER_MAX_WAYPOINT_DIST_M: ${ROVER_MAX_WAYPOINT_DIST_M:-}
       ROVER_MAX_SEGMENT_DIST_M: ${ROVER_MAX_SEGMENT_DIST_M:-}
-      # 로버 전용 시크릿(선택). 설정 시 로버/perception/GPS 장비가 INTERNAL_SECRET 대신 이 값으로
-      # 인증할 수 있어(course 로버 라우트 한정) 필드 장비의 유출 반경이 좁혀진다. course와 caddy에만
+      # 로버 전용 시크릿(선택). 설정 시 로버/GPS 장비가 INTERNAL_SECRET 대신 이 값으로
+      # 인증할 수 있어(course 로버 라우트 한정) 필드 장비의 유출 반경이 좁혀진다. course에만
       # 주입한다(common-env에 넣으면 전 서비스로 퍼져 스코핑이 무의미).
       ROVER_SECRET: ${ROVER_SECRET:-}
     volumes:
@@ -220,7 +220,6 @@ services:
     environment:
       - DOMAIN_NAME=${DOMAIN_NAME}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
-      - ROVER_SECRET=${ROVER_SECRET:-}
       - TEST_SERVER=${TEST_SERVER:-}
     healthcheck:
       # caddy:alpine 이미지의 BusyBox wget으로 랜딩 페이지(:9000/)를 확인. 다른 서비스가
@@ -244,7 +243,6 @@ services:
       - local
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
-      - ROVER_SECRET=${ROVER_SECRET:-}
       - TEST_SERVER=${TEST_SERVER:-}
     ports:
       - "0.0.0.0:9000:9000"

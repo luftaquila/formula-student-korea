@@ -661,15 +661,11 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 | POST | `/api/rover/waypoint_reached` | internal | `{ index }` | 200 | 웨이포인트 도달 보고 (미션 진행 영속 + `rover:waypoint` 브로드캐스트) |
 | POST | `/api/rover/waypoint_skipped` | internal | `{ index }` | 200 | stuck 웨이포인트 건너뜀 보고 (`rover:skipped` 브로드캐스트) |
 | POST | `/api/rover/spray_result` | internal | `{ waypoint, outcome: success\|cancelled\|timeout }` | 200 | 도색 결과 보고 (미션에 영속 + `rover:spray` 브로드캐스트) |
-| POST | `/api/rover/obstacle` | internal | `{ ... }` | 200 | 장애물 감지 보고 (`rover:obstacle` 브로드캐스트) |
 | POST | `/api/rover/logs` | internal | `{ entries: [...] }` | 200 | 로버 로그 업로드 (서버 메모리 캐시, 최대 1000줄) |
 | POST | `/api/rover/antenna_calibration_result` | internal | `{ ... }` | 200 | 안테나 캘리브레이션 결과 보고 |
 | POST | `/api/rover/wheel_calibration_result` | internal | `{ ... }` | 200 | 휠 캘리브레이션 결과 보고 |
-| POST | `/api/rover/calibration-progress` | internal | `{ ... }` | 200 | 스테레오 캘리브레이션 진행률 보고 |
 | POST | `/api/rover/base/survey-result` | internal | `{ point_id, lat, lng, alt, h_acc, samples }` | 200 | 수신기(base station)가 측량 결과 보고 → survey_point 갱신 |
 | POST | `/api/rover/base/rtcm` | internal | `{ data: base64 }` | 200 | 수신기(base station)가 RTCM3 청크 전송 → 로버로 릴레이(SSE `rtcm`). 로버 미연결이면 드롭 |
-| POST | `/api/rover/camera` | internal | `image/jpeg` (≤3MB) | 200 | 카메라 프레임 push (서버가 뷰어에 MJPEG 릴레이). WebRTC가 기본 경로이므로 이건 **폴백** — MJPEG 뷰어가 있을 때만(`mjpeg-on`) 로버가 POST |
-| GET | `/api/rover/camera/control` | internal | — | SSE stream | perception 컨테이너의 카메라 제어 채널. 서버가 캡처/스트림 제어 이벤트를 전송: `camera-start`/`camera-stop`, `mjpeg-on`/`mjpeg-off`, `webrtc-2d-on`/`webrtc-2d-off`, `webrtc-vr-on`/`webrtc-vr-off`, `depth-on`/`depth-off`. 각 스트림은 해당 뷰어가 있을 때만 인코딩 |
 
 ### Rover — 운용 (관리자 → 서버 → 로버)
 
@@ -685,20 +681,12 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 | POST | `/api/rover/nav-lights` | `rover.operate` | `{ ... }` | 200 | 항법등 제어 |
 | POST | `/api/rover/led-brightness` | `rover.operate` | `{ ... }` | 200 | LED 밝기 제어 |
 | POST | `/api/rover/calibrate-battery` | `rover.operate` | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정. 로버가 영구 저장 |
-| POST | `/api/rover/calibrate-stereo` | `rover.operate` | — | 200 | 스테레오 카메라 캘리브레이션 시작 |
-| POST | `/api/rover/calibrate-ground` | `rover.operate` | `{ frames? }` (10~120, 기본 30) | `{ ok }` | 지면 교정 시작(above-ground 검출기 행별 기대 지면 깊이 곡선). 스테레오 교정 선행 필요, perception 미연결 시 503 |
 | POST | `/api/rover/calibrate-antenna` | `rover.operate` | — | 200 | GPS 안테나 오프셋 캘리브레이션 시작 |
 | POST | `/api/rover/set-antenna-offset` | `rover.operate` | `{ ... }` | 200 | 안테나 오프셋 수동 설정 |
 | POST | `/api/rover/calibrate-wheels` | `rover.operate` | — | 200 | 휠 캘리브레이션 시작 |
 | POST | `/api/rover/reset-wheel-cal` | `rover.operate` | — | 200 | 휠 캘리브레이션 초기화 |
 | GET | `/api/rover/logs` | `rover.operate` | — | `{ entries, uploaded_at }` | 업로드된 로버 로그 조회 |
 | POST | `/api/rover/logs/fetch` | `rover.operate` | — | 200 | 로버에 로그 업로드 요청 (SSE 이벤트) |
-| GET | `/api/rover/camera/stream` | `rover.operate` | — | MJPEG stream | 카메라 MJPEG 스트림 (최대 8 뷰어, ≤~25fps 릴레이). WebRTC(WHEP) 실패/드롭 시의 **폴백** — 뷰어가 붙으면 서버가 `mjpeg-on`을 로버에 전달 |
-| GET | `/api/rover/camera/hold` | `rover.operate` | `?mode=2d\|vr` | SSE stream | WebRTC **게이팅 전용** 뷰어. MJPEG 프레임은 안 받고, 로버가 캡처 + 해당 WebRTC 스트림(`mode=2d`→`rover-2d`, `mode=vr`→`rover-vr`)을 publish하도록 유지. 2D 패널/VR 뷰가 세션 동안 열어둠 |
-| POST | `/api/rover/camera/depth` | `rover.operate` | `{ on }` | `{ ok, depth, camera_connected }` | 양안 깊이 컴포지트(정류 좌안 + 깊이 히트맵 + 최근접 거리, 로버가 렌더) 토글. 2D 뷰어(MJPEG `cameraViewers` **또는** WebRTC `holdViewers2d`)가 있어야 적용 — 뷰어 없으면 무시. 마지막 2D 뷰어 이탈 시 자동 해제 |
-| POST | `/api/rover/camera/detection` | `rover.operate` | `{ on }` | `{ ok, detection, camera_connected }` | 근접(장애물) 감지 토글. depth와 달리 뷰어 게이트 없이 NAVIGATING 중 항상 적용되는 미션 안전 설정. roverState에 저장(`rover:status` 반영)되고 perception 재연결마다 재전송. 로버 env `OBSTACLE_DETECTION`이 하드 킬스위치, 이건 운영자 소프트 on/off |
-| GET | `/api/rover/camera/status` | `rover.operate` | — | `{ camera_connected, viewers, depth, last_frame_age_ms }` | 카메라 릴레이 상태. `camera_connected`=perception 제어 SSE 연결됨, `viewers`=MJPEG 뷰어 수, `depth`=컴포지트 모드, `last_frame_age_ms`=서버 계산 프레임 경과(뷰어 없으면 null) |
-| GET | `/api/rover/map-tile` | `rover.operate` | `?z=&x=&y=` | image (jpeg/png) | VR 미니맵용 위성 타일 **동일 출처 프록시**. WebGL 캔버스가 교차 출처 타일로 오염되지 않도록 VWorld(서버측 `VWORLD_KEY`)·구글 타일을 서버가 대신 가져와 전달. z/x/y는 slippy-map(XYZ) 인덱스, 범위 밖이면 400 |
 
 미션 v2 로버가 연결됐거나 v2 활성 미션이 있으면 레거시 `/api/rover/execute`, `/pause`, `/resume`, `/end-mission`은 410을 반환한다. 새 운용 UI는 아래 Missions API만 사용한다.
 
@@ -718,24 +706,6 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 기기 방향 이벤트(서버 → 기기, 위 `/api/rover/stream`으로 전달): 수신기 `base-survey-start`/
 `base-survey-cancel`/`base-activate`/`base-stop`, 로버 `rtcm`(base64)·`ntrip-source`(`ngii\|base`).
-
-### Rover 카메라 — WebRTC 시그널링 (mediamtx, WHIP/WHEP)
-
-H.264 영상은 `mediamtx`가 WebRTC로 중계합니다. Caddy는 `/course/api/rtc/*`를 `mediamtx:8889`로 프록시합니다(`landing/Caddyfile`). SDP 시그널링은 HTTP, 미디어는 UDP/SRTP를 사용합니다. mediamtx는 permit-all인 ClusterIP 서비스이므로 Caddy가 시그널링 접근을 통제합니다. SRTP 키 수립에는 시그널링이 필요합니다:
-
-- **WHIP(로버 publish)**: caddy가 `X-Internal-Service` = `INTERNAL_SECRET`를 요구(없으면 403). 로버가 이 헤더를 실어 발행.
-- **WHEP(브라우저 play)**: caddy `forward_auth`로 **`rover.operate` 권한**을 요구한다(미인증은 401, 미승인은 403).
-
-mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없다 — 로컬 compose 스택에선 WebRTC가 동작하지 않고 MJPEG 폴백만 쓰인다.
-
-| 방향 | 경로 | 인증 | 스트림 | 설명 |
-|------|------|------|--------|------|
-| 로버 publish (WHIP) | `POST /course/api/rtc/rover-2d/whip` | X-Internal-Service | rover-2d | 모노 / 깊이 컴포지트 (2D 패널). aiortc가 발행 |
-| 로버 publish (WHIP) | `POST /course/api/rtc/rover-vr/whip` | X-Internal-Service | rover-vr | 정류 좌·우 side-by-side 스테레오 (VR 뷰) |
-| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-2d/whep` | `rover.operate` | rover-2d | 2D 운영 패널이 재생 |
-| 브라우저 play (WHEP) | `POST /course/api/rtc/rover-vr/whep` | `rover.operate` | rover-vr | WebXR VR 뷰가 재생 (눈별 분할) |
-
-로버는 `SERVER_URL`로 WHIP URL을 구성하며 `/api/rover/camera/hold`가 발행을 유지합니다. 브라우저는 WHEP로 재생하고 실패 시 MJPEG(`/api/rover/camera/stream`)로 전환합니다.
 
 ### Missions (`rover.operate`)
 
@@ -770,7 +740,7 @@ mediamtx는 프로덕션 k3s(GitOps)에만 배포되며 `compose.yml`에는 없�
 | `rover` | `{ lat, lng, alt, source }` | 활성 소스 위치 수신 시 브로드캐스트 (source: rover\|receiver) |
 | `rover:status` | roverState + `{ active_mission_summary, mission_protocol, receiver, position_source, ntrip_source }` | GPS-rate bounded 상태. `active_mission_summary`는 ID/status/hold/hash/revision 등 권한 판단 필드만 포함하고 waypoint 배열은 포함하지 않음 |
 | `rover:mission` | `{ mission }` | command acknowledgement, checkpoint reconcile, waypoint 결과, 정지/완료 직후 v2 미션 전체 상태 |
-| `rover:waypoint` / `rover:skipped` / `rover:spray` / `rover:obstacle` | `{ index }` / `{ waypoint, outcome }` / `{ nearest_m, paused }` 등 | 미션 진행 이벤트 |
+| `rover:waypoint` / `rover:skipped` / `rover:spray` | `{ index }` / `{ waypoint, outcome }` 등 | 미션 진행 이벤트 |
 | `rover:logs` | `{ count, uploaded_at }` | 로버 로그 업로드 완료 |
 | `rover:antenna_calibration` | 캘리브레이션 결과 객체 | 안테나 오프셋 캘리브레이션 결과 |
 | `gps:survey_result` | `{ point_id, name, ok, samples? }` | base station 측량 결과 |

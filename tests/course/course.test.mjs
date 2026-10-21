@@ -17,14 +17,6 @@ setupTestEnv();
 
 import { createCourseApp } from '../../course/index.mjs';
 
-function withFailureTimeout(promise, label, timeoutMs = 2_000) {
-  let timer;
-  const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
-}
-
 const adminCookie = makeAuthCookie({ email: 'admin@test.com', name: 'Admin', role: 'admin' });
 
 let server, baseUrl, client, db, dbPath;
@@ -94,21 +86,10 @@ describe('Auth enforcement', () => {
   it('keeps rover operations independent from course management', async () => {
     const courseManagerRover = await client.get('/api/rover/status', { cookie: courseManagerCookie });
     assert.equal(courseManagerRover.status, 403);
-    const courseManagerVr = await fetch(`${baseUrl}/vr`, {
-      headers: { Cookie: courseManagerCookie },
-      redirect: 'manual',
-    });
-    assert.equal(courseManagerVr.status, 302);
-    assert.equal(courseManagerVr.headers.get('location'), '/');
     const rover = await client.get('/api/rover/status', { cookie: roverOperatorCookie });
     assert.equal(rover.status, 200);
     const missions = await client.get('/api/missions', { cookie: roverOperatorCookie });
     assert.equal(missions.status, 200);
-    const roverVr = await fetch(`${baseUrl}/vr`, {
-      headers: { Cookie: roverOperatorCookie },
-      redirect: 'manual',
-    });
-    assert.notEqual(roverVr.status, 302);
   });
 
   it('requires course.manage for destructive course and snapshot operations', async () => {
@@ -1362,126 +1343,6 @@ describe('POST /api/rover/calibrate-battery', () => {
   });
 });
 
-// ─── Rover camera depth composite toggle ────────────────────────────────
-describe('POST /api/rover/camera/depth', () => {
-  it('rejects unauthenticated requests', async () => {
-    const res = await client.post('/api/rover/camera/depth', { body: { on: true } });
-    assert.equal(res.status, 401);
-  });
-
-  it('is a no-op without an active viewer (depth needs a live stream)', async () => {
-    // Depth is a sub-mode of an active stream; toggling it on with zero viewers
-    // must NOT latch the flag true (it would otherwise get stuck — the only reset
-    // is the last-viewer-leave edge). The on-with-viewer path is covered in the
-    // Camera relay suite (which holds a viewer + a control channel open).
-    const on = await client.post('/api/rover/camera/depth', {
-      body: { on: true }, cookie: adminCookie,
-    });
-    assert.equal(on.status, 200);
-    const onBody = await on.json();
-    assert.equal(onBody.ok, true);
-    assert.equal(onBody.depth, false);           // guarded: no viewer → stays off
-    const status = await client.get('/api/rover/camera/status', { cookie: adminCookie });
-    assert.equal((await status.json()).depth, false);
-  });
-
-  it('coerces a missing body to off (no crash)', async () => {
-    const res = await client.post('/api/rover/camera/depth', { body: {}, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).depth, false);
-  });
-});
-
-// ─── Rover proximity (obstacle) detection toggle ─────────────────────────
-describe('POST /api/rover/camera/detection', () => {
-  it('rejects unauthenticated requests', async () => {
-    const res = await client.post('/api/rover/camera/detection', { body: { on: false } });
-    assert.equal(res.status, 401);
-  });
-
-  it('defaults to OFF and stores the on/off flag in rover status', async () => {
-    // Default is OFF — detection is opt-in per mission.
-    const before = await client.get('/api/rover/status', { cookie: adminCookie });
-    assert.equal((await before.json()).obstacle_detection_enabled, false);
-
-    const on = await client.post('/api/rover/camera/detection', {
-      body: { on: true }, cookie: adminCookie,
-    });
-    assert.equal(on.status, 200);
-    const onBody = await on.json();
-    assert.equal(onBody.ok, true);
-    assert.equal(onBody.detection, true);
-    // No perception control channel is attached here, so it can't be delivered —
-    // but the flag is stored regardless (re-synced on the next perception connect).
-    assert.equal(onBody.camera_connected, false);
-    assert.equal((await (await client.get('/api/rover/status', { cookie: adminCookie })).json())
-      .obstacle_detection_enabled, true);
-
-    const off = await client.post('/api/rover/camera/detection', {
-      body: { on: false }, cookie: adminCookie,
-    });
-    assert.equal((await off.json()).detection, false);
-    assert.equal((await (await client.get('/api/rover/status', { cookie: adminCookie })).json())
-      .obstacle_detection_enabled, false);
-  });
-
-  it('coerces a missing body to off (no crash)', async () => {
-    const res = await client.post('/api/rover/camera/detection', { body: {}, cookie: adminCookie });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).detection, false);
-  });
-});
-
-// ─── Rover minimap tile proxy ────────────────────────────────────────────
-describe('GET /api/rover/map-tile', () => {
-  it('rejects unauthenticated requests', async () => {
-    const res = await client.get('/api/rover/map-tile?z=18&x=1&y=1');
-    assert.equal(res.status, 401);
-  });
-
-  it('400s on out-of-range / non-integer / missing tile coords', async () => {
-    // Guards the SSRF-adjacent proxy: only valid slippy-map indices reach fetch.
-    // (The success path hits an external tile server, so it's not covered here.)
-    for (const q of ['z=99&x=0&y=0', 'z=18&x=-1&y=0', 'z=18&x=0', 'z=1.5&x=0&y=0', 'z=2&x=4&y=0']) {
-      const res = await client.get(`/api/rover/map-tile?${q}`, { cookie: adminCookie });
-      assert.equal(res.status, 400, `expected 400 for ?${q}`);
-    }
-  });
-
-  it('throttles repeated upstream failures to one rover.map_tile warn per reason', async () => {
-    // A minimap screen requests dozens of tiles, so a persistent upstream
-    // failure (expired VWORLD_KEY etc.) must not flood the warn filter: the
-    // route logs once per failure reason per 60s. Fail the upstream fetch
-    // deterministically (offline-safe) by intercepting the tile hosts only —
-    // the throttle keys on the error name, so a unique name isolates this test.
-    const realFetch = globalThis.fetch;
-    globalThis.fetch = (input, init) => {
-      const target = String(typeof input === 'string' ? input : input?.url ?? input);
-      if (target.includes('api.vworld.kr') || target.includes('mt0.google.com')) {
-        const err = new Error('simulated tile upstream outage');
-        err.name = 'TestTileFailure';
-        return Promise.reject(err);
-      }
-      return realFetch(input, init);
-    };
-    try {
-      for (let i = 0; i < 3; i++) {
-        const res = await client.get(`/api/rover/map-tile?z=18&x=${i}&y=1`, { cookie: adminCookie });
-        assert.equal(res.status, 502, 'every failed tile request still 502s');
-      }
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-    const rows = db.prepare(
-      "SELECT detail FROM logs WHERE action = 'rover.map_tile' AND level = 'warn' AND detail LIKE '%simulated tile upstream outage%'",
-    ).all();
-    assert.equal(rows.length, 1, '3 failing tile requests must produce exactly ONE warn row');
-    const detail = JSON.parse(rows[0].detail);
-    assert.match(detail.error, /simulated tile upstream outage/);
-    assert.equal(detail.z, 18, 'the logged row keeps the tile coords for triage');
-  });
-});
-
 // ─── Rover telemetry / status ───────────────────────────────────────────
 describe('Rover telemetry + status (internal)', () => {
   it('rejects telemetry without internal secret', async () => {
@@ -1635,6 +1496,18 @@ describe('GET /api/rover/stream (auth)', () => {
     // nothing despite RTK fixed and IDLE". Internal-only closes that door.
     const res = await client.get('/api/rover/stream', { cookie: adminCookie });
     assert.equal(res.status, 403);
+  });
+
+  it('resists path-variant bypass of the internal-strict gate by a browser admin', async () => {
+    // Express 5 routes case and trailing-slash variants to the same handler, so
+    // an exact-match gate would fall through to "admin" and let a browser admin
+    // open the rover SSE (200). None of these variants may succeed for a
+    // non-internal caller (403 denied or 404 unrouted are both fine).
+    for (const path of ['/api/rover/stream/', '/api/rover/stream//', '/API/rover/stream']) {
+      const res = await client.get(path, { cookie: adminCookie });
+      assert.ok(res.status !== 200, `GET ${path} must NOT succeed for a browser admin (got ${res.status})`);
+      try { await res.body?.cancel(); } catch { /* ignore */ }
+    }
   });
 });
 
@@ -2122,8 +1995,8 @@ describe('Mission soft pause / resume', () => {
   });
 });
 
-// ─── Obstacle auto-pause (perception → server reflection + alert) ───────
-describe('Mission obstacle auto-pause (perception)', () => {
+// ─── Rover PAUSED telemetry reconcile ───────────────────────────────────
+describe('Mission PAUSED telemetry reconcile', () => {
   let srv, url, cli, localDb, localDbPath;
 
   async function connectRover() {
@@ -2153,9 +2026,6 @@ describe('Mission obstacle auto-pause (perception)', () => {
     body: { waypoints: [{ lat: 35.00001, lng: 126.00001 }, { lat: 35.00002, lng: 126.00002 }] },
     cookie: adminCookie,
   });
-  const obstacle = (body) => cli.post('/api/rover/obstacle', {
-    body: body || {}, headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
-  });
   const telemetry = (nav_state) => cli.post('/api/rover/telemetry', {
     body: { nav_state }, headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET },
   });
@@ -2181,59 +2051,15 @@ describe('Mission obstacle auto-pause (perception)', () => {
     cleanup(localDbPath);
   });
 
-  it('is internal-strict: a browser admin cannot spoof an obstacle', async () => {
-    const pub = await fetch(`${url}/api/rover/obstacle`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    });
-    assert.ok(pub.status === 401 || pub.status === 403, 'public obstacle POST denied');
-    const adm = await fetch(`${url}/api/rover/obstacle`, {
-      method: 'POST', headers: { Cookie: adminCookie, 'Content-Type': 'application/json' }, body: '{}',
-    });
-    assert.ok(![200, 204].includes(adm.status), `browser admin must not succeed (got ${adm.status})`);
-  });
-
-  it('does not pause OR raise a banner when there is no running mission', async () => {
-    const res = await obstacle({ nearest_m: 1.2 });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).paused, false);
-    const st = await status();
-    assert.notEqual(st.mission_progress.status, 'paused');
-    // No mission → no persistent alert (it would be unclearable: resume 409s).
-    assert.equal(st.obstacle.active, false);
-  });
-
-  it("reflects the rover's local pause and raises an obstacle alert", async () => {
+  it('reconciles an unrecorded rover pause from telemetry', async () => {
     const disconnect = await connectRover();
     assert.equal((await exec()).status, 200);
 
-    const res = await obstacle({ nearest_m: 0.8 });
-    assert.equal(res.status, 200);
-    assert.equal((await res.json()).paused, true);
-
-    const st = await status();
-    assert.equal(st.mission_progress.status, 'paused');
-    assert.equal(st.obstacle.active, true);
-    assert.equal(st.obstacle.nearest_m, 0.8);
-
-    // Resume clears the obstacle hold and returns the mission to running.
-    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
-    const st2 = await status();
-    assert.equal(st2.mission_progress.status, 'running');
-    assert.equal(st2.obstacle.active, false);
-
-    await disconnect();
-  });
-
-  it('reconciles a rover-local pause from telemetry when the alert was lost', async () => {
-    const disconnect = await connectRover();
-    assert.equal((await exec()).status, 200);
-
-    // The obstacle POST was lost (uplink blip): the rover paused itself locally
-    // and only telemetry reports PAUSED. The server reconciles so resume works.
+    // The server never recorded the pause: only telemetry reports PAUSED. The
+    // server reconciles so resume works.
     await telemetry('PAUSED');
     const st = await status();
     assert.equal(st.mission_progress.status, 'paused', 'PAUSED telemetry reconciles to paused');
-    assert.equal(st.obstacle.active, true, 'reconcile also raises the operator alert');
 
     await cli.post('/api/rover/resume', { cookie: adminCookie });
     await disconnect();
@@ -2252,34 +2078,18 @@ describe('Mission obstacle auto-pause (perception)', () => {
     await disconnect();
   });
 
-  it('ignores a stale obstacle POST right after a resume (grace window)', async () => {
-    const disconnect = await connectRover();
-    assert.equal((await exec()).status, 200);
-    assert.equal((await obstacle({ nearest_m: 0.7 })).status, 200);   // pause via obstacle
-    assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
-    // A stale obstacle POST in flight at resume time must NOT re-pause / re-alert.
-    const res = await obstacle({ nearest_m: 0.7 });
-    assert.equal((await res.json()).ignored, true);
-    const st = await status();
-    assert.equal(st.mission_progress.status, 'running',
-      'a stale obstacle POST within the resume grace window must not re-pause');
-    assert.equal(st.obstacle.active, false);
-    await disconnect();
-  });
-
-  it('rescues interrupted + local PAUSED so resume works (SSE drop then obstacle)', async () => {
+  it('rescues interrupted + PAUSED so resume works (SSE drop then PAUSED report)', async () => {
     let disconnect = await connectRover();
     assert.equal((await exec()).status, 200);
     await disconnect();                          // SSE drop mid-mission → interrupted
     let st = await status();
     assert.equal(st.mission_progress.status, 'interrupted');
-    // Rover reconnects and reports it paused ITSELF on an obstacle while dropped.
+    // Rover reconnects and reports PAUSED.
     disconnect = await connectRover();
     await telemetry('PAUSED');
     st = await status();
     assert.equal(st.mission_progress.status, 'paused',
       'interrupted + PAUSED must reconcile to paused (else resume 409s)');
-    assert.equal(st.obstacle.active, true);
     assert.equal((await cli.post('/api/rover/resume', { cookie: adminCookie })).status, 200);
     await disconnect();
   });
@@ -2404,613 +2214,6 @@ describe('Cone schema migration (center + alt ordering)', () => {
       result.db.close();
       cleanup(p);
     }
-  });
-});
-
-// ─── Camera relay (MJPEG) ───────────────────────────────────────────────
-describe('Camera relay', () => {
-  let srv, url, cli, localDb, localDbPath;
-
-  before(async () => {
-    localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
-    localDb = result.db;
-    const started = await startServer(result.app);
-    srv = started.server;
-    url = started.baseUrl;
-    cli = createClient(url);
-  });
-
-  after(async () => {
-    await stopServer(srv);
-    localDb.close();
-    cleanup(localDbPath);
-  });
-
-  it('rejects the control SSE and frame upload without the internal secret', async () => {
-    const ctl = await fetch(`${url}/api/rover/camera/control`, { headers: { Accept: 'text/event-stream' } });
-    assert.ok(ctl.status === 401 || ctl.status === 403, 'control SSE is internal-strict');
-    try { await ctl.body?.cancel(); } catch { /* ignore */ }
-
-    const up = await fetch(`${url}/api/rover/camera`, {
-      method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]),
-    });
-    assert.ok(up.status === 401 || up.status === 403, 'frame upload is internal-strict');
-  });
-
-  it('internal-strict camera paths resist path-variant bypass by a browser admin', async () => {
-    // Express 5 routes a trailing-slash variant to the same handler, so an
-    // exact-match gate would fall through to "admin" and let a browser admin
-    // inject a frame (204) / open the control SSE (200). The security property:
-    // none of these variants may produce a SUCCESS for a non-internal caller
-    // (403 denied or 404 unrouted are both fine — the internal action ran iff
-    // 200/204).
-    const cases = [
-      { method: 'POST', path: '/api/rover/camera/', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
-      { method: 'POST', path: '/api/rover/camera//', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([0xff, 0xd8, 0xff, 0xd9]) },
-      { method: 'GET', path: '/api/rover/camera/control/', headers: { Accept: 'text/event-stream' } },
-    ];
-    for (const c of cases) {
-      const r = await fetch(`${url}${c.path}`, {
-        method: c.method, headers: { Cookie: adminCookie, ...c.headers }, body: c.body,
-      });
-      assert.ok(![200, 204].includes(r.status),
-        `${c.method} ${c.path} must NOT succeed for a browser admin (got ${r.status})`);
-      try { await r.body?.cancel(); } catch { /* ignore */ }
-    }
-  });
-
-  // Accumulate decoded stream bytes into `sink.text`, bounded so a stalled
-  // read can never hang the test. Returns a stop() that aborts the reader.
-  function pump(reader, sink) {
-    sink.text = '';
-    const dec = new TextDecoder('latin1');
-    let stopped = false;
-    (async () => {
-      try {
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done || stopped) break;
-          if (value) sink.text += dec.decode(value);
-        }
-      } catch { /* aborted/cancelled */ }
-    })();
-    return () => { stopped = true; reader.cancel().catch(() => {}); };
-  }
-  async function waitFor(cond, timeoutMs) {
-    try {
-      await waitForCondition(cond, { timeoutMs, label: 'camera stream condition' });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  it('relays a frame rover→browser and toggles capture on first/last viewer', async () => {
-    // Perception container's control SSE.
-    const ctlAc = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ctlAc.signal,
-    });
-    assert.equal(ctl.status, 200);
-    const ctlSink = {};
-    const stopCtl = pump(ctl.body.getReader(), ctlSink);
-    await waitForCondition(async () => (
-      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
-    ).camera_connected, { label: 'camera control connection' });
-
-    // No viewer yet → camera connected but idle.
-    let st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-    assert.equal(st.camera_connected, true);
-    assert.equal(st.viewers, 0);
-
-    // Browser viewer connects → first viewer triggers camera-start.
-    const viewAc = new AbortController();
-    const view = await fetch(`${url}/api/rover/camera/stream`, {
-      headers: { Cookie: adminCookie }, signal: viewAc.signal,
-    });
-    assert.equal(view.status, 200);
-    assert.match(view.headers.get('content-type'), /multipart\/x-mixed-replace/);
-    const viewSink = {};
-    const stopView = pump(view.body.getReader(), viewSink);
-    assert.ok(await waitFor(() => ctlSink.text.includes('camera-start'), 1000),
-      'first viewer triggers camera-start');
-
-    // Rover pushes a JPEG frame.
-    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3, 4, 0xff, 0xd9]);
-    const up = await fetch(`${url}/api/rover/camera`, {
-      method: 'POST', headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'image/jpeg' }, body: jpeg,
-    });
-    assert.equal(up.status, 204);
-
-    // Viewer receives the multipart frame.
-    assert.ok(await waitFor(() => viewSink.text.includes('--frame'), 1000),
-      'viewer receives the multipart boundary');
-    assert.ok(viewSink.text.includes('Content-Type: image/jpeg'), 'frame carries a JPEG part header');
-
-    st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-    assert.equal(st.viewers, 1);
-    assert.ok(st.last_frame_age_ms != null && st.last_frame_age_ms >= 0, 'status reports a server-computed frame age');
-
-    // Depth toggle (with a viewer present) relays depth-on to perception and is
-    // reflected in status.
-    const dOn = await cli.post('/api/rover/camera/depth', { body: { on: true }, cookie: adminCookie });
-    assert.equal((await dOn.json()).depth, true, 'depth turns on while a viewer is watching');
-    assert.ok(await waitFor(() => ctlSink.text.includes('depth-on'), 1000),
-      'depth toggle relays depth-on to the perception control channel');
-    st = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-    assert.equal(st.depth, true);
-
-    // Last viewer leaves → camera-stop AND depth-off (so a reopen starts plain),
-    // and the server depth state resets. A connect-time camera-stop/depth-off is
-    // already in ctlSink.text (the control channel re-syncs on attach), so wait for
-    // a FRESH one (count increases) rather than a substring that's satisfiable
-    // before the disconnect has been processed, then confirm the server state via
-    // the status endpoint — polling removes the async close-handler race.
-    const stopBefore = (ctlSink.text.match(/camera-stop/g) || []).length;
-    const offBefore = (ctlSink.text.match(/depth-off/g) || []).length;
-    stopView();
-    viewAc.abort();
-    assert.ok(await waitFor(() => (ctlSink.text.match(/camera-stop/g) || []).length > stopBefore, 1500),
-      'last viewer triggers camera-stop');
-    assert.ok(await waitFor(() => (ctlSink.text.match(/depth-off/g) || []).length > offBefore, 1500),
-      'last viewer also clears the depth mode (depth-off)');
-    st = await waitForCondition(async () => {
-      const next = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-      return next.depth ? false : next;
-    }, { label: 'camera depth reset' });
-    assert.equal(st.depth, false, 'depth mode resets when the last viewer leaves');
-
-    stopCtl();
-    ctlAc.abort();
-  });
-
-  it('depth works for a WebRTC-only 2D viewer (no MJPEG) and clears on leave', async () => {
-    // Regression: the 2D operator panel streams via WebRTC — it holds open a
-    // camera/hold?mode=2d gating viewer and pulls NO MJPEG <img>. The depth
-    // composite is baked into the rover's shared `out` frame (feeding both the
-    // MJPEG relay AND rover-2d WebRTC), so depth must gate on ANY 2D viewer, not
-    // just the MJPEG cameraViewers (which are zero in a WebRTC session).
-    const ctlAc = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ctlAc.signal,
-    });
-    assert.equal(ctl.status, 200);
-    const ctlSink = {};
-    const stopCtl = pump(ctl.body.getReader(), ctlSink);
-    await waitForCondition(async () => (
-      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
-    ).camera_connected, { label: 'camera control connection' });
-
-    // A WebRTC 2D gating viewer (mode=2d hold). No MJPEG viewer at all.
-    const holdAc = new AbortController();
-    const hold = await fetch(`${url}/api/rover/camera/hold?mode=2d`, {
-      headers: { Cookie: adminCookie, Accept: 'text/event-stream' }, signal: holdAc.signal,
-    });
-    assert.equal(hold.status, 200);
-    const holdSink = {};
-    const stopHold = pump(hold.body.getReader(), holdSink);
-    assert.ok(await waitFor(() => ctlSink.text.includes('webrtc-2d-on'), 1000),
-      'a 2D hold viewer starts the rover-2d WebRTC publish');
-    // A WebRTC-only session must NOT be counted as an MJPEG viewer (no JPEG encode).
-    const st0 = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-    assert.equal(st0.viewers, 0, 'a WebRTC 2D viewer is not an MJPEG viewer');
-
-    // Depth on with ONLY the WebRTC 2D viewer present → relays depth-on + latches.
-    const dOn = await cli.post('/api/rover/camera/depth', { body: { on: true }, cookie: adminCookie });
-    assert.equal((await dOn.json()).depth, true, 'depth turns on for a WebRTC-only 2D viewer');
-    assert.ok(await waitFor(() => ctlSink.text.includes('depth-on'), 1000),
-      'depth-on is relayed to perception for a WebRTC 2D viewer');
-    assert.equal((await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).depth, true);
-
-    // The last 2D viewer leaves → depth clears (depth-off) so a reopen starts plain.
-    // A connect-time depth-off already sits in ctlSink.text, so wait for a FRESH
-    // depth-off (count increases) rather than a substring that's satisfiable before
-    // the disconnect has been processed, then confirm the server state via the
-    // status endpoint — polling removes the async close-handler race.
-    const offBefore = (ctlSink.text.match(/depth-off/g) || []).length;
-    stopHold();
-    holdAc.abort();
-    assert.ok(await waitFor(() => (ctlSink.text.match(/depth-off/g) || []).length > offBefore, 1500),
-      'the last 2D viewer leaving clears depth (depth-off)');
-    const st = await waitForCondition(async () => {
-      const next = await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json();
-      return next.depth ? false : next;
-    }, { label: 'WebRTC depth reset' });
-    assert.equal(st.depth, false, 'depth resets when the last 2D viewer leaves');
-
-    stopCtl();
-    ctlAc.abort();
-  });
-
-  it('relays the proximity-detection toggle and re-syncs it on (re)connect', async () => {
-    // First perception control channel. On connect the server re-syncs the
-    // stored detection state — default is OFF.
-    const ctlAc = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ctlAc.signal,
-    });
-    assert.equal(ctl.status, 200);
-    const ctlSink = {};
-    const stopCtl = pump(ctl.body.getReader(), ctlSink);
-    assert.ok(await waitFor(() => ctlSink.text.includes('detect-off'), 1000),
-      'control connect re-syncs the stored detection state (default off)');
-
-    // Operator turns detection ON → relayed as detect-on + stored server-side.
-    const on = await cli.post('/api/rover/camera/detection', { body: { on: true }, cookie: adminCookie });
-    assert.equal(on.status, 200);
-    assert.equal((await on.json()).detection, true);
-    assert.ok(await waitFor(() => ctlSink.text.includes('detect-on'), 1000),
-      'detection toggle relays detect-on to the perception control channel');
-    assert.equal((await (await cli.get('/api/rover/status', { cookie: adminCookie })).json())
-      .obstacle_detection_enabled, true);
-
-    // A fresh perception container reconnects → must be re-told the stored ON
-    // (a new container boots with detection off, so the server re-asserts truth).
-    stopCtl();
-    ctlAc.abort();
-    await waitForCondition(async () => !(
-      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
-    ).camera_connected, { label: 'camera control disconnection' });
-    const ctl2Ac = new AbortController();
-    const ctl2 = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ctl2Ac.signal,
-    });
-    assert.equal(ctl2.status, 200);
-    const ctl2Sink = {};
-    const stopCtl2 = pump(ctl2.body.getReader(), ctl2Sink);
-    assert.ok(await waitFor(() => ctl2Sink.text.includes('detect-on'), 1000),
-      'reconnect re-syncs the stored ON state to a fresh perception container');
-
-    // Turn detection back OFF → relayed as detect-off.
-    const off = await cli.post('/api/rover/camera/detection', { body: { on: false }, cookie: adminCookie });
-    assert.equal((await off.json()).detection, false);
-    assert.ok(await waitFor(() => ctl2Sink.text.includes('detect-off'), 1000),
-      'turning detection off relays detect-off');
-
-    stopCtl2();
-    ctl2Ac.abort();
-  });
-
-  it('caps concurrent viewers (503 past the limit)', async () => {
-    // The viewer cap is the only thing stopping a scripted/looping admin from
-    // exhausting sockets/heap on the shared mission server, so guard it.
-    // Use raw node:http with agent:false: each viewer gets a DISTINCT socket
-    // that stays open. (fetch/undici reuses+evicts held, unconsumed streaming
-    // connections, which under-counts viewers and made this flaky.)
-    const http = (await import('node:http')).default;
-    const MAX = 8; // mirrors MAX_CAMERA_VIEWERS in course/index.mjs
-    const u = new URL(`${url}/api/rover/camera/stream`);
-    const opened = [];
-    const openStream = () => new Promise((resolve) => {
-      const req = http.request(
-        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'GET', headers: { Cookie: adminCookie }, agent: false },
-        (res) => { res.on('data', () => {}); res.on('error', () => {}); resolve({ status: res.statusCode, req }); },
-      );
-      req.on('error', () => resolve({ status: 0, req }));
-      req.end();
-    });
-    const viewers = async () => (await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()).viewers;
-    try {
-      for (let i = 0; i < MAX; i++) {
-        const r = await openStream();
-        opened.push(r);
-        assert.equal(r.status, 200, `viewer ${i + 1} should be accepted`);
-      }
-      // A held stream registers server-side a beat after the headers arrive;
-      // wait until all MAX are counted so the over-cap check isn't racy.
-      await waitForCondition(async () => (await viewers()) === MAX, { label: 'all camera viewers' });
-      assert.equal(await viewers(), MAX, 'server should have registered all viewers');
-
-      const over = await openStream();
-      opened.push(over);
-      assert.equal(over.status, 503, 'a viewer past the cap must be rejected');
-    } finally {
-      for (const o of opened) { try { o.req.destroy(); } catch { /* ignore */ } }
-      await waitForCondition(async () => (await viewers()) === 0, { label: 'camera viewer cleanup' });
-    }
-  });
-});
-
-// ─── Stereo calibration (UI-triggered) ──────────────────────────────────
-describe('Stereo calibration trigger', () => {
-  let srv, url, cli, localDb, localDbPath;
-  const progress = (body) => fetch(`${url}/api/rover/calibration-progress`, {
-    method: 'POST',
-    headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const status = async () => (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
-
-  before(async () => {
-    localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
-    localDb = result.db;
-    const started = await startServer(result.app);
-    srv = started.server; url = started.baseUrl; cli = createClient(url);
-  });
-  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
-
-  it('calibration-progress is internal-strict and updates status', async () => {
-    const pub = await fetch(`${url}/api/rover/calibration-progress`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    });
-    assert.ok(pub.status === 401 || pub.status === 403, 'public progress denied');
-    assert.equal((await progress({ phase: 'collecting', captured: 5, target: 20 })).status, 200);
-    let st = await status();
-    assert.equal(st.stereo_calibration.status, 'running');
-    assert.equal(st.stereo_calibration.captured, 5);
-    assert.equal(st.stereo_calibration.target, 20);
-    // done(ok) → status done with the result fields.
-    await progress({ phase: 'done', ok: true, rms: 0.4, rms_l: 0.31, rms_r: 0.29, baseline_mm: 61.2, pairs: 18 });
-    st = await status();
-    assert.equal(st.stereo_calibration.status, 'done');
-    assert.equal(st.stereo_calibration.rms, 0.4);
-    assert.equal(st.stereo_calibration.baseline_mm, 61.2);
-    // per-eye RMS is persisted in the calibration record for post-hoc diagnosis
-    // (high per-eye → intrinsic; low per-eye but high stereo → eye-sync/extrinsic).
-    const rec = localDb.prepare(
-      "SELECT detail FROM logs WHERE action = 'rover.calibration' ORDER BY id DESC LIMIT 1"
-    ).get();
-    const detail = JSON.parse(rec.detail);
-    assert.equal(detail.rms_l, 0.31);
-    assert.equal(detail.rms_r, 0.29);
-  });
-
-  it('calibrate-stereo needs admin, a valid square, and a connected perception', async () => {
-    const pub = await fetch(`${url}/api/rover/calibrate-stereo`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ square_m: 0.025 }),
-    });
-    assert.ok(pub.status === 401 || pub.status === 403, 'public denied');
-    assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 5 }, cookie: adminCookie })).status, 400);
-    // No perception control SSE connected → 503.
-    assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 0.025 }, cookie: adminCookie })).status, 503);
-  });
-
-  it('calibrate-stereo emits the calibrate command (with square_m) to perception', async () => {
-    const ac = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ac.signal,
-    });
-    assert.equal(ctl.status, 200);
-    let text = '';
-    const reader = ctl.body.getReader();
-    const dec = new TextDecoder();
-    const drained = (async () => {
-      try { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); } } catch { /* aborted */ }
-    })();
-    await waitForCondition(async () => (
-      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
-    ).camera_connected, {
-      label: 'stereo control connection',
-    });
-
-    assert.equal((await cli.post('/api/rover/calibrate-stereo', { body: { square_m: 0.03 }, cookie: adminCookie })).status, 200);
-    await waitForCondition(() => text.includes('event: calibrate') && text.includes('0.03'), {
-      label: 'stereo calibration command',
-    });
-    assert.equal((await status()).stereo_calibration.status, 'running');
-    // Perception disconnects mid-calibration → status must flip to 'failed' so
-    // the operator isn't locked out (not stuck 'running' forever).
-    ac.abort();
-    await drained.catch(() => {});
-    await waitForCondition(async () => (await status()).stereo_calibration.status === 'failed', {
-      label: 'stereo calibration disconnect failure',
-    });
-  });
-});
-
-// ─── Ground calibration (UI-triggered, above-ground detector) ───────────
-describe('Ground calibration trigger', () => {
-  let srv, url, cli, localDb, localDbPath;
-  const progress = (body) => fetch(`${url}/api/rover/calibration-progress`, {
-    method: 'POST',
-    headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const status = async () => (await cli.get('/api/rover/status', { cookie: adminCookie })).json();
-
-  before(async () => {
-    localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
-    localDb = result.db;
-    const started = await startServer(result.app);
-    srv = started.server; url = started.baseUrl; cli = createClient(url);
-  });
-  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
-
-  it('calibration-progress kind:ground updates ground status without touching stereo', async () => {
-    assert.equal((await progress({ kind: 'ground', phase: 'collecting', captured: 7, target: 30 })).status, 200);
-    let st = await status();
-    assert.equal(st.ground_calibration.status, 'running');
-    assert.equal(st.ground_calibration.captured, 7);
-    assert.equal(st.ground_calibration.target, 30);
-    assert.notEqual(st.stereo_calibration.status, 'running');   // separate channels
-    await progress({ kind: 'ground', phase: 'done', ok: true, near_m: 1.1, far_m: 8.8, rows: 24, mode: 'aboveground' });
-    st = await status();
-    assert.equal(st.ground_calibration.status, 'done');
-    assert.equal(st.ground_calibration.near_m, 1.1);
-    assert.equal(st.ground_calibration.far_m, 8.8);
-    assert.equal(st.ground_calibration.rows, 24);
-    const rec = localDb.prepare(
-      "SELECT detail FROM logs WHERE action = 'rover.ground_calibration' ORDER BY id DESC LIMIT 1"
-    ).get();
-    assert.equal(JSON.parse(rec.detail).mode, 'aboveground');
-  });
-
-  it('calibrate-ground needs admin and a connected perception', async () => {
-    const pub = await fetch(`${url}/api/rover/calibrate-ground`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
-    });
-    assert.ok(pub.status === 401 || pub.status === 403, 'public denied');
-    assert.equal((await cli.post('/api/rover/calibrate-ground', { body: {}, cookie: adminCookie })).status, 503);
-  });
-
-  it('calibrate-ground emits the command; a disconnect flips status to failed', async () => {
-    const ac = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ac.signal,
-    });
-    assert.equal(ctl.status, 200);
-    let text = '';
-    const reader = ctl.body.getReader();
-    const dec = new TextDecoder();
-    const drained = (async () => {
-      try { for (;;) { const { done, value } = await reader.read(); if (done) break; text += dec.decode(value, { stream: true }); } } catch { /* aborted */ }
-    })();
-    await waitForCondition(async () => (
-      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
-    ).camera_connected, {
-      label: 'ground control connection',
-    });
-    assert.equal((await cli.post('/api/rover/calibrate-ground', { body: { frames: 30 }, cookie: adminCookie })).status, 200);
-    await waitForCondition(() => text.includes('event: calibrate-ground'), {
-      label: 'ground calibration command',
-    });
-    assert.equal((await status()).ground_calibration.status, 'running');
-    ac.abort();
-    await drained.catch(() => {});
-    await waitForCondition(async () => (await status()).ground_calibration.status === 'failed', {
-      label: 'ground calibration disconnect failure',
-    });
-    // A close that aborted a running calibration is warn-level (it broke
-    // something the operator was waiting on), tagged with which calibration.
-    const rec = localDb.prepare(
-      "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_closed' ORDER BY id DESC LIMIT 1"
-    ).get();
-    assert.equal(rec.level, 'warn', 'a calibration-aborting disconnect is warn-level');
-    assert.ok(JSON.parse(rec.detail).aborted_calibration.includes('ground'),
-      'the warn names the aborted calibration');
-  });
-
-  it('a bare perception disconnect (nothing running) logs control_closed at info', async () => {
-    // Fresh control channel, no calibrate-* issued: the close handler takes the
-    // benign branch. This is the reconnect-churn case that used to flood warn.
-    const ac = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ac.signal,
-    });
-    assert.equal(ctl.status, 200);
-    const reader = ctl.body.getReader();
-    const drained = (async () => {
-      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
-    })();
-    await waitForCondition(async () => (
-      await (await cli.get('/api/rover/camera/status', { cookie: adminCookie })).json()
-    ).camera_connected, {
-      label: 'bare camera control connection',
-    });
-    const before = localDb.prepare(
-      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'"
-    ).get().n;
-    ac.abort();
-    await drained.catch(() => {});
-    const rec = await waitForCondition(() => {
-      const cnt = localDb.prepare(
-        "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'"
-      ).get().n;
-      if (cnt > before) {
-        return localDb.prepare(
-          "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_closed' ORDER BY id DESC LIMIT 1"
-        ).get();
-      }
-      return false;
-    }, { label: 'bare camera disconnect audit' });
-    assert.equal(rec.level, 'info', 'a benign close is info, not warn');
-    assert.equal(rec.detail, null, 'a benign close carries no aborted-calibration detail');
-  });
-});
-
-// ─── Camera control write failure (sendCameraControl teardown) ───────────
-describe('Camera control write failure', () => {
-  let srv, url, cli, localDb, localDbPath;
-
-  before(async () => {
-    localDbPath = tmpDbPath();
-    const result = createCourseApp({ dbPath: localDbPath, validateUser: TRUST_JWT });
-    localDb = result.db;
-    const started = await startServer(result.app);
-    srv = started.server; url = started.baseUrl; cli = createClient(url);
-  });
-  after(async () => { await stopServer(srv); localDb.close(); cleanup(localDbPath); });
-
-  it('a throwing control write logs control_write_failed once and drops the slot', async () => {
-    // Capture the server-side response object of the perception control SSE:
-    // http.Server emits 'request' to every listener, so this sees the same res
-    // the route stores in cameraControlClient. By the time the client fetch
-    // resolves (headers received) the handler has already run, so the capture
-    // is deterministic — no polling.
-    let ctlRes = null;
-    srv.on('request', (rq, rs) => {
-      if (rq.url.startsWith('/api/rover/camera/control')) ctlRes = rs;
-    });
-
-    const ac = new AbortController();
-    const ctl = await fetch(`${url}/api/rover/camera/control`, {
-      headers: { 'X-Internal-Service': TEST_INTERNAL_SECRET, Accept: 'text/event-stream' },
-      signal: ac.signal,
-    });
-    assert.equal(ctl.status, 200);
-    const reader = ctl.body.getReader();
-    const drained = (async () => {
-      try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch { /* aborted */ }
-    })();
-    assert.ok(ctlRes, 'the control response is captured on attach');
-    const controlClosed = new Promise((resolve) => ctlRes.once('close', resolve));
-
-    // Simulate a dead perception socket: writing to a destroyed http response
-    // does NOT throw synchronously in Node (the error is emitted async), so
-    // force the synchronous-throw path sendCameraControl guards against by
-    // sabotaging this connection's write. (Same technique as the documents
-    // tests' fs.renameSync monkeypatch — instance-scoped, restored by close.)
-    ctlRes.write = () => { throw new Error('simulated dead control socket'); };
-
-    const countWriteFailed = () => localDb.prepare(
-      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_write_failed'",
-    ).get().n;
-    const countClosed = () => localDb.prepare(
-      "SELECT COUNT(*) n FROM logs WHERE action = 'rover.camera.control_closed'",
-    ).get().n;
-    assert.equal(countWriteFailed(), 0, 'no write-failed rows before the failure');
-
-    // Any control-triggering call now hits the throwing write.
-    const res = await cli.post('/api/rover/camera/detection', {
-      body: { on: true }, cookie: adminCookie,
-    });
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.camera_connected, false, 'the dead control slot is dropped after the failed write');
-
-    assert.equal(countWriteFailed(), 1, 'the failed control write leaves exactly one warn trail');
-    const rec = localDb.prepare(
-      "SELECT level, detail FROM logs WHERE action = 'rover.camera.control_write_failed' ORDER BY id DESC LIMIT 1",
-    ).get();
-    assert.equal(rec.level, 'warn');
-    assert.equal(JSON.parse(rec.detail).event, 'detect-on', 'the warn names the event that failed to deliver');
-
-    // The emptied slot short-circuits later sends to false — no warn flooding.
-    await cli.post('/api/rover/camera/detection', { body: { on: false }, cookie: adminCookie });
-    assert.equal(countWriteFailed(), 1, 'subsequent control calls must not log again');
-
-    // The slot was cleared by the failed write, so the eventual client
-    // disconnect must NOT also log control_closed for this connection (the
-    // close handler's cameraControlClient === res guard is false).
-    const closedBefore = countClosed();
-    ac.abort();
-    await withFailureTimeout(
-      Promise.all([drained.catch(() => {}), controlClosed]),
-      'camera control close',
-    );
-    assert.equal(countClosed(), closedBefore,
-      'a connection torn down by a failed write does not double-log control_closed');
   });
 });
 
