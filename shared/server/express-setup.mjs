@@ -257,7 +257,7 @@ export function createApp(deps, authRoleFn) {
 
   // 2. CSRF 심층방어: 모던 브라우저가 보내는 Sec-Fetch-Site 헤더가 cross-site인 쓰기
   // 요청을 차단한다. 1차 방어는 fsk_session 쿠키의 SameSite=Lax이고 이 검사는 두 번째
-  // 계층. 헤더가 없는 요청(내부 서비스 호출, rover, 구형 클라이언트)과
+  // 계층. 헤더가 없는 요청(내부 서비스 호출, 구형 클라이언트)과
   // same-origin/same-site/none은 통과한다.
   const CSRF_SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
   app.use((req, res, next) => {

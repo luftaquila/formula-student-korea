@@ -86,13 +86,13 @@ test.describe("Course + cone CRUD (UI)", () => {
     const newName = `e2e-crud-new-${Date.now()}-${test.info().parallelIndex}`;
     // .course-add also holds a hidden file input (inline JSON import), so target
     // the named text input specifically.
-    await page.locator('.course-add input[placeholder="새 코스 이름"]').fill(newName);
+    await page.locator('.course-add input[placeholder="New course name"]').fill(newName);
 
     const createResp = page.waitForResponse(
       (r) => r.url().includes("/course/api/courses") && r.request().method() === "POST" && r.status() === 201,
     );
     // The + button is the primary add button in .course-add.
-    await page.locator(".course-add button[title='코스 추가']").tap();
+    await page.locator(".course-add button[title='Add course']").tap();
     const created = await createResp;
     const newCourseId = (await created.json()).id;
 
@@ -120,7 +120,7 @@ test.describe("Course + cone CRUD (UI)", () => {
     const renameResp = page.waitForResponse(
       (r) => new RegExp(`/course/api/courses/${courseId}$`).test(r.url()) && r.request().method() === "PATCH" && r.status() === 200,
     );
-    await row.locator("button:has-text('저장')").click();
+    await row.locator("button:has-text('Save')").click();
     await renameResp;
 
     await expect(page.locator(".course-item").filter({ hasText: newName })).toBeVisible();
@@ -137,7 +137,7 @@ test.describe("Course + cone CRUD (UI)", () => {
     const otherId = (await response.json()).id;
     try {
       const other = page.locator(".course-item").filter({ hasText: name });
-      const overlay = other.getByRole("button", { name: "코스 표시" });
+      const overlay = other.getByRole("button", { name: "Show course" });
       await expect(overlay).toHaveAttribute("aria-pressed", "false");
       await overlay.tap();
       await expect(overlay).toHaveAttribute("aria-pressed", "true");

@@ -746,7 +746,7 @@ describe('createApp CSRF middleware', () => {
     for (const headers of [
       { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
       { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'none' },
-      { 'Content-Type': 'application/json' }, // 내부 서비스·rover·구형 클라이언트
+      { 'Content-Type': 'application/json' }, // 내부 서비스·구형 클라이언트
     ]) {
       const res = await fetch(`${baseUrl}/api/write`, { method: 'POST', headers, body: '{}' });
       assert.equal(res.status, 200);

@@ -50,12 +50,8 @@ services:
       <<: *common-env
       MISSION_TELEMETRY_MAX_ROWS: ${MISSION_TELEMETRY_MAX_ROWS:-}
       VWORLD_KEY: ${VWORLD_KEY:-}
-      ROVER_MAX_WAYPOINT_DIST_M: ${ROVER_MAX_WAYPOINT_DIST_M:-}
-      ROVER_MAX_SEGMENT_DIST_M: ${ROVER_MAX_SEGMENT_DIST_M:-}
-      # 로버 전용 시크릿(선택). 설정 시 로버/GPS 장비가 INTERNAL_SECRET 대신 이 값으로
-      # 인증할 수 있어(course 로버 라우트 한정) 필드 장비의 유출 반경이 좁혀진다. course에만
-      # 주입한다(common-env에 넣으면 전 서비스로 퍼져 스코핑이 무의미).
-      ROVER_SECRET: ${ROVER_SECRET:-}
+      # 콘솔이 tailnet으로 직접 붙는 로버·GPS 유닛 API 주소 목록(JSON).
+      COURSE_DEVICES: ${COURSE_DEVICES:-}
     volumes:
       - ./course/data:/home/node/fsk-course/data
     restart: unless-stopped

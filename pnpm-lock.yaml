@@ -261,9 +261,15 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      fsk-coursekeeper:
+        specifier: link:../../fsk-coursekeeper/course
+        version: link:../../fsk-coursekeeper/course
 
   course/web:
     dependencies:
+      fsk-coursekeeper:
+        specifier: link:../../../fsk-coursekeeper/course
+        version: link:../../../fsk-coursekeeper/course
       jszip:
         specifier: ^3.10.1
         version: 3.10.1

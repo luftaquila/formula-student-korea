@@ -16,11 +16,15 @@ import {
 setupTestEnv();
 
 import { createCourseApp } from "../../course/index.mjs";
-import { computeCenterline } from "../../course/lib/centerline.mjs";
-import { resolveCourseRoute, ROUTE_MODE } from "../../course/lib/route-mode.mjs";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 const SEED_MIGRATION = "course.seed_route_markers_from_direction.v1";
 const masterCookie = makeAuthCookie({ email: "master@test.com", name: "Master", role: "master" });
+// The course geometry comes from the Course server's fsk-coursekeeper dependency.
+const resolveFromCourse = createRequire(new URL("../../course/package.json", import.meta.url)).resolve;
+const { computeCenterline } = await import(pathToFileURL(resolveFromCourse("fsk-coursekeeper/centerline.mjs")).href);
+const { resolveCourseRoute, ROUTE_MODE } = await import(pathToFileURL(resolveFromCourse("fsk-coursekeeper/route-mode.mjs")).href);
 const fixture = JSON.parse(readFileSync(new URL("./fixtures/endurance.json", import.meta.url), "utf8"));
 
 // Courses created before route markers existed carry their travel direction in

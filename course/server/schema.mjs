@@ -4,8 +4,9 @@ import {
   setupRowCapRetention,
   normalizeTimestampColumn,
 } from "../../shared/server/db-setup.mjs";
-import { setupMissionV2Schema } from "../lib/mission-v2.mjs";
-import { seedOrientationMarkers } from "../lib/route-mode.mjs";
+import { seedOrientationMarkers } from "fsk-coursekeeper/route-mode.mjs";
+import { COURSE_TABLES, initializeCourseSchema } from "fsk-coursekeeper/service";
+import { setupMissionV2Schema } from "./retired-mission-schema.mjs";
 
 export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   db.pragma("foreign_keys = ON");
@@ -30,10 +31,6 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
       db.exec("ALTER TABLE course ADD COLUMN reverse INTEGER NOT NULL DEFAULT 0");
     if (!cols.includes("start_cone_id"))
       db.exec("ALTER TABLE course ADD COLUMN start_cone_id INTEGER");
-    if (!cols.includes("is_public"))
-      db.exec(
-        "ALTER TABLE course ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))",
-      );
   }
 
   // ALTER로 덧붙인 컬럼은 항상 끝에 붙고, 위 CREATE TABLE은 datetime('now')로 굳은 기본값을
@@ -455,4 +452,25 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
+
+  // Publication is FSK-only state, so it lives beside the shared course schema
+  // instead of on its rows. Copy the legacy is_public flags, then rebuild course
+  // to the shared definition. Re-running after an interruption is safe: the copy
+  // ignores existing rows and the rebuild is skipped once the layout matches.
+  db.exec(`CREATE TABLE IF NOT EXISTS course_publication (
+  course_id INTEGER PRIMARY KEY,
+  published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+);`);
+  runMigrationOnce(db, "course.publication_table.v1", () => {
+    const hasFlag = db.prepare("PRAGMA table_info(course)").all().some((c) => c.name === "is_public");
+    if (hasFlag) {
+      db.prepare(
+        "INSERT OR IGNORE INTO course_publication (course_id) SELECT id FROM course WHERE is_public = 1",
+      ).run();
+    }
+    rebuildTable(db, "course", COURSE_TABLES.course);
+  }, { transaction: false });
+
+  initializeCourseSchema(db);
 }

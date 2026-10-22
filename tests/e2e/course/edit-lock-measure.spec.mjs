@@ -78,7 +78,7 @@ test.describe("Edit lock + measurement", () => {
 
   test("ruler tool measures a distance and shows the overlay result", async ({ page }) => {
     // The ruler is in the top-right tools panel (read-only; works even locked).
-    const ruler = page.locator(".map-fab-tools .fab-tool[aria-label='거리 측정']");
+    const ruler = page.locator(".map-fab-tools .fab-tool[aria-label='Measure distance']");
     await expect(ruler).toBeVisible();
     await ruler.tap();
     await expect(ruler).toHaveClass(/active/);
@@ -86,7 +86,7 @@ test.describe("Edit lock + measurement", () => {
     // The measure overlay appears with its tool name + hint.
     const overlay = page.locator(".measure-overlay");
     await expect(overlay).toBeVisible();
-    await expect(overlay.locator(".measure-tool-name")).toContainText("거리");
+    await expect(overlay.locator(".measure-tool-name")).toContainText("Distance");
 
     // Tap two distinct points on the map. NOTE: rather than computing seeded cone
     // screen pixels (map center/zoom dependent → flaky), we tap two raw map

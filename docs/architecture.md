@@ -21,7 +21,7 @@ Competition-critical domains run as modules in one `competition` process, one de
 | `competition` | Teams, Queue, Registration, Inspection, Traffic, Score, Documents, and seven SPAs | 9200 |
 | `energymeter` | Energy meter viewer | 9800 |
 | `email` | Email/SMS provider integration | 9900 |
-| `course` | Course, rover, RTK GPS, and teleoperation | 10000 |
+| `course` | Course data, publication, and the course console host | 10000 |
 | `calendar` | Competition schedules | 11000 |
 | `files` | FileBrowser storage with Auth forward-auth | 8080 |
 
@@ -59,15 +59,34 @@ its module; Rover remains a separate top-level component.
 ## Public course viewing
 
 Course serves the operational map at `/course` and anonymous read-only map at
-`/course/public`. Publication is a private-by-default flag on the existing row.
+`/course/public`. Publication is private by default and stored in the FSK-only
+`course_publication` table, outside the shared course schema.
 Public APIs read and expose only published geometry, never memos; the viewer refreshes
 manually, without SSE or polling. Operational events, telemetry, snapshots, and
 mutations retain their permission gates. Both views share geometry and browser
 archive generation; only operational exports include annotations.
 
-Backup validation accepts the current schema and its exact pre-publication
-predecessor without modifying either. Restoring an older database adds private
-defaults at runtime.
+Backup validation accepts the current schema, the predecessor that stored
+publication as `course.is_public`, and the exact pre-publication schema, without
+modifying any of them. Restoring an older database migrates the flag or adds
+private defaults at runtime.
+
+## Course service boundary
+
+The course domain, data service, and console come from the `fsk-coursekeeper`
+package (a pnpm git dependency pinned to a tag). Its `service` owns course data
+operations (courses, cones, memos, route markers, snapshots, mission presets) and
+the canonical course schema, knows nothing of users, permissions, publication, or
+transport, and returns `{ ok, status, value, detail, subject, events }`. Its
+`service/routes.mjs` is the single REST surface: the Course server registers it
+with Express and maps results to responses, audit logs, and SSE broadcasts.
+
+The package `console` is the operator console and public viewer. `course/web` is
+the FSK host: FSK styles, navigation, Auth permissions, publication, and the
+Course server as the course store. The console talks to the rover and GPS unit
+APIs directly over the tailnet; the Course server only lists their addresses
+(`GET /api/devices`, from `COURSE_DEVICES`). The Course server keeps the retired
+mission tables and converges their schema, but does not read or write them.
 
 ## Teams and years
 
