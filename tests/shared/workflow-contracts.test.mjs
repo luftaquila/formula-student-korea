@@ -14,7 +14,6 @@ import {
 const testWorkflow = fs.readFileSync(".github/workflows/test.yml", "utf8");
 const buildWorkflow = fs.readFileSync(".github/workflows/build.yml", "utf8");
 const pnpmSetupAction = fs.readFileSync(".github/actions/setup-pnpm/action.yml", "utf8");
-const roverWorkflow = parse(fs.readFileSync(".github/workflows/rover.yml", "utf8"));
 const packageManifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
 const workspaceConfig = fs.readFileSync("pnpm-workspace.yaml", "utf8");
 const workspaceLock = fs.readFileSync("pnpm-lock.yaml", "utf8");
@@ -52,79 +51,6 @@ function assertShardCoverage(project) {
 }
 
 describe("CI workflow operational contracts", () => {
-  it("routes all Rover automation through one component-aware workflow", () => {
-    const roverWorkflowFiles = fs.readdirSync(".github/workflows")
-      .filter((name) => name.startsWith("rover-") || name === "rover.yml");
-    const components = ["pilot", "host", "mcu", "gps"];
-    const dispatchComponents = [...components, "sd"];
-    const pushPaths = [
-      "rover/gps/**",
-      "rover/host/**",
-      "rover/mcu/**",
-      "rover/pilot/**",
-      ".github/workflows/rover.yml",
-    ];
-    const filterStep = roverWorkflow.jobs.changes.steps
-      .find((step) => step.uses === "dorny/paths-filter@v4");
-    const filters = parse(filterStep.with.filters);
-
-    assert.deepEqual(roverWorkflowFiles, ["rover.yml"]);
-    assert.deepEqual(roverWorkflow.on.push.branches, ["main"]);
-    assert.deepEqual(roverWorkflow.on.push.paths, pushPaths);
-    assert.deepEqual(
-      roverWorkflow.on.workflow_dispatch.inputs.component.options,
-      dispatchComponents,
-    );
-
-    for (const component of components) {
-      const expectedCondition =
-        `(github.event_name == 'workflow_dispatch' && inputs.component == '${component}') || `
-        + `needs.changes.outputs.${component} == 'true'`;
-      const jobNames = component === "pilot"
-        ? [`${component}-verify`, component]
-        : [component];
-
-      assert.equal(
-        roverWorkflow.jobs.changes.outputs[component],
-        `\${{ steps.filter.outputs.${component} }}`,
-      );
-      assert.deepEqual(
-        filters[component],
-        component === "gps"
-          ? [
-              "rover/gps/**",
-              "rover/pilot/pilot/lib/**",
-              ".github/workflows/rover.yml",
-            ]
-          : [`rover/${component}/**`, ".github/workflows/rover.yml"],
-      );
-      for (const jobName of jobNames) {
-        const job = roverWorkflow.jobs[jobName];
-        const expectedNeeds = jobName === component && jobNames.length === 2
-          ? ["changes", `${component}-verify`]
-          : "changes";
-
-        assert.equal(job.if, expectedCondition);
-        assert.deepEqual(job.needs, expectedNeeds);
-      }
-    }
-
-    assert.equal(filterStep.if, "github.event_name == 'push'");
-    assert.equal(filters.sd, undefined);
-    assert.equal(
-      roverWorkflow.jobs.sd.if,
-      "github.event_name == 'workflow_dispatch' && inputs.component == 'sd'",
-    );
-    assert.deepEqual(roverWorkflow.jobs.sd.needs, "changes");
-
-    const pilotVerify = roverWorkflow.jobs["pilot-verify"];
-    const pilotPublish = roverWorkflow.jobs.pilot;
-
-    assert.equal(pilotVerify.concurrency.group, pilotPublish.concurrency.group);
-    assert.equal(pilotVerify.concurrency["cancel-in-progress"], true);
-    assert.equal(pilotPublish.concurrency["cancel-in-progress"], true);
-  });
-
   it("runs unit tests in Seoul time and preserves the UTC/KST year boundary", () => {
     assert.equal(parse(testWorkflow).jobs.unit.env.TZ, "Asia/Seoul");
     assert.equal(currentCompetitionYear(new Date("2025-12-31T14:59:59.999Z")), 2025);

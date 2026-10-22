@@ -54,7 +54,7 @@ Shared dependencies follow these boundaries, verified by `test:shared`:
 
 Shared code never imports an application. Tests remain under the root `tests`
 folders, with existing domain commands. Traffic firmware and hardware stay with
-its module; Rover remains a separate top-level component.
+its module.
 
 ## Public course viewing
 

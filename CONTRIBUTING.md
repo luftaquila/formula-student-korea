@@ -4,7 +4,8 @@ Development and deployment workflow. See [Architecture](docs/architecture.md) fo
 service ownership and the [API reference](docs/api.md) for contracts.
 
 Competition module factories support tests but share one deployment. Hardware:
-[rover](rover/README.md), [timing devices](competition/modules/traffic/DESIGN.md).
+[timing devices](competition/modules/traffic/DESIGN.md); the course console, rover,
+and GPS unit live in [fsk-coursekeeper](https://github.com/luftaquila/fsk-coursekeeper).
 
 ## Local development
 
