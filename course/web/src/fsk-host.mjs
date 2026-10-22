@@ -24,5 +24,6 @@ export function createFskHost() {
     access: { permission: permissionComputed },
     features: { publication: true },
     publicCourses: { request: requestPublicCourse },
+    version: import.meta.env.VITE_COURSEKEEPER_VERSION || "dev",
   };
 }
