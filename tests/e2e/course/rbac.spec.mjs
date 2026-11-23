@@ -4,14 +4,10 @@ import { storageStatePath } from "../helpers/utils.mjs";
 // Course service RBAC backstop. The frontend hides tabs/buttons by permission,
 // while these gates (course/index.mjs authRoleFn) remain the enforcing layer:
 //   Course checkbox → course.manage, which includes course.operate
-//   rover.operate  → rover and missions
+//   rover.operate  → rover/GPS unit addresses and mission presets
 //   admin          → logs
-//   internal-strict (deny even an admin browser) → /api/rover/stream,
-//     /mission-report, /base/rtcm, /base/survey-result
 //
-// All assertions go through APIRequestContext (ctx.request / page.request) so no
-// SSE stream is held open — a denied internal-strict GET returns its 403 (or a
-// short 200 header for /stream) immediately and is closed by .close().
+// All assertions go through APIRequestContext (ctx.request / page.request).
 
 test.describe("Course RBAC gates", () => {
   test("course access can create a course and a cone (201)", async ({ browser }) => {
@@ -48,11 +44,9 @@ test.describe("Course RBAC gates", () => {
         data: { lat: 37.5, lng: 127.0, side: "left" },
       });
 
-      // rover control + mission history + logs require independent grants.
-      const roverExec = await ctx.request.post("/course/api/rover/execute", { data: { waypoints: [] } });
-      expect(roverExec.status()).toBe(403);
-      const missions = await ctx.request.get("/course/api/missions");
-      expect(missions.status()).toBe(403);
+      // Device addresses and logs require independent grants.
+      const devices = await ctx.request.get("/course/api/devices");
+      expect(devices.status()).toBe(403);
       const logs = await ctx.request.get("/course/api/logs");
       expect(logs.status()).toBe(403);
 
@@ -99,30 +93,6 @@ test.describe("Course RBAC gates", () => {
 
       const api = await ctx.request.get("/course/api/courses");
       expect(api.status()).toBe(401);
-    } finally {
-      await ctx.close();
-    }
-  });
-
-  test("internal-strict rover endpoints deny an admin browser (403)", async ({ browser }) => {
-    // Even a logged-in admin must be denied without an internal or rover secret
-    // — these are device-only. Caddy passes X-Internal-Service through on
-    // /course/api/rover/* (rovers authenticate with it), so this gate is the
-    // enforcing layer. The gate is method-independent and denies BEFORE any
-    // handler runs: ctx.request buffers, so the 403 returns immediately, and
-    // /stream never writes the event-stream head, so this never hangs on a
-    // held-open SSE.
-    const ctx = await browser.newContext({ storageState: storageStatePath("admin") });
-    try {
-      for (const path of [
-        "/course/api/rover/stream",
-        "/course/api/rover/mission-report",
-        "/course/api/rover/base/rtcm",
-        "/course/api/rover/base/survey-result",
-      ]) {
-        const res = await ctx.request.get(path, { timeout: 8000 });
-        expect(res.status(), `admin GET ${path}`).toBe(403);
-      }
     } finally {
       await ctx.close();
     }

@@ -17,10 +17,13 @@ test.describe("Public race courses", () => {
       id = (await created.json()).id;
       const operatorPage = await admin.newPage();
       await operatorPage.goto("/course");
-      const row = operatorPage.locator(".course-item").filter({ hasText: name });
+      // Publication is FSK-only; the console offers it in the course switcher.
+      const switcher = operatorPage.getByTestId("course-switcher");
+      await switcher.getByRole("button", { expanded: false }).click();
+      const row = switcher.getByTestId("course-row").filter({ hasText: name });
       await expect(row).toBeVisible();
       const published = operatorPage.waitForResponse((response) => response.url().endsWith(`/courses/${id}/publication`) && response.request().method() === "PATCH");
-      await row.getByRole("button", { name: "코스 공개", exact: true }).click();
+      await row.getByRole("button", { name: "Publish", exact: true }).click();
       expect((await published).status()).toBe(200);
 
       const page = await visitor.newPage();
@@ -32,12 +35,12 @@ test.describe("Public race courses", () => {
       await page.getByRole("link", { name: /경기 코스/ }).click();
       await expect(page).toHaveURL(/\/course\/public\/?$/);
       await expect(page.getByRole("banner").getByRole("heading", { name: "FSK 경기 코스" })).toBeVisible();
-      await expect(page.getByRole("heading", { name: "코스 목록", exact: true })).toBeVisible();
+      await expect(page.getByRole("heading", { name: "Courses", exact: true })).toBeVisible();
       const selection = page.getByRole("button", { name: new RegExp(`^${name} `) });
       await selection.click();
       await expect(selection).toHaveAttribute("aria-pressed", "true");
       await expect(selection).toHaveText(new RegExp(`${name} \\(\\d+m\\)`));
-      const tools = page.getByRole("group", { name: "코스 도구" });
+      const tools = page.getByRole("group", { name: "Course tools" });
       await expect(tools.getByRole("button")).toHaveCount(4);
       const selectionLines = await selection.evaluate((button) => {
         const name = button.querySelector(".public-course-name");
@@ -52,22 +55,22 @@ test.describe("Public race courses", () => {
       const cardBox = await card.boundingBox();
       // A full-width title and a separate action row must still fit a compact card.
       expect(cardBox.height).toBeLessThanOrEqual(76);
-      for (const action of [card.getByRole("button", { name: "코스 표시", exact: true }), card.getByRole("button", { name: "Asseto Corsa 트랙 다운로드", exact: true })]) {
+      for (const action of [card.getByRole("button", { name: "Show course", exact: true }), card.getByRole("button", { name: "Download Assetto Corsa track", exact: true })]) {
         const actionBox = await action.boundingBox();
         expect(actionBox.y).toBeGreaterThanOrEqual(titleBox.y + titleBox.height);
       }
       expect(titleBox.width).toBeGreaterThan(cardBox.width * .85);
       expect(Math.abs(selectionLines.nameY - selectionLines.lengthY)).toBeLessThan(selectionLines.lineHeight / 2);
-      const protractorBox = await tools.getByRole("button", { name: "각도 측정" }).boundingBox();
-      const rotateBox = await tools.getByRole("button", { name: "지도 90° 회전", exact: true }).boundingBox();
+      const protractorBox = await tools.getByRole("button", { name: "Measure angle" }).boundingBox();
+      const rotateBox = await tools.getByRole("button", { name: "Rotate map 90°", exact: true }).boundingBox();
       expect(rotateBox.x).toBeGreaterThanOrEqual(protractorBox.x + protractorBox.width);
       expect(rotateBox.y).toBe(protractorBox.y);
-      const map = page.getByLabel("경기 코스 지도", { exact: true });
+      const map = page.getByLabel("Course map", { exact: true });
       const bounds = await map.boundingBox();
       expect(bounds).not.toBeNull();
-      await tools.getByRole("button", { name: "거리 측정" }).click();
-      const reset = page.getByRole("button", { name: "측정 초기화" });
-      const close = page.getByRole("button", { name: "측정 닫기" });
+      await tools.getByRole("button", { name: "Measure distance" }).click();
+      const reset = page.getByRole("button", { name: "Reset measurement" });
+      const close = page.getByRole("button", { name: "Close measurement" });
       const resetBox = await reset.boundingBox();
       const closeBox = await close.boundingBox();
       for (const control of [reset, close]) {
@@ -87,29 +90,29 @@ test.describe("Public race courses", () => {
       await map.tap({ position: { x: bounds.width * .65, y: bounds.height * .5 } });
       await expect(page.getByRole("status").filter({ hasText: /\d+\.\d+ (m|km)/ })).toBeVisible();
       await page.screenshot({ path: test.info().outputPath("public-course-layout.png") });
-      await tools.getByRole("button", { name: "각도 측정" }).click();
+      await tools.getByRole("button", { name: "Measure angle" }).click();
       for (const [x, y] of [[.25, .4], [.5, .5], [.65, .3]]) await map.tap({ position: { x: bounds.width * x, y: bounds.height * y } });
       await expect(page.getByRole("status").filter({ hasText: /∠ .*°/ })).toBeVisible();
 
-      await page.getByRole("button", { name: "측정 닫기" }).click();
+      await page.getByRole("button", { name: "Close measurement" }).click();
       const bearing = () => map.locator(".leaflet-rotate-pane").evaluate((pane) => {
         const angle = pane.style.transform.match(/rotate\(([-\d.]+)rad\)/);
         return angle ? Number(angle[1]) : null;
       });
       const north = await bearing();
-      await page.getByRole("button", { name: "지도 90° 회전", exact: true }).click();
+      await page.getByRole("button", { name: "Rotate map 90°", exact: true }).click();
       await expect.poll(bearing).not.toBe(north);
       const rotated = await bearing();
-      await tools.getByRole("button", { name: "중심선 표시" }).click();
+      await tools.getByRole("button", { name: "Show centerline" }).click();
       await page.reload();
       await expect(selection).toHaveAttribute("aria-pressed", "true");
-      await expect(tools.getByRole("button", { name: "중심선 표시" })).toHaveAttribute("aria-pressed", "false");
+      await expect(tools.getByRole("button", { name: "Show centerline" })).toHaveAttribute("aria-pressed", "false");
       await expect.poll(bearing).toBe(rotated);
       const listReads = courseRequests.filter((request) => new URL(request.url()).pathname === "/course/api/public/courses").length;
 
       const publicRow = page.getByRole("listitem").filter({ has: selection });
       const downloaded = page.waitForEvent("download");
-      await publicRow.getByRole("button", { name: "Asseto Corsa 트랙 다운로드", exact: true }).click();
+      await publicRow.getByRole("button", { name: "Download Assetto Corsa track", exact: true }).click();
       const download = await downloaded;
       expect(download.suggestedFilename()).toBe(`${name}.zip`);
       expect(await download.failure()).toBeNull();
@@ -120,7 +123,7 @@ test.describe("Public race courses", () => {
       expect(courseRequests.every((request) => request.method() === "GET" && new URL(request.url()).pathname.startsWith("/course/api/public/"))).toBe(true);
 
       const revoked = operatorPage.waitForResponse((response) => response.url().endsWith(`/courses/${id}/publication`) && response.request().method() === "PATCH");
-      await row.getByRole("button", { name: "공개 해제", exact: true }).click();
+      await row.getByRole("button", { name: "Unpublish", exact: true }).click();
       expect((await revoked).status()).toBe(200);
       await drainBrowserEvents(page);
       await expect(selection).toBeVisible();
@@ -132,35 +135,6 @@ test.describe("Public race courses", () => {
       if (id) await admin.request.delete(`/course/api/courses/${id}`);
       await visitor.close();
       await admin.close();
-    }
-  });
-
-  test("a course without enough boundary cones remains usable without a centerline diagnostic", async ({ browser }) => {
-    const context = await browser.newContext({ viewport: { width: 390, height: 800 }, hasTouch: true });
-    try {
-      const course = { id: 1, name: "Sparse course", cone_count: 2 };
-      const detail = {
-        course,
-        cones: [
-          { id: 1, side: "left", lat: 35.292, lng: 126.574 },
-          { id: 2, side: "right", lat: 35.2921, lng: 126.5741 },
-        ],
-        route: { markers: [], steps: [] },
-      };
-      await context.route("**/course/api/public/courses", (route) => route.fulfill({ json: [course] }));
-      await context.route("**/course/api/public/courses/1", (route) => route.fulfill({ json: detail }));
-      const page = await context.newPage();
-      await page.goto("/course/public");
-      await expect(page.getByRole("button", { name: course.name, exact: true })).toHaveAttribute("aria-pressed", "true");
-      const inspector = page.getByRole("complementary", { name: "공개 코스" });
-      await expect(inspector.getByRole("status")).toHaveCount(0);
-      await expect(inspector.getByRole("alert")).toHaveCount(0);
-      await page.getByRole("button", { name: "중심선 표시", exact: true }).click();
-      await expect(inspector.getByRole("status")).toHaveCount(0);
-      await page.getByRole("button", { name: "거리 측정", exact: true }).click();
-      await expect(page.getByRole("button", { name: "측정 닫기", exact: true })).toBeVisible();
-    } finally {
-      await context.close();
     }
   });
 
@@ -181,7 +155,7 @@ test.describe("Public race courses", () => {
       });
       await page.goto("/course/public");
       await page.getByRole("button", { name: new RegExp(`^${name} `) }).click();
-      await expect(page.getByRole("group", { name: "코스 도구" }).getByRole("button")).toHaveCount(4);
+      await expect(page.getByRole("group", { name: "Course tools" }).getByRole("button")).toHaveCount(4);
       await drainBrowserEvents(page);
       expect(privateRequests).toEqual([]);
     } finally {

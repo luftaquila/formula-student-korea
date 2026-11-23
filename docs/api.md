@@ -564,7 +564,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 ## Course Service (port 10000)
 
-코스·콘 API와 SSE는 `course.operate`, 스냅샷·코스 삭제는 `course.manage`, 로버 운용은 `rover.operate`가 필요하다. 기기 인입은 `X-Internal-Service` 또는 Course 범위의 `X-Rover-Secret`으로 인증하며 사람 세션은 허용하지 않는다. 공개 조회는 `/course/public`에서 제공한다.
+코스·콘 API와 SSE, 스냅샷 생성은 `course.operate`, 스냅샷 조회·복원·삭제와 코스 삭제는 `course.manage`, 미션 프리셋과 장치 목록은 `rover.operate`가 필요하다. 로버와 GPS 유닛은 fsk-coursekeeper 장치 API를 tailnet에서 직접 제공하며 콘솔이 브라우저에서 직접 연결한다. 공개 조회는 `/course/public`에서 제공한다.
 
 ### Courses (`course.operate`)
 
@@ -574,13 +574,13 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 | POST | `/api/courses` | `course.operate` | `{ name }` | 201 `{ id, name, created_at, updated_at }` | 코스 생성 |
 | PATCH | `/api/courses/:id` | `course.operate` | `{ name }` | `{ id, name, updated_at }` | 코스 이름 수정 |
 | PATCH | `/api/courses/:id/direction` | `course.operate` | `{ reverse?, start_cone_id?: int\|null }` | `{ ...course }` | 코스 진행 방향(reverse)·시작 콘 저장 (요청에 담긴 것만 갱신, start_cone_id null=자동 시작 게이트). 주행 마커가 없는 코스의 폴백 값이며 UI는 시작 콘만 노출한다. `courses` SSE(type=direction) 브로드캐스트 |
-| DELETE | `/api/courses/:id` | `course.manage` | — | 200 | 코스 삭제 (콘·스냅샷·주행 마커 CASCADE 삭제). 활성 미션이 사용 중이면 감사 로그를 남기고 `409 { reason:"active_mission_course" }` |
+| DELETE | `/api/courses/:id` | `course.manage` | — | 200 | 코스 삭제 (콘·메모·스냅샷·주행 마커·미션 프리셋 CASCADE 삭제). 활성 미션이 쓰는 코스는 콘솔이 삭제를 막는다 |
 | GET | `/api/courses/:id/export` | `course.operate` | — | `{ name, cones, memos, route_markers, route_steps, ... }` | 코스 JSON 다운로드. `route_steps`는 DB id가 아닌 `route_markers` 배열 인덱스 |
 | POST | `/api/courses/import` | `course.operate` | `{ name, cones, memos?, route_markers?, route_steps? }` | 201 `{ id, name, ... }` | JSON으로 코스 일괄 생성 (트랜잭션, 주행 단계의 마커 인덱스를 새 id로 재매핑) |
 
 ### Public courses
 
-기존·신규·가져온 코스의 `is_public` 기본값은 `0`(비공개)입니다. 관리 화면에서 공개로 전환한 코스의 현재 내용을 그대로 제공하며, 별도의 공개 스냅샷은 만들지 않습니다. 아래 경로는 Course 서비스 기준이며 외부에서는 `/course` 접두어를 붙입니다.
+공개 여부는 FSK 전용 `course_publication` 테이블에 행이 있는지로 저장하며, 운영 API의 코스 응답·`courses` SSE에는 `is_public`(0\|1)으로 덧붙여집니다. 기존·신규·가져온 코스의 기본값은 비공개입니다. 관리 화면에서 공개로 전환한 코스의 현재 내용을 그대로 제공하며, 별도의 공개 스냅샷은 만들지 않습니다. 아래 경로는 Course 서비스 기준이며 외부에서는 `/course` 접두어를 붙입니다.
 
 | Method | Path | Auth | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
@@ -592,12 +592,12 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 공개 다운로드는 클릭 시 상세 API를 새로 조회한 다음 브라우저에서 ZIP을 생성합니다. 생성 완료 후에도 해당 코스의 공개 여부와 내용이 유지되는지 다시 확인하며, 변경되었으면 다운로드를 취소합니다. 공개 JSON에는 `memos` 필드 자체가 없고 PNG·트랙 파일에도 메모를 포함하지 않습니다. ZIP은 코스 JSON, 미리보기 PNG, Assetto Corsa 트랙 ZIP, 영어 설치 안내 `README.txt`로 구성됩니다. 관리 화면의 ZIP도 README를 포함하며 기존 메모 내보내기를 유지합니다.
 
-### Course Snapshots (`course.manage`)
+### Course Snapshots
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses/:id/snapshots` | `course.manage` | — | `[{ id, taken_at, actor, reason, cone_count }]` | 코스 스냅샷 목록 |
-| POST | `/api/courses/:id/snapshots` | `course.manage` | `{ reason? }` | 201 | 현재 콘 상태 스냅샷 저장 |
+| GET | `/api/courses/:id/snapshots` | `course.manage` | — | `{ snapshots: [{ id, course_id, taken_at, actor, reason, cone_count }] }` | 코스 스냅샷 목록 (최신순 최대 100개) |
+| POST | `/api/courses/:id/snapshots` | `course.operate` | `{ reason? }` | 201 | 현재 콘 상태 스냅샷 저장. 콘솔은 미션 생성 시 `auto:` 사유로 남긴다 |
 | POST | `/api/courses/:id/snapshots/:sid/restore` | `course.manage` | — | 200 | 스냅샷으로 콘 상태 복원 (복원 직전 자동 스냅샷) |
 | DELETE | `/api/courses/:id/snapshots/:sid` | `course.manage` | — | 200 | 스냅샷 삭제 |
 
@@ -617,15 +617,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 주행 방향의 단일 지정 수단이다. `course.reverse` / `course.start_cone_id`는 마커가 없는 코스에만 적용되는 폴백으로 남고, 웹 UI에는 진행방향 전환 컨트롤이 없다.
 
-`course/lib/route-mode.mjs`의 `resolveCourseRoute`가 지도·ZIP 내보내기 양쪽에서 계산 방식을 결정한다 (동일 입력 → 동일 결과):
-
-| mode | 조건 | 계산 |
-|---|---|---|
-| `auto` | 해석 가능한 단계 2개 미만 | `computeCenterline` + 저장된 `start_cone_id`/`reverse` |
-| `oriented` | 단계가 한 루프를 한 방향으로 훑음(반복 방문 없음, 모든 마커가 노면 위, 되돌아가지 않음) | `computeCenterline`. 마커가 `start`와 `reverse`만 공급하므로 **기하는 마커 도입 전과 완전히 동일** |
-| `guided` | 그 외(반복 방문·분기·노면 밖 마커) | `computeGuidedRoute` |
-
-닫힌 루프에서 마커 2개는 어느 쪽으로 돌아도 도달하므로 첫 구간은 **짧은 호**로 해석한다. 먼 쪽을 강제하려면 반대편에 마커를 추가한다.
+마커로 경로를 계산하는 방식(`auto`·`oriented`·`guided`)은 fsk-coursekeeper 패키지 `route-mode.mjs`가 정한다.
 
 마커 이전에 생성된 코스는 서비스 부팅 시 `course.seed_route_markers_from_direction.v1` 마이그레이션이 저장된 방향을 재현하는 마커 2개(루프 시작점과 1/3 지점)를 심는다. 루프로 닫히지 않는 코스는 건드리지 않아 `auto`로 남는다.
 
@@ -648,85 +640,17 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 | PATCH | `/api/memos/:id` | `course.operate` | `{ lat?, lng?, width?, height?, rotation?, content? }` | `{ id, course_id, lat, lng, width, height, rotation, content, updated_at }` | 메모 수정 (이동/크기/회전/내용) |
 | DELETE | `/api/memos/:id` | `course.operate` | — | 200 | 메모 삭제 |
 
-### Rover — 기기 인입 (로버 → 서버)
+### Mission presets and devices (`rover.operate`)
 
-로버는 `/api/rover/stream` SSE로 명령을 받고 아래 API로 응답·텔레메트리를 보낸다.
-
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| GET | `/api/rover/stream` | internal | GPS: `?device=gps`; rover: `?protocol_version=2&boot_id=<uuid>` | SSE stream | 기기 SSE 연결 (INTERNAL_SECRET 필수). v2 boot ID는 서버에 generation으로 영속되므로 A→B 교체 후 A 재접속은 409. 재부팅 경계의 active mission은 persisted `mission-safety-hold { mission_id, plan_hash, hold_id }`를 받고, correlated durable held/interrupted ACK 전까지 재접속마다 재전송한다. `device=gps`는 별도 수신기 슬롯 |
-| POST | `/api/rover/mission-report` | internal | `{ protocol_version:2, boot_id, report_seq, mission_id, plan_hash, event, command_id?, command_seq?, command_result?, waypoint_id?, active_waypoint_id?, completed_waypoint_ids?, motion_state?, hold_id?, checkpoint_persisted? }` | `{ ok, duplicate?, reset_mission?, mission? }` | boot·순번·미션·계획에 결합된 미션 보고. `report_seq` high-water와 보고 적용은 SQLite 트랜잭션 하나로 저장되어 서버 재시작 뒤에도 동일 boot replay를 거부한다. 모든 checkpoint report의 `completed_waypoint_ids`를 검증/재현한다. reboot hold는 `held\|interrupted` + 동일 `hold_id` + `checkpoint_persisted:true`일 때만 해제된다. terminal 보고의 동일 순번 재전송도 `reset_mission:true`를 반환한다. stale boot/hash/waypoint는 409 |
-| POST | `/api/rover/position` | internal | rover: `{ boot_id, lat, lng, alt?, request_id? }`; GPS: `{ lat, lng, alt?, request_id? }` `?device=gps\|rover` | `{ lat, lng, alt }` | v2 rover 위치는 현재 SSE boot와 일치할 때만 liveness·거리 gate·pending request를 갱신한다. GPS receiver는 별도 세션 계약 |
-| POST | `/api/rover/telemetry` | internal | rover: `{ boot_id, fix_status, nav_state, ntrip_*, gps, ... }`; GPS: 기존 payload `?device=gps\|rover` | 200 | v2 rover 텔레메트리는 현재 SSE boot에만 결합된다. current boot의 authoritative `EMERGENCY_STOP`만 active v2 mission을 confirmed-held/interrupted로 조정한다. 수신기(`device=gps`)는 receiverState 갱신 |
-| POST | `/api/rover/waypoint_reached` | internal | `{ index }` | 200 | 웨이포인트 도달 보고 (미션 진행 영속 + `rover:waypoint` 브로드캐스트) |
-| POST | `/api/rover/waypoint_skipped` | internal | `{ index }` | 200 | stuck 웨이포인트 건너뜀 보고 (`rover:skipped` 브로드캐스트) |
-| POST | `/api/rover/spray_result` | internal | `{ waypoint, outcome: success\|cancelled\|timeout }` | 200 | 도색 결과 보고 (미션에 영속 + `rover:spray` 브로드캐스트) |
-| POST | `/api/rover/logs` | internal | `{ entries: [...] }` | 200 | 로버 로그 업로드 (서버 메모리 캐시, 최대 1000줄) |
-| POST | `/api/rover/antenna_calibration_result` | internal | `{ ... }` | 200 | 안테나 캘리브레이션 결과 보고 |
-| POST | `/api/rover/wheel_calibration_result` | internal | `{ ... }` | 200 | 휠 캘리브레이션 결과 보고 |
-| POST | `/api/rover/base/survey-result` | internal | `{ point_id, lat, lng, alt, h_acc, samples }` | 200 | 수신기(base station)가 측량 결과 보고 → survey_point 갱신 |
-| POST | `/api/rover/base/rtcm` | internal | `{ data: base64 }` | 200 | 수신기(base station)가 RTCM3 청크 전송 → 로버로 릴레이(SSE `rtcm`). 로버 미연결이면 드롭 |
-
-### Rover — 운용 (관리자 → 서버 → 로버)
+미션 프리셋은 코스 데이터다. 미션 실행 원장은 각 로버의 hub가 소유한다.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/rover/status` | `rover.operate` | — | `{ connected, nav_state, active_mission, mission_protocol, last_position, ... }` | 로버 종합 상태. `active_mission`은 안정적 waypoint occurrence ID·상태·plan hash를 포함하고 `mission_protocol`은 요구/연결 버전과 boot ID를 표시 |
-| POST | `/api/rover/request` | `rover.operate` | — | `{ lat, lng }` | 로버에 위치 요청 후 응답 대기 (5초 타임아웃). 503=미연결, 504=타임아웃 |
-| POST | `/api/rover/stop` | `rover.operate` | — | `{ stopped: true }` | 비상정지 (SSE `emergency-stop` 이벤트) |
-| POST | `/api/rover/clear-emergency` | `rover.operate` | — | `{ cleared: true }` | 비상정지 해제. 미션은 자동 종료되지 않고 보존되어 "이어서 실행" 가능 |
-| POST | `/api/rover/control` | `rover.operate` | `{ throttle, steering }` | `{ throttle, steering }` | 수동 제어 (-100~100). v2 활성 미션은 로버가 실제 held를 보고한 경우(`motion_confirmed_held:true`)에만 non-zero 명령을 허용한다. 단순 SSE/telemetry 중단처럼 자율 주행이 계속될 수 있는 interruption은 409; 정지 명령(0/0)은 항상 전달 가능 |
-| POST | `/api/rover/pump` | `rover.operate` | `{ on }` | `{ on }` | 페리스탈릭 펌프 수동 on/off 토글 |
-| POST | `/api/rover/pump-duration` | `rover.operate` | `{ seconds }` (0~10) | `{ ok }` | 펌프 분사 시간(초) 설정. 로버 재연결 시 재전송 |
-| POST | `/api/rover/nav-lights` | `rover.operate` | `{ ... }` | 200 | 항법등 제어 |
-| POST | `/api/rover/led-brightness` | `rover.operate` | `{ ... }` | 200 | LED 밝기 제어 |
-| POST | `/api/rover/calibrate-battery` | `rover.operate` | `{ measured_v }` (15~32 V) | `{ ok, measured_v }` | 멀티미터 실측값으로 배터리 ADC 게인 1점 보정. 로버가 영구 저장 |
-| POST | `/api/rover/calibrate-antenna` | `rover.operate` | — | 200 | GPS 안테나 오프셋 캘리브레이션 시작 |
-| POST | `/api/rover/set-antenna-offset` | `rover.operate` | `{ ... }` | 200 | 안테나 오프셋 수동 설정 |
-| POST | `/api/rover/calibrate-wheels` | `rover.operate` | — | 200 | 휠 캘리브레이션 시작 |
-| POST | `/api/rover/reset-wheel-cal` | `rover.operate` | — | 200 | 휠 캘리브레이션 초기화 |
-| GET | `/api/rover/logs` | `rover.operate` | — | `{ entries, uploaded_at }` | 업로드된 로버 로그 조회 |
-| POST | `/api/rover/logs/fetch` | `rover.operate` | — | 200 | 로버에 로그 업로드 요청 (SSE 이벤트) |
-
-미션 v2 로버가 연결됐거나 v2 활성 미션이 있으면 레거시 `/api/rover/execute`, `/pause`, `/resume`, `/end-mission`은 410을 반환한다. 새 운용 UI는 아래 Missions API만 사용한다.
-
-### GPS — 수신기 소스 선택 + base station 측량점
-
-콘 캡처는 연결된 GPS 수신기를 우선하고 로버로 폴백한다. RTK 소스는 NGII 또는 수신기 base station이며, 수신기의 캡처·base 역할은 상호배타다. `rover.operate`가 필요하다.
-
-| Method | Path | 인증 | Body | 응답 | 설명 |
-|--------|------|------|------|------|------|
-| GET | `/api/gps/config` | `rover.operate` | — | `{ ntrip_source, active_base_point_id }` | 현재 GPS 소스 설정 |
-| PUT | `/api/gps/config` | `rover.operate` | `{ ntrip_source: ngii\|base, active_base_point_id? }` | config | 소스 변경. base면 측량 완료된 점 필수. 수신기에 `base-activate`/`base-stop`, 로버에 `ntrip-source` 즉시 전송 |
-| GET | `/api/gps/survey-points` | `rover.operate` | — | `{ points: [...] }` | 측량점 목록 |
-| POST | `/api/gps/survey-points` | `rover.operate` | `{ name }` | point | 측량점 추가(이름만, 좌표 미측량) |
-| DELETE | `/api/gps/survey-points/:id` | `rover.operate` | — | 200 | 삭제. 활성 base면 409 |
-| POST | `/api/gps/survey-points/:id/survey` | `rover.operate` | `{ duration_s? }` | `{ ok, duration_s }` | 수신기 측량 시작(NGII rtk_fixed 위치 평균). 미연결 503, base 모드면 409 |
-| POST | `/api/gps/survey-points/:id/survey/cancel` | `rover.operate` | — | 200 | 측량 취소 |
-
-기기 방향 이벤트(서버 → 기기, 위 `/api/rover/stream`으로 전달): 수신기 `base-survey-start`/
-`base-survey-cancel`/`base-activate`/`base-stop`, 로버 `rtcm`(base64)·`ntrip-source`(`ngii\|base`).
-
-### Missions (`rover.operate`)
-
-`mission.status`는 `ready → starting → running → pausing/paused 또는 interrupted → resuming → running → completed` 상태 기계다. `cancelled`도 종결 상태다. `plan_hash`는 종료 동작과 occurrence 순서를 묶고 start/resume 발행 시점에 `expected_plan_hash`로 CAS한다. `occurrence_revision`은 웨이포인트 진행 상태를 포함하며 남은 경로 편집과 start/resume 모두 `expected_occurrence_revision`까지 비교한다. `motion_confirmed_held`는 서버가 추정한 interruption과 로버가 확인한 실제 정지를 구분한다. end는 reboot safety hold 중에도 허용되지만 accepted+held ACK 전까지 미션을 active로 유지해 후속 미션과 수동 주행을 차단한다. 빈 return-only 경로는 영구 저장된 `start_position`이 있을 때만 편집·실행할 수 있다. 한 미션은 완료 항목을 포함해 최대 1,000 occurrence이며 코스별 프리셋은 최대 20개다.
-
-| Method | Path | Role | Request | Response | Description |
-|--------|------|------|---------|----------|-------------|
-| GET | `/api/missions/active` | `rover.operate` | — | `{ mission }` | 유일한 비종결 미션. 없으면 null |
-| POST | `/api/missions` | `rover.operate` | `{ course_id, preset_id?, finish_behavior: stop\|return_to_start, items: [{cone_id,lat,lng,alt,side}...] }` | 201 mission | 서버 권위 미션 생성. 각 좌표/방향은 운영자가 마지막으로 확인한 값의 value-CAS이며 live cone과 다르면 409. 같은 cone ID를 여러 번 넣으면 서로 다른 occurrence ID로 보존 |
-| PUT | `/api/missions/:id/remaining` | `rover.operate` | `{ expected_plan_hash, expected_occurrence_revision, finish_behavior, items: [{waypoint_id}\|{cone_id}...] }` | mission | `motion_confirmed_held:true`인 미션에서만 남은 경로 교체. 일반 stop 경로는 empty를 거부하고, 모든 pending이 `dispense_outcome_uncertain`이거나 return-only인 경우만 명시적 empty mode를 저장 |
-| POST | `/api/missions/:id/start` | `rover.operate` | `{ expected_plan_hash, expected_occurrence_revision, force? }` | 202 `{ command_id, command_seq, delivered, replay, mission }` | ready 미션 시작 명령 |
-| POST | `/api/missions/:id/pause` | `rover.operate` | — | 202 command envelope | running 미션 정지 명령. 수락 후 paused |
-| POST | `/api/missions/:id/resume` | `rover.operate` | `{ expected_plan_hash, expected_occurrence_revision, force? }` | 202 command envelope | paused/interrupted 미션의 pending occurrence만 재개. 완료 항목은 전송하지 않음 |
-| POST | `/api/missions/:id/end` | `rover.operate` | — | 202 command envelope | accepted+held ACK 후에만 cancelled. ACK 전에는 active/motion-unconfirmed fence를 유지 |
-| GET | `/api/rover/mission-presets` | `rover.operate` | `?course_id=` | `{ presets:[{ preset_revision, ... }] }` | 순서·중복·종료 동작을 저장한 코스별 프리셋. 삭제된 콘이 있으면 `stale:true` |
-| POST | `/api/rover/mission-presets` | `rover.operate` | `{ course_id, name, finish_behavior, items:[{cone_id}...] }` | 201 preset | 프리셋 생성 |
-| PUT | `/api/rover/mission-presets/:id` | `rover.operate` | 생성 payload + `{ expected_preset_revision }` | preset | last-read revision이 일치할 때만 프리셋 갱신 |
-| DELETE | `/api/rover/mission-presets/:id` | `rover.operate` | `{ expected_preset_revision }` | 204 | last-read revision이 일치할 때만 프리셋 삭제 |
-| GET | `/api/missions` | `rover.operate` | `?limit=(≤500, 기본 50)&offset=` | `{ missions, total }` | 미션 이력 목록 |
-| GET | `/api/missions/:id` | `rover.operate` | — | v2: `{ ...mission, waypoints, events }`; legacy: 기존 좌표 배열 | 미션 상세와 모든 lifecycle/command/route-edit 감사 이벤트 |
-| GET | `/api/missions/:id/telemetry` | `rover.operate` | — | `{ samples: [...] }` | 미션 텔레메트리 전체 (페이지네이션 미지원, 대용량 가능) |
+| GET | `/api/courses/:id/mission-presets` | `rover.operate` | — | `{ presets:[{ preset_revision, ... }] }` | 순서·중복·종료 동작을 저장한 코스별 프리셋(코스 데이터). 삭제된 콘이 있으면 `stale:true` |
+| POST | `/api/courses/:id/mission-presets` | `rover.operate` | `{ name, finish_behavior, items:[{cone_id,lat,lng,alt,side}...] }` | 201 preset | 프리셋 생성. 항목 좌표·방향이 live cone과 다르면 409 `cone_snapshot_mismatch` |
+| PUT | `/api/courses/:id/mission-presets/:presetId` | `rover.operate` | 생성 payload + `{ expected_preset_revision }` | preset | last-read revision이 일치할 때만 프리셋 갱신 |
+| DELETE | `/api/courses/:id/mission-presets/:presetId` | `rover.operate` | `{ expected_preset_revision }` | 204 | last-read revision이 일치할 때만 프리셋 삭제 |
+| GET | `/api/devices` | `rover.operate` | — | `{ devices: [{ id, kind: rover\|gps, label, url }] }` | 콘솔이 tailnet으로 직접 연결할 로버·GPS 유닛 API 주소(`COURSE_DEVICES`) |
 
 ### SSE (`/api/events`, `course.operate`)
 
@@ -737,13 +661,6 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 | `cones` | `{ type, courseId, cone?, coneId?, cones }` | 콘 변경 (type: add/update/delete/clear/restore) |
 | `memos` | `{ type, courseId, memo?, memoId?, memos }` | 메모 변경 (type: add/update/delete) |
 | `route` | `{ type, courseId, markers, steps }` | 주행 마커/방문 순서 변경 (type: marker_add/marker_update/marker_delete/steps) |
-| `rover` | `{ lat, lng, alt, source }` | 활성 소스 위치 수신 시 브로드캐스트 (source: rover\|receiver) |
-| `rover:status` | roverState + `{ active_mission_summary, mission_protocol, receiver, position_source, ntrip_source }` | GPS-rate bounded 상태. `active_mission_summary`는 ID/status/hold/hash/revision 등 권한 판단 필드만 포함하고 waypoint 배열은 포함하지 않음 |
-| `rover:mission` | `{ mission }` | command acknowledgement, checkpoint reconcile, waypoint 결과, 정지/완료 직후 v2 미션 전체 상태 |
-| `rover:waypoint` / `rover:skipped` / `rover:spray` | `{ index }` / `{ waypoint, outcome }` 등 | 미션 진행 이벤트 |
-| `rover:logs` | `{ count, uploaded_at }` | 로버 로그 업로드 완료 |
-| `rover:antenna_calibration` | 캘리브레이션 결과 객체 | 안테나 오프셋 캘리브레이션 결과 |
-| `gps:survey_result` | `{ point_id, name, ok, samples? }` | base station 측량 결과 |
 
 ---
 

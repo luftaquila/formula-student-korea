@@ -24,16 +24,7 @@ test.describe("Caddy security header stripping", () => {
     expect(res.status()).toBe(401);
   });
 
-  test("X-Internal-Service is preserved on /course/api/rover/* but stripped on /course UI paths", async ({ request }) => {
-    // Rover endpoints live on the open internet, so Caddy intentionally keeps
-    // the header here — the internal secret authenticates as admin.
-    const rover = await request.post("/course/api/rover/position", {
-      headers: internalHeaders(),
-      data: { lat: 37.5, lng: 127.0 },
-    });
-    expect(rover.ok()).toBeTruthy();
-
-    // The same header on a non-rover course path is stripped → no auth → 401.
+  test("X-Internal-Service is stripped on /course paths", async ({ request }) => {
     const ui = await request.post("/course/api/courses", {
       headers: internalHeaders(),
       data: { name: `sec-strip-${Date.now()}` },

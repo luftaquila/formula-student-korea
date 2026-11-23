@@ -100,29 +100,14 @@
 		reverse_proxy competition:9200
 	}
 
-	# Course service (map tiles require relaxed CSP)
+	# Course service (map tiles require relaxed CSP). The console talks to the
+	# rover and GPS unit APIs directly over the tailnet (https://*.ts.net).
 	redir /course /course/
 	handle_path /course/* {
-		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com https://api.vworld.kr; connect-src 'self'; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-ancestors 'self'"
-
-		# Rover-side SSE/REST endpoints authenticate via X-Internal-Service.
-		# The rover sits on the open internet (no Tailscale) so on these
-		# paths we skip the header-strip that the rest of /course/* gets.
-		# Authuser and X-Forwarded-For are still stripped to keep admin
-		# identity and IP-trust scoped to internal traffic.
-		@rover path /api/rover/*
-		handle @rover {
-			request_header -Authuser
-			request_header -X-Forwarded-For
-			reverse_proxy course:10000
-		}
-
-		handle {
-			request_header -X-Internal-Service
-			request_header -X-Rover-Secret
-			request_header -Authuser
-			reverse_proxy course:10000
-		}
+		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com https://api.vworld.kr; connect-src 'self' https://*.ts.net; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-ancestors 'self'"
+		request_header -X-Internal-Service
+		request_header -Authuser
+		reverse_proxy course:10000
 	}
 
 	# Score UI

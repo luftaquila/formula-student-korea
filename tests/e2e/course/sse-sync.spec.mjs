@@ -1,11 +1,8 @@
 import { test, expect } from "@playwright/test";
 import { storageStatePath, waitForPageReady } from "../helpers/utils.mjs";
-import { internalHeaders } from "../helpers/auth.mjs";
 
 // Live cone sync across two browser clients via the course SSE stream
-// (/course/api/events), plus the one-shot rover-position broadcast driving the
-// map marker. Both clients pin the same seeded course. No held-open rover stream
-// is used — the rover position is a single buffered POST.
+// (/course/api/events). Both clients pin the same seeded course.
 
 test.use({ viewport: { width: 1280, height: 800 } });
 
@@ -21,7 +18,7 @@ test.describe("Course SSE sync", () => {
     courseId = null;
   });
 
-  test("a cone added in context A appears in context B; rover position shows a marker", async ({ browser }) => {
+  test("a cone added in context A appears in context B", async ({ browser }) => {
     const ctxA = await browser.newContext({ storageState: storageStatePath("admin") });
     const ctxB = await browser.newContext({ storageState: storageStatePath("admin") });
     try {
@@ -38,7 +35,7 @@ test.describe("Course SSE sync", () => {
       });
 
       for (const p of [pageA, pageB]) {
-        await p.addInitScript((id) => localStorage.setItem("mapview.activeCourseId", String(id)), courseId);
+        await p.addInitScript((id) => localStorage.setItem("coursekeeper.console.activeCourseId", String(id)), courseId);
       }
 
       // Subscribe to the SSE stream BEFORE navigating so we don't miss events.
@@ -52,8 +49,9 @@ test.describe("Course SSE sync", () => {
       await sseB;
 
       // Both clients show the seeded cone.
-      await expect(pageB.locator(".cone-item")).toHaveCount(1, { timeout: 10000 });
-      const baselineB = await pageB.locator(".cone-item").count();
+      const conesB = pageB.getByTestId("cone-row");
+      await expect(conesB).toHaveCount(1, { timeout: 10000 });
+      const baselineB = await conesB.count();
 
       // Context A creates a cone via API → broadcasts cones:add over SSE.
       const add = await pageA.request.post(`/course/api/courses/${courseId}/cones`, {
@@ -62,20 +60,7 @@ test.describe("Course SSE sync", () => {
       expect(add.status()).toBe(201);
 
       // Context B's cone list grows (auto-retrying assertion over the SSE update).
-      await expect(pageB.locator(".cone-item")).toHaveCount(baselineB + 1, { timeout: 10000 });
-
-      // One-shot rover position POST (internal header preserved by Caddy only on
-      // /course/api/rover/*). Drives the "rover" SSE event → map marker. The
-      // marker carries a permanent Leaflet tooltip with className "rover-tooltip".
-      const pos = await pageA.request.post("/course/api/rover/position", {
-        headers: internalHeaders(),
-        data: { lat: 37.5008, lng: 127.0008 },
-      });
-      expect(pos.ok()).toBeTruthy();
-
-      // Both clients render the rover marker tooltip from the broadcast position.
-      await expect(pageB.locator(".rover-tooltip")).toContainText("로버", { timeout: 10000 });
-      await expect(pageA.locator(".rover-tooltip")).toContainText("로버", { timeout: 10000 });
+      await expect(conesB).toHaveCount(baselineB + 1, { timeout: 10000 });
     } finally {
       await ctxA.close();
       await ctxB.close();

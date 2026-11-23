@@ -36,7 +36,7 @@ test("public UI and settings load anonymously while operational routes remain pr
   }
   const privatePage = await fetch(baseUrl + "/", { redirect: "manual" });
   assert.equal(privatePage.status, 302);
-  for (const path of ["/api/courses", "/api/events", "/api/rover/status", "/api/courses/1/memos", "/api/courses/1/export"]) {
+  for (const path of ["/api/courses", "/api/events", "/api/devices", "/api/courses/1/memos", "/api/courses/1/export"]) {
     assert.equal((await client.get(path)).status, 401, path);
   }
   assert.equal((await client.post("/api/public/courses", { body: { name: "unauthorized" } })).status, 401);
@@ -55,8 +55,10 @@ test("courses are private by default and only course.manage may change publicati
     cookie: operator, body: { name: course.name, is_public: true },
   })).status, 200);
   for (const value of [1, "true", null]) assert.equal((await publish(value)).status, 400);
-  assert.equal(db.prepare("SELECT is_public FROM course WHERE id = ?").get(course.id).is_public, 0);
+  const published = () => db.prepare("SELECT COUNT(*) AS n FROM course_publication WHERE course_id = ?").get(course.id).n;
+  assert.equal(published(), 0);
   assert.equal((await publish(true)).status, 200);
+  assert.equal(published(), 1);
   const audit = db.prepare("SELECT detail FROM logs WHERE action = 'course.publication' AND level = 'info'").get();
   assert.deepEqual(JSON.parse(audit.detail), { before: { is_public: false }, after: { is_public: true } });
   const imported = await client.post("/api/courses/import", { cookie: manager, body: { name: "Imported", cones: [], is_public: true } });
@@ -105,9 +107,9 @@ test("revocation and deletion hide details even from an authenticated manager on
 
 test("publication persistence failures are audited without changing the stored state", async (t) => {
   const { db, publish, course } = await fixture(t);
-  db.exec("CREATE TRIGGER reject_publication BEFORE UPDATE OF is_public ON course BEGIN SELECT RAISE(ABORT, 'publication storage failure'); END");
+  db.exec("CREATE TRIGGER reject_publication BEFORE INSERT ON course_publication BEGIN SELECT RAISE(ABORT, 'publication storage failure'); END");
   assert.equal((await publish(true)).status, 500);
-  assert.equal(db.prepare("SELECT is_public FROM course WHERE id = ?").get(course.id).is_public, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM course_publication WHERE course_id = ?").get(course.id).n, 0);
   const warning = db.prepare("SELECT detail FROM logs WHERE action = 'course.publication' AND level = 'warn'").get();
   assert.match(JSON.parse(warning.detail).error, /publication storage failure/);
 });
@@ -118,17 +120,40 @@ test("the public viewer has no event stream endpoint", async (t) => {
   assert.equal((await client.get("/api/public/events", { cookie: manager })).status, 404);
 });
 
-test("existing course databases gain a private default without changing geometry or annotations", async () => {
+// Recreates the storage of a database written before publication moved to its
+// own table: course.is_public (form "column") or no publication at all ("none").
+function revertPublicationStorage(db, { flagged = [] } = {}) {
+  db.exec("DROP TABLE course_publication");
+  db.prepare("DELETE FROM schema_migrations WHERE name = 'course.publication_table.v1'").run();
+  if (flagged === null) return;
+  db.exec("ALTER TABLE course ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))");
+  for (const name of flagged) db.prepare("UPDATE course SET is_public = 1 WHERE name = ?").run(name);
+}
+
+test("legacy publication flags move to the publication table without changing geometry", async () => {
+  const dbPath = tmpDbPath();
+  let created = createCourseApp({ dbPath, validateUser: TRUST_JWT });
+  try {
+    created.db.exec("INSERT INTO course (name) VALUES ('Private'), ('Public')");
+    created.db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (2, 35, 126, 'left')").run();
+    revertPublicationStorage(created.db, { flagged: ["Public"] });
+    created.close(); created.db.close();
+    created = createCourseApp({ dbPath, validateUser: TRUST_JWT });
+    assert.deepEqual(created.db.prepare("SELECT course_id FROM course_publication").all(), [{ course_id: 2 }]);
+    assert.equal(created.db.pragma("table_info(course)").some((column) => column.name === "is_public"), false);
+    assert.equal(created.db.prepare("SELECT COUNT(*) AS n FROM cone").get().n, 1);
+  } finally { created.close(); created.db.close(); cleanup(dbPath); }
+});
+
+test("pre-publication databases gain a private default", async () => {
   const dbPath = tmpDbPath();
   let created = createCourseApp({ dbPath, validateUser: TRUST_JWT });
   try {
     created.db.prepare("INSERT INTO course (name) VALUES (?)").run("Existing");
-    created.db.prepare("INSERT INTO cone (course_id, lat, lng, side) VALUES (1, 35, 126, 'left')").run();
-    created.db.exec("ALTER TABLE course DROP COLUMN is_public");
+    revertPublicationStorage(created.db, { flagged: null });
     created.close(); created.db.close();
     created = createCourseApp({ dbPath, validateUser: TRUST_JWT });
-    assert.equal(created.db.prepare("SELECT is_public FROM course").get().is_public, 0);
-    assert.equal(created.db.prepare("SELECT COUNT(*) AS n FROM cone").get().n, 1);
-    assert.throws(() => created.db.prepare("UPDATE course SET is_public = 2").run(), /CHECK/);
+    assert.equal(created.db.prepare("SELECT COUNT(*) AS n FROM course_publication").get().n, 0);
+    assert.equal(created.db.prepare("SELECT COUNT(*) AS n FROM course").get().n, 1);
   } finally { created.close(); created.db.close(); cleanup(dbPath); }
 });

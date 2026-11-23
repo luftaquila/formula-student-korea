@@ -11,7 +11,6 @@
 *docker-compose*
 .env*
 .htpasswd*
-rover
 competition/modules/traffic/device
 competition/modules/traffic/assets
 filebrowser

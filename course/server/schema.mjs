@@ -4,10 +4,11 @@ import {
   setupRowCapRetention,
   normalizeTimestampColumn,
 } from "../../shared/server/db-setup.mjs";
-import { setupMissionV2Schema } from "../lib/mission-v2.mjs";
-import { seedOrientationMarkers } from "../lib/route-mode.mjs";
+import { seedOrientationMarkers } from "fsk-coursekeeper/route-mode.mjs";
+import { COURSE_TABLES, initializeCourseSchema } from "fsk-coursekeeper/service";
+import { setupMissionV2Schema } from "./retired-mission-schema.mjs";
 
-export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
+export function initializeSchema({ db, logger }) {
   db.pragma("foreign_keys = ON");
 
   db.exec(`CREATE TABLE IF NOT EXISTS course (
@@ -30,10 +31,6 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
       db.exec("ALTER TABLE course ADD COLUMN reverse INTEGER NOT NULL DEFAULT 0");
     if (!cols.includes("start_cone_id"))
       db.exec("ALTER TABLE course ADD COLUMN start_cone_id INTEGER");
-    if (!cols.includes("is_public"))
-      db.exec(
-        "ALTER TABLE course ADD COLUMN is_public INTEGER NOT NULL DEFAULT 0 CHECK(is_public IN (0, 1))",
-      );
   }
 
   // ALTER로 덧붙인 컬럼은 항상 끝에 붙고, 위 CREATE TABLE은 datetime('now')로 굳은 기본값을
@@ -242,7 +239,9 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
 
-  setupRowCapRetention(db, "mission_telemetry", MISSION_TELEMETRY_MAX_ROWS);
+  // Nothing inserts telemetry anymore, so the cap is fixed. The retention trigger
+  // stays because backup validation expects it.
+  setupRowCapRetention(db, "mission_telemetry", 500000);
 
   // 기존 DB 마이그레이션: mission_telemetry에 NTRIP 링크 건강도 + 측위 정확도 컬럼
   // 추가. fix_status/nav_state만으로는 "가다서다"(로버가 미션 중 정지 반복)의 원인을
@@ -369,9 +368,9 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
     }
   });
 
-  // Durable mission protocol v2: stable waypoint identities, editable remaining
-  // routes, command acknowledgements, and named route presets. The migration is
-  // additive and backfills legacy coordinate arrays without deleting history.
+  // Retired mission protocol v2 tables (the ledger moved to the rover hub). This
+  // only converges older databases to the validated layout without deleting
+  // history; retired-mission-schema.mjs lists the rows it can still rewrite.
   setupMissionV2Schema(db, logger);
 
   // 주행 마커가 코스의 유일한 방향 지정 수단이 되면서, 마커가 없는 기존 코스는 UI에서
@@ -430,8 +429,9 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
     });
   });
 
-  // GPS 소스/기준국 설정. 로버가 쓸 NTRIP 소스(NGII vs 수신기 base station)를 서버에
-  // 저장해 모든 클라이언트·로버 재연결 간에 공유한다. key-value 단순 저장:
+  // 퇴역 테이블. 로버 NTRIP 소스 설정은 rover hub가, 기준국 측량은 GPS 유닛이
+  // 관리한다(fsk-coursekeeper). FSK는 기존 데이터와 백업 검증 형식을 유지하려고
+  // gps_config·survey_point 테이블만 만들어 두며 읽거나 쓰지 않는다. 당시 형식:
   //   ntrip_source          "ngii" | "base" (기본 ngii)
   //   active_base_point_id  survey_point.id (base 소스일 때 사용할 기준점) | null
   db.exec(`CREATE TABLE IF NOT EXISTS gps_config (
@@ -439,10 +439,8 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   value TEXT
 );`);
 
-  // 측량점: 수신기를 기준국으로 쓰기 위한 이름 붙은 지점. NGII RTK가 살아있을 때
-  // 수신기 위치를 일정 시간 평균내어(lat/lng/alt) 기록해 두고, 같은 자리에 두면
-  // 그 좌표로 수신기를 고정 기준국(F9P TMODE3 FIXED)으로 돌린다. lat/lng/alt는
-  // 미측량 시 NULL, double 정밀도로 TMODE3 LLH 재구성에 충분하다.
+  // 퇴역 측량점 테이블(위 gps_config 참고). 수신기를 기준국으로 쓰던 시절 NGII RTK로
+  // 평균낸 지점 좌표를 기록했다. lat/lng/alt는 미측량 시 NULL.
   db.exec(`CREATE TABLE IF NOT EXISTS survey_point (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,
@@ -455,4 +453,25 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );`);
+
+  // Publication is FSK-only state, so it lives beside the shared course schema
+  // instead of on its rows. Copy the legacy is_public flags, then rebuild course
+  // to the shared definition. Re-running after an interruption is safe: the copy
+  // ignores existing rows and the rebuild is skipped once the layout matches.
+  db.exec(`CREATE TABLE IF NOT EXISTS course_publication (
+  course_id INTEGER PRIMARY KEY,
+  published_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+  FOREIGN KEY (course_id) REFERENCES course(id) ON DELETE CASCADE
+);`);
+  runMigrationOnce(db, "course.publication_table.v1", () => {
+    const hasFlag = db.prepare("PRAGMA table_info(course)").all().some((c) => c.name === "is_public");
+    if (hasFlag) {
+      db.prepare(
+        "INSERT OR IGNORE INTO course_publication (course_id) SELECT id FROM course WHERE is_public = 1",
+      ).run();
+    }
+    rebuildTable(db, "course", COURSE_TABLES.course);
+  }, { transaction: false });
+
+  initializeCourseSchema(db);
 }

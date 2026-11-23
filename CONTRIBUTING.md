@@ -4,7 +4,8 @@ Development and deployment workflow. See [Architecture](docs/architecture.md) fo
 service ownership and the [API reference](docs/api.md) for contracts.
 
 Competition module factories support tests but share one deployment. Hardware:
-[rover](rover/README.md), [timing devices](competition/modules/traffic/DESIGN.md).
+[timing devices](competition/modules/traffic/DESIGN.md); the course console, rover,
+and GPS unit live in [fsk-coursekeeper](https://github.com/luftaquila/fsk-coursekeeper).
 
 ## Local development
 
@@ -34,7 +35,7 @@ against the live k3s environment.
   fix and observe the same test pass.
 - Run the narrowest relevant test first. Run all affected suites before handoff.
 - On shared hosts, run tests through `pnpm test`, `pnpm run test:<domain>`, or
-  `node scripts/test.mjs tests/course/course-archive.test.mjs`; never use
+  `node scripts/test.mjs tests/course/public-courses.test.mjs`; never use
   `node --test` directly. The runner requires Linux, cgroup v2, and a systemd user
   manager, and refuses to run without enforced limits. Use CI if unsupported.
   Test limits (not application/build limits):

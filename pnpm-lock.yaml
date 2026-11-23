@@ -261,9 +261,15 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      fsk-coursekeeper:
+        specifier: github:luftaquila/fsk-coursekeeper#v0.1.0&path:/course
+        version: https://codeload.github.com/luftaquila/fsk-coursekeeper/tar.gz/ed45291c086ea6632b6a8de628a11242e1c30eda#path:/course(leaflet@1.9.4)(vue@3.5.42)
 
   course/web:
     dependencies:
+      fsk-coursekeeper:
+        specifier: github:luftaquila/fsk-coursekeeper#v0.1.0&path:/course
+        version: https://codeload.github.com/luftaquila/fsk-coursekeeper/tar.gz/ed45291c086ea6632b6a8de628a11242e1c30eda#path:/course(leaflet@1.9.4)(vue@3.5.42)
       jszip:
         specifier: ^3.10.1
         version: 3.10.1
@@ -1185,6 +1191,13 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
+
+  fsk-coursekeeper@https://codeload.github.com/luftaquila/fsk-coursekeeper/tar.gz/ed45291c086ea6632b6a8de628a11242e1c30eda#path:/course:
+    resolution: {gitHosted: true, integrity: sha512-Kyy10In1bRSdUgM12J2+DImxL7Kmy2gJghqoqktMdYFCWVLX4qlqJvYIpVPjJmpz+jssFUv8kK93bUJISkWhZA==, path: /course, tarball: https://codeload.github.com/luftaquila/fsk-coursekeeper/tar.gz/ed45291c086ea6632b6a8de628a11242e1c30eda}
+    version: 0.1.0
+    peerDependencies:
+      leaflet: ^1.9.4
+      vue: ^3.5.26
 
   fstream@1.0.12:
     resolution: {integrity: sha512-WvJ193OHa0GHPEL+AycEJgxvBEwyfRkN1vhjca23OaPVMCaLCXTd5qAu82AjTcgP1UJmytkOKb63Ypde7raDIg==}
@@ -2699,6 +2712,18 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  fsk-coursekeeper@https://codeload.github.com/luftaquila/fsk-coursekeeper/tar.gz/ed45291c086ea6632b6a8de628a11242e1c30eda#path:/course(leaflet@1.9.4)(vue@3.5.42):
+    dependencies:
+      jszip: 3.10.1
+      leaflet: 1.9.4
+      leaflet-rotate: 0.2.8(leaflet@1.9.4)
+      vue: 3.5.42
+      vue-sonner: 2.0.9
+    transitivePeerDependencies:
+      - '@nuxt/kit'
+      - '@nuxt/schema'
+      - nuxt
 
   fstream@1.0.12:
     dependencies:

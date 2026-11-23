@@ -2,9 +2,6 @@
 data/
 node_modules/
 **/web/dist/
-rover/rover_mcu.bin
-rover/rover_mcu.elf
-rover/rover_mcu.uf2
 tests/e2e/.auth/*.json
 playwright-report/
 test-results/

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import { DEVICE_SCOPES, PERMISSION_KEYS } from "../../shared/common/access-control.js";
 
 const column = (name, type, notnull = 0, pk = 0, defaultValue = null) =>
@@ -41,40 +40,6 @@ const LOG_TRIGGER = Object.freeze({
 
 const fk = (table, from, to, onDelete) =>
   Object.freeze({ table, from, to, onDelete, onUpdate: "NO ACTION" });
-
-function canonicalMissionPlanHash(finishBehavior, waypoints) {
-  const canonical = JSON.stringify({
-    finish_behavior: finishBehavior,
-    waypoints: waypoints.map((waypoint) => ({
-      id: waypoint.id,
-      cone_id: waypoint.cone_id_snapshot ?? waypoint.cone_id ?? null,
-      lat: Number(waypoint.lat),
-      lng: Number(waypoint.lng),
-      alt: Number.isFinite(waypoint.alt) ? Number(waypoint.alt) : null,
-      side: waypoint.side || null,
-    })),
-  });
-  return crypto.createHash("sha256").update(canonical).digest("hex");
-}
-
-function publicMissionWaypoint(row) {
-  return {
-    id: row.id,
-    position: row.position,
-    cone_id: row.cone_id,
-    cone_id_snapshot: row.cone_id_snapshot,
-    lat: row.lat,
-    lng: row.lng,
-    alt: row.alt,
-    side: row.side,
-    state: row.state,
-    outcome: row.outcome,
-    attempt_count: row.attempt_count,
-    completed_at: row.completed_at,
-    skipped_at: row.skipped_at,
-    skip_reason: row.skip_reason,
-  };
-}
 
 export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
   auth: Object.freeze({
@@ -190,7 +155,10 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
         column("updated_at", "TEXT", 1, 0, "strftime('%Y-%m-%dT%H:%M:%fZ','now')"),
         column("reverse", "INTEGER", 1, 0, "0"),
         column("start_cone_id", "INTEGER"),
-        column("is_public", "INTEGER", 1, 0, "0"),
+      ]),
+      course_publication: Object.freeze([
+        column("course_id", "INTEGER", 0, 1),
+        column("published_at", "TEXT", 1, 0, "strftime('%Y-%m-%dT%H:%M:%fZ','now')"),
       ]),
       cone: Object.freeze([
         column("id", "INTEGER", 0, 1),
@@ -385,6 +353,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
       ["rover_boot_session", ["generation"]],
     ]),
     foreignKeys: Object.freeze({
+      course_publication: Object.freeze([fk("course", "course_id", "id", "CASCADE")]),
       cone: Object.freeze([fk("course", "course_id", "id", "CASCADE")]),
       memo: Object.freeze([fk("course", "course_id", "id", "CASCADE")]),
       course_snapshot: Object.freeze([fk("course", "course_id", "id", "CASCADE")]),
@@ -403,7 +372,7 @@ export const SUPPORT_DATABASE_CONTRACTS = Object.freeze({
       mission_event: Object.freeze([fk("mission", "mission_id", "id", "CASCADE")]),
     }),
     tableSqlFragments: Object.freeze({
-      course: Object.freeze(["nametextnotnullunique", "check(is_publicin(0,1))"]),
+      course: Object.freeze(["nametextnotnullunique"]),
       cone: Object.freeze(["check(sidein('left','right','center'))"]),
       mission: Object.freeze([
         "check(statusin('running','paused','interrupted','completed','stopped','error'))",
@@ -530,6 +499,12 @@ function actualForeignKeys(db, table) {
   })).sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
 }
 
+function coursePublicationForm(db) {
+  const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'course_publication'").get();
+  if (hasTable) return "table";
+  return actualColumns(db, "course").some((entry) => entry.name === "is_public") ? "column" : "none";
+}
+
 function fail(service, incompatible) {
   throw new Error(`missing or incompatible ${service} runtime schema: ${incompatible.join(", ")}`);
 }
@@ -539,19 +514,21 @@ export function assertSupportDatabaseSchema(db, service) {
   if (!contract) throw new Error(`unknown support database service: ${service}`);
   const incompatible = [];
 
+  // Course publication has three restorable forms; validation never upgrades
+  // the source artifact, and the runtime migrates the older two after restore:
+  // "table" (current course_publication), "column" (the course.is_public flag
+  // it replaced), and "none" (the exact predecessor without publication).
+  const publicationForm = service === "course" ? coursePublicationForm(db) : null;
   for (const [table, columns] of Object.entries(contract.tables)) {
+    if (table === "course_publication" && publicationForm !== "table") continue;
     const object = db.prepare("SELECT type, sql FROM sqlite_master WHERE name = ?").get(table);
     if (object?.type !== "table") {
       incompatible.push(`${table}<table:missing>`);
       continue;
     }
-    const actual = JSON.stringify(actualColumns(db, table));
-    // Backups from immediately before publication are still restorable. Accept
-    // only that exact predecessor; the runtime adds the private default after
-    // restore, while validation never upgrades the source artifact.
-    const beforePublication = service === "course" && table === "course"
-      && actual === JSON.stringify(expectedColumns(columns.filter((column) => column.name !== "is_public")));
-    if (!beforePublication && actual !== JSON.stringify(expectedColumns(columns))) {
+    const legacyFlag = service === "course" && table === "course" && publicationForm === "column";
+    const expected = legacyFlag ? [...columns, column("is_public", "INTEGER", 1, 0, "0")] : columns;
+    if (JSON.stringify(actualColumns(db, table)) !== JSON.stringify(expectedColumns(expected))) {
       incompatible.push(`${table}<table:columns>`);
     }
     const expectedFks = [...(contract.foreignKeys[table] || [])]
@@ -560,8 +537,11 @@ export function assertSupportDatabaseSchema(db, service) {
       incompatible.push(`${table}<table:foreign-keys>`);
     }
     const normalizedSql = normalizeSql(object.sql);
-    for (const fragment of contract.tableSqlFragments[table] || []) {
-      if (beforePublication && fragment === "check(is_publicin(0,1))") continue;
+    const fragments = [
+      ...(contract.tableSqlFragments[table] || []),
+      ...(legacyFlag ? ["check(is_publicin(0,1))"] : []),
+    ];
+    for (const fragment of fragments) {
       if (!normalizedSql.includes(fragment)) incompatible.push(`${table}<table:constraint>`);
     }
   }
@@ -634,197 +614,6 @@ export function validateSupportDatabase(db, service) {
       WHERE typeof(is_public) != 'integer' OR is_public NOT IN (0, 1)`).all() : [];
     if (invalidPublication.length) {
       throw new Error(`invalid course publication state: ${invalidPublication.map(({ id }) => id).slice(0, 20).join(", ")}`);
-    }
-    const invalid = [];
-    const activeLifecycleStates = new Set([
-      "ready", "starting", "running", "pausing", "paused", "interrupted", "resuming",
-    ]);
-    for (const mission of db.prepare(`SELECT id,protocol_version,lifecycle_state
-      FROM mission ORDER BY id`).all()) {
-      if (![1, 2].includes(mission.protocol_version)) {
-        invalid.push(`mission#${mission.id}:protocol_version`);
-      } else if (mission.protocol_version === 1
-          && activeLifecycleStates.has(mission.lifecycle_state)) {
-        invalid.push(`mission#${mission.id}:legacy_active_protocol`);
-      }
-    }
-    const v2Missions = db.prepare(`SELECT id,lifecycle_state,plan_hash,active_command_id,
-      active_hold_id,empty_plan_mode,finish_behavior,hold_reason,start_lat,start_lng,start_alt,
-      (SELECT COUNT(*) FROM mission_waypoint w WHERE w.mission_id=mission.id
-        AND w.state IN ('pending','active')) AS pending_count
-      FROM mission WHERE protocol_version=2 ORDER BY id`).all();
-    const v2MissionById = new Map(v2Missions.map((mission) => [mission.id, mission]));
-    const lifecycleStates = new Set([
-      "ready", "starting", "running", "pausing", "paused", "interrupted",
-      "resuming", "completed", "cancelled",
-    ]);
-    const transitionalActions = new Map([
-      ["starting", "start"], ["pausing", "pause"], ["resuming", "resume"],
-    ]);
-    const commandById = db.prepare("SELECT * FROM mission_command WHERE id=? AND mission_id=?");
-    const planWaypoints = db.prepare(`SELECT * FROM mission_waypoint
-      WHERE mission_id=? AND state <> 'skipped'
-      ORDER BY CASE WHEN position IS NULL THEN 1 ELSE 0 END,position,created_at,id`);
-    for (const mission of v2Missions) {
-      if (!lifecycleStates.has(mission.lifecycle_state)) {
-        invalid.push(`mission#${mission.id}:lifecycle_state`);
-      }
-      if (typeof mission.plan_hash !== "string" || !/^[0-9a-f]{64}$/.test(mission.plan_hash)) {
-        invalid.push(`mission#${mission.id}:plan_hash`);
-      } else if (canonicalMissionPlanHash(
-        mission.finish_behavior, planWaypoints.all(mission.id),
-      ) !== mission.plan_hash) {
-        invalid.push(`mission#${mission.id}:plan_hash_content`);
-      }
-      if (!["stop", "return_to_start"].includes(mission.finish_behavior)) {
-        invalid.push(`mission#${mission.id}:finish_behavior`);
-      }
-      if (mission.empty_plan_mode != null
-          && !["return_only", "uncertainty_resolved"].includes(mission.empty_plan_mode)) {
-        invalid.push(`mission#${mission.id}:empty_plan_mode`);
-      }
-      if (mission.empty_plan_mode != null && mission.pending_count !== 0) {
-        invalid.push(`mission#${mission.id}:empty_plan_with_waypoints`);
-      }
-      if (mission.empty_plan_mode === "return_only" && mission.finish_behavior !== "return_to_start") {
-        invalid.push(`mission#${mission.id}:return_only_finish_behavior`);
-      }
-      if (mission.empty_plan_mode === "return_only"
-          && (!Number.isFinite(mission.start_lat) || !Number.isFinite(mission.start_lng))) {
-        invalid.push(`mission#${mission.id}:return_only_start_position`);
-      }
-      if (mission.empty_plan_mode === "uncertainty_resolved" && mission.finish_behavior !== "stop") {
-        invalid.push(`mission#${mission.id}:uncertainty_resolved_finish_behavior`);
-      }
-      if (mission.active_hold_id != null
-          && (typeof mission.active_hold_id !== "string" || mission.active_hold_id.length === 0)) {
-        invalid.push(`mission#${mission.id}:active_hold_id`);
-      }
-      if (["completed", "cancelled"].includes(mission.lifecycle_state)
-          && (mission.active_command_id != null || mission.active_hold_id != null)) {
-        invalid.push(`mission#${mission.id}:terminal_fence`);
-      }
-      if (mission.active_hold_id != null
-          && (mission.lifecycle_state !== "interrupted"
-            || mission.hold_reason !== "rover_rebooted")) {
-        invalid.push(`mission#${mission.id}:reboot_hold`);
-      }
-      if (mission.active_command_id != null) {
-        const command = commandById.get(mission.active_command_id, mission.id);
-        if (!command || command.state !== "pending") {
-          invalid.push(`mission#${mission.id}:active_command_id`);
-        } else {
-          const expectedAction = transitionalActions.get(mission.lifecycle_state);
-          if (command.action !== "end" && command.action !== expectedAction) {
-            invalid.push(`mission#${mission.id}:active_command_action`);
-          }
-          if (mission.active_hold_id != null && command.action !== "end") {
-            invalid.push(`mission#${mission.id}:reboot_hold_command`);
-          }
-          if (command.plan_hash !== mission.plan_hash) {
-            invalid.push(`mission#${mission.id}:active_command_plan_hash`);
-          }
-        }
-      } else if (transitionalActions.has(mission.lifecycle_state)) {
-        invalid.push(`mission#${mission.id}:missing_active_command`);
-      }
-    }
-
-    for (const command of db.prepare(`SELECT c.*
-      FROM mission_command c JOIN mission m ON m.id=c.mission_id
-      WHERE m.protocol_version=2 ORDER BY c.mission_id,c.command_seq`).all()) {
-      const mission = v2MissionById.get(command.mission_id);
-      let payload = null;
-      try { payload = JSON.parse(command.payload_json); } catch { /* reported below */ }
-      if (typeof command.plan_hash !== "string" || !/^[0-9a-f]{64}$/.test(command.plan_hash)
-          || !payload || payload.protocol_version !== 2
-          || payload.command_id !== command.id
-          || payload.command_seq !== command.command_seq
-          || payload.mission_id !== command.mission_id
-          || payload.action !== command.action
-          || payload.plan_hash !== command.plan_hash) {
-        invalid.push(`command#${command.id}:correlation`);
-      }
-      if (command.state !== "pending") continue;
-      if (!mission || mission.active_command_id !== command.id) {
-        invalid.push(`command#${command.id}:orphan_pending`);
-        continue;
-      }
-      if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
-
-      const carriesWaypoints = command.action === "start" || command.action === "resume";
-      const expectedKeys = [
-        "protocol_version", "command_id", "command_seq", "mission_id", "action",
-        "plan_hash", "expected_occurrence_revision", "finish_behavior", "mission_start",
-        "empty_plan_mode", "force", "target_boot_id", "previous_state",
-        ...(carriesWaypoints ? ["waypoints"] : []),
-      ].sort();
-      if (JSON.stringify(Object.keys(payload).sort()) !== JSON.stringify(expectedKeys)) {
-        invalid.push(`command#${command.id}:payload_shape`);
-      }
-      const expectedStart = mission.start_lat == null ? null : {
-        lat: mission.start_lat,
-        lng: mission.start_lng,
-        alt: mission.start_alt,
-      };
-      const expectedPending = db.prepare(`SELECT * FROM mission_waypoint
-        WHERE mission_id=? AND state IN ('pending','active')
-        ORDER BY position,created_at,id`).all(mission.id).map(publicMissionWaypoint);
-      const expectedPreviousState = command.action === "start" ? "ready"
-        : command.action === "pause" ? "running"
-          : command.action === "end" ? mission.lifecycle_state : null;
-      const validResumePreviousState = command.action !== "resume"
-        || ["paused", "interrupted"].includes(payload.previous_state);
-      const validCurrentState = command.action === "start" ? mission.lifecycle_state === "starting"
-        : command.action === "resume" ? mission.lifecycle_state === "resuming"
-          : command.action === "pause" ? mission.lifecycle_state === "pausing"
-            : payload.previous_state === mission.lifecycle_state;
-      if (payload.finish_behavior !== mission.finish_behavior
-          || payload.empty_plan_mode !== mission.empty_plan_mode
-          || JSON.stringify(payload.mission_start) !== JSON.stringify(expectedStart)
-          || payload.force !== true && payload.force !== false
-          || payload.target_boot_id !== command.rover_boot_id
-          || !validCurrentState
-          || !validResumePreviousState
-          || (expectedPreviousState != null && payload.previous_state !== expectedPreviousState)) {
-        invalid.push(`command#${command.id}:executable_context`);
-      }
-      if (carriesWaypoints) {
-        if (typeof payload.expected_occurrence_revision !== "string"
-            || !/^[0-9a-f]{64}$/.test(payload.expected_occurrence_revision)) {
-          invalid.push(`command#${command.id}:occurrence_revision`);
-        }
-        if (JSON.stringify(payload.waypoints) !== JSON.stringify(expectedPending)) {
-          invalid.push(`command#${command.id}:waypoints`);
-        }
-        if (expectedPending.length === 0
-            && !["return_only", "uncertainty_resolved"].includes(mission.empty_plan_mode)) {
-          invalid.push(`command#${command.id}:empty_plan`);
-        }
-        if (expectedPending.length === 0 && mission.empty_plan_mode === "return_only"
-            && (!Number.isFinite(mission.start_lat) || !Number.isFinite(mission.start_lng))) {
-          invalid.push(`command#${command.id}:return_start_unavailable`);
-        }
-      } else if (payload.expected_occurrence_revision !== null
-          || Object.hasOwn(payload, "waypoints")) {
-        invalid.push(`command#${command.id}:non_executable_payload`);
-      }
-    }
-
-    const bootSessions = db.prepare(`SELECT boot_id,generation,first_seen_at,last_seen_at,last_report_seq
-      FROM rover_boot_session ORDER BY generation`).all();
-    for (const session of bootSessions) {
-      if (typeof session.boot_id !== "string" || session.boot_id.length === 0
-          || !Number.isInteger(session.generation) || session.generation < 1
-          || !Number.isInteger(session.first_seen_at) || session.first_seen_at < 0
-          || !Number.isInteger(session.last_seen_at)
-          || session.last_seen_at < session.first_seen_at
-          || !Number.isSafeInteger(session.last_report_seq) || session.last_report_seq < -1) {
-        invalid.push(`boot#${session.boot_id || "<empty>"}:session`);
-      }
-    }
-    if (invalid.length) {
-      throw new Error(`invalid course mission state: ${invalid.slice(0, 20).join(", ")}`);
     }
   }
   return true;

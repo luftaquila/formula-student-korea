@@ -1,8 +1,7 @@
 import { authorizePrincipal, access } from "../../../shared/common/access-control.js";
 
 export function createCourseEvents({ app }) {
-  // 연결에 service grants를 태깅해 rover 텔레메트리를 rover.operate 연결로만 좁힌다.
-  // courses/cones/memos는 course.operate 연결에 전송된다. 권한은 연결 시점 스냅샷이므로
+  // 연결에 service grants를 태깅한다. courses/cones/memos는 course.operate 연결에 전송된다. 권한은 연결 시점 스냅샷이므로
   // SSE 매니저가 주기적으로 재검증해 변경·삭제 시 metadata를 갱신하거나 연결을 종료한다.
   async function revalidateSseRole(meta) {
     const email = meta.email;

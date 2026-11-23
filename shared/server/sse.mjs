@@ -64,7 +64,7 @@ export function createSSEManager(maxClients = 200, { logger = null } = {}) {
   }, 30000);
   heartbeatTimer.unref();
 
-  // 선택적 주기 재검증: revalidate가 등록된 연결만 대상(예: course rover SSE의 role 재확인).
+  // 선택적 주기 재검증: revalidate가 등록된 연결만 대상(예: course SSE의 권한 재확인).
   // 연결 시점 meta는 스냅샷이라 강등이 재연결 전까지 반영 안 되는데(즉시-권한-반영 원칙 위배),
   // 여기서 주기적으로 최신 상태를 meta에 반영하거나(→ filterFn이 재평가) 자격 상실 시 연결을
   // 종료한다. revalidate가 throw하면(auth 일시 오류) 연결을 유지한다(fail-open, validateUser의
