@@ -35,7 +35,7 @@ test.describe("Course SSE sync", () => {
       });
 
       for (const p of [pageA, pageB]) {
-        await p.addInitScript((id) => localStorage.setItem("mapview.activeCourseId", String(id)), courseId);
+        await p.addInitScript((id) => localStorage.setItem("coursekeeper.console.activeCourseId", String(id)), courseId);
       }
 
       // Subscribe to the SSE stream BEFORE navigating so we don't miss events.
@@ -49,8 +49,9 @@ test.describe("Course SSE sync", () => {
       await sseB;
 
       // Both clients show the seeded cone.
-      await expect(pageB.locator(".cone-item")).toHaveCount(1, { timeout: 10000 });
-      const baselineB = await pageB.locator(".cone-item").count();
+      const conesB = pageB.getByTestId("cone-row");
+      await expect(conesB).toHaveCount(1, { timeout: 10000 });
+      const baselineB = await conesB.count();
 
       // Context A creates a cone via API → broadcasts cones:add over SSE.
       const add = await pageA.request.post(`/course/api/courses/${courseId}/cones`, {
@@ -59,7 +60,7 @@ test.describe("Course SSE sync", () => {
       expect(add.status()).toBe(201);
 
       // Context B's cone list grows (auto-retrying assertion over the SSE update).
-      await expect(pageB.locator(".cone-item")).toHaveCount(baselineB + 1, { timeout: 10000 });
+      await expect(conesB).toHaveCount(baselineB + 1, { timeout: 10000 });
     } finally {
       await ctxA.close();
       await ctxB.close();

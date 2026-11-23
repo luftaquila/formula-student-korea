@@ -17,10 +17,13 @@ test.describe("Public race courses", () => {
       id = (await created.json()).id;
       const operatorPage = await admin.newPage();
       await operatorPage.goto("/course");
-      const row = operatorPage.locator(".course-item").filter({ hasText: name });
+      // Publication is FSK-only; the console offers it in the course switcher.
+      const switcher = operatorPage.getByTestId("course-switcher");
+      await switcher.getByRole("button", { expanded: false }).click();
+      const row = switcher.getByTestId("course-row").filter({ hasText: name });
       await expect(row).toBeVisible();
       const published = operatorPage.waitForResponse((response) => response.url().endsWith(`/courses/${id}/publication`) && response.request().method() === "PATCH");
-      await row.getByRole("button", { name: "Publish course", exact: true }).click();
+      await row.getByRole("button", { name: "Publish", exact: true }).click();
       expect((await published).status()).toBe(200);
 
       const page = await visitor.newPage();
