@@ -48,7 +48,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      MISSION_TELEMETRY_MAX_ROWS: ${MISSION_TELEMETRY_MAX_ROWS:-}
       VWORLD_KEY: ${VWORLD_KEY:-}
       # 콘솔이 tailnet으로 직접 붙는 로버·GPS 유닛 API 주소 목록(JSON).
       COURSE_DEVICES: ${COURSE_DEVICES:-}

@@ -8,7 +8,7 @@ import { seedOrientationMarkers } from "fsk-coursekeeper/route-mode.mjs";
 import { COURSE_TABLES, initializeCourseSchema } from "fsk-coursekeeper/service";
 import { setupMissionV2Schema } from "./retired-mission-schema.mjs";
 
-export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
+export function initializeSchema({ db, logger }) {
   db.pragma("foreign_keys = ON");
 
   db.exec(`CREATE TABLE IF NOT EXISTS course (
@@ -239,7 +239,9 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_mission_telemetry ON mission_telemetry(mission_id, t);`);
 
-  setupRowCapRetention(db, "mission_telemetry", MISSION_TELEMETRY_MAX_ROWS);
+  // Nothing inserts telemetry anymore, so the cap is fixed. The retention trigger
+  // stays because backup validation expects it.
+  setupRowCapRetention(db, "mission_telemetry", 500000);
 
   // 기존 DB 마이그레이션: mission_telemetry에 NTRIP 링크 건강도 + 측위 정확도 컬럼
   // 추가. fix_status/nav_state만으로는 "가다서다"(로버가 미션 중 정지 반복)의 원인을

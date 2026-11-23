@@ -1,4 +1,3 @@
-import { MISSION_TELEMETRY_MAX_ROWS } from "./server/constants.mjs";
 import { createCourseEvents } from "./server/services/events.mjs";
 import { createCourseAccess } from "./server/services/access.mjs";
 import { initializeSchema } from "./server/schema.mjs";
@@ -28,7 +27,7 @@ export function createCourseApp(options = {}) {
     authRoleFn: roleFn,
   });
 
-  initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger });
+  initializeSchema({ db, logger });
 
   /* ============================================
    SSE (Server-Sent Events) 설정
