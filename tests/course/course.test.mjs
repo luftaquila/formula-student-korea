@@ -109,6 +109,22 @@ describe('Auth enforcement', () => {
     const snapshotAllowed = await client.get('/api/courses/99999/snapshots', { cookie: courseManagerCookie });
     assert.equal(snapshotAllowed.status, 404);
   });
+
+  it('applies the course.manage gates to ids that parseInt would still accept', async () => {
+    const deleteDenied = await client.delete('/api/courses/1a', { cookie: courseOperatorCookie });
+    assert.equal(deleteDenied.status, 403);
+    const listDenied = await client.get('/api/courses/1a/snapshots', { cookie: courseOperatorCookie });
+    assert.equal(listDenied.status, 403);
+    const restoreDenied = await client.post('/api/courses/1a/snapshots/1/restore', { cookie: courseOperatorCookie, body: {} });
+    assert.equal(restoreDenied.status, 403);
+    const snapshotDeleteDenied = await client.delete('/api/courses/1a/snapshots/1', { cookie: courseOperatorCookie });
+    assert.equal(snapshotDeleteDenied.status, 403);
+
+    const take = await client.post('/api/courses/99999a/snapshots', { cookie: courseOperatorCookie, body: {} });
+    assert.equal(take.status, 404);
+    const deleteAllowed = await client.delete('/api/courses/99999a', { cookie: courseManagerCookie });
+    assert.equal(deleteAllowed.status, 404);
+  });
 });
 
 // ─── Courses ────────────────────────────────────────────────────────────
