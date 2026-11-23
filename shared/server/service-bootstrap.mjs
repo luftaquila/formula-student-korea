@@ -29,6 +29,7 @@ export function createServiceSkeleton({
     staticRoot: options.staticRoot,
     jsonLimit: options.jsonLimit,
     jsonLimitPaths: options.jsonLimitPaths,
+    site: options.site,
   };
   const requestedCacheTtl = options.validateUserCacheTtl ?? validateUserCacheTtl;
   if (requestedCacheTtl !== undefined) deps.validateUserCacheTtl = requestedCacheTtl;
@@ -62,13 +63,13 @@ export function createServiceSkeleton({
       }
     });
   }
-  return { app, db, logger, dbRun: createDbRun(), ownsDb };
+  return { app, db, logger, dbRun: createDbRun(), ownsDb, site: app.locals.site };
 }
 
 // SPA fallback은 모든 서비스 라우트 **뒤에** 등록해야 하므로 골격이 아니라 각 팩토리
 // 말미에서 서비스가 직접 호출한다. root override는 테스트 픽스처 격리용.
 export function addSpaFallback(app, root = app.locals.staticRoot || "./web/dist") {
-  app.get("/{*splat}", htmlPage("index.html", root));
+  app.get("/{*splat}", htmlPage("index.html", root, { site: app.locals.site }));
 }
 
 // 직접 실행(`node index.mjs`) 부팅 블록. factory는 { app, db, ...extras }를 반환해야

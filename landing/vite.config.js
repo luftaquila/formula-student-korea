@@ -1,9 +1,20 @@
 import { defineConfig } from "vite";
 import vue from "@vitejs/plugin-vue";
 import { resolve } from "path";
+import { siteEnvConfigPlugin } from "../shared/build/vite-config.js";
+import { parseSiteConfig } from "../shared/common/site-config.js";
+import { renderLandingIndex } from "./site-setup.mjs";
+
+// The Caddy entrypoint renders the title and social tags into the built page; the
+// dev server renders them from its own environment.
+const siteMetaPlugin = {
+  name: "landing-site-meta",
+  apply: "serve",
+  transformIndexHtml: (html) => renderLandingIndex(html, parseSiteConfig(process.env)),
+};
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [vue(), siteEnvConfigPlugin(), siteMetaPlugin],
 
   server: {
     port: 9000,

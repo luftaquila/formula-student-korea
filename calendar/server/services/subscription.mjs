@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 
-export function createSubscriptionService() {
+export function createSubscriptionService({ site }) {
   // Generate HMAC signature for iCal subscription URL
   function generateICalSig(role) {
     return crypto.createHmac("sha256", process.env.JWT_SECRET).update(`ical:${role}`).digest("hex");
@@ -33,10 +33,10 @@ export function createSubscriptionService() {
     const lines = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
-      "PRODID:-//Formula Student Korea//Calendar//KO",
+      `PRODID:-//${escapeICalText(site.name)}//Calendar//KO`,
       "CALSCALE:GREGORIAN",
       "METHOD:PUBLISH",
-      "X-WR-CALNAME:Formula Student Korea",
+      `X-WR-CALNAME:${escapeICalText(site.name)}`,
       "X-WR-TIMEZONE:Asia/Seoul",
       "BEGIN:VTIMEZONE",
       "TZID:Asia/Seoul",

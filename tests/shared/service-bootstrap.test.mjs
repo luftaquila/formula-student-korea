@@ -17,6 +17,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  testSite,
   TRUST_JWT,
 } from '../helpers/test-utils.mjs';
 
@@ -99,6 +100,8 @@ describe('addSpaFallback', () => {
     fs.writeFileSync(path.join(root, 'index.html'), '<html>spa</html>');
     try {
       const app = express();
+      // Skeleton apps carry the deployment's site configuration for SPA HTML.
+      app.locals.site = testSite();
       addSpaFallback(app, root);
       const { server, baseUrl } = await startServer(app);
       try {

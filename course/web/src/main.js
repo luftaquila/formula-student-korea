@@ -9,6 +9,7 @@ import "vue-sonner/style.css";
 import { initTheme } from "@shared/browser/theme-init.js";
 import { initTestBanner } from "@shared/browser/test-banner.js";
 import { hasPermission } from "@shared/browser/officialsStore.js";
+import { siteTitle } from "@shared/browser/site.js";
 import { HOST_KEY } from "fsk-coursekeeper/console/host.mjs";
 import { setBaseMapKey } from "fsk-coursekeeper/console/lib/course-map.mjs";
 import { createFskHost } from "./fsk-host.mjs";
@@ -31,7 +32,7 @@ router.beforeEach((to) => {
   if (to.meta.permission && !hasPermission(to.meta.permission)) return to.path === "/" ? "/public" : "/";
 });
 
-router.afterEach((to) => { document.title = to.meta.public ? "FSK 경기 코스" : "FSK 코스 관리"; });
+router.afterEach((to) => { document.title = siteTitle(to.meta.public ? "경기 코스" : "코스 관리"); });
 
 initTheme();
 setBaseMapKey(window.__VWORLD_KEY__);

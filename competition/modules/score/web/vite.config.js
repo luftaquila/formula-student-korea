@@ -1,7 +1,7 @@
 import vue from "@vitejs/plugin-vue";
-import { createViteConfig } from "../../../../shared/build/vite-config.js";
+import { createViteConfig, siteEnvConfigPlugin } from "../../../../shared/build/vite-config.js";
 
 export default (env) => ({
-  plugins: [vue()],
+  plugins: [vue(), siteEnvConfigPlugin()],
   ...createViteConfig("score", 9600)(env),
 });

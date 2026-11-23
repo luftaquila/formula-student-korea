@@ -28,6 +28,10 @@ Read the applicable references before work:
   scope deployments and verification separately.
 - Competition has one runtime and database. `competition_team` is the only team
   source; its `id` is stable.
+- Each deployment's name, domain, and features come from its
+  [site configuration](docs/architecture.md#site-configuration). Unset values keep
+  the FSK defaults; other sites override through configuration, never code.
+  Invalid configuration fails closed.
 - Migration sources are immutable. Migration, backup, and restore validation must
   be read-only and fail closed before publishing or replacing artifacts.
 - Authentication and integrations fail closed. Only Auth HTTP `200` confirms a user;

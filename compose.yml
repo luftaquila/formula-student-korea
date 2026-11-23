@@ -2,6 +2,14 @@ x-common-env: &common-env
   JWT_SECRET: ${JWT_SECRET}
   INTERNAL_SECRET: ${INTERNAL_SECRET}
   TEST_SERVER: ${TEST_SERVER:-}
+  # Site identity and enabled features (see .env.example). Unset values take
+  # the defaults; every runtime rejects an invalid value at startup.
+  SITE_NAME: ${SITE_NAME:-}
+  SITE_SHORT_NAME: ${SITE_SHORT_NAME:-}
+  PUBLIC_URL: ${PUBLIC_URL:-}
+  FEATURES: ${FEATURES:-}
+  SITE_LINKS: ${SITE_LINKS:-}
+  SITE_OG_IMAGE: ${SITE_OG_IMAGE:-}
 
 x-common-healthcheck: &common-healthcheck
   interval: 30s
@@ -20,7 +28,6 @@ services:
       - label:disable
     environment:
       <<: *common-env
-      PUBLIC_URL: ${PUBLIC_URL}
     volumes:
       - ./competition/data:/app/data
     restart: unless-stopped
@@ -146,7 +153,6 @@ services:
       ADMIN_EMAIL: ${ADMIN_EMAIL}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
-      PUBLIC_URL: ${PUBLIC_URL}
     volumes:
       - ./auth/data:/home/node/fsk-auth/data
     restart: unless-stopped
@@ -216,6 +222,12 @@ services:
       - DOMAIN_NAME=${DOMAIN_NAME}
       - INTERNAL_SECRET=${INTERNAL_SECRET}
       - TEST_SERVER=${TEST_SERVER:-}
+      - SITE_NAME=${SITE_NAME:-}
+      - SITE_SHORT_NAME=${SITE_SHORT_NAME:-}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - FEATURES=${FEATURES:-}
+      - SITE_LINKS=${SITE_LINKS:-}
+      - SITE_OG_IMAGE=${SITE_OG_IMAGE:-}
     healthcheck:
       # caddy:alpine 이미지의 BusyBox wget으로 랜딩 페이지(:9000/)를 확인. 다른 서비스가
       # 이 caddy에 service_healthy로 의존할 수 있게 하고, 프록시가 살아있는지 검증한다.
@@ -239,6 +251,12 @@ services:
     environment:
       - INTERNAL_SECRET=${INTERNAL_SECRET}
       - TEST_SERVER=${TEST_SERVER:-}
+      - SITE_NAME=${SITE_NAME:-}
+      - SITE_SHORT_NAME=${SITE_SHORT_NAME:-}
+      - PUBLIC_URL=${PUBLIC_URL:-}
+      - FEATURES=${FEATURES:-}
+      - SITE_LINKS=${SITE_LINKS:-}
+      - SITE_OG_IMAGE=${SITE_OG_IMAGE:-}
     ports:
       - "0.0.0.0:9000:9000"
     depends_on: *caddy-depends

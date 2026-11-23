@@ -19,6 +19,7 @@ other module tables use the prefix above (Queue `/health` means
 [Runtime communication](architecture.md#runtime-communication).
 
 Former standalone, nested `/{module}/api/*`, lifecycle, finalize, snapshot, and version routes are not compatibility APIs and return `404`.
+Modules of disabled [site features](architecture.md#site-configuration) serve no API or UI and also return `404`.
 
 Competition years use `Asia/Seoul`. Reads may select any valid year. Team, vehicle-type, and Inspection mutations may select the current or next KST year; Queue, Registration, Traffic, Score, and Documents mutations remain limited to the current KST year. A year outside the applicable write window returns `409 YEAR_READ_ONLY`. There is no draft/finalize state.
 
@@ -56,6 +57,11 @@ Admin satisfies all human permissions. A `*.manage` permission implies the match
 
 Entry, Email/SMS, logs, and Account & Access are Admin-only; they have no grant key.
 
+Each permission belongs to a [site feature](architecture.md#site-configuration)
+(`rover.operate` to `course`, the others to the feature of their prefix). A
+deployment offers, accepts, and forward-authorizes only the permissions of its
+enabled features; browsers also hide pages of disabled features from Admins.
+
 ### Rate Limiting
 
 - **Auth**: OAuth login/callback — 20 requests/minute per IP
@@ -84,13 +90,13 @@ Entry, Email/SMS, logs, and Account & Access are Admin-only; they have no grant 
 | POST | `/api/logout` | public | — | 200 | Clears the human and device session cookies regardless of the current principal state |
 | GET | `/api/session` | public | — | `{ name, picture, role, permissions, accessRevision }` or 401 | Validates the current human session; `picture` is the Google profile image URL (empty when unavailable) |
 | GET | `/api/device/session` | public | — | `{ id, name, scope, startPath }` or 401 | Validates the current device session |
-| GET | `/api/forward-auth` | internal key | `?permission=<permission>`, `X-Forward-Auth-Key` header | 200 + `X-Forwarded-User` header, or 400/401/403 | Caddy forward_auth for an exact human permission |
+| GET | `/api/forward-auth` | internal key | `?permission=<permission>`, `X-Forward-Auth-Key` header | 200 + `X-Forwarded-User` header, or 400/401/403 | Caddy forward_auth for an exact human permission; 403 when the permission's feature is disabled |
 
 ### User Management
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/access/catalog` | admin | — | `{ roles, permissions, accessControls }` | List permissions and their tiered or single-toggle controls |
+| GET | `/api/access/catalog` | admin | — | `{ roles, permissions, accessControls }` | List the enabled features' permissions and their tiered or single-toggle controls; grants outside this catalog return `400 INVALID_ACCESS_KEY` |
 | GET | `/api/users` | admin | — | `[{ ..., grants, permissions, accessRevision, protected }]` | List users, configured grants, and effective permissions |
 | POST | `/api/users` | admin | `{ email, role }` | `{ id, email, role }` | Create user |
 | POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone, affiliation, grants? }] }` | `{ added, skipped, errors }` | Bulk create users; grants apply only to newly created Officials |
@@ -114,7 +120,7 @@ Entry, Email/SMS, logs, and Account & Access are Admin-only; they have no grant 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
 | GET | `/api/devices` | admin | — | Device list without tokens or pairing-code hashes | List device status and last-seen data |
-| POST | `/api/devices` | admin | `{ name, scope }` | `201 { id, name, scope, pairingCode, pairingCodeExpiresAt }` | Create a one-scope device and issue a 10-minute code |
+| POST | `/api/devices` | admin | `{ name, scope }` | `201 { id, name, scope, pairingCode, pairingCodeExpiresAt }` | Create a one-scope device and issue a 10-minute code; the scope's queue (`kiosk.queue.register` → `queue`, `kiosk.registration.register` → `registration`) must be enabled, otherwise `400 INVALID_DEVICE_SCOPE` |
 | POST | `/api/devices/:id/pairing-code` | admin | — | `{ pairingCode, pairingCodeExpiresAt }` | Revoke any current token and issue a new code |
 | POST | `/api/devices/:id/revoke` | admin | — | 200 | Revoke token/code immediately |
 | POST | `/api/device/pair` | public | `{ code }` | `{ id, name, scope, startPath }` + `fsk_device` cookie | Consume a one-time pairing code |
@@ -687,4 +693,4 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 - `calendarId`: `role` 필드와 동일한 값 (캘린더 식별자)
 - `allDay: true` → `start`/`end`는 `YYYY-MM-DD` 형식
 - `allDay: false` → `start`/`end`는 UTC ISO 8601 형식(`...Z`, 예 `2026-07-13T05:00:00.000Z`). 요청 body는 `YYYY-MM-DD HH:mm`(Asia/Seoul 해석) 또는 오프셋/Z 포함 ISO를 받아 UTC로 정규화해 저장·응답한다
-- iCal 서명: HMAC-SHA256 (`JWT_SECRET`), PRODID `-//Formula Student Korea//Calendar//KO`
+- iCal 서명: HMAC-SHA256 (`JWT_SECRET`), PRODID `-//<SITE_NAME>//Calendar//KO`, `X-WR-CALNAME` `<SITE_NAME>`

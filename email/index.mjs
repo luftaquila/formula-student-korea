@@ -24,7 +24,7 @@ import { access } from "../shared/common/access-control.js";
 export function createEmailApp(options = {}) {
   const fetchFn = options.fetchFn || globalThis.fetch;
 
-  const { app, db, logger, dbRun } = createServiceSkeleton({
+  const { app, db, logger, dbRun, site } = createServiceSkeleton({
     name: "email",
     express,
     Database,
@@ -55,6 +55,7 @@ export function createEmailApp(options = {}) {
     dbRun,
     db,
     isInternalSecret,
+    site,
   });
 
   registerConfigRoutes({
@@ -76,7 +77,7 @@ export function createEmailApp(options = {}) {
 
   registerRecipientsRoutes({ app, fetchFn, logger });
 
-  registerTestRoutes({ app, logger, getConfig, fetchFn, BREVO_API_BASE });
+  registerTestRoutes({ app, logger, getConfig, fetchFn, BREVO_API_BASE, site });
 
   addSpaFallback(app);
 

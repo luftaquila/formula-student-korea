@@ -100,16 +100,6 @@
 		reverse_proxy competition:9200
 	}
 
-	# Course service (map tiles require relaxed CSP). The console talks to the
-	# rover and GPS unit APIs directly over the tailnet (https://*.ts.net).
-	redir /course /course/
-	handle_path /course/* {
-		header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com https://api.vworld.kr; connect-src 'self' https://*.ts.net; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-ancestors 'self'"
-		request_header -X-Internal-Service
-		request_header -Authuser
-		reverse_proxy course:10000
-	}
-
 	# Score UI
 	redir /score /score/
 	handle /score/* {
@@ -126,56 +116,10 @@
 		reverse_proxy competition:9200
 	}
 
-	# Calendar service
-	redir /calendar /calendar/
-	handle_path /calendar/* {
-		request_header -X-Internal-Service
-		request_header -Authuser
-		reverse_proxy calendar:11000
-	}
-
-	# FileBrowser service (proxy auth via forward_auth)
-	redir /files /files/
-	handle /files/* {
-		header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' blob:; worker-src 'self' blob:; object-src 'none'; frame-ancestors 'self'"
-		request_header -X-Internal-Service
-		request_header -Authuser
-		# NOTE: X-Forwarded-User는 여기서 제거하지 않는다. handle 블록 안에서 Caddy는
-		# 지시어를 작성 순서가 아닌 고정 directive order로 실행해 request_header가
-		# forward_auth 뒤에 돌 수 있고, 그러면 copy_headers가 방금 설정한 헤더를 지워
-		# FileBrowser 인증이 깨진다. 위조 인바운드 값은 forward_auth의 copy_headers가
-		# 200 응답에서 Set(덮어쓰기)하고 비200은 리다이렉트되므로 이미 무력화된다.
-		forward_auth auth:9100 {
-			uri /api/forward-auth?permission=files.access
-			header_up X-Forward-Auth-Key {env.INTERNAL_SECRET}
-			copy_headers X-Forwarded-User
-			@unauthenticated status 401
-			handle_response @unauthenticated {
-				redir * /auth/api/login?redirect={http.request.uri}
-			}
-			@forbidden status 403
-			handle_response @forbidden {
-				redir * /
-			}
-		}
-		reverse_proxy filebrowser:8080
-	}
-
-	# Energymeter service
-	redir /energymeter /energymeter/
-	handle_path /energymeter/* {
-		request_header -X-Internal-Service
-		request_header -Authuser
-		reverse_proxy energymeter:9800
-	}
-
-	# Email service
-	redir /email /email/
-	handle_path /email/* {
-		request_header -X-Internal-Service
-		request_header -Authuser
-		reverse_proxy email:9900
-	}
+	# Supporting-runtime routes of the enabled site features. The entrypoint
+	# copies routes/<feature>.caddy here for each feature in FEATURES, so a
+	# deployment never proxies to a runtime it does not run.
+	import /etc/caddy/routes.d/*.caddy
 
 	# Landing page (static files)
 	handle {

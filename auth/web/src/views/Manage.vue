@@ -4,8 +4,13 @@ import { useNotification } from "@shared/browser/useNotification.js";
 import { formatPhone } from "@shared/common/format-phone.js";
 import { ROLE_SORT_ORDER } from "@shared/common/constants.js";
 import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
+import { enabledDeviceScopes } from "@shared/common/access-control.js";
+import { site } from "@shared/browser/site.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
+
+// Kiosk tablets exist only for the queues this deployment enables.
+const hasDeviceScopes = enabledDeviceScopes(site.features).length > 0;
 
 const { notyf } = useNotification();
 
@@ -817,7 +822,7 @@ onUnmounted(() => {
         <div class="header-actions">
           <button type="button" class="btn btn-sm btn-ghost apply-url" title="클릭하여 복사" @click="copyApplyUrl">{{ applyUrl }}</button>
           <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
-          <router-link to="/devices" class="btn btn-sm btn-primary">태블릿 장비 관리</router-link>
+          <router-link v-if="hasDeviceScopes" to="/devices" class="btn btn-sm btn-primary">태블릿 장비 관리</router-link>
         </div>
       </div>
       <div class="card-body">

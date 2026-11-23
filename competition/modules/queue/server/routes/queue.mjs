@@ -3,6 +3,7 @@ import { inspectionLastCallSms } from "../../../../../shared/common/sms-template
 
 export function registerQueueRoutes({
   app,
+  site,
   validateInspection,
   currentYear,
   dbRun,
@@ -90,7 +91,7 @@ export function registerQueueRoutes({
     try {
       const { response, status } = await smsClient.send(
         lookup.result.phone,
-        inspectionLastCallSms({ year, num, inspection: inspections[type] }),
+        inspectionLastCallSms({ shortName: site.shortName, year, num, inspection: inspections[type] }),
       );
       logger.log(
         req,

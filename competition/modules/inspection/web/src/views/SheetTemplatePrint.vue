@@ -3,6 +3,7 @@ import { ref, onMounted, onBeforeUnmount, computed } from "vue";
 import { useRoute } from "vue-router";
 import { fetchSheetTemplate } from "../api";
 import { currentCompetitionYear } from "@shared/common/competition-year.mjs";
+import { site } from "@shared/browser/site.js";
 import { ruleDocumentLabel } from "../utils/rule-text";
 
 const route = useRoute();
@@ -61,7 +62,7 @@ import { subNum, grpNum, itemNum, getChecktableConfig, isPdfItem } from "../util
         class="page"
         :class="{ 'page-break': ci > 0 }"
       >
-        <h1 class="page-title">{{ year }} FSK Technical Inspection Form ({{ cat.name }})</h1>
+        <h1 class="page-title">{{ year }} {{ site.shortName }} Technical Inspection Form ({{ cat.name }})</h1>
 
         <div class="info-section">
           <div class="info-left">

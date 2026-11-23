@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { setupTestEnv, TRUST_JWT } from "../helpers/test-utils.mjs";
+import { SITE_FEATURE_NAMES } from "../../shared/common/site-features.js";
 import { currentCompetitionYear } from "../../shared/common/competition-year.mjs";
 import { createK3sBackup } from "../../competition/scripts/create-k3s-backup.mjs";
 import { validateCompetitionDatabaseFile } from
@@ -34,7 +35,9 @@ function sha256(target) {
   return crypto.createHash("sha256").update(fs.readFileSync(target)).digest("hex");
 }
 
-function createFixture() {
+const ALL_FEATURES = SITE_FEATURE_NAMES;
+
+function createFixture({ migrated = true, supportApps = Object.keys(supportAppCreators) } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-k3s-backup-"));
   roots.push(root);
   const dataRoot = path.join(root, "fsk");
@@ -81,10 +84,13 @@ function createFixture() {
   `).run(submissionId, Buffer.byteLength(contents));
   competition.close();
 
-  fs.writeFileSync(`${competitionDb}.migration.json`, '{"audit":"retained"}\n');
-  fs.writeFileSync(path.join(competitionDir, ".cutover-active"), "complete\n");
+  if (migrated) {
+    fs.writeFileSync(`${competitionDb}.migration.json`, '{"audit":"retained"}\n');
+    fs.writeFileSync(path.join(competitionDir, ".cutover-active"), "complete\n");
+  }
 
-  for (const [name, createApp] of Object.entries(supportAppCreators)) {
+  for (const name of supportApps) {
+    const createApp = supportAppCreators[name];
     const dbPath = path.join(dataRoot, name, `${name}.db`);
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
     const created = createApp({ dbPath, skipStaticValidation: true });
@@ -107,7 +113,7 @@ describe("k3s coordinated backup", () => {
       ]),
     ].map(([name, target]) => [name, sha256(target)]));
 
-    const result = await createK3sBackup(fixture.dataRoot, output);
+    const result = await createK3sBackup(fixture.dataRoot, output, { features: ALL_FEATURES });
 
     assert.equal(result.output, output);
     assert.equal(result.uploadCount, 1);
@@ -149,7 +155,8 @@ describe("k3s coordinated backup", () => {
     const output = path.join(fixture.root, "missing.zip");
     fs.rmSync(path.join(fixture.dataRoot, "email", "email.db"));
 
-    await assert.rejects(createK3sBackup(fixture.dataRoot, output), /email database/);
+    await assert.rejects(createK3sBackup(fixture.dataRoot, output, { features: ALL_FEATURES }),
+      /email database/);
     assert.equal(fs.existsSync(output), false);
   });
 
@@ -161,7 +168,41 @@ describe("k3s coordinated backup", () => {
     fs.rmSync(fixture.stored);
     fs.symlinkSync(external, fixture.stored);
 
-    await assert.rejects(createK3sBackup(fixture.dataRoot, output), /symbolic link/);
+    await assert.rejects(createK3sBackup(fixture.dataRoot, output, { features: ALL_FEATURES }),
+      /symbolic link/);
+    assert.equal(fs.existsSync(output), false);
+  });
+
+  it("requires only the databases of the enabled features", {
+    skip: !unzipAvailable,
+  }, async () => {
+    // A documents-only deployment created without the legacy migration.
+    const fixture = createFixture({ migrated: false, supportApps: ["auth", "email"] });
+    const output = path.join(fixture.root, "documents.zip");
+
+    await createK3sBackup(fixture.dataRoot, output, { features: ["entry", "documents", "email"] });
+    const extracted = path.join(fixture.root, "extracted");
+    fs.mkdirSync(extracted);
+    assert.equal(spawnSync("unzip", ["-q", output, "-d", extracted]).status, 0);
+    assert.equal(fs.readFileSync(path.join(extracted, "db", "required-databases.txt"), "utf8"),
+      ["format=fsk-required-databases-v1", "competition.db", "auth.db", "email.db", ""].join("\n"));
+    assert.deepEqual(Object.keys(JSON.parse(fs.readFileSync(path.join(extracted, "backup.json"),
+      "utf8")).databases), ["competition.db", "auth.db", "email.db"]);
+    assert.equal(fs.existsSync(path.join(extracted, "competition", ".cutover-active")), false);
+
+    await assert.rejects(createK3sBackup(fixture.dataRoot, path.join(fixture.root, "calendar.zip"),
+      { features: ["entry", "documents", "email", "calendar"] }), /calendar database/);
+    await assert.rejects(createK3sBackup(fixture.dataRoot, path.join(fixture.root, "none.zip")),
+      /enabled site features are required/);
+  });
+
+  it("rejects one migration artifact without the other", async () => {
+    const fixture = createFixture();
+    fs.rmSync(path.join(fixture.dataRoot, "competition", ".cutover-active"));
+    const output = path.join(fixture.root, "partial.zip");
+
+    await assert.rejects(createK3sBackup(fixture.dataRoot, output, { features: ALL_FEATURES }),
+      /cutover marker is missing/);
     assert.equal(fs.existsSync(output), false);
   });
 });

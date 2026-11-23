@@ -7,20 +7,38 @@ import archiver from "archiver";
 import Database from "better-sqlite3";
 import { validateCompetitionDatabase } from "../lib/database-validation.mjs";
 import { validateSupportDatabase } from "../lib/support-database-validation.mjs";
+import { parseSiteConfig } from "../../shared/common/site-config.js";
 
+// Competition and Auth run on every deployment. Each supporting database belongs
+// to the site feature of the same name and is required only when it is enabled.
 const DATABASES = Object.freeze([
   Object.freeze({ name: "competition", relative: "competition/competition.db" }),
   Object.freeze({ name: "auth", relative: "auth/auth.db" }),
-  Object.freeze({ name: "calendar", relative: "calendar/calendar.db" }),
-  Object.freeze({ name: "course", relative: "course/course.db" }),
-  Object.freeze({ name: "email", relative: "email/email.db" }),
+  Object.freeze({ name: "calendar", relative: "calendar/calendar.db", feature: "calendar" }),
+  Object.freeze({ name: "course", relative: "course/course.db", feature: "course" }),
+  Object.freeze({ name: "email", relative: "email/email.db", feature: "email" }),
 ]);
 
-const REQUIRED_DATABASE_MANIFEST = [
-  "format=fsk-required-databases-v1",
-  ...DATABASES.map(({ name }) => `${name}.db`),
-  "",
-].join("\n");
+export function requiredDatabases(features) {
+  const enabled = new Set(features);
+  return DATABASES.filter(({ feature }) => !feature || enabled.has(feature));
+}
+
+function requiredDatabaseManifest(databases) {
+  return [
+    "format=fsk-required-databases-v1",
+    ...databases.map(({ name }) => `${name}.db`),
+    "",
+  ].join("\n");
+}
+
+// Artifacts of the one-shot legacy migration. A migrated deployment keeps both;
+// a deployment created without migration has neither. One without the other
+// rejects the backup.
+const MIGRATION_ARTIFACTS = Object.freeze([
+  Object.freeze({ file: "competition.db.migration.json", description: "migration report" }),
+  Object.freeze({ file: ".cutover-active", description: "cutover marker" }),
+]);
 
 function assertDirectory(target, description) {
   const resolved = path.resolve(target);
@@ -58,6 +76,15 @@ function assertPathHasNoSymlink(root, target, description) {
     if (stat.isSymbolicLink()) {
       throw new Error(`${description} contains a symbolic link: ${relative}`);
     }
+  }
+}
+
+function isSymbolicLink(target) {
+  try {
+    return fs.lstatSync(target).isSymbolicLink();
+  } catch (error) {
+    if (error?.code === "ENOENT") return false;
+    throw error;
   }
 }
 
@@ -199,7 +226,9 @@ async function archiveDirectory(source, destination) {
   });
 }
 
-export async function createK3sBackup(sourceRootPath, outputPath) {
+export async function createK3sBackup(sourceRootPath, outputPath, { features } = {}) {
+  if (!Array.isArray(features)) throw new Error("the enabled site features are required");
+  const databases = requiredDatabases(features);
   const sourceRoot = assertDirectory(sourceRootPath, "FSK data root");
   const output = path.resolve(outputPath);
   const outputParent = path.dirname(output);
@@ -210,24 +239,30 @@ export async function createK3sBackup(sourceRootPath, outputPath) {
   const partial = path.join(outputParent, `.${path.basename(output)}.partial-${process.pid}`);
   try {
     const databaseDir = path.join(staging, "db");
-    for (const database of DATABASES) {
+    for (const database of databases) {
       await snapshotDatabase(sourceRoot, path.join(sourceRoot, database.relative),
         path.join(databaseDir, `${database.name}.db`), database.name);
     }
     fs.writeFileSync(path.join(databaseDir, "required-databases.txt"),
-      REQUIRED_DATABASE_MANIFEST, { mode: 0o600 });
+      requiredDatabaseManifest(databases), { mode: 0o600 });
 
     const competitionSource = path.join(sourceRoot, "competition");
     const competitionTarget = path.join(staging, "competition");
-    copyFileNoFollow(sourceRoot,
-      path.join(competitionSource, "competition.db.migration.json"),
-      path.join(competitionTarget, "competition.db.migration.json"), "migration report");
-    copyFileNoFollow(sourceRoot, path.join(competitionSource, ".cutover-active"),
-      path.join(competitionTarget, ".cutover-active"), "cutover marker");
+    const presentArtifacts = MIGRATION_ARTIFACTS.filter(({ file }) =>
+      fs.existsSync(path.join(competitionSource, file)) || isSymbolicLink(path.join(competitionSource, file)));
+    if (presentArtifacts.length && presentArtifacts.length !== MIGRATION_ARTIFACTS.length) {
+      const missing = MIGRATION_ARTIFACTS.filter((artifact) => !presentArtifacts.includes(artifact));
+      throw new Error(`${missing.map(({ description }) => description).join(", ")} is missing `
+        + "while the other migration artifact exists");
+    }
+    for (const { file, description } of presentArtifacts) {
+      copyFileNoFollow(sourceRoot, path.join(competitionSource, file),
+        path.join(competitionTarget, file), description);
+    }
 
     const uploadCount = copyReferencedUploads(path.join(databaseDir, "competition.db"),
       path.join(competitionSource, "uploads"), path.join(competitionTarget, "uploads"));
-    const hashes = Object.fromEntries(DATABASES.map(({ name }) => [
+    const hashes = Object.fromEntries(databases.map(({ name }) => [
       `${name}.db`, sha256File(path.join(databaseDir, `${name}.db`)),
     ]));
     fs.writeFileSync(path.join(staging, "backup.json"), `${JSON.stringify({
@@ -249,11 +284,13 @@ export async function createK3sBackup(sourceRootPath, outputPath) {
 
 if (fileURLToPath(import.meta.url) === path.resolve(process.argv[1] || "")) {
   if (process.argv.length !== 4) {
-    console.error("usage: create-k3s-backup.mjs <fsk-data-root> <output.zip>");
+    console.error("usage: [FEATURES=<features>] create-k3s-backup.mjs <fsk-data-root> <output.zip>");
     process.exitCode = 2;
   } else {
     try {
-      const result = await createK3sBackup(process.argv[2], process.argv[3]);
+      // Every feature when FEATURES is unset, as for the services themselves.
+      const { features } = parseSiteConfig(process.env);
+      const result = await createK3sBackup(process.argv[2], process.argv[3], { features });
       console.log(JSON.stringify(result));
     } catch (error) {
       console.error(`FSK backup failed: ${error.message || error}`);

@@ -1,6 +1,5 @@
 import {
   accessCatalog,
-  PERMISSION_KEYS,
   normalizeAccessGrants,
 } from "../../../shared/common/access-control.js";
 import { VALID_ROLES } from "../../../shared/server/express-setup.mjs";
@@ -13,7 +12,13 @@ export function registerUsersRoutes({
   ADMIN_EMAIL,
   logger,
   notifyNewUser,
+  site,
 }) {
+  // Grants are limited to the permissions of this deployment's enabled features.
+  const catalog = accessCatalog(site.features);
+  const assignableKeys = new Set(catalog.permissions.map(({ key }) => key));
+  const isAssignable = (key) => assignableKeys.has(key);
+
   // GET /api/users/exists/:email - 사용자 존재 + 활성 여부 (내부 서비스용)
   app.get("/api/users/exists/:email", (req, res) => {
     const user = db
@@ -41,7 +46,7 @@ export function registerUsersRoutes({
     });
   });
 
-  app.get("/api/access/catalog", (req, res) => res.json(accessCatalog()));
+  app.get("/api/access/catalog", (req, res) => res.json(catalog));
 
   app.get("/api/internal/users", (req, res) => {
     const result = dbRun(() =>
@@ -89,7 +94,7 @@ export function registerUsersRoutes({
     }
     if (
       new Set(grants).size !== grants.length ||
-      grants.some((key) => !PERMISSION_KEYS.includes(key))
+      grants.some((key) => !isAssignable(key))
     ) {
       logger.warn(req, "user.bulk_access_update", { reason: "invalid_access_key", grants });
       return res.status(400).json({ code: "INVALID_ACCESS_KEY" });
@@ -193,7 +198,7 @@ export function registerUsersRoutes({
     }
     if (
       new Set(grants).size !== grants.length ||
-      grants.some((key) => !PERMISSION_KEYS.includes(key))
+      grants.some((key) => !isAssignable(key))
     ) {
       logger.warn(
         req,
@@ -358,7 +363,7 @@ export function registerUsersRoutes({
         const phone = (row.phone || "").trim();
         const affiliation = (row.affiliation || "").trim();
         const grants = Array.isArray(row.grants) ? row.grants : [];
-        if (grants.some((key) => !PERMISSION_KEYS.includes(key))) {
+        if (grants.some((key) => !isAssignable(key))) {
           errors.push({ row, reason: "알 수 없는 서비스 권한" });
           continue;
         }

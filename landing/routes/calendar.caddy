@@ -1,0 +1,8 @@
+# Routes of the "calendar" site feature, imported only when FEATURES enables it.
+# Calendar service
+redir /calendar /calendar/
+handle_path /calendar/* {
+	request_header -X-Internal-Service
+	request_header -Authuser
+	reverse_proxy calendar:11000
+}

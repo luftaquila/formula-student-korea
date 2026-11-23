@@ -1,3 +1,5 @@
+import { isSiteFeature } from "./site-features.js";
+
 export const HUMAN_ROLES = Object.freeze(["student", "official", "admin"]);
 
 const definitions = [
@@ -20,8 +22,29 @@ const definitions = [
   ["score.manage", "성적 관리", "페널티, 설정과 성적 공개 변경", ["score.operate"]],
 ];
 
+// The site feature that owns each permission namespace. A deployment exposes
+// only the permissions of the features it enables.
+const PERMISSION_FEATURES = Object.freeze({
+  registration: "registration",
+  queue: "queue",
+  inspection: "inspection",
+  documents: "documents",
+  files: "files",
+  calendar: "calendar",
+  course: "course",
+  rover: "course",
+  traffic: "traffic",
+  score: "score",
+});
+
+function featureOfPermission(key) {
+  const feature = PERMISSION_FEATURES[key.split(".")[0]];
+  if (!isSiteFeature(feature)) throw new Error(`Permission ${key} has no site feature`);
+  return feature;
+}
+
 export const PERMISSION_DEFINITIONS = Object.freeze(definitions.map(([key, label, description, implies = []]) =>
-  Object.freeze({ key, label, description, implies: Object.freeze(implies) })));
+  Object.freeze({ key, label, description, implies: Object.freeze(implies), feature: featureOfPermission(key) })));
 
 export const PERMISSION_KEYS = Object.freeze(PERMISSION_DEFINITIONS.map(({ key }) => key));
 const permissionKeySet = new Set(PERMISSION_KEYS);
@@ -29,6 +52,10 @@ const permissionKeySet = new Set(PERMISSION_KEYS);
 for (const permission of PERMISSION_DEFINITIONS) {
   for (const implied of permission.implies) {
     if (!permissionKeySet.has(implied)) throw new Error(`Unknown implied permission: ${implied}`);
+    // An enabled permission must never imply one whose feature may be disabled.
+    if (featureOfPermission(implied) !== permission.feature) {
+      throw new Error(`Permission ${permission.key} implies ${implied} from another feature`);
+    }
   }
 }
 
@@ -105,16 +132,47 @@ export function expandPermissions(grants = []) {
   return [...effective].sort();
 }
 
-export function accessCatalog() {
+export function permissionFeature(key) {
+  assertPermissionKey(key);
+  return permissionByKey.get(key).feature;
+}
+
+// Tiered controls hold permission definitions; toggles hold a permission key.
+function controlPermissions(control) {
+  return control.type === "tiered"
+    ? [control.operate, control.manage]
+    : [permissionByKey.get(control.permission)];
+}
+
+// The grants a deployment can assign: only permissions of its enabled features.
+export function accessCatalog(features) {
+  const enabled = new Set(features);
   return {
     roles: HUMAN_ROLES,
-    permissions: PERMISSION_DEFINITIONS,
-    accessControls: ACCESS_CONTROL_DEFINITIONS,
+    permissions: PERMISSION_DEFINITIONS.filter(({ feature }) => enabled.has(feature)),
+    accessControls: ACCESS_CONTROL_DEFINITIONS.filter((control) =>
+      controlPermissions(control).every(({ feature }) => enabled.has(feature))),
   };
+}
+
+// Grant keys whose feature this deployment does not enable.
+export function disabledGrants(grants, features) {
+  const enabled = new Set(features);
+  return grants.filter((key) => !enabled.has(permissionFeature(key)));
 }
 
 export const DEVICE_SCOPES = Object.freeze(["kiosk.queue.register", "kiosk.registration.register"]);
 const deviceScopeSet = new Set(DEVICE_SCOPES);
+const DEVICE_SCOPE_FEATURES = Object.freeze({
+  "kiosk.queue.register": "queue",
+  "kiosk.registration.register": "registration",
+});
+
+// Kiosk scopes a deployment can pair devices for.
+export function enabledDeviceScopes(features) {
+  const enabled = new Set(features);
+  return DEVICE_SCOPES.filter((scope) => enabled.has(DEVICE_SCOPE_FEATURES[scope]));
+}
 
 export const access = Object.freeze({
   authenticated: Object.freeze({ authenticated: true }),

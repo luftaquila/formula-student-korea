@@ -1,4 +1,4 @@
-import { SERVICE_NAMES } from "../common/service-names.js";
+import { SERVICE_NAMES, siteServiceNames } from "../common/service-names.js";
 
 // 배포되는 프로세스의 주소만 둔다. Entry/Queue/Registration/Inspection/Traffic/Score/Documents는
 // Competition 안의 논리 모듈이며 독립 서비스 주소나 포트를 갖지 않는다.
@@ -37,7 +37,8 @@ export function serviceUrl(name) {
 
 // 집계기가 경로 규칙을 다시 추론하지 않도록 실제 로그 엔드포인트를 반환한다.
 // 논리 모듈 이름은 유지하지만 Competition 모듈은 하나의 런타임으로 향한다.
-export function logAggregationTargets() {
+// 대상은 배포에서 켠 기능의 서비스로 한정한다 — 없는 서비스로의 요청은 매번 실패한다.
+export function logAggregationTargets(features) {
   const competitionModules = {
     entry: "",
     queue: "queue",
@@ -48,7 +49,7 @@ export function logAggregationTargets() {
     documents: "documents",
   };
   return Object.fromEntries(
-    SERVICE_NAMES
+    siteServiceNames(features)
       .filter((name) => name !== "auth")
       .map((name) => [
         name,

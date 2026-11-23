@@ -1,13 +1,22 @@
 import { readFile } from 'node:fs';
 import { resolve } from 'node:path';
+import { socialMetaTags } from '../common/social-meta.js';
+
+// Stands in for the page title, which arrives already escaped from the document.
+const TITLE = Symbol('title');
 
 function escapeAttribute(value) {
   return String(value).replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
 }
 
 // Only packaged SPA entry documents use this handler; downloads never pass through it.
-export function htmlPage(file, root, { fallthrough = false } = {}) {
+// Their <title> holds the page name; the deployment's short name is prefixed here so
+// titles and Open Graph tags carry it before JavaScript runs.
+export function htmlPage(file, root, { fallthrough = false, site } = {}) {
+  if (!site) throw new Error("htmlPage requires the site configuration");
   const filename = resolve(root, file);
+  const shortName = escapeAttribute(site.shortName);
+  const siteName = escapeAttribute(site.name);
   return (req, res, next) => {
     readFile(filename, 'utf8', (error, html) => {
       if (error) {
@@ -17,34 +26,25 @@ export function htmlPage(file, root, { fallthrough = false } = {}) {
         }
         return next(error);
       }
-      const image = escapeAttribute(`https://${req.get('host')}/og-image.png`);
-      // The title is already HTML-escaped; retain its entities inside the attribute.
-      const title = (html.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1] || 'Formula Student Korea')
-        .replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-      const tags = [
-        ['property', 'og:title', title],
-        ['name', 'twitter:title', title],
-        ['property', 'og:type', 'website'],
-        ['property', 'og:site_name', 'Formula Student Korea'],
-        ['property', 'og:image', image],
-        ['property', 'og:image:type', 'image/png'],
-        ['property', 'og:image:width', '1200'],
-        ['property', 'og:image:height', '630'],
-        ['property', 'og:image:alt', 'Formula Student Korea — 체크 패턴과 대회명'],
-        ['name', 'twitter:card', 'summary_large_image'],
-        ['name', 'twitter:image', image],
-        ['name', 'twitter:image:alt', 'Formula Student Korea — 체크 패턴과 대회명'],
-      ].filter(([attribute, key]) => !new RegExp(`<meta\\b[^>]*\\b${attribute}\\s*=\\s*["']${key}["']`, 'i').test(html))
-        .map(([attribute, key, value]) => `<meta ${attribute}="${key}" content="${value}">`).join('\n');
+      const titleElement = /(<title\b[^>]*>)([\s\S]*?)(<\/title>)/i;
+      const pageTitle = html.match(titleElement)?.[2].trim();
+      // The page title is already HTML-escaped; retain its entities.
+      const fullTitle = pageTitle ? `${shortName} ${pageTitle}` : siteName;
+      html = html.replace(titleElement, (_match, open, _text, close) => `${open}${fullTitle}${close}`);
+      const title = fullTitle.replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const tags = socialMetaTags({ title: TITLE, site, origin: `https://${req.get('host')}` })
+        .filter(([attribute, key]) => !new RegExp(`<meta\\b[^>]*\\b${attribute}\\s*=\\s*["']${key}["']`, 'i').test(html))
+        .map(([attribute, key, value]) =>
+          `<meta ${attribute}="${key}" content="${value === TITLE ? title : escapeAttribute(value)}">`).join('\n');
       res.setHeader('Cache-Control', 'no-cache');
       res.type('html').send(html.replace(/<\/head\s*>/i, `${tags}\n</head>`));
     });
   };
 }
 
-export function htmlEntries(root) {
-  const index = htmlPage('index.html', root, { fallthrough: true });
-  const publicPage = htmlPage('public.html', root, { fallthrough: true });
+export function htmlEntries(root, site) {
+  const index = htmlPage('index.html', root, { fallthrough: true, site });
+  const publicPage = htmlPage('public.html', root, { fallthrough: true, site });
   return (req, res, next) => {
     if (req.method !== 'GET' && req.method !== 'HEAD') return next();
     if (req.path === '/' || req.path === '/index.html') return index(req, res, next);

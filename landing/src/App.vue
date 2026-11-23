@@ -5,7 +5,7 @@
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">🏁</span>
-          <h1>Formula Student Korea</h1>
+          <h1>{{ site.name }}</h1>
         </a>
         <div class="header-actions">
           <NavMenu currentPath="/" />
@@ -20,7 +20,7 @@
         </div>
       </section>
 
-      <details :open="resourcesOpen" class="section resources-section" @toggle="persistResourcesState">
+      <details v-if="resources.length" :open="resourcesOpen" class="section resources-section" @toggle="persistResourcesState">
         <summary class="section-title collapsible-title">
           Resources
           <svg class="collapse-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
@@ -62,9 +62,11 @@ import {
   writeDisclosureState,
 } from "@shared/browser/persistent-disclosure.js";
 import { user, isStudent, isAdmin, hasPermission, refreshUser } from "@shared/browser/officialsStore.js";
-import { services, resources, operations, administration, getIcon, isSvgIcon, forumSvg } from "@shared/browser/nav-config.js";
+import { siteNavigation, getIcon, isSvgIcon, forumSvg } from "@shared/browser/nav-config.js";
+import { site } from "@shared/browser/site.js";
 
 // 메뉴 데이터의 단일 소스는 nav-config.js — NavMenu와 landing 카드가 같은 목록을 쓴다.
+const { services, resources, operations, administration } = siteNavigation(site);
 // "홈"은 landing 자신이므로 카드에서 제외하고, 학생 전용 항목은 exact role로 제한한다.
 const serviceItems = computed(() =>
   services.filter((item) => item.href !== "/" && (!item.studentOnly || isStudent.value)),

@@ -14,6 +14,7 @@ import {
   setupTestEnv,
   TRUST_JWT,
   TEST_SECRET,
+  TEST_SITE_ENV,
 } from '../helpers/test-utils.mjs';
 import { createQueueApp, INSPECTIONS } from '../../competition/modules/queue/index.mjs';
 import { competitionYearBounds, currentCompetitionYear } from '../../shared/common/competition-year.mjs';
@@ -781,7 +782,7 @@ describe('POST /api/admin/inspection/:type/:num/last-call', () => {
       assert.deepEqual(transport.requests[0].body.messages, [{ to: '01022223333' }]);
       assert.equal(
         transport.requests[0].body.content,
-        `[FSK ${CURRENT_YEAR}]\n2번 전기 검차 지금 즉시 입차하세요.\n미입차시 취소 페널티가 부여됩니다.`,
+        `[${TEST_SITE_ENV.SITE_SHORT_NAME} ${CURRENT_YEAR}]\n2번 전기 검차 지금 즉시 입차하세요.\n미입차시 취소 페널티가 부여됩니다.`,
       );
 
       const log = created.db.prepare(`

@@ -2,10 +2,11 @@
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 
 const route = useRoute();
-const title = computed(() => route.path.startsWith("/admin") ? "FSK 서류 제출 관리" : "FSK 서류 제출");
+const title = computed(() => siteTitle(route.path.startsWith("/admin") ? "서류 제출 관리" : "서류 제출"));
 
 watch(title, (v) => { document.title = v; }, { immediate: true });
 </script>

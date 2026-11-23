@@ -1,7 +1,7 @@
 import { serviceUrl } from "../../../../../shared/server/services.mjs";
 import { currentCompetitionYear } from "../../../../../shared/common/competition-year.mjs";
 
-export function createDocumentNotifications({ options, db, now, subtractHours, logger, toKST }) {
+export function createDocumentNotifications({ options, site, db, now, subtractHours, logger, toKST }) {
   const enableNotificationScheduler = options.enableNotificationScheduler !== false;
 
   const notificationTasks = new Set();
@@ -79,6 +79,8 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
     return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   }
 
+  const siteName = escapeHtml(site.name);
+
   /** 엔트리 정보 조회. 공유 DB 읽기 실패는 감사한 뒤 호출자에게 전파한다. */
   async function fetchEntries(year, req = null, action = "entry.fetch") {
     if (!options.teamStore) {
@@ -135,7 +137,7 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
 
       for (const n of pending) {
         try {
-          const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
+          const url = site.publicUrl;
           const deadlineInfo = n.late_end_at
             ? `제출 마감: ${toKST(n.end_at)} (KST)<br>지각 마감: ${toKST(n.late_end_at)} (KST)`
             : `제출 마감: ${toKST(n.end_at)} (KST)`;
@@ -196,9 +198,9 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
           let subject;
           const safeName = escapeHtml(n.name);
 
-          if (n.type === "session_open") subject = `[FSK] 서류 제출 안내: ${n.name}`;
-          else if (n.type === "deadline_3h") subject = `[FSK] 서류 제출 마감 3시간 전: ${n.name}`;
-          else if (n.type === "deadline_1h") subject = `[FSK] 서류 미제출 알림: ${n.name}`;
+          if (n.type === "session_open") subject = `[${site.shortName}] 서류 제출 안내: ${n.name}`;
+          else if (n.type === "deadline_3h") subject = `[${site.shortName}] 서류 제출 마감 3시간 전: ${n.name}`;
+          else if (n.type === "deadline_1h") subject = `[${site.shortName}] 서류 미제출 알림: ${n.name}`;
 
           // 수신자별 개별 발송 — 이미 성공한 수신자는 스킵(부분 실패 재시도 시 중복 방지).
           const alreadySent = new Set(JSON.parse(n.sent_recipients || "[]"));
@@ -211,7 +213,7 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
             if (n.type === "session_open") {
               const noticeHtml = n.notice ? escapeHtml(n.notice).replace(/\n/g, "<br>") : "";
               htmlContent =
-                `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
+                `<h2 style="margin:0 0 16px;font-size:20px">${siteName} 서류 제출 안내</h2>` +
                 teamHeader +
                 (noticeHtml
                   ? `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${noticeHtml}</p>`
@@ -221,7 +223,7 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
                 `<p style="margin:0;font-size:14px"><a href="${url}/documents">서류 제출 바로가기</a></p>`;
             } else if (n.type === "deadline_3h") {
               htmlContent =
-                `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 마감 안내</h2>` +
+                `<h2 style="margin:0 0 16px;font-size:20px">${siteName} 서류 제출 마감 안내</h2>` +
                 teamHeader +
                 `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${safeName} 서류 제출 마감이 3시간 남았습니다.</p>` +
                 `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
@@ -229,7 +231,7 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
                 `<p style="margin:0;font-size:12px;color:#888">본 메일은 서류 제출 여부와 관계없이 발송되는 마감 안내 메일입니다.</p>`;
             } else if (n.type === "deadline_1h") {
               htmlContent =
-                `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 미제출 알림</h2>` +
+                `<h2 style="margin:0 0 16px;font-size:20px">${siteName} 서류 미제출 알림</h2>` +
                 teamHeader +
                 `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${safeName} 서류가 아직 제출되지 않았습니다. 마감까지 1시간 남았습니다.</p>` +
                 `<p style="margin:0 0 8px;font-size:14px;line-height:1.6">${deadlineInfo}</p>` +
@@ -376,7 +378,7 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
       const entries = await fetchEntries(year);
       const teamHeader = teamHeaderHtml(teamNum, entries);
 
-      const url = process.env.PUBLIC_URL || "https://fsk.luftaquila.io";
+      const url = site.publicUrl;
       const sessionList = openSessions
         .map((s) => {
           const safeName = escapeHtml(s.name);
@@ -388,8 +390,8 @@ export function createDocumentNotifications({ options, db, now, subtractHours, l
         .join("");
 
       const result = await sendNotificationEmail(
-        `[FSK] 제출 대기 중인 서류가 있습니다`,
-        `<h2 style="margin:0 0 16px;font-size:20px">Formula Student Korea 서류 제출 안내</h2>` +
+        `[${site.shortName}] 제출 대기 중인 서류가 있습니다`,
+        `<h2 style="margin:0 0 16px;font-size:20px">${siteName} 서류 제출 안내</h2>` +
           teamHeader +
           `<p style="margin:0 0 12px;font-size:14px;line-height:1.6">현재 제출 대기 중인 서류 세션이 있습니다.</p>` +
           `<ul style="margin:0 0 16px;padding-left:20px;font-size:14px;line-height:1.8">${sessionList}</ul>` +

@@ -1,4 +1,4 @@
-import { DEVICE_SCOPES } from "../../../shared/common/access-control.js";
+import { enabledDeviceScopes } from "../../../shared/common/access-control.js";
 import crypto from "crypto";
 import { isSecureConnection, formatCookieOpts } from "../../../shared/server/express-setup.mjs";
 
@@ -14,7 +14,11 @@ export function registerDevicesRoutes({
   pairingLimiter,
   pairingCodeHash,
   tokenHash,
+  site,
 }) {
+  // Only the kiosk scopes of this deployment's enabled queues can be paired.
+  const deviceScopes = enabledDeviceScopes(site.features);
+
   app.get("/api/devices", (req, res) => {
     const result = dbRun(() =>
       db.prepare("SELECT * FROM kiosk_device ORDER BY created_at DESC, id").all(),
@@ -30,7 +34,7 @@ export function registerDevicesRoutes({
       logger.warn(req, "device.create", { reason: "invalid_name", name_length: name.length });
       return res.status(400).json({ code: "INVALID_DEVICE_NAME" });
     }
-    if (!DEVICE_SCOPES.includes(scope)) {
+    if (!deviceScopes.includes(scope)) {
       logger.warn(req, "device.create", { reason: "invalid_scope", scope });
       return res.status(400).json({ code: "INVALID_DEVICE_SCOPE" });
     }

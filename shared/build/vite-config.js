@@ -1,5 +1,30 @@
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
+import { renderEnvConfig } from "../common/site-config.js";
+
+// Containers write env-config.js at startup. The dev server renders the same file
+// from its own environment (SITE_NAME, SITE_SHORT_NAME, PUBLIC_URL, FEATURES, ...)
+// and reports an invalid configuration in the browser console.
+export function siteEnvConfigPlugin() {
+  return {
+    name: "site-env-config",
+    apply: "serve",
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.split("?")[0].endsWith("/env-config.js")) return next();
+        let body;
+        try {
+          body = renderEnvConfig(process.env);
+        } catch (error) {
+          body = `console.error(${JSON.stringify(`Invalid site configuration: ${error.message}`)});\n`;
+        }
+        res.setHeader("Content-Type", "text/javascript; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache");
+        res.end(body);
+      });
+    },
+  };
+}
 
 export function createViteConfig(serviceName, servicePort, options = {}) {
   const { server = {}, build = {}, aliases = {} } = options;

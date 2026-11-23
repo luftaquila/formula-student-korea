@@ -22,7 +22,7 @@ import { access } from "../../../shared/common/access-control.js";
 export function createRegistrationApp(options = {}) {
   if (!options.teamStore) throw new Error("Competition team store is required");
 
-  const { app, db, logger, dbRun } = createServiceSkeleton({
+  const { app, db, logger, dbRun, site } = createServiceSkeleton({
     name: "registration",
     express,
     Database,
@@ -76,10 +76,11 @@ export function createRegistrationApp(options = {}) {
     });
 
   const { settingsForYear, registrationRow, publicStatus, advanceTarget } = createRegistrationStore(
-    { db, DEFAULT_SETTINGS, smsClient },
+    { db, DEFAULT_SETTINGS, smsClient, site },
   );
 
   const { pendingTasks, notifyUpcoming } = createRegistrationSms({
+    site,
     smsClient,
     logger,
     dbRun,

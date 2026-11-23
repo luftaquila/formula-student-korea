@@ -4,6 +4,7 @@ import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/browser/useNotification.js";
 import { currentCompetitionYear } from "@shared/common/competition-year.mjs";
+import { site } from "@shared/browser/site.js";
 import { addRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
 import { useLiveAttempt } from "../composables/useLiveAttempt";
@@ -101,7 +102,7 @@ onActivated(() => {
 });
 
 const currentYear = computed(() => currentCompetitionYear());
-const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || "Skidpad"}`);
+const titleText = computed(() => `${currentYear.value} ${site.shortName} ${eventName.value.trim() || "Skidpad"}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
 const isLocked = computed(() => serial.green.active);
 // 컨트롤러(무선=lease 보유자, 유선=로컬)만 선택·제어. 관찰자는 read-only — 세션에서 미러.

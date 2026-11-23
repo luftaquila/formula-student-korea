@@ -1,5 +1,6 @@
 <script setup>
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 </script>
 
@@ -10,7 +11,7 @@ import SonnerToaster from "@shared/browser/SonnerToaster.vue";
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">📅</span>
-          <h1>FSK 대회 일정</h1>
+          <h1>{{ siteTitle("대회 일정") }}</h1>
         </a>
         <div class="header-actions">
           <NavMenu currentPath="/calendar" />

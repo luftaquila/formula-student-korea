@@ -24,7 +24,7 @@ import { access } from "../../../shared/common/access-control.js";
 export function createDocumentsApp(options = {}) {
   const createArchive = options.archiveFactory || archiver;
 
-  const { app, db, logger, dbRun } = createServiceSkeleton({
+  const { app, db, logger, dbRun, site } = createServiceSkeleton({
     name: "documents",
     express,
     Database,
@@ -72,7 +72,7 @@ export function createDocumentsApp(options = {}) {
     launchOpenSessionNotification,
     drainNotificationTasks,
     hasPendingNotificationTasks,
-  } = createDocumentNotifications({ options, db, now, subtractHours, logger, toKST });
+  } = createDocumentNotifications({ options, site, db, now, subtractHours, logger, toKST });
 
   const { auditedLookup } = createDocumentPreflight({ dbRun, logger });
 
@@ -148,6 +148,7 @@ export function createDocumentsApp(options = {}) {
 
   registerYearsRoutes({
     app,
+    site,
     dbRun,
     db,
     logger,

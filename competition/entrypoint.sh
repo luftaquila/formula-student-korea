@@ -2,12 +2,16 @@
 set -eu
 
 chown -R node:node /app/data 2>/dev/null || true
+# Renders the site configuration (defaults for unset values); an invalid value stops startup.
 node --input-type=module <<'JS'
-import fs from "node:fs";
 import modules from "/app/competition/ui-modules.json" with { type: "json" };
-for (const directory of Object.values(modules)) {
-  const config = `/app/competition/modules/${directory}/web/dist/env-config.js`;
-  fs.writeFileSync(config, `window.__TEST_SERVER__ = ${process.env.TEST_SERVER || "false"};\n`);
+import { writeEnvConfig } from "/app/shared/server/write-env-config.mjs";
+try {
+  writeEnvConfig(Object.values(modules)
+    .map((directory) => `/app/competition/modules/${directory}/web/dist/env-config.js`));
+} catch (error) {
+  console.error(`Invalid site configuration: ${error.message || error}`);
+  process.exit(1);
 }
 JS
 exec su-exec node "$@"

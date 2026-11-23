@@ -24,12 +24,14 @@ import {
   isEnvEnabled,
 } from "../shared/server/express-setup.mjs";
 import { access } from "../shared/common/access-control.js";
+import { parseSiteConfig } from "../shared/common/site-config.js";
 import { createLogger } from "../shared/server/logger.mjs";
 import { runIfDirect } from "../shared/server/service-bootstrap.mjs";
 
 export { sessionPicture } from "./server/input.mjs";
 
 export function createAuthApp(options = {}) {
+  const site = options.site || parseSiteConfig(process.env);
   const db = createDatabase(Database, options.dbPath || "./data/auth.db");
 
   const { ADMIN_EMAIL } = initializeSchema({ db, LEGACY_PERMISSION_BUNDLES });
@@ -46,9 +48,9 @@ export function createAuthApp(options = {}) {
   const logger = createLogger(db, "auth");
 
   const { warnAggThrottled, LOG_SERVICES, logFilterHash, encodeAggCursor, decodeAggCursor } =
-    createLogAggregationService({ logger });
+    createLogAggregationService({ logger, site });
 
-  const { notifyNewUser } = createNotificationService({ logger });
+  const { notifyNewUser } = createNotificationService({ logger, site });
 
   // validateUserCacheTtl: 0 — auth의 검증기는 로컬 인덱스 SELECT라 캐시가 무익하고,
   // auth 자신의 사용자 관리 UI는 역할 변경이 즉시 반영되어야 한다.
@@ -60,6 +62,7 @@ export function createAuthApp(options = {}) {
       validateDevice,
       validateUserCacheTtl: 0,
       validateDeviceCacheTtl: 0,
+      site,
     },
     (req) => {
       if (req.path === "/api/health") return null;
@@ -121,7 +124,7 @@ export function createAuthApp(options = {}) {
     }
   }, 60000).unref();
 
-  registerSessionRoutes({ app, logger, isForwardAuthKey });
+  registerSessionRoutes({ app, logger, isForwardAuthKey, site });
 
   registerDevicesRoutes({
     app,
@@ -135,6 +138,7 @@ export function createAuthApp(options = {}) {
     pairingLimiter,
     pairingCodeHash,
     tokenHash,
+    site,
   });
 
   registerOauthRoutes({
@@ -161,7 +165,7 @@ export function createAuthApp(options = {}) {
     notifyNewUser,
   });
 
-  registerUsersRoutes({ app, db, userAccess, dbRun, ADMIN_EMAIL, logger, notifyNewUser });
+  registerUsersRoutes({ app, db, userAccess, dbRun, ADMIN_EMAIL, logger, notifyNewUser, site });
 
   registerContactsRoutes({ app, dbRun, db, logger });
 
@@ -179,7 +183,7 @@ export function createAuthApp(options = {}) {
   /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-  app.get("/{*splat}", htmlPage("index.html", "./web/dist"));
+  app.get("/{*splat}", htmlPage("index.html", "./web/dist", { site }));
 
   return { app, db };
 }
