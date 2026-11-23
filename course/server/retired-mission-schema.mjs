@@ -1,7 +1,13 @@
 // Schema of the mission tables the Course server no longer uses. The rover's
 // mission ledger moved to the rover hub (fsk-coursekeeper); FSK keeps these
-// tables and their history, and still converges older databases to the
-// validated layout, but nothing reads or writes missions anymore.
+// tables and their history so older databases and backups converge to the
+// validated layout. No request handler reads or writes missions anymore. The
+// only writes left are the convergence steps below. They run at every boot but
+// change only rows still in an older layout (for example from a restored
+// backup): they backfill v2 columns and waypoints, close all but the newest open
+// mission, and promote or cancel open v1 missions.
+// The mission preset tables created here are still live: the course service
+// (fsk-coursekeeper) owns them as course data and declares the same layout.
 import crypto from "crypto";
 
 const MISSION_PROTOCOL_VERSION = 2;

@@ -366,9 +366,9 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
     }
   });
 
-  // Durable mission protocol v2: stable waypoint identities, editable remaining
-  // routes, command acknowledgements, and named route presets. The migration is
-  // additive and backfills legacy coordinate arrays without deleting history.
+  // Retired mission protocol v2 tables (the ledger moved to the rover hub). This
+  // only converges older databases to the validated layout without deleting
+  // history; retired-mission-schema.mjs lists the rows it can still rewrite.
   setupMissionV2Schema(db, logger);
 
   // 주행 마커가 코스의 유일한 방향 지정 수단이 되면서, 마커가 없는 기존 코스는 UI에서
@@ -427,8 +427,9 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
     });
   });
 
-  // GPS 소스/기준국 설정. 로버가 쓸 NTRIP 소스(NGII vs 수신기 base station)를 서버에
-  // 저장해 모든 클라이언트·로버 재연결 간에 공유한다. key-value 단순 저장:
+  // 퇴역 테이블. 로버 NTRIP 소스 설정은 rover hub가, 기준국 측량은 GPS 유닛이
+  // 관리한다(fsk-coursekeeper). FSK는 기존 데이터와 백업 검증 형식을 유지하려고
+  // gps_config·survey_point 테이블만 만들어 두며 읽거나 쓰지 않는다. 당시 형식:
   //   ntrip_source          "ngii" | "base" (기본 ngii)
   //   active_base_point_id  survey_point.id (base 소스일 때 사용할 기준점) | null
   db.exec(`CREATE TABLE IF NOT EXISTS gps_config (
@@ -436,10 +437,8 @@ export function initializeSchema({ db, MISSION_TELEMETRY_MAX_ROWS, logger }) {
   value TEXT
 );`);
 
-  // 측량점: 수신기를 기준국으로 쓰기 위한 이름 붙은 지점. NGII RTK가 살아있을 때
-  // 수신기 위치를 일정 시간 평균내어(lat/lng/alt) 기록해 두고, 같은 자리에 두면
-  // 그 좌표로 수신기를 고정 기준국(F9P TMODE3 FIXED)으로 돌린다. lat/lng/alt는
-  // 미측량 시 NULL, double 정밀도로 TMODE3 LLH 재구성에 충분하다.
+  // 퇴역 측량점 테이블(위 gps_config 참고). 수신기를 기준국으로 쓰던 시절 NGII RTK로
+  // 평균낸 지점 좌표를 기록했다. lat/lng/alt는 미측량 시 NULL.
   db.exec(`CREATE TABLE IF NOT EXISTS survey_point (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL UNIQUE,

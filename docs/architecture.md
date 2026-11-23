@@ -86,7 +86,8 @@ the FSK host: FSK styles, navigation, Auth permissions, publication, and the
 Course server as the course store. The console talks to the rover and GPS unit
 APIs directly over the tailnet; the Course server only lists their addresses
 (`GET /api/devices`, from `COURSE_DEVICES`). The Course server keeps the retired
-mission tables and converges their schema, but does not read or write them.
+mission tables and their history, and no request reads or writes them. At boot it
+still converges rows left in an older layout, for example from a restored backup.
 
 ## Teams and years
 

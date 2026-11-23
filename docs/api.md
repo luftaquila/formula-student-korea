@@ -596,7 +596,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/courses/:id/snapshots` | `course.manage` | — | `[{ id, taken_at, actor, reason, cone_count }]` | 코스 스냅샷 목록 |
+| GET | `/api/courses/:id/snapshots` | `course.manage` | — | `{ snapshots: [{ id, course_id, taken_at, actor, reason, cone_count }] }` | 코스 스냅샷 목록 (최신순 최대 100개) |
 | POST | `/api/courses/:id/snapshots` | `course.operate` | `{ reason? }` | 201 | 현재 콘 상태 스냅샷 저장. 콘솔은 미션 생성 시 `auto:` 사유로 남긴다 |
 | POST | `/api/courses/:id/snapshots/:sid/restore` | `course.manage` | — | 200 | 스냅샷으로 콘 상태 복원 (복원 직전 자동 스냅샷) |
 | DELETE | `/api/courses/:id/snapshots/:sid` | `course.manage` | — | 200 | 스냅샷 삭제 |
@@ -617,7 +617,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 주행 방향의 단일 지정 수단이다. `course.reverse` / `course.start_cone_id`는 마커가 없는 코스에만 적용되는 폴백으로 남고, 웹 UI에는 진행방향 전환 컨트롤이 없다.
 
-`course/lib/route-mode.mjs`의 `resolveCourseRoute`가 지도·ZIP 내보내기 양쪽에서 계산 방식을 결정한다 (동일 입력 → 동일 결과):
+fsk-coursekeeper 패키지 `route-mode.mjs`의 `resolveCourseRoute`가 지도·ZIP 내보내기 양쪽에서 계산 방식을 결정한다 (동일 입력 → 동일 결과):
 
 | mode | 조건 | 계산 |
 |---|---|---|

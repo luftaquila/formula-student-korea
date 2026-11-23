@@ -35,7 +35,7 @@ against the live k3s environment.
   fix and observe the same test pass.
 - Run the narrowest relevant test first. Run all affected suites before handoff.
 - On shared hosts, run tests through `pnpm test`, `pnpm run test:<domain>`, or
-  `node scripts/test.mjs tests/course/course-archive.test.mjs`; never use
+  `node scripts/test.mjs tests/course/public-courses.test.mjs`; never use
   `node --test` directly. The runner requires Linux, cgroup v2, and a systemd user
   manager, and refuses to run without enforced limits. Use CI if unsupported.
   Test limits (not application/build limits):

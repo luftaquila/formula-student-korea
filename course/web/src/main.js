@@ -13,9 +13,9 @@ import { HOST_KEY } from "fsk-coursekeeper/console/host.mjs";
 import { setBaseMapKey } from "fsk-coursekeeper/console/lib/course-map.mjs";
 import { createFskHost } from "./fsk-host.mjs";
 
-// Mission history is integrated into MapView as the 기록(history) inspector tab
-// so the same rail + map + inspector layout serves both live operation and
-// replay; legacy /missions URLs redirect to the merged view.
+// /missions was the old mission history page. Mission records now live on the
+// rover hub and the console's Review mode shows them, so legacy /missions links
+// land on the console.
 const routes = [
   { path: "/", component: () => import("fsk-coursekeeper/console/CourseConsole.vue"), meta: { permission: "course.operate" } },
   { path: "/public", component: () => import("fsk-coursekeeper/console/views/PublicCourseView.vue"), meta: { public: true } },
