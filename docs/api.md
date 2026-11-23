@@ -617,15 +617,7 @@ Config keys: `email_enabled`, `brevo_api_key`, `brevo_sender_name`, `brevo_sende
 
 주행 방향의 단일 지정 수단이다. `course.reverse` / `course.start_cone_id`는 마커가 없는 코스에만 적용되는 폴백으로 남고, 웹 UI에는 진행방향 전환 컨트롤이 없다.
 
-fsk-coursekeeper 패키지 `route-mode.mjs`의 `resolveCourseRoute`가 지도·ZIP 내보내기 양쪽에서 계산 방식을 결정한다 (동일 입력 → 동일 결과):
-
-| mode | 조건 | 계산 |
-|---|---|---|
-| `auto` | 해석 가능한 단계 2개 미만 | `computeCenterline` + 저장된 `start_cone_id`/`reverse` |
-| `oriented` | 단계가 한 루프를 한 방향으로 훑음(반복 방문 없음, 모든 마커가 노면 위, 되돌아가지 않음) | `computeCenterline`. 마커가 `start`와 `reverse`만 공급하므로 **기하는 마커 도입 전과 완전히 동일** |
-| `guided` | 그 외(반복 방문·분기·노면 밖 마커) | `computeGuidedRoute` |
-
-닫힌 루프에서 마커 2개는 어느 쪽으로 돌아도 도달하므로 첫 구간은 **짧은 호**로 해석한다. 먼 쪽을 강제하려면 반대편에 마커를 추가한다.
+마커로 경로를 계산하는 방식(`auto`·`oriented`·`guided`)은 fsk-coursekeeper 패키지 `route-mode.mjs`가 정한다.
 
 마커 이전에 생성된 코스는 서비스 부팅 시 `course.seed_route_markers_from_direction.v1` 마이그레이션이 저장된 방향을 재현하는 마커 2개(루프 시작점과 1/3 지점)를 심는다. 루프로 닫히지 않는 코스는 건드리지 않아 `auto`로 남는다.
 
