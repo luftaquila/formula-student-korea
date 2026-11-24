@@ -1,7 +1,7 @@
 import { logAggregationTargets } from "../../../shared/server/services.mjs";
 import crypto from "crypto";
 
-export function createLogAggregationService({ logger }) {
+export function createLogAggregationService({ logger, site }) {
   // 로그 집계 실패 폭주 방지: action+service별 최소 60초 간격 throttle
   const _aggWarn = new Map();
 
@@ -17,7 +17,7 @@ export function createLogAggregationService({ logger }) {
   /* ============================================
    로그 집계 API
    ============================================ */
-  const LOG_SERVICES = logAggregationTargets();
+  const LOG_SERVICES = logAggregationTargets(site.features);
 
   // 집계 커서 토큰. 서비스별 keyset 커서("ts,id")를 하나의 opaque 문자열로 묶고,
   // 필터 해시(f)를 동봉해 "필터 A로 만든 커서로 필터 B 페이지를 잇는" 오용을 막는다

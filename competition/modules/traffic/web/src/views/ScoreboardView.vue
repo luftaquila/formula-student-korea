@@ -6,6 +6,7 @@ import { useSSE } from "../composables/useSSE";
 import { fetchRecord } from "../composables/useApi";
 import { useWirelessStore } from "../stores/wireless";
 import { currentCompetitionYear } from "@shared/common/competition-year.mjs";
+import { site } from "@shared/browser/site.js";
 import {
   scoreboardLiveAttempt,
   scoreboardRecordEffects,
@@ -524,7 +525,7 @@ onDeactivated(() => {
           <div v-else class="scoreboard">
             <!-- Header -->
             <header class="header">
-              <h1 class="title">FSK Race Control</h1>
+              <h1 class="title">{{ site.shortName }} Race Control</h1>
               <div class="live">
                 <span class="live-dot" :class="{ connected }"></span>
                 <span>LIVE</span>

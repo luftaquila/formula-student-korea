@@ -6,6 +6,7 @@ export function createEmailService({
   dbRun,
   db,
   isInternalSecret,
+  site,
 }) {
   /* ============================================
    Brevo API Wrapper — single recipient, no side effects
@@ -19,7 +20,7 @@ export function createEmailService({
         Accept: "application/json",
       },
       body: JSON.stringify({
-        sender: { name: senderName || "FSK", email: senderEmail },
+        sender: { name: senderName || site.shortName, email: senderEmail },
         to: [{ email: recipient }],
         subject,
         htmlContent: wrappedHtml,

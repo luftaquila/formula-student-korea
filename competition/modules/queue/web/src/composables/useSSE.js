@@ -52,8 +52,8 @@ on("entries", (e) => {
   lastEntriesUpdate.value = { ...data, timestamp: Date.now() };
 });
 
-export function useSSE() {
-  useConnection();
+export function useSSE(enabled = true) {
+  useConnection(enabled);
 
   return {
     activeInspections,

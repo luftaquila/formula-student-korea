@@ -1,0 +1,8 @@
+# Routes of the "energymeter" site feature, imported only when FEATURES enables it.
+# Energymeter service
+redir /energymeter /energymeter/
+handle_path /energymeter/* {
+	request_header -X-Internal-Service
+	request_header -Authuser
+	reverse_proxy energymeter:9800
+}

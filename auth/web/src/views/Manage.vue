@@ -4,8 +4,13 @@ import { useNotification } from "@shared/browser/useNotification.js";
 import { formatPhone } from "@shared/common/format-phone.js";
 import { ROLE_SORT_ORDER } from "@shared/common/constants.js";
 import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
+import { disabledGrants, enabledDeviceScopes } from "@shared/common/access-control.js";
+import { site } from "@shared/browser/site.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
+
+// Kiosk tablets exist only for the queues this deployment enables.
+const hasDeviceScopes = enabledDeviceScopes(site.features).length > 0;
 
 const { notyf } = useNotification();
 
@@ -145,10 +150,17 @@ function toggleAccess(control, checked) {
   selectedGrants.value = next;
 }
 
+// 꺼진 기능의 권한은 대화상자에 싣지 않는다. 서버가 저장 시 그대로 보존한다.
+function editableGrants(user) {
+  const grants = user.grants || [];
+  const disabled = new Set(disabledGrants(grants, site.features));
+  return grants.filter((key) => !disabled.has(key));
+}
+
 function editAccess(user) {
   bulkAccessTargets.value = [];
   editingAccessUser.value = user;
-  selectedGrants.value = new Set(user.grants || []);
+  selectedGrants.value = new Set(editableGrants(user));
 }
 
 // 선택한 Official 전원에게 같은 권한 목록을 적용한다. 권한이 서로 다르면 공통
@@ -156,7 +168,7 @@ function editAccess(user) {
 function editBulkAccess() {
   const targets = selectedOfficials.value;
   if (targets.length === 0) return;
-  const grantSets = targets.map((u) => new Set(u.grants || []));
+  const grantSets = targets.map((u) => new Set(editableGrants(u)));
   const common = [...grantSets[0]].filter((key) => grantSets.every((set) => set.has(key)));
   editingAccessUser.value = null;
   bulkAccessTargets.value = targets;
@@ -817,7 +829,7 @@ onUnmounted(() => {
         <div class="header-actions">
           <button type="button" class="btn btn-sm btn-ghost apply-url" title="클릭하여 복사" @click="copyApplyUrl">{{ applyUrl }}</button>
           <router-link to="/applications" class="btn btn-sm btn-primary">계정 신청 관리</router-link>
-          <router-link to="/devices" class="btn btn-sm btn-primary">태블릿 장비 관리</router-link>
+          <router-link v-if="hasDeviceScopes" to="/devices" class="btn btn-sm btn-primary">태블릿 장비 관리</router-link>
         </div>
       </div>
       <div class="card-body">

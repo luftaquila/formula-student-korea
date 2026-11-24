@@ -8,6 +8,7 @@ import { currentCompetitionYear } from "../../../../../shared/common/competition
 export function createQueueSms({
   logger,
   options,
+  site,
   getInspectionSettings,
   currentYear,
   getQueueStmt,
@@ -52,6 +53,7 @@ export function createQueueSms({
           .send(
             target.phone,
             inspectionQueueRankSms({
+              shortName: site.shortName,
               year: currentCompetitionYear(),
               num: target.num,
               inspection: inspections[type],

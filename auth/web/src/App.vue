@@ -2,6 +2,7 @@
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 
 const route = useRoute();
@@ -15,12 +16,12 @@ const isManage = computed(() => route.path === "/");
 const pageIcon = computed(() =>
   isApply.value ? "📝" : isDevicePair.value || isDevices.value ? "📱" : isApplications.value ? "📋" : isLogs.value ? "📜" : "🔑");
 const pageTitle = computed(() =>
-  isApply.value ? "FSK 계정 신청"
-  : isDevicePair.value ? "FSK 태블릿 인증"
-  : isDevices.value ? "FSK 태블릿 장비 관리"
-  : isApplications.value ? "FSK 계정 신청 관리"
-  : isLogs.value ? "FSK 시스템 로그"
-  : "FSK 계정 관리");
+  siteTitle(isApply.value ? "계정 신청"
+  : isDevicePair.value ? "태블릿 인증"
+  : isDevices.value ? "태블릿 장비 관리"
+  : isApplications.value ? "계정 신청 관리"
+  : isLogs.value ? "시스템 로그"
+  : "계정 관리"));
 const currentPath = computed(() =>
   isLogs.value ? "/auth/logs"
   : isDevices.value ? "/auth/devices"

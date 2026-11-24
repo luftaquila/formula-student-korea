@@ -10,7 +10,9 @@ and GPS unit live in [fsk-coursekeeper](https://github.com/luftaquila/fsk-course
 ## Local development
 
 Use Node.js 22, the pinned pnpm version, and `.env` based on `.env.example`.
-Install from the workspace root:
+[Site configuration](docs/architecture.md#site-configuration) variables are
+optional. Vite dev servers render `env-config.js` from their own environment, so
+export any overrides before `run dev`. Install from the workspace root:
 
 ```bash
 corepack enable
@@ -167,6 +169,11 @@ remigrate Competition data. Use `./scripts/fsk-redeploy.sh --check` to validate
 deployment without a Flux resume or workload rollout; it still creates a temporary
 validation pod.
 
+Every application Deployment and the Caddy Deployment read the
+[site configuration](docs/architecture.md#site-configuration) from the namespace
+ConfigMap. Unset values take the FSK defaults; an invalid value keeps the pods from
+starting. Deploy only the supporting runtimes whose features `FEATURES` enables.
+
 Secrets are imperative Kubernetes Secrets and never belong in Git. Follow
 `/srv/k3s/README.md` for per-cluster bootstrap, secrets, infrastructure, and recovery
 operations instead of copying those procedures here.
@@ -189,8 +196,12 @@ restore-tests every restore gate below for the target environment.
 ### Required backup unit
 
 - `competition.db` and its Documents upload tree
-- Auth, Calendar, Course, and Email SQLite databases
+- Auth and the Calendar, Course, and Email SQLite databases of the enabled features;
+  `create-k3s-backup.mjs` reads the deployment's `FEATURES` (every feature when
+  unset)
 - an exact manifest identifying every required database
+- the legacy migration report and cutover marker together, when the deployment was
+  migrated; one without the other rejects the backup
 - FileBrowser's mounted payload when present; its private database remains outside
   the Competition consistency contract
 

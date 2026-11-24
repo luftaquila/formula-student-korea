@@ -2,6 +2,7 @@ import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { serviceUrl, logAggregationTargets, SERVICE_NAMES, RUNTIME_SERVICE_NAMES } from '../../shared/server/services.mjs';
+import { SITE_FEATURE_NAMES } from '../../shared/common/site-features.js';
 
 const ENV_KEYS = ['AUTH_SERVER', 'COMPETITION_SERVER'];
 
@@ -46,7 +47,7 @@ describe('logAggregationTargets', () => {
   // 손으로 관리하던 9개짜리 LOG_SERVICES 문자열을 대체했으므로, 그 집합이
   // 그대로인지 고정해 둔다.
   it('returns every service except auth', () => {
-    const targets = logAggregationTargets();
+    const targets = logAggregationTargets(SITE_FEATURE_NAMES);
     assert.deepEqual(Object.keys(targets).sort(), [
       'calendar', 'course', 'documents', 'email', 'entry',
       'inspection', 'queue', 'registration', 'score', 'traffic',
@@ -63,7 +64,7 @@ describe('logAggregationTargets', () => {
   it('SERVICE_NAMES covers the aggregation targets plus auth', () => {
     assert.deepEqual(
       [...SERVICE_NAMES].sort(),
-      ['auth', ...Object.keys(logAggregationTargets())].sort(),
+      ['auth', ...Object.keys(logAggregationTargets(SITE_FEATURE_NAMES))].sort(),
     );
     assert.ok(SERVICE_NAMES.includes('auth'), 'the viewer filters auth too (queried locally)');
   });
@@ -87,8 +88,14 @@ describe('logAggregationTargets', () => {
     assert.ok(Object.isFrozen(SERVICE_NAMES));
   });
 
+  it('targets only the services of enabled features', () => {
+    assert.deepEqual(Object.keys(logAggregationTargets(['entry', 'registration', 'email'])),
+      ['entry', 'registration', 'email']);
+    assert.deepEqual(Object.keys(logAggregationTargets(['calendar'])), ['calendar']);
+  });
+
   it('honours overrides', () => {
     process.env.COMPETITION_SERVER = 'http://127.0.0.1:45679';
-    assert.equal(logAggregationTargets().entry, 'http://127.0.0.1:45679/competition/api/v1/logs');
+    assert.equal(logAggregationTargets(SITE_FEATURE_NAMES).entry, 'http://127.0.0.1:45679/competition/api/v1/logs');
   });
 });

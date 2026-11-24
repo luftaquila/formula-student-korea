@@ -1,0 +1,10 @@
+# Routes of the "course" site feature, imported only when FEATURES enables it.
+# Course service (map tiles require relaxed CSP). The console talks to the
+# rover and GPS unit APIs directly over the tailnet (https://*.ts.net).
+redir /course /course/
+handle_path /course/* {
+	header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; img-src 'self' data: https://*.googleusercontent.com https://mt0.google.com https://mt1.google.com https://mt2.google.com https://mt3.google.com https://api.vworld.kr; connect-src 'self' https://*.ts.net; font-src 'self' https://fonts.gstatic.com data:; object-src 'none'; frame-ancestors 'self'"
+	request_header -X-Internal-Service
+	request_header -Authuser
+	reverse_proxy course:10000
+}

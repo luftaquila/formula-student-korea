@@ -5,11 +5,17 @@ import {
   DEVICE_SCOPES,
   HUMAN_ROLES,
   PERMISSION_KEYS,
+  PERMISSION_DEFINITIONS,
   access,
+  accessCatalog,
   authorizePrincipal,
+  disabledGrants,
+  enabledDeviceScopes,
   expandPermissions,
   normalizeAccessGrants,
+  permissionFeature,
 } from "../../shared/common/access-control.js";
+import { SITE_FEATURE_NAMES } from "../../shared/common/site-features.js";
 
 test("uses only student, official, and admin as human roles", () => {
   assert.deepEqual(HUMAN_ROLES, ["student", "official", "admin"]);
@@ -62,4 +68,37 @@ test("admin bypass applies only to human permissions and kiosk scopes remain exa
   assert.equal(authorizePrincipal({ kind: "device", scope: DEVICE_SCOPES[0] }, access.permission("queue.operate")), false);
   assert.equal(authorizePrincipal({ kind: "device", scope: "kiosk.queue.register" }, access.device("kiosk.queue.register")), true);
   assert.equal(authorizePrincipal({ kind: "device", scope: "kiosk.queue.register" }, access.device("kiosk.registration.register")), false);
+});
+
+test("every permission belongs to a site feature and implies only its own feature", () => {
+  for (const permission of PERMISSION_DEFINITIONS) {
+    assert.ok(SITE_FEATURE_NAMES.includes(permission.feature), permission.key);
+    for (const implied of permission.implies) assert.equal(permissionFeature(implied), permission.feature);
+  }
+  assert.equal(permissionFeature("rover.operate"), "course");
+  assert.equal(permissionFeature("files.access"), "files");
+  assert.throws(() => permissionFeature("queue.unknown"), /Unknown permission/);
+});
+
+test("the grant catalog lists only the permissions of enabled features", () => {
+  const all = accessCatalog(SITE_FEATURE_NAMES);
+  assert.deepEqual(all.permissions.map(({ key }) => key), PERMISSION_KEYS);
+  assert.deepEqual(all.accessControls.map(({ key }) => key), ACCESS_CONTROL_DEFINITIONS.map(({ key }) => key));
+
+  const documents = accessCatalog(["entry", "documents", "email"]);
+  assert.deepEqual(documents.permissions.map(({ key }) => key), ["documents.operate", "documents.manage"]);
+  assert.deepEqual(documents.accessControls.map(({ key }) => key), ["documents"]);
+  assert.deepEqual(documents.roles, HUMAN_ROLES);
+
+  const course = accessCatalog(["course"]);
+  assert.deepEqual(course.accessControls.map(({ key }) => key), ["course", "rover"]);
+
+  assert.deepEqual(disabledGrants(["documents.manage", "queue.operate", "files.access"], ["documents"]),
+    ["queue.operate", "files.access"]);
+});
+
+test("kiosk scopes follow the queue features", () => {
+  assert.deepEqual(enabledDeviceScopes(SITE_FEATURE_NAMES), DEVICE_SCOPES);
+  assert.deepEqual(enabledDeviceScopes(["entry", "registration", "email"]), ["kiosk.registration.register"]);
+  assert.deepEqual(enabledDeviceScopes(["entry", "documents", "email"]), []);
 });

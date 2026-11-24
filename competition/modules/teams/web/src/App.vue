@@ -5,6 +5,7 @@ import EntryForm from "./components/EntryForm.vue";
 import FileManager from "./components/FileManager.vue";
 import VehicleTypeManager from "./components/VehicleTypeManager.vue";
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 import { fetchYears, fetchEntries, addEntry, updateEntry, setEntryActive, uploadEntries, fetchVehicleTypes, addVehicleType, updateVehicleType, deleteVehicleType } from "./api";
 import { useNotification } from "@shared/browser/useNotification.js";
@@ -175,7 +176,7 @@ onMounted(async () => { await loadYears(); await Promise.all([loadEntries(), loa
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">🏁</span>
-          <h1>FSK 엔트리 관리</h1>
+          <h1>{{ siteTitle("엔트리 관리") }}</h1>
         </a>
         <div class="header-actions">
           <NavMenu currentPath="/entry" />

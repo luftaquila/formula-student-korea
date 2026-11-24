@@ -1,5 +1,6 @@
 import { ref, computed } from "vue";
-import { PERMISSION_KEYS } from "../common/access-control.js";
+import { PERMISSION_KEYS, permissionFeature } from "../common/access-control.js";
+import { hasFeature } from "./site.js";
 
 function getUserFromCookie() {
   const match = document.cookie.match(/fsk_user=([^;]+)/);
@@ -16,6 +17,8 @@ export const isAdmin = computed(() => user.value?.role === "admin");
 
 export function hasPermission(permission) {
   if (!PERMISSION_KEYS.includes(permission)) return false;
+  // A disabled feature has no pages or APIs on this deployment, even for Admins.
+  if (!hasFeature(permissionFeature(permission))) return false;
   return user.value?.role === "admin"
     || (user.value?.role === "official" && user.value?.permissions?.includes(permission));
 }

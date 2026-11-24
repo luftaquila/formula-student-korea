@@ -7,6 +7,7 @@ import { useEntryStore } from "../stores/entry";
 import { useSerialStore, msToClockStr } from "../stores/serial";
 import { useNotification } from "@shared/browser/useNotification.js";
 import { currentCompetitionYear } from "@shared/common/competition-year.mjs";
+import { site } from "@shared/browser/site.js";
 import { addRecord } from "../composables/useApi";
 import { useAutoSavedRecord } from "../composables/useAutoSavedRecord";
 import { useLiveAttempt } from "../composables/useLiveAttempt";
@@ -98,7 +99,7 @@ watch(() => props.config.mode, (mode) => {
 });
 
 const currentYear = computed(() => currentCompetitionYear());
-const titleText = computed(() => `${currentYear.value} FSK ${eventName.value.trim() || props.config.defaultTitle}`);
+const titleText = computed(() => `${currentYear.value} ${site.shortName} ${eventName.value.trim() || props.config.defaultTitle}`);
 const selectedEntry = computed(() => (selectedTeam.value ? entryStore.getEntryByNum(selectedTeam.value) : null));
 const isLocked = computed(() => serial.green.active);
 // 신호등 게이팅: 유선=연결 여부, 무선=녹색등(인수)은 브리지면 가능 / 적·소등은 점유자만.

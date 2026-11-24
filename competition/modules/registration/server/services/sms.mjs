@@ -2,6 +2,7 @@ import { createThrottledSkipWarning } from "../../../../../shared/server/sms-cli
 import { registrationQueueRankSms } from "../../../../../shared/common/sms-template.mjs";
 
 export function createRegistrationSms({
+  site,
   smsClient,
   logger,
   dbRun,
@@ -154,6 +155,7 @@ export function createRegistrationSms({
         registrationId: target.id,
         phone: target.phone,
         content: registrationQueueRankSms({
+          shortName: site.shortName,
           year,
           num: target.num,
           rank: settings.notifyRank,

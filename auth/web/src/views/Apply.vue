@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted } from "vue";
 import { useNotification } from "@shared/browser/useNotification.js";
 import { formatPhone } from "@shared/common/format-phone.js";
+import { site } from "@shared/browser/site.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const APPLY_PATH = import.meta.env.PROD ? "/auth/apply" : "/apply";
@@ -120,7 +121,7 @@ onMounted(load);
     </div>
 
     <div v-else-if="state === 'unlinked'" class="card">
-      <div class="card-header"><h3>Formula Student Korea 계정 신청</h3></div>
+      <div class="card-header"><h3>{{ site.name }} 계정 신청</h3></div>
       <div class="card-body">
         <button type="button" class="btn btn-primary submit-btn" @click="connectGoogle">Google 계정 연동</button>
       </div>
@@ -128,7 +129,7 @@ onMounted(load);
 
     <div v-else class="card">
       <div class="card-header">
-        <h3>{{ state === 'pending' ? '신청 정보' : 'Formula Student Korea 계정 신청' }}</h3>
+        <h3>{{ state === 'pending' ? '신청 정보' : `${site.name} 계정 신청` }}</h3>
         <span v-if="state === 'pending'" class="badge badge-warning">신청 완료 · 검토 대기</span>
       </div>
       <div class="card-body">

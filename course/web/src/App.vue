@@ -2,6 +2,7 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import Toaster from "fsk-coursekeeper/console/Toaster.vue";
 
 const route = useRoute();
@@ -15,7 +16,7 @@ const isPublic = computed(() => route.meta.public === true);
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">🏁</span>
-          <h1>FSK 경기 코스</h1>
+          <h1>{{ siteTitle("경기 코스") }}</h1>
         </a>
         <div class="header-actions">
           <NavMenu currentPath="/course/public" />

@@ -21,6 +21,7 @@ COPY landing/src landing/src
 COPY landing/public landing/public
 COPY landing/index.html landing/index.html
 COPY landing/vite.config.js landing/vite.config.js
+COPY landing/site-setup.mjs landing/site-setup.mjs
 
 # Copy shared folder
 COPY shared shared
@@ -31,11 +32,23 @@ RUN pnpm --dir landing run build
 # Final Caddy image
 FROM docker.io/library/caddy:alpine
 
-# Copy Caddyfile
-COPY landing/Caddyfile /etc/caddy/Caddyfile
+# The entrypoint renders the site configuration with the shared Node modules
+# before Caddy starts.
+RUN apk add --no-cache nodejs
 
-# Copy landing build
+# Copy Caddyfile and the per-feature route snippets
+COPY landing/Caddyfile /etc/caddy/Caddyfile
+COPY landing/routes /etc/caddy/routes
+
+# Site setup script and the shared configuration rules it applies
+COPY shared/common /opt/site/shared/common
+COPY landing/site-setup.mjs /opt/site/landing/site-setup.mjs
+RUN echo '{"type":"module"}' > /opt/site/package.json
+
+# Copy landing build. The entrypoint renders /srv/landing/index.html from the
+# pristine copy so a restarted container renders it again.
 COPY --from=landing-builder /workspace/landing/dist /srv/landing
+COPY --from=landing-builder /workspace/landing/dist/index.html /opt/site/landing-index.html
 
 COPY landing/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

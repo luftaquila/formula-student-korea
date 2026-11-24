@@ -40,7 +40,7 @@ export function createQueueApp(options = {}) {
 
   rateLimitTimer.unref();
 
-  const { app, db, logger, dbRun } = createServiceSkeleton({
+  const { app, db, logger, dbRun, site } = createServiceSkeleton({
     name: "queue",
     express,
     Database,
@@ -145,6 +145,7 @@ export function createQueueApp(options = {}) {
   const { smsClient, loadSmsConfig, sendSmsNotification } = createQueueSms({
     logger,
     options,
+    site,
     getInspectionSettings,
     currentYear,
     getQueueStmt,
@@ -270,6 +271,7 @@ export function createQueueApp(options = {}) {
 
   registerQueueRoutes({
     app,
+    site,
     validateInspection,
     currentYear,
     dbRun,

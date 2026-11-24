@@ -1,0 +1,8 @@
+# Routes of the "email" site feature, imported only when FEATURES enables it.
+# Email service
+redir /email /email/
+handle_path /email/* {
+	request_header -X-Internal-Service
+	request_header -Authuser
+	reverse_proxy email:9900
+}

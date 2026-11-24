@@ -4,6 +4,7 @@ import fs from "fs";
 
 export function registerYearsRoutes({
   app,
+  site,
   dbRun,
   db,
   logger,
@@ -162,7 +163,7 @@ export function registerYearsRoutes({
     res.setHeader("Content-Type", "application/zip");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename*=UTF-8''${encodeURIComponent(`FSK_${year}_documents.zip`)}`,
+      `attachment; filename*=UTF-8''${encodeURIComponent(sanitize(`${site.shortName}_${year}_documents.zip`))}`,
     );
 
     const archive = createArchive("zip", { zlib: { level: 5 } });

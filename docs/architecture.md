@@ -5,6 +5,52 @@
 Test and live are independent clusters with separate state and reconciliation.
 Hostnames, manifest paths, and procedures: [k3s deployment](../CONTRIBUTING.md#k3s-deployment).
 
+## Site configuration
+
+One set of images serves several competitions. Each deployment may override its
+identity and features through the environment of every runtime;
+`shared/common/site-config.js` parses them. An unset or empty variable takes its
+default, the Formula Student Korea service with every feature. Every runtime, the
+container entrypoints, and the Caddy entrypoint refuse to start on a set but
+invalid value.
+
+| Variable | Use | Default |
+|---|---|---|
+| `SITE_NAME` | Landing heading, Open Graph site name, email bodies, iCal name | `Formula Student Korea` |
+| `SITE_SHORT_NAME` | Page titles and headings, email subjects, SMS prefix `[<short> <year>]`, archive names | `FSK` |
+| `PUBLIC_URL` | Absolute http(s) origin for emailed links and the OAuth callback | `https://fsk.luftaquila.io` for links; OAuth uses the request host |
+| `FEATURES` | Comma-separated features from `shared/common/site-features.js` | every feature |
+| `SITE_LINKS` | JSON array of `{ name, href, icon? }` menu links after the internal resources; `[]` for none | the FSK reference links |
+| `SITE_OG_IMAGE` | Absolute http(s) URL of the link-preview image | the packaged `/og-image.png` |
+
+Feature dependencies: `registration`, `queue`, and `documents` need `entry` and
+`email`; `inspection` and `traffic` need `entry`; `score` needs `entry`,
+`inspection`, and `traffic`. `course`, `calendar`, `files`, `energymeter`, and
+`email` stand alone. When `registration` or `queue` is enabled, the short name must
+fit in 8 SMS bytes (ASCII 1, Korean 2) so every queue SMS stays within 90 bytes.
+
+A disabled feature has no route, page, menu item, grant, kiosk scope, log target, or
+background work:
+
+- Competition initializes every module schema, so all deployments share one
+  database contract, but mounts only enabled modules; their APIs and UIs return
+  `404`. With `registration` and without `queue`, `/queue` serves only the public
+  lookup page.
+- Caddy imports `landing/routes/<feature>.caddy` only for enabled features, so it
+  never proxies to a runtime the deployment does not run.
+- Auth limits the access catalog, accepted grants, forward-auth, kiosk scopes, and
+  log aggregation to enabled features. Grants stored for a feature that is later
+  disabled stay through access edits and apply again once it is re-enabled. Browsers
+  hide pages of disabled features even from Admins.
+
+SPA `<title>` elements hold the page name; the server prefixes the short name. The
+Caddy entrypoint renders the landing title and social tags from the same
+configuration. The packaged image is served on the request host with its PNG type,
+size, and descriptive alt text; a `SITE_OG_IMAGE` replaces it and takes the site
+name as alt text. Internal identifiers stay unchanged across deployments: cookie
+names, package and image names, backup formats, and Traffic record names
+(`FSK <year> <name>`), which are stored keys.
+
 ## Venue network
 
 Venue clients primarily use distinct mobile-carrier IPs, not a shared venue NAT.
@@ -162,7 +208,9 @@ stable team IDs, copy only referenced uploads, and validate before publishing
 create-if-absent artifacts. k3s deployment must never rerun the legacy migration.
 
 Backup and restore validate one coordinated Competition, Auth, Calendar, Course,
-and Email state before publishing or replacing artifacts. FileBrowser payload may
+and Email state before publishing or replacing artifacts. The k3s backup requires
+Competition and Auth plus the Calendar, Course, and Email databases of enabled
+features. FileBrowser payload may
 be included; its private database and lifecycle are outside this contract. Follow
 the [backup/restore gates](../CONTRIBUTING.md#backup-and-restore).
 

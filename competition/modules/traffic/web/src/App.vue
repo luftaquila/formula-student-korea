@@ -4,6 +4,7 @@ import { useRoute } from "vue-router";
 import NavTabs from "./components/NavTabs.vue";
 import WirelessQualityAlert from "./components/WirelessQualityAlert.vue";
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 import { useEntryStore } from "./stores/entry";
 import { useSSE } from "./composables/useSSE";
@@ -46,7 +47,7 @@ onUnmounted(() => {
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">🚦</span>
-          <h1>FSK 계측 시스템</h1>
+          <h1>{{ siteTitle("계측 시스템") }}</h1>
         </a>
         <NavTabs />
         <div class="header-actions">

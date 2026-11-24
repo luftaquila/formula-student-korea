@@ -1,6 +1,10 @@
-import { PERMISSION_KEYS, principalHasPermission } from "../../../shared/common/access-control.js";
+import {
+  PERMISSION_KEYS,
+  permissionFeature,
+  principalHasPermission,
+} from "../../../shared/common/access-control.js";
 
-export function registerSessionRoutes({ app, logger, isForwardAuthKey }) {
+export function registerSessionRoutes({ app, logger, isForwardAuthKey, site }) {
   app.get("/api/logs", logger.queryHandler);
 
   app.get("/api/health", (req, res) => res.send("ok"));
@@ -45,6 +49,13 @@ export function registerSessionRoutes({ app, logger, isForwardAuthKey }) {
         required: requiredPermission,
       });
       return res.status(400).send("알 수 없는 권한입니다.");
+    }
+    if (!site.has(permissionFeature(requiredPermission))) {
+      logger.warn(req, "auth.forward_auth_denied", {
+        reason: "feature_disabled",
+        required: requiredPermission,
+      });
+      return res.status(403).send();
     }
     if (req.user?.kind !== "human") {
       logger.warn(req, "auth.forward_auth_denied", { reason: "no_user" });

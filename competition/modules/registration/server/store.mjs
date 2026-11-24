@@ -1,6 +1,6 @@
 import { smsPrefix } from "../../../../shared/common/sms-template.mjs";
 
-export function createRegistrationStore({ db, DEFAULT_SETTINGS, smsClient }) {
+export function createRegistrationStore({ db, DEFAULT_SETTINGS, smsClient, site }) {
   function settingsForYear(year) {
     const row = db
       .prepare(
@@ -16,7 +16,7 @@ export function createRegistrationStore({ db, DEFAULT_SETTINGS, smsClient }) {
       sms: row ? row.sms === 1 : DEFAULT_SETTINGS.sms,
       notifyRank: row ? row.notify_rank : DEFAULT_SETTINGS.notifyRank,
       smsAvailable: smsClient.isAvailable(),
-      smsPrefix: smsPrefix(year).trimEnd(),
+      smsPrefix: smsPrefix(site.shortName, year).trimEnd(),
       updatedAt: row?.updated_at || null,
     };
   }

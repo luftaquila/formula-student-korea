@@ -18,7 +18,7 @@ import { access } from "../shared/common/access-control.js";
    App
    ============================================ */
 export function createCalendarApp(options = {}) {
-  const { app, db, logger, dbRun } = createServiceSkeleton({
+  const { app, db, logger, dbRun, site } = createServiceSkeleton({
     name: "calendar",
     express,
     Database,
@@ -45,7 +45,7 @@ export function createCalendarApp(options = {}) {
 
   initializeSchema({ db, normalizeDateTime });
 
-  const { generateICalSig, generateICal } = createSubscriptionService();
+  const { generateICalSig, generateICal } = createSubscriptionService({ site });
 
   registerEventsRoutes({
     app,

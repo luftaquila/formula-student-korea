@@ -1,5 +1,7 @@
 import { createJWT } from '../../shared/server/express-setup.mjs';
 import { expandPermissions } from '../../shared/common/access-control.js';
+import { parseSiteConfig } from '../../shared/common/site-config.js';
+import { SITE_FEATURE_NAMES } from '../../shared/common/site-features.js';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
@@ -77,9 +79,23 @@ export function cleanup(...paths) {
   }
 }
 
+// Every feature on, as one deployment could configure it. Tests of other
+// feature sets pass their own `site` to the factory.
+export const TEST_SITE_ENV = Object.freeze({
+  SITE_NAME: "Test Competition",
+  SITE_SHORT_NAME: "TC",
+  PUBLIC_URL: "https://competition.test",
+  FEATURES: SITE_FEATURE_NAMES.join(","),
+});
+
+export function testSite(overrides = {}) {
+  return parseSiteConfig({ ...TEST_SITE_ENV, ...overrides });
+}
+
 export function setupTestEnv() {
   process.env.JWT_SECRET = TEST_SECRET;
   process.env.INTERNAL_SECRET = TEST_INTERNAL_SECRET;
+  Object.assign(process.env, TEST_SITE_ENV);
 }
 
 // 대부분의 테스트는 auth 서비스 없이 대상 서비스만 띄우므로 재검증할 상대가 없다.

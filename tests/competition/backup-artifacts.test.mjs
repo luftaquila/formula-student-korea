@@ -120,7 +120,9 @@ function scriptProject() {
   }
   fs.mkdirSync(path.join(root, "shared", "common"), { recursive: true });
   fs.copyFileSync(path.resolve("shared", "common", "competition-year.mjs"), path.join(root, "shared", "common", "competition-year.mjs"));
-  fs.copyFileSync(path.resolve("shared", "common", "access-control.js"), path.join(root, "shared", "common", "access-control.js"));
+  for (const name of ["access-control.js", "site-features.js"]) {
+    fs.copyFileSync(path.resolve("shared", "common", name), path.join(root, "shared", "common", name));
+  }
   fs.symlinkSync(path.resolve("competition/node_modules"), path.join(root, "competition", "node_modules"), "dir");
   return root;
 }

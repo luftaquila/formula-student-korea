@@ -1,9 +1,10 @@
 import crypto from "node:crypto";
 import { smsTestMessage } from "../../../shared/common/sms-template.mjs";
 import { currentCompetitionYear } from "../../../shared/common/competition-year.mjs";
+import { escapeHtml } from "../../../shared/common/escape-html.js";
 import https from "node:https";
 
-export function registerTestRoutes({ app, logger, getConfig, fetchFn, BREVO_API_BASE }) {
+export function registerTestRoutes({ app, logger, getConfig, fetchFn, BREVO_API_BASE, site }) {
   /* ============================================
    Test Email
    ============================================ */
@@ -37,14 +38,14 @@ export function registerTestRoutes({ app, logger, getConfig, fetchFn, BREVO_API_
           Accept: "application/json",
         },
         body: JSON.stringify({
-          sender: { name: senderName || "FSK", email: senderEmail },
+          sender: { name: senderName || site.shortName, email: senderEmail },
           to: [{ email: recipient }],
-          subject: "[FSK] 이메일 전송 테스트",
+          subject: `[${site.shortName}] 이메일 전송 테스트`,
           htmlContent: `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><meta http-equiv="Content-Type" content="text/html; charset=utf-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" /></head>
 <body style="margin:0;padding:32px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:14px;line-height:1.6;color:#333333;background-color:#ffffff;">
-<p>이 메일은 FSK 이메일 서비스의 테스트 메일입니다.</p>
+<p>이 메일은 ${escapeHtml(site.shortName)} 이메일 서비스의 테스트 메일입니다.</p>
 </body></html>`,
         }),
         signal: AbortSignal.timeout(10000),
@@ -95,7 +96,7 @@ export function registerTestRoutes({ app, logger, getConfig, fetchFn, BREVO_API_
     const body = JSON.stringify({
       type: "SMS",
       from: sender,
-      content: smsTestMessage(currentCompetitionYear()),
+      content: smsTestMessage(site.shortName, currentCompetitionYear()),
       messages: [{ to: recipient }],
     });
 

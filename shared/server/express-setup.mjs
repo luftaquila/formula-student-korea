@@ -1,4 +1,5 @@
 import { htmlEntries } from "./social-image.mjs";
+import { parseSiteConfig } from "../common/site-config.js";
 import fs from "fs";
 import crypto from "crypto";
 
@@ -10,13 +11,7 @@ import {
 import { serviceUrl } from "./services.mjs";
 export const VALID_ROLES = HUMAN_ROLES;
 
-// 불리언 환경변수 파싱. env 값은 항상 문자열이므로 "false"/"0"도 truthy가 되는
-// 함정을 막는다. "1"/"true"/"yes"/"on"(대소문자 무시)만 활성으로 간주하고,
-// 그 외("false", "0", "", undefined)는 모두 비활성.
-export function isEnvEnabled(value) {
-  if (!value) return false;
-  return ["1", "true", "yes", "on"].includes(String(value).trim().toLowerCase());
-}
+export { isEnvEnabled } from "../common/env-flags.js";
 
 export function isSecureConnection(req) {
   return (req.headers["x-forwarded-proto"] || req.protocol) === "https";
@@ -208,8 +203,12 @@ export function createApp(deps, authRoleFn) {
     console.warn("WARN: INTERNAL_SECRET is not set — inter-service calls and user revalidation will be rejected.");
   }
 
+  // 배포의 사이트 설정. 설정하지 않은 값은 기본값을 쓰고, 잘못된 값이면 서비스를 띄우지 않는다.
+  const site = deps.site || parseSiteConfig(process.env);
+
   const app = express();
   app.disable("x-powered-by");
+  app.locals.site = site;
 
   // 정적 루트. 프로덕션은 항상 기본값 — override는 테스트 픽스처 격리용(dbPath와 동일 패턴).
   const staticRoot = deps.staticRoot || "./web/dist";
@@ -469,7 +468,7 @@ export function createApp(deps, authRoleFn) {
   // Vite가 낸 해시 자산(/assets/*)은 파일명이 콘텐츠에 종속되므로 1년 immutable 캐시로
   // 매 페이지 로드의 재검증(304) 왕복을 없앤다. 그 외(index.html 등)는 no-cache라 재배포가
   // 즉시 반영된다.
-  app.use(htmlEntries(staticRoot));
+  app.use(htmlEntries(staticRoot, site));
   app.use(express.static(staticRoot, {
     setHeaders: (res, filePath) => {
       if (/[\\/]assets[\\/]/.test(filePath)) {

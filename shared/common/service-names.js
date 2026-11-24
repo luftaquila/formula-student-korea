@@ -6,6 +6,8 @@
 // 안전해야 한다"는 제약이 한눈에 확인되는 크기의 파일에 머물게 한다.
 //
 // 순서는 로그 뷰어 드롭다운 표시 순서다.
+import { isSiteFeature } from "./site-features.js";
+
 export const SERVICE_NAMES = Object.freeze([
   "auth",
   "entry",
@@ -19,3 +21,14 @@ export const SERVICE_NAMES = Object.freeze([
   "course",
   "email",
 ]);
+
+// auth를 제외한 각 이름은 같은 이름의 사이트 기능이 켜졌을 때만 배포에 존재한다.
+for (const name of SERVICE_NAMES) {
+  if (name !== "auth" && !isSiteFeature(name)) throw new Error(`Service ${name} has no site feature`);
+}
+
+// 이 배포에 존재하는 로그 서비스. 집계 대상과 로그 뷰어 필터가 같은 목록을 쓴다.
+export function siteServiceNames(features) {
+  const enabled = new Set(features);
+  return SERVICE_NAMES.filter((name) => name === "auth" || enabled.has(name));
+}

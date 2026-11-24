@@ -70,7 +70,7 @@ export function createCourseApp(options = {}) {
   });
 
   // Link preview crawlers need public metadata before the SPA executes.
-  app.get("/public", htmlPage("public.html", app.locals.staticRoot));
+  app.get("/public", htmlPage("public.html", app.locals.staticRoot, { site: app.locals.site }));
 
   addSpaFallback(app);
 

@@ -82,7 +82,7 @@ export function createScoreApp(options = {}) {
   /* ============================================
    SPA Fallback - Vue Router 지원
    ============================================ */
-  const publicScoreHtml = htmlPage("index.html", app.locals.staticRoot);
+  const publicScoreHtml = htmlPage("index.html", app.locals.staticRoot, { site: app.locals.site });
 
   registerEventsRoutes({ app, sseHandler, parseScoreYear, isScorePublished, handlePublicSSE });
 

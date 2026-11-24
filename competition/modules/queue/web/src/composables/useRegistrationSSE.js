@@ -13,6 +13,7 @@ const {
 );
 
 const registrationRevision = ref(0);
+const lastEntriesUpdate = ref(null);
 
 on("registration", (event) => {
   const data = parseSSEData(event);
@@ -20,7 +21,13 @@ on("registration", (event) => {
   registrationRevision.value += 1;
 });
 
-export function useRegistrationSSE() {
-  useConnection();
-  return { registrationRevision, reconnected };
+on("entries", (event) => {
+  const data = parseSSEData(event);
+  if (!data || data.year !== year) return;
+  lastEntriesUpdate.value = { ...data, timestamp: Date.now() };
+});
+
+export function useRegistrationSSE(enabled = true) {
+  useConnection(enabled);
+  return { registrationRevision, lastEntriesUpdate, reconnected };
 }

@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { currentCompetitionYear } from "@shared/common/competition-year.mjs";
 import { useNotification } from "@shared/browser/useNotification.js";
+import { hasFeature } from "@shared/browser/site.js";
 import {
   fetchEntries,
   fetchPublicQueues,
@@ -17,18 +18,29 @@ import { createLookupLoader, isLookupEntryAvailable } from "../lookup-state.js";
 
 const year = currentCompetitionYear();
 const { error } = useNotification();
+// This page combines the queues the deployment enables: the inspection booth
+// queue (queue) and the registration desk queue (registration).
+const queueEnabled = hasFeature("queue");
+const registrationEnabled = hasFeature("registration");
 const {
   activeInspections,
   lastQueueUpdate,
   allBooths,
   lastBoothUpdate,
-  lastEntriesUpdate,
+  lastEntriesUpdate: queueEntriesUpdate,
   reconnected: queueReconnected,
-} = useSSE();
+} = useSSE(queueEnabled);
 const {
   registrationRevision,
+  lastEntriesUpdate: registrationEntriesUpdate,
   reconnected: registrationReconnected,
-} = useRegistrationSSE();
+} = useRegistrationSSE(registrationEnabled);
+// Both streams announce roster changes; follow one so a change reloads once.
+const lastEntriesUpdate = queueEnabled ? queueEntriesUpdate : registrationEntriesUpdate;
+const lookupTitle = queueEnabled && registrationEnabled ? "통합 대기 순번 조회" : "대기 순번 조회";
+const emptyLookupText = queueEnabled && registrationEnabled
+  ? "현재 등록 또는 검차 대기가 없습니다."
+  : queueEnabled ? "현재 검차 대기가 없습니다." : "현재 등록 대기가 없습니다.";
 const { elapsedTimes, syncTimers } = useBoothTimers();
 
 const visibleInspections = computed(() =>
@@ -45,8 +57,10 @@ const registrationWait = ref(null);
 const queueEntries = ref([]);
 const lookupError = ref("");
 const lookupLoader = createLookupLoader({
-  fetchQueue: fetchQueueState,
-  fetchRegistration: (num) => fetchRegistrationLookup(year, num),
+  fetchQueue: queueEnabled ? fetchQueueState : async () => ({ queues: [] }),
+  fetchRegistration: registrationEnabled
+    ? (num) => fetchRegistrationLookup(year, num)
+    : async () => null,
 });
 
 const team = computed(() => {
@@ -76,6 +90,7 @@ async function loadEntries({ notify = false } = {}) {
 }
 
 async function loadPublicQueues({ notify = false } = {}) {
+  if (!queueEnabled) return;
   try {
     const result = await fetchPublicQueues();
     publicQueues.value = Array.isArray(result.queues) ? result.queues : [];
@@ -236,7 +251,7 @@ onUnmounted(() => {
     <div class="status-grid">
       <section class="card query-card">
         <div class="card-header">
-          <h3>🔍 통합 대기 순번 조회</h3>
+          <h3>🔍 {{ lookupTitle }}</h3>
         </div>
         <form class="card-body" @submit.prevent="query">
           <label class="form-label" for="queue-entry-number">엔트리 번호</label>
@@ -302,13 +317,13 @@ onUnmounted(() => {
               </span>
             </div>
           </div>
-          <p v-else-if="hasQueried && !lookupError" class="empty-result">현재 등록 또는 검차 대기가 없습니다.</p>
+          <p v-else-if="hasQueried && !lookupError" class="empty-result">{{ emptyLookupText }}</p>
           <div v-else class="result-row placeholder"><strong class="result-rank">-</strong></div>
         </div>
       </section>
     </div>
 
-    <section class="card queues-card">
+    <section v-if="queueEnabled" class="card queues-card">
       <div class="card-header">
         <h3>🛎️ 전체 대기열 현황</h3>
       </div>

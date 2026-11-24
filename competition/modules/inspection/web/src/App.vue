@@ -2,6 +2,7 @@
 import { computed, watch } from "vue";
 import { useRoute } from "vue-router";
 import NavMenu from "@shared/browser/NavMenu.vue";
+import { siteTitle } from "@shared/browser/site.js";
 import TestServerNotice from "@shared/browser/TestServerNotice.vue";
 import SonnerToaster from "@shared/browser/SonnerToaster.vue";
 
@@ -23,7 +24,7 @@ function getPageTitle() {
   return pageInfo[route.path]?.title || "인스펙션 시트";
 }
 
-watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { immediate: true });
+watch(() => route.path, () => { document.title = siteTitle(getPageTitle()); }, { immediate: true });
 </script>
 
 <template>
@@ -37,7 +38,7 @@ watch(() => route.path, () => { document.title = `FSK ${getPageTitle()}`; }, { i
       <div class="header-content">
         <a href="/" class="logo">
           <span class="logo-icon">📋</span>
-          <h1>FSK {{ getPageTitle() }}</h1>
+          <h1>{{ siteTitle(getPageTitle()) }}</h1>
         </a>
         <div class="header-actions">
           <NavMenu :currentPath="'/inspection' + route.path" />

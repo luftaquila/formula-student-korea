@@ -18,6 +18,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  TEST_SITE_ENV,
   TEST_SECRET,
   TRUST_JWT,
 } from '../helpers/test-utils.mjs';
@@ -2405,7 +2406,7 @@ describe('GET /api/admin/years/:year/archive', () => {
     assert.equal(res.status, 200);
     assert.equal(res.headers.get('content-type'), 'application/zip');
     const disposition = res.headers.get('content-disposition');
-    assert.ok(disposition.includes('FSK_2026_documents.zip'), 'should have correct filename');
+    assert.ok(disposition.includes(`${TEST_SITE_ENV.SITE_SHORT_NAME}_2026_documents.zip`), 'should have correct filename');
     const buf = Buffer.from(await res.arrayBuffer());
     assert.ok(buf.length > 0, 'zip should not be empty');
     // Verify zip magic bytes (PK\x03\x04)

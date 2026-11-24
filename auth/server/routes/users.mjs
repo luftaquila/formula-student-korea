@@ -1,6 +1,7 @@
 import {
-  accessCatalog,
   PERMISSION_KEYS,
+  accessCatalog,
+  disabledGrants,
   normalizeAccessGrants,
 } from "../../../shared/common/access-control.js";
 import { VALID_ROLES } from "../../../shared/server/express-setup.mjs";
@@ -13,7 +14,16 @@ export function registerUsersRoutes({
   ADMIN_EMAIL,
   logger,
   notifyNewUser,
+  site,
 }) {
+  // Grants are limited to the permissions of this deployment's enabled features.
+  // Edits keep the grants stored while another feature was enabled, so they
+  // apply again if that feature returns.
+  const catalog = accessCatalog(site.features);
+  const assignableKeys = new Set(catalog.permissions.map(({ key }) => key));
+  const isAssignable = (key) => assignableKeys.has(key);
+  const keptGrants = (user) => disabledGrants(userAccess(user).grants, site.features);
+
   // GET /api/users/exists/:email - 사용자 존재 + 활성 여부 (내부 서비스용)
   app.get("/api/users/exists/:email", (req, res) => {
     const user = db
@@ -41,7 +51,7 @@ export function registerUsersRoutes({
     });
   });
 
-  app.get("/api/access/catalog", (req, res) => res.json(accessCatalog()));
+  app.get("/api/access/catalog", (req, res) => res.json(catalog));
 
   app.get("/api/internal/users", (req, res) => {
     const result = dbRun(() =>
@@ -89,7 +99,7 @@ export function registerUsersRoutes({
     }
     if (
       new Set(grants).size !== grants.length ||
-      grants.some((key) => !PERMISSION_KEYS.includes(key))
+      grants.some((key) => !isAssignable(key))
     ) {
       logger.warn(req, "user.bulk_access_update", { reason: "invalid_access_key", grants });
       return res.status(400).json({ code: "INVALID_ACCESS_KEY" });
@@ -126,8 +136,9 @@ export function registerUsersRoutes({
           "UPDATE users SET access_revision = access_revision + 1 WHERE id = ?",
         );
         for (const row of rows) {
+          const kept = keptGrants(row);
           deletePermissions.run(row.id);
-          for (const key of normalizedGrants) insertPermission.run(row.id, key);
+          for (const key of [...normalizedGrants, ...kept]) insertPermission.run(row.id, key);
           bumpRevision.run(row.id);
         }
         const after = selectTargets
@@ -193,7 +204,7 @@ export function registerUsersRoutes({
     }
     if (
       new Set(grants).size !== grants.length ||
-      grants.some((key) => !PERMISSION_KEYS.includes(key))
+      grants.some((key) => !isAssignable(key))
     ) {
       logger.warn(
         req,
@@ -235,11 +246,12 @@ export function registerUsersRoutes({
         if (!current || current.role !== "official") return { roleChanged: true };
         if (current.access_revision !== expectedRevision)
           return { stale: true, current: userAccess(current) };
+        const kept = keptGrants(current);
         db.prepare("DELETE FROM user_permission WHERE user_id = ?").run(id);
         const insertPermission = db.prepare(
           "INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)",
         );
-        for (const key of normalizedGrants) insertPermission.run(id, key);
+        for (const key of [...normalizedGrants, ...kept]) insertPermission.run(id, key);
         db.prepare("UPDATE users SET access_revision = access_revision + 1 WHERE id = ?").run(id);
         return {
           current: userAccess(
@@ -362,7 +374,12 @@ export function registerUsersRoutes({
           errors.push({ row, reason: "알 수 없는 서비스 권한" });
           continue;
         }
-        const normalizedGrants = normalizeAccessGrants([...new Set(grants)]);
+        // Lists exported where more features are enabled still import.
+        const dropped = disabledGrants(grants, site.features);
+        if (dropped.length > 0) {
+          errors.push({ row, reason: `꺼진 기능의 권한 제외: ${dropped.join(", ")}` });
+        }
+        const normalizedGrants = normalizeAccessGrants([...new Set(grants.filter(isAssignable))]);
 
         const result = insert.run(email, role, realname, phone, affiliation);
         if (result.changes > 0) {

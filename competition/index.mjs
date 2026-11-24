@@ -8,6 +8,7 @@ import Database from "better-sqlite3";
 import { createDatabase } from "../shared/server/db-setup.mjs";
 import { createCachedValidator, createRemoteUserValidator, ensureDataDir } from "../shared/server/express-setup.mjs";
 import { currentCompetitionYear } from "../shared/common/competition-year.mjs";
+import { parseSiteConfig } from "../shared/common/site-config.js";
 import { createQueueApp } from "./modules/queue/index.mjs";
 import { createRegistrationApp } from "./modules/registration/index.mjs";
 import { createInspectionApp } from "./modules/inspection/index.mjs";
@@ -29,12 +30,31 @@ function defaultStaticRoots() {
   ]));
 }
 
-function mountUi(app, prefix, staticRoot, moduleApp) {
+// Site feature that enables each module. Modules of disabled features still
+// initialize their schema, so every deployment keeps one database contract, but
+// they serve no API or UI and run no background work.
+const MODULE_FEATURES = Object.freeze({
+  teams: "entry",
+  queue: "queue",
+  registration: "registration",
+  inspection: "inspection",
+  traffic: "traffic",
+  score: "score",
+  documents: "documents",
+});
+
+// The participant lookup page of the Queue SPA. With Registration enabled and
+// Queue disabled, only this page and its static files are served.
+function isQueueHubPath(path) {
+  return path === "/" || path === "/index.html" || path === "/env-config.js" || path.startsWith("/assets/");
+}
+
+function mountUi(app, prefix, staticRoot, moduleApp, site) {
   // Reuse the module's authentication middleware before the shared process
   // serves its SPA. Without this pass, consolidating static hosting would
   // silently make every module UI public even though its API stayed gated.
   app.use(prefix, moduleApp);
-  app.use(prefix, htmlEntries(staticRoot));
+  app.use(prefix, htmlEntries(staticRoot, site));
   app.use(prefix, express.static(staticRoot, {
     index: false,
     fallthrough: true,
@@ -44,7 +64,7 @@ function mountUi(app, prefix, staticRoot, moduleApp) {
       }
     },
   }));
-  app.get([prefix, `${prefix}/{*splat}`], htmlPage("index.html", staticRoot));
+  app.get([prefix, `${prefix}/{*splat}`], htmlPage("index.html", staticRoot, { site }));
 }
 
 function mountFlatModuleApi(app, prefix, moduleApp) {
@@ -57,6 +77,9 @@ function mountFlatModuleApi(app, prefix, moduleApp) {
 
 export function createCompetitionApp(options = {}) {
   ensureDataDir();
+  const site = options.site || parseSiteConfig(process.env);
+  const enabled = Object.fromEntries(Object.entries(MODULE_FEATURES)
+    .map(([name, feature]) => [name, site.has(feature)]));
 
   const dbPath = options.dbPath || "./data/competition.db";
   const db = options.db || createDatabase(Database, dbPath);
@@ -85,6 +108,7 @@ export function createCompetitionApp(options = {}) {
     // cannot extend a stale role beyond the single configured TTL.
     validateUserCacheTtl: 0,
     skipSpaFallback: true,
+    site,
   };
   let dispatchScoreSourceEvent = () => {};
   let dispatchTeamChange = () => {};
@@ -98,6 +122,7 @@ export function createCompetitionApp(options = {}) {
     validateUserCacheTtl: 0,
     staticRoot: staticRoots.entry,
     skipSpaFallback: true,
+    site,
     onChange: (data) => dispatchTeamChange(data),
   });
   const guarded = (module) => createModuleYearGuard({ module, db });
@@ -167,7 +192,7 @@ export function createCompetitionApp(options = {}) {
     uploadsDir: uploadRoot,
     teamStore: teams.store,
     mutationGuard: guarded("documents"),
-    enableNotificationScheduler: options.enableNotificationScheduler,
+    enableNotificationScheduler: enabled.documents ? options.enableNotificationScheduler : false,
     sendNotificationEmail: options.sendNotificationEmail,
     beforeSubmissionMetadataCommit: options.beforeSubmissionMetadataCommit,
   });
@@ -194,12 +219,14 @@ export function createCompetitionApp(options = {}) {
     res.json({ currentYear, years });
   });
 
-  app.use("/competition/api/v1", (req, res, next) => {
-    if (!/^\/(?:teams|vehicle-types|health|logs)(?:\/|$)/i.test(req.path)) return next();
-    teams.app(req, res, next);
-  });
+  if (enabled.teams) {
+    app.use("/competition/api/v1", (req, res, next) => {
+      if (!/^\/(?:teams|vehicle-types|health|logs)(?:\/|$)/i.test(req.path)) return next();
+      teams.app(req, res, next);
+    });
+  }
   for (const name of ["queue", "registration", "inspection", "traffic", "score", "documents"]) {
-    mountFlatModuleApi(app, `/competition/api/v1/${name}`, modules[name].app);
+    if (enabled[name]) mountFlatModuleApi(app, `/competition/api/v1/${name}`, modules[name].app);
   }
 
   // Old API paths are intentionally not a second compatibility facade. This
@@ -209,11 +236,21 @@ export function createCompetitionApp(options = {}) {
     app.use(`/${name}/api`, (req, res) => res.status(404).json({ code: "NOT_FOUND" }));
   }
 
-  app.get(["/registration", "/registration/"], (_req, res) => res.redirect("/queue/"));
+  if (enabled.registration) {
+    app.get(["/registration", "/registration/"], (_req, res) => res.redirect("/queue/"));
+  }
 
-  mountUi(app, "/entry", staticRoots.entry, teams.app);
-  for (const name of ["queue", "registration", "inspection", "traffic", "score", "documents"]) {
-    mountUi(app, `/${name}`, staticRoots[name], modules[name].app);
+  if (enabled.teams) mountUi(app, "/entry", staticRoots.entry, teams.app, site);
+  if (!enabled.queue && enabled.registration) {
+    // Registration's public lookup lives in the Queue SPA; its other pages stay absent.
+    app.use("/queue", (req, res, next) => (isQueueHubPath(req.path) ? next()
+      : res.status(404).json({ code: "NOT_FOUND" })));
+  }
+  if (enabled.queue || enabled.registration) {
+    mountUi(app, "/queue", staticRoots.queue, queue.app, site);
+  }
+  for (const name of ["registration", "inspection", "traffic", "score", "documents"]) {
+    if (enabled[name]) mountUi(app, `/${name}`, staticRoots[name], modules[name].app, site);
   }
 
   app.use((req, res) => res.status(404).json({ code: "NOT_FOUND" }));
@@ -224,13 +261,23 @@ export function createCompetitionApp(options = {}) {
     ...(traffic.timers || []),
     ...(documents.timers || []),
   ];
+  // Stop background work of disabled modules. Queue owns the SMS client that
+  // Registration borrows, so its refresh continues while either one is enabled.
+  const smsInUse = enabled.queue || enabled.registration;
+  for (const [name, module] of Object.entries(modules)) {
+    if (enabled[name]) continue;
+    for (const timer of module.timers || []) {
+      if (smsInUse && timer === queue.smsClient.timer) continue;
+      clearTimeout(timer);
+    }
+  }
   let drained = false;
   let closed = false;
   let closePromise = null;
-  const start = () => Promise.all([
-    queue.loadSmsConfig({ retries: 10, delayMs: 3000 }),
-    registration.loadSmsConfig({ retries: 10, delayMs: 3000 }),
-  ]);
+  // The shared client loads its configuration through its owner, Queue.
+  const start = async () => {
+    if (smsInUse) await queue.loadSmsConfig({ retries: 10, delayMs: 3000 });
+  };
   const drain = () => {
     if (!drained) {
       drained = true;
@@ -258,7 +305,7 @@ export function createCompetitionApp(options = {}) {
     return closePromise;
   };
 
-  return { app, db, teams: teams.store, modules, start, drain, close };
+  return { app, db, site, teams: teams.store, modules, start, drain, close };
 }
 
 export function createShutdownHandler({

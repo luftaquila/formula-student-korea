@@ -3,6 +3,8 @@ import { onMounted, onUnmounted, ref } from "vue";
 import { isAdmin } from "@shared/browser/officialsStore.js";
 import { parseDbTimestamp } from "@shared/common/parse-timestamp.js";
 import { useNotification } from "@shared/browser/useNotification.js";
+import { enabledDeviceScopes } from "@shared/common/access-control.js";
+import { site } from "@shared/browser/site.js";
 
 const BASE_URL = import.meta.env.PROD ? "/auth" : "";
 const { success, error } = useNotification();
@@ -10,7 +12,9 @@ const devices = ref([]);
 // Server status keys rendered in the page's language.
 const DEVICE_STATUS_LABELS = { active: "활성", pending: "페어링 대기", revoked: "폐기", unpaired: "미페어링" };
 const name = ref("");
-const scope = ref("kiosk.queue.register");
+// Kiosk scopes of this deployment's enabled queues.
+const scopeOptions = enabledDeviceScopes(site.features);
+const scope = ref(scopeOptions[0] || "");
 const issued = ref(null);
 const now = ref(Date.now());
 const timer = setInterval(() => { now.value = Date.now(); }, 1000);
@@ -77,8 +81,7 @@ onUnmounted(() => clearInterval(timer));
       <form @submit.prevent="createDevice">
         <input v-model="name" class="form-input" maxlength="80" placeholder="장비 이름" required />
         <select v-model="scope" class="form-select">
-          <option value="kiosk.queue.register">검차 대기 접수</option>
-          <option value="kiosk.registration.register">등록 대기 접수</option>
+          <option v-for="option in scopeOptions" :key="option" :value="option">{{ scopeLabel(option) }}</option>
         </select>
         <button class="btn btn-primary">코드 생성</button>
       </form>
