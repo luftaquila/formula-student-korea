@@ -389,6 +389,52 @@ describe("deployment features", () => {
     assert.deepEqual((await allowed.json()).grants, ["registration.manage"]);
   });
 
+  it("keeps stored grants of disabled features while the enabled ones are edited", async () => {
+    const created = await reducedClient.post("/api/users", {
+      cookie: adminCookie, body: { email: "kept@test.com", role: "official" },
+    });
+    const user = await created.json();
+    // Granted while this deployment still enabled the Queue.
+    reduced.db.prepare("INSERT INTO user_permission (user_id, permission_key) VALUES (?, ?)")
+      .run(user.id, "queue.operate");
+
+    const single = await reducedClient.put(`/api/users/${user.id}/access`, {
+      cookie: adminCookie, body: { expectedRevision: 0, grants: ["registration.operate"] },
+    });
+    assert.equal(single.status, 200);
+    const edited = await single.json();
+    assert.deepEqual(edited.grants, ["queue.operate", "registration.operate"]);
+
+    const bulk = await reducedClient.put("/api/users/bulk/access", {
+      cookie: adminCookie,
+      body: { users: [{ id: user.id, expectedRevision: edited.accessRevision }], grants: ["registration.manage"] },
+    });
+    assert.equal(bulk.status, 200);
+    assert.deepEqual((await bulk.json()).users[0].grants, ["queue.operate", "registration.manage"]);
+  });
+
+  it("imports users without the grants of disabled features", async () => {
+    const response = await reducedClient.post("/api/users/bulk", {
+      cookie: adminCookie,
+      body: { users: [{ email: "imported@test.com", role: "official", grants: ["registration.operate", "queue.operate"] }] },
+    });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.added, 1);
+    assert.deepEqual(result.errors.map(({ row }) => row.email), ["imported@test.com"]);
+    const stored = reduced.db.prepare(`
+      SELECT permission_key FROM user_permission
+      WHERE user_id = (SELECT id FROM users WHERE email = ?)
+    `).all("imported@test.com").map(({ permission_key: key }) => key);
+    assert.deepEqual(stored, ["registration.operate"]);
+
+    const unknown = await reducedClient.post("/api/users/bulk", {
+      cookie: adminCookie,
+      body: { users: [{ email: "unknown-grant@test.com", role: "official", grants: ["unknown.access"] }] },
+    });
+    assert.equal((await unknown.json()).added, 0);
+  });
+
   it("pairs kiosks only for enabled queues", async () => {
     const queueKiosk = await reducedClient.post("/api/devices", {
       cookie: adminCookie, body: { name: "Inspection tablet", scope: "kiosk.queue.register" },

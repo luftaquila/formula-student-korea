@@ -85,3 +85,15 @@ test('a configured link-preview image replaces the packaged one and its size tag
   for (const key of ['og:image:type', 'og:image:width', 'og:image:height']) assert.equal(metadata.has(key), false, key);
   assert.match(body, /content="https:\/\/cdn\.example\.org\/preview\.png\?v=1&amp;size=large"/);
 });
+
+test('configured names reach the metadata literally, including replacement patterns', async t => {
+  const root = mkdtempSync(join(tmpdir(), 'fsk-social-literal-'));
+  writeFileSync(join(root, 'index.html'), '<!doctype html><html><head><title>Lookup</title></head><body></body></html>');
+  const site = testSite({ SITE_NAME: "Cup $& $' $$ $`" });
+  const app = createApp({ express, staticRoot: root, validateUser: TRUST_JWT, site }, () => null);
+  addSpaFallback(app, root);
+  const { server, baseUrl } = await startServer(app);
+  t.after(async () => { await stopServer(server); rmSync(root, { recursive: true, force: true }); });
+  const metadata = new Map(readMetadata(await (await fetch(baseUrl + '/')).text()));
+  assert.equal(metadata.get('og:site_name'), "Cup $& $' $$ $`");
+});

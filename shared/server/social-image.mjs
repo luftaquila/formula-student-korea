@@ -37,7 +37,7 @@ export function htmlPage(file, root, { fallthrough = false, site } = {}) {
         .map(([attribute, key, value]) =>
           `<meta ${attribute}="${key}" content="${value === TITLE ? title : escapeAttribute(value)}">`).join('\n');
       res.setHeader('Cache-Control', 'no-cache');
-      res.type('html').send(html.replace(/<\/head\s*>/i, `${tags}\n</head>`));
+      res.type('html').send(html.replace(/<\/head\s*>/i, () => `${tags}\n</head>`));
     });
   };
 }

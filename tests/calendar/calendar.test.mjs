@@ -8,6 +8,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  testSite,
   TRUST_JWT,
 } from '../helpers/test-utils.mjs';
 import { createCalendarApp } from '../../calendar/index.mjs';
@@ -269,5 +270,29 @@ describe('Calendar API', () => {
       const again = await client.delete(`/api/events/${createdId}`, { cookie: managerCookie });
       assert.equal(again.status, 404);
     });
+  });
+});
+
+describe('iCal feed', () => {
+  it('names the calendar after the configured site (docs/api.md)', async (t) => {
+    const path = tmpDbPath();
+    const created = createCalendarApp({
+      dbPath: path,
+      validateUser: TRUST_JWT,
+      site: testSite({ SITE_NAME: 'Electric, Korea; Cup' }),
+    });
+    const started = await startServer(created.app);
+    t.after(async () => {
+      await stopServer(started.server);
+      created.db.close();
+      cleanup(path);
+    });
+    const siteClient = createClient(started.baseUrl);
+    const { path: feedPath } = await (await siteClient.get('/api/events/subscribe', { cookie: studentCookie })).json();
+    const feed = await fetch(started.baseUrl + feedPath.replace(/^\/calendar/, ''));
+    assert.equal(feed.status, 200);
+    const lines = (await feed.text()).split('\r\n');
+    assert.ok(lines.includes('PRODID:-//Electric\\, Korea\\; Cup//Calendar//KO'));
+    assert.ok(lines.includes('X-WR-CALNAME:Electric\\, Korea\\; Cup'));
   });
 });

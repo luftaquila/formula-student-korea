@@ -19,7 +19,23 @@ after(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
 
-async function startCompetition(features) {
+// Stands in for the Email service's SMS configuration endpoint.
+function smsConfigFetch(requests) {
+  return async (url) => {
+    requests.push(String(url));
+    return {
+      ok: true,
+      json: async () => ({
+        naver_cloud_access_key: "key",
+        naver_cloud_secret_key: "secret",
+        naver_cloud_sms_service_id: "service",
+        phone_number_sms_sender: "01000000000",
+      }),
+    };
+  };
+}
+
+async function startCompetition(features, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "fsk-site-features-"));
   roots.push(root);
   const staticRoots = {};
@@ -36,6 +52,7 @@ async function startCompetition(features) {
     validateUser: TRUST_JWT,
     enableNotificationScheduler: false,
     site: testSite({ FEATURES: features }),
+    ...options,
   });
   const { server, baseUrl } = await startServer(runtime.app);
   return {
@@ -84,6 +101,20 @@ describe("Competition modules follow the enabled site features", () => {
     }
   });
 
+  it("loads the shared SMS configuration for Registration without the Queue", async () => {
+    const requests = [];
+    const competition = await startCompetition("entry,registration,email", { fetchImpl: smsConfigFetch(requests) });
+    try {
+      await competition.runtime.start();
+      assert.equal(requests.length, 1);
+      const settings = await competition.client.get("/competition/api/v1/registration/settings", { cookie: adminCookie });
+      assert.equal(settings.status, 200);
+      assert.equal((await settings.json()).smsAvailable, true);
+    } finally {
+      await competition.stop();
+    }
+  });
+
   it("serves the Queue operations once the Queue feature is enabled", async () => {
     const competition = await startCompetition("entry,queue,email");
     try {
@@ -98,7 +129,8 @@ describe("Competition modules follow the enabled site features", () => {
   });
 
   it("keeps one database contract for a documents deployment and loads no SMS configuration", async () => {
-    const competition = await startCompetition("entry,documents,email");
+    const requests = [];
+    const competition = await startCompetition("entry,documents,email", { fetchImpl: smsConfigFetch(requests) });
     try {
       const { runtime, client } = competition;
       assert.equal((await client.get("/documents/admin", { cookie: adminCookie })).status, 200);
@@ -106,7 +138,8 @@ describe("Competition modules follow the enabled site features", () => {
       assert.equal((await client.get("/registration/")).status, 404);
       // Every module schema exists even though only Documents serves requests.
       validateCompetitionDatabase(runtime.db);
-      assert.deepEqual(await runtime.start(), [false, false]);
+      await runtime.start();
+      assert.deepEqual(requests, []);
     } finally {
       await competition.stop();
     }

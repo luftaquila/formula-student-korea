@@ -274,10 +274,10 @@ export function createCompetitionApp(options = {}) {
   let drained = false;
   let closed = false;
   let closePromise = null;
-  const start = () => Promise.all([
-    enabled.queue && queue.loadSmsConfig({ retries: 10, delayMs: 3000 }),
-    enabled.registration && registration.loadSmsConfig({ retries: 10, delayMs: 3000 }),
-  ]);
+  // The shared client loads its configuration through its owner, Queue.
+  const start = async () => {
+    if (smsInUse) await queue.loadSmsConfig({ retries: 10, delayMs: 3000 });
+  };
   const drain = () => {
     if (!drained) {
       drained = true;

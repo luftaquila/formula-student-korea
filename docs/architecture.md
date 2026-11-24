@@ -39,8 +39,9 @@ background work:
 - Caddy imports `landing/routes/<feature>.caddy` only for enabled features, so it
   never proxies to a runtime the deployment does not run.
 - Auth limits the access catalog, accepted grants, forward-auth, kiosk scopes, and
-  log aggregation to enabled features. Browsers hide pages of disabled features even
-  from Admins.
+  log aggregation to enabled features. Grants stored for a feature that is later
+  disabled stay through access edits and apply again once it is re-enabled. Browsers
+  hide pages of disabled features even from Admins.
 
 SPA `<title>` elements hold the page name; the server prefixes the short name. The
 Caddy entrypoint renders the landing title and social tags from the same

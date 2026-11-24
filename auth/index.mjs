@@ -115,7 +115,7 @@ export function createAuthApp(options = {}) {
     getRedirectUri,
     sanitizeRedirect,
     isApplyRedirect,
-  } = createOAuthService({ logger });
+  } = createOAuthService({ logger, site });
 
   setInterval(() => {
     const now = Date.now();

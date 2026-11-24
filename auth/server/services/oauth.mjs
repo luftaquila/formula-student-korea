@@ -1,6 +1,6 @@
 import { verifyJWT } from "../../../shared/server/express-setup.mjs";
 
-export function createOAuthService({ logger }) {
+export function createOAuthService({ logger, site }) {
   // fsk_applicant 쿠키에서 구글 인증된 신청자 신원을 검증해 반환 (없거나 무효면 null).
   // role이 없는 별도 토큰이므로 어떤 admin/user API도 통과하지 못한다.
   function getApplicant(req) {
@@ -47,7 +47,9 @@ export function createOAuthService({ logger }) {
    Google OAuth 헬퍼
    ============================================ */
   function getRedirectUri(req) {
-    if (process.env.PUBLIC_URL) return `${process.env.PUBLIC_URL}/auth/api/callback`;
+    // An unset PUBLIC_URL keeps the request host; site.publicUrl then holds the
+    // FSK default that only emailed links use.
+    if (process.env.PUBLIC_URL) return `${site.publicUrl}/auth/api/callback`;
     const proto = req.headers["x-forwarded-proto"] || req.protocol || "http";
     const host = req.headers["x-forwarded-host"] || req.headers.host;
     return `${proto}://${host}/auth/api/callback`;

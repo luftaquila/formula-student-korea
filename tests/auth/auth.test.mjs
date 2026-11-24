@@ -9,6 +9,7 @@ import {
   stopServer,
   cleanup,
   setupTestEnv,
+  testSite,
   TEST_SECRET,
   TEST_INTERNAL_SECRET,
 } from '../helpers/test-utils.mjs';
@@ -1003,6 +1004,23 @@ describe('OAuth endpoints', () => {
     const location = rawRes.headers.get('location');
     assert.ok(location.includes('accounts.google.com'), 'should redirect to Google');
     assert.ok(location.includes('client_id=test-client-id'), 'should include client_id');
+  });
+
+  it('GET /api/login sends the callback on the configured public origin', async (t) => {
+    const previous = process.env.PUBLIC_URL;
+    process.env.PUBLIC_URL = 'https://competition.test/';
+    const path = tmpDbPath();
+    const created = createAuthApp({ dbPath: path, site: testSite({ PUBLIC_URL: process.env.PUBLIC_URL }) });
+    const started = await startServer(created.app);
+    t.after(async () => {
+      process.env.PUBLIC_URL = previous;
+      await stopServer(started.server);
+      created.db.close();
+      cleanup(path);
+    });
+    const rawRes = await fetch(`${started.baseUrl}/api/login`, { redirect: 'manual' });
+    const location = new URL(rawRes.headers.get('location'));
+    assert.equal(location.searchParams.get('redirect_uri'), 'https://competition.test/auth/api/callback');
   });
 
   it('GET /api/login sets nonce cookie', async () => {

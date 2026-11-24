@@ -96,16 +96,16 @@ enabled features; browsers also hide pages of disabled features from Admins.
 
 | Method | Path | Role | Request | Response | Description |
 |--------|------|------|---------|----------|-------------|
-| GET | `/api/access/catalog` | admin | — | `{ roles, permissions, accessControls }` | List the enabled features' permissions and their tiered or single-toggle controls; grants outside this catalog return `400 INVALID_ACCESS_KEY` |
+| GET | `/api/access/catalog` | admin | — | `{ roles, permissions, accessControls }` | List the enabled features' permissions and their tiered or single-toggle controls; access edits with grants outside this catalog return `400 INVALID_ACCESS_KEY` |
 | GET | `/api/users` | admin | — | `[{ ..., grants, permissions, accessRevision, protected }]` | List users, configured grants, and effective permissions |
 | POST | `/api/users` | admin | `{ email, role }` | `{ id, email, role }` | Create user |
-| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone, affiliation, grants? }] }` | `{ added, skipped, errors }` | Bulk create users; grants apply only to newly created Officials |
+| POST | `/api/users/bulk` | admin | `{ users: [{ email, role, realname, phone, affiliation, grants? }] }` | `{ added, skipped, errors }` | Bulk create users; grants apply only to newly created Officials. Grants of disabled features are dropped and reported in `errors`; an unknown grant rejects its row |
 | PATCH | `/api/users/bulk` | admin | `{ ids: [int], active: bool }` | `{ updated }` | Bulk activate/deactivate users |
 | DELETE | `/api/users/bulk` | admin | `{ ids: [int] }` | `{ deleted }` | Bulk delete users (protects last admin) |
 | PATCH | `/api/users/:id` | admin | `{ role?, realname?, phone?, active? }` | 200 | Update user role/realname/phone/active status |
 | DELETE | `/api/users/:id` | admin | — | 200 | Delete single user (protects last admin, ADMIN_EMAIL) |
-| PUT | `/api/users/:id/access` | admin | `{ expectedRevision, grants }` | `{ grants, permissions, accessRevision }` | Replace an Official's grants; stale revision returns `409 ACCESS_STALE_WRITE` |
-| PUT | `/api/users/bulk/access` | admin | `{ users: [{ id, expectedRevision }], grants }` | `{ updated, users: [{ id, email, grants, permissions, accessRevision }] }` | Replace several Officials' grants with one list in a single transaction; any stale target returns `409 ACCESS_STALE_WRITE` with `stale`, a non-Official target `409 OFFICIAL_ACCESS_ONLY`, and nothing is written |
+| PUT | `/api/users/:id/access` | admin | `{ expectedRevision, grants }` | `{ grants, permissions, accessRevision }` | Replace an Official's grants of enabled features, keeping stored grants of disabled features; stale revision returns `409 ACCESS_STALE_WRITE` |
+| PUT | `/api/users/bulk/access` | admin | `{ users: [{ id, expectedRevision }], grants }` | `{ updated, users: [{ id, email, grants, permissions, accessRevision }] }` | Replace several Officials' grants of enabled features with one list in a single transaction, keeping each one's stored grants of disabled features; any stale target returns `409 ACCESS_STALE_WRITE` with `stale`, a non-Official target `409 OFFICIAL_ACCESS_ONLY`, and nothing is written |
 
 ### Internal User Lookup
 

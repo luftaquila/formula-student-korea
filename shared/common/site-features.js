@@ -1,6 +1,6 @@
 // Features a deployment can enable through FEATURES, each with the features it
-// needs. A deployment names its whole set explicitly; nothing is enabled by
-// default and an unknown name or a missing dependency rejects the set.
+// needs. A set FEATURES names the whole set and an unknown name or a missing
+// dependency rejects it; unset, every feature is enabled (site-config.js).
 //
 // This file is bundled into browsers and must stay free of Node-only APIs.
 const definitions = [
